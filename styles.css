@@ -5,6 +5,58 @@
   line-height: 1.4;
 }
 
+.tps-collapsible-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+
+.tps-collapsible-section-summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font-weight: 600;
+  gap: 8px;
+  list-style: none;
+  user-select: none;
+}
+
+.tps-collapsible-section-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tps-collapsible-section-summary::before {
+  color: var(--text-muted);
+  content: '▶';
+  flex-shrink: 0;
+  font-size: 0.65em;
+  transition: transform 0.15s ease;
+}
+
+.tps-collapsible-section[open] > .tps-collapsible-section-summary::before {
+  transform: rotate(90deg);
+}
+
+.tps-collapsible-section[open] > .tps-collapsible-section-summary {
+  margin-bottom: 8px;
+}
+
+.tps-collapsible-section-title {
+  flex: 1;
+}
+
+.tps-collapsible-section-description {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  margin: 4px 0 8px;
+}
+
+.tps-collapsible-section-content {
+  padding-top: 4px;
+}
+
 .tps-health-settings-section {
   border-top: 1px solid var(--background-modifier-border);
   margin-top: 18px;
@@ -14,127 +66,6 @@
 .tps-health-settings-section h3 {
   font-size: var(--font-ui-medium);
   margin: 0 0 4px;
-}
-
-.tps-health-food-log-base {
-  color: var(--text-normal);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  height: 100%;
-  min-height: 220px;
-  overflow: auto;
-  padding: 10px;
-}
-
-.tps-health-food-log-toolbar,
-.tps-health-food-log-summary,
-.tps-health-food-log-day-header,
-.tps-health-food-log-entry {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-}
-
-.tps-health-food-log-toolbar,
-.tps-health-food-log-day-header,
-.tps-health-food-log-entry {
-  justify-content: space-between;
-}
-
-.tps-health-food-log-title,
-.tps-health-food-log-entry-main {
-  min-width: 0;
-}
-
-.tps-health-food-log-heading {
-  font-size: var(--font-ui-large);
-  font-weight: 700;
-}
-
-.tps-health-food-log-subtitle,
-.tps-health-food-log-entry-source,
-.tps-health-food-log-empty {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-.tps-health-food-log-actions,
-.tps-health-food-log-day-meta,
-.tps-health-food-log-entry-title,
-.tps-health-food-log-entry-macros,
-.tps-health-food-log-summary-macros {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.tps-health-food-log-actions {
-  justify-content: flex-end;
-}
-
-.tps-health-food-log-actions button,
-.tps-health-food-log-entry button {
-  min-height: 28px;
-  padding: 3px 9px;
-}
-
-.tps-health-food-log-summary {
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  justify-content: space-between;
-  padding: 8px;
-}
-
-.tps-health-food-log-summary-count,
-.tps-health-food-log-day-title,
-.tps-health-food-log-entry-name {
-  font-weight: 700;
-}
-
-.tps-health-food-log-day {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.tps-health-food-log-day-header {
-  background: var(--background-secondary);
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding: 8px;
-}
-
-.tps-health-food-log-day-meta {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  justify-content: flex-end;
-}
-
-.tps-health-food-log-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.tps-health-food-log-entry {
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding: 8px;
-}
-
-.tps-health-food-log-entry:last-child {
-  border-bottom: 0;
-}
-
-.tps-health-food-log-entry-serving {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-.tps-health-food-log-entry-source {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"] .tps-gcm-parent-nav-label {
@@ -169,10 +100,68 @@
   gap: 8px;
 }
 
+.modal.tps-health-food-editor-frame {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.tps-health-food-editor-frame .tps-health-modal > h2 {
+  font-size: 1.2rem;
+  line-height: 1.2;
+  margin: 0 0 8px;
+}
+
+.tps-health-food-editor-frame .tps-health-status {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+  margin-bottom: 8px;
+}
+
+.tps-health-food-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 10px 12px;
+  margin-top: 8px;
+}
+
+.tps-health-food-editor-grid > .setting-item {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.tps-health-food-editor-grid .setting-item-info,
+.tps-health-food-editor-grid .setting-item-control {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.tps-health-food-editor-grid .setting-item-name {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.tps-health-food-editor-grid .setting-item-description {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  margin-top: 2px;
+}
+
+.tps-health-food-editor-grid .setting-item-control input,
+.tps-health-food-editor-grid .setting-item-control select {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  font-size: var(--font-ui-small);
+}
+
 .modal.tps-health-modal-frame {
   max-height: min(720px, calc(100vh - 32px));
-  --tps-health-keyboard-offset: 0px;
-  --tps-health-visual-height: 100dvh;
 }
 
 .modal.tps-health-modal-frame .modal-content {
@@ -223,6 +212,19 @@
   display: block;
 }
 
+.tps-health-describe-input {
+  box-sizing: border-box;
+  min-height: 120px;
+  resize: vertical;
+  width: 100%;
+}
+
+.tps-health-describe-action {
+  margin-top: 8px;
+  min-height: 40px;
+  width: 100%;
+}
+
 .tps-health-result-section {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -232,26 +234,15 @@
 }
 
 .tps-health-selection {
-  background: var(--background-primary);
+  background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  margin-top: 12px;
+  margin-top: 10px;
   padding: 10px;
 }
 
-.tps-health-floating-selection {
-  bottom: 8px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
-  position: sticky;
-  z-index: 4;
-}
-
-.tps-health-floating-selection.is-empty {
+.tps-health-selection.is-empty {
   display: none;
-}
-
-.tps-health-floating-selection.is-collapsed {
-  padding: 8px;
 }
 
 .tps-health-selection-empty {
@@ -281,8 +272,24 @@
   min-width: 0;
 }
 
-.tps-health-selection-name {
+.tps-health-selection-copy {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tps-health-selection-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-selection-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -294,6 +301,13 @@
   flex-wrap: wrap;
   gap: 4px;
   justify-content: flex-end;
+}
+
+.tps-health-selection-line-macros {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .tps-health-selection-header-actions {
@@ -309,16 +323,78 @@
 }
 
 .tps-health-selection-row {
-  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  display: grid;
+  gap: 5px 8px;
+  grid-template-areas:
+    "name name"
+    "copy controls";
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-top: 8px;
-  padding-top: 8px;
+  padding: 8px;
+}
+
+.tps-health-selection-row > .tps-health-selection-name {
+  grid-area: name;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  width: 100%;
+}
+
+.tps-health-selection-row > .tps-health-selection-copy {
+  grid-area: copy;
+}
+
+.tps-health-selection-row > .tps-health-selection-controls {
+  grid-area: controls;
+}
+
+body.is-mobile .tps-health-selection-row,
+body.is-phone .tps-health-selection-row {
+  align-items: stretch;
+  grid-template-areas:
+    "name"
+    "copy"
+    "controls";
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .tps-health-selection-controls {
   flex: 0 0 auto;
 }
 
-.tps-health-selection-controls input {
+.tps-health-selection-step {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font-weight: 700;
+  height: 30px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+.tps-health-selection-step:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+  outline: none;
+}
+
+body.is-mobile .tps-health-selection-controls,
+body.is-phone .tps-health-selection-controls {
+  justify-content: flex-start;
+}
+
+.tps-health-selection-controls input,
+.tps-health-selection-quantity {
+  text-align: right;
   width: 72px;
 }
 
@@ -338,10 +414,138 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   cursor: pointer;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
+  display: grid;
+  gap: 4px 10px;
+  grid-template-areas:
+    "title title"
+    "meta meta"
+    "macros actions";
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: 8px 10px;
+}
+
+.tps-health-result > .tps-health-result-title {
+  grid-area: title;
+  min-width: 0;
+  width: 100%;
+}
+
+.tps-health-result > .tps-health-result-meta {
+  grid-area: meta;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-result > .tps-health-result-macros {
+  grid-area: macros;
+}
+
+.tps-health-result > .setting-item {
+  border: 0;
+  grid-area: actions;
+  min-height: 0;
+  padding: 0;
+}
+
+/* The tray is a frequent-use surface, so keep it denser than settings-style modals. */
+.tps-health-food-search-frame .modal-content {
+  padding: 16px 18px;
+}
+
+.tps-health-food-search-frame .tps-health-modal > h2 {
+  font-size: 1.15rem;
+  line-height: 1.2;
+  margin: 0 0 5px;
+}
+
+.tps-health-food-search-frame .tps-health-status {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+  margin: 5px 0;
+}
+
+.tps-health-food-search-frame .tps-health-food-tabs {
+  margin: 5px 0 7px;
+}
+
+.tps-health-food-search-frame .tps-health-food-tab {
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.tps-health-food-search-frame .tps-health-search-results {
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.tps-health-food-search-frame .tps-health-result {
+  gap: 3px 7px;
+  padding: 6px 8px;
+}
+
+.tps-health-food-search-frame .tps-health-result > .setting-item .setting-item-control {
+  gap: 5px;
+}
+
+.tps-health-food-search-frame .tps-health-result > .setting-item button {
+  font-size: var(--font-ui-smaller);
+  min-height: 28px;
+  padding: 3px 7px;
+}
+
+.tps-health-food-search-frame .tps-health-selection {
+  margin-top: 7px;
+  padding: 7px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-row {
+  margin-top: 6px;
+  padding: 6px 7px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-copy {
+  gap: 2px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-controls {
+  gap: 5px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-step {
+  height: 28px;
+  min-height: 28px;
+  min-width: 28px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-controls input,
+.tps-health-food-search-frame .tps-health-selection-quantity {
+  height: 28px;
+  width: 62px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-controls select {
+  height: 28px;
+  width: 96px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-controls button:not(.tps-health-selection-step),
+.tps-health-food-search-frame .tps-health-selection-header-actions button,
+.tps-health-food-search-frame .tps-health-selection-actions button {
+  font-size: var(--font-ui-smaller);
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.tps-health-food-search-frame .tps-health-macro-pill {
+  line-height: 1.3;
+  padding: 0 5px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-actions {
+  margin-top: 6px;
+  padding-top: 7px;
 }
 
 .tps-health-result:hover {
@@ -406,6 +610,18 @@
   color: var(--text-warning);
 }
 
+.tps-health-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.tps-health-modal-actions button {
+  min-height: var(--interactive-normal);
+}
+
 .tps-health-log-summary {
   align-items: center;
   border: 1px solid var(--background-modifier-border);
@@ -453,22 +669,34 @@
 
 .tps-health-food-entry-row {
   list-style: none;
+  margin: 2px 0;
+}
+
+.tps-health-food-log-hidden-source {
+  display: none;
 }
 
 .tps-health-food-chip {
   align-items: center;
-  background: color-mix(in srgb, var(--background-secondary) 80%, var(--background-primary));
-  border: 1px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 72%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--text-normal);
-  display: inline-flex;
-  flex-wrap: nowrap;
+  display: inline-grid;
   font-size: var(--font-ui-small);
-  gap: 8px;
-  line-height: 1.6;
-  max-width: 100%;
-  padding: 2px 8px 2px 6px;
+  gap: 5px 10px;
+  grid-template-areas:
+    "food macros menu"
+    "serving amount menu";
+  grid-template-columns: minmax(8ch, 1fr) max-content max-content;
+  line-height: 1.35;
+  max-width: calc(100vw - 72px);
+  min-height: 42px;
+  padding: 6px 7px 6px 9px;
+  touch-action: manipulation;
   vertical-align: baseline;
+  width: min(42rem, max(24rem, 100%));
 }
 
 .tps-health-food-chip-serving {
@@ -476,6 +704,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 999px;
   color: var(--text-normal);
+  grid-area: serving;
   font-weight: 650;
   padding: 0 6px;
   white-space: nowrap;
@@ -483,9 +712,8 @@
 
 .tps-health-food-chip-food {
   color: var(--link-color);
-  flex: 1 1 auto;
-  font-weight: 500;
-  max-width: 28ch;
+  grid-area: food;
+  font-weight: 650;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -495,18 +723,58 @@
 .tps-health-food-chip-amount {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+  grid-area: amount;
+  justify-self: end;
+  opacity: 0.82;
   white-space: nowrap;
 }
 
 .tps-health-food-chip-macros {
   align-items: center;
+  display: flex;
+  font-size: var(--font-ui-smaller);
+  grid-area: macros;
+  gap: 4px;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tps-health-food-chip-macro {
+  background: color-mix(in srgb, var(--background-primary) 78%, var(--interactive-accent) 22%);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1.45;
+  padding: 0 6px;
+}
+
+.tps-health-food-chip-menu {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
   color: var(--text-muted);
   display: inline-flex;
-  flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
-  font-weight: 600;
-  margin-inline-start: 2px;
-  white-space: nowrap;
+  font-weight: 700;
+  grid-area: menu;
+  height: 22px;
+  justify-content: center;
+  line-height: 1;
+  margin: 0;
+  min-height: 22px;
+  min-width: 28px;
+  padding: 0 6px;
+}
+
+.tps-health-food-chip-menu:hover,
+.tps-health-food-chip-menu:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .tps-health-food-chip-macro {
@@ -516,10 +784,596 @@
   white-space: nowrap;
 }
 
+.tps-health-recipe-ingredient-row {
+  list-style: none;
+  margin: 6px 0;
+  padding-inline-start: 0;
+}
+
+.tps-health-recipe-ingredient-row::marker {
+  content: "";
+}
+
+.tps-health-recipe-ingredient {
+  align-items: center;
+  background: color-mix(in srgb, var(--background-secondary) 82%, var(--background-primary));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(4.5rem, 0.45fr) minmax(6rem, 0.7fr) minmax(10rem, 1.5fr) minmax(11rem, 1fr);
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px;
+  width: 100%;
+}
+
+.markdown-source-view.mod-cm6 .tps-health-recipe-ingredient {
+  margin: 6px 0;
+}
+
+.tps-health-recipe-ingredient-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tps-health-recipe-ingredient-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.tps-health-recipe-ingredient input,
+.tps-health-recipe-ingredient select {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.tps-health-recipe-ingredient-food {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: none;
+  color: var(--link-color);
+  display: block;
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+  height: 32px;
+  justify-self: start;
+  line-height: 1.3;
+  margin: 0;
+  min-height: 32px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.tps-health-recipe-ingredient-food:hover,
+.tps-health-recipe-ingredient-food:focus-visible {
+  color: var(--link-color-hover);
+  text-decoration: underline;
+}
+
+.tps-health-recipe-ingredient-macros {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  line-height: 32px;
+  min-height: 1.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-recipe-add {
+  align-items: center;
+  display: flex;
+  margin: 8px 0 12px;
+  min-width: 0;
+}
+
+.tps-health-recipe-add-button {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font: inherit;
+  font-weight: 700;
+  height: 34px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.tps-health-recipe-add-button:hover,
+.tps-health-recipe-add-button:focus-visible {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.tps-health-recipe-add-controls {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(90px, 0.4fr) minmax(120px, 0.6fr) minmax(0, 1fr);
+  margin: 10px 0;
+}
+
+.tps-health-recipe-add-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tps-health-recipe-add-controls input,
+.tps-health-recipe-add-controls select {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  color: var(--text-normal);
+  font: inherit;
+  height: 34px;
+  min-width: 0;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+.tps-health-recipe-add-macros {
+  align-self: end;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+  line-height: 34px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-recipe-add-results,
+.tps-health-recipe-add-selected {
+  margin-top: 8px;
+}
+
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
+  .tps-health-food-entry-row {
+    margin: 6px 0;
+  }
+
+  .tps-health-food-chip {
+    align-items: start;
+    background: color-mix(in srgb, var(--background-secondary) 86%, var(--background-primary));
+    border-color: color-mix(in srgb, var(--background-modifier-border) 82%, var(--text-muted) 18%);
+    border-radius: 10px;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+    display: grid;
+    gap: 4px 8px;
+    grid-template-areas:
+      "food menu"
+      "macros macros"
+      "serving amount";
+    grid-template-columns: minmax(0, 1fr) max-content;
+    max-width: 100%;
+    min-height: 0;
+    padding: 7px 8px;
+    width: min(100%, calc(100vw - 96px));
+  }
+
+  .tps-health-food-chip-food {
+    align-self: center;
+    font-size: var(--font-ui-small);
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  .tps-health-food-chip-serving {
+    justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 1px 7px;
+    text-overflow: ellipsis;
+  }
+
+  .tps-health-food-chip-macros {
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding: 1px 0;
+    scrollbar-width: none;
+  }
+
+  .tps-health-food-chip-macros::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tps-health-food-chip-macro {
+    flex: 0 0 auto;
+  }
+
+  .tps-health-food-chip-amount {
+    align-self: center;
+    justify-self: start;
+  }
+
+  .tps-health-food-chip-menu {
+    align-self: start;
+    background: var(--background-modifier-hover);
+    border-radius: 8px;
+    height: 28px;
+    min-height: 28px;
+    min-width: 34px;
+  }
+
+  .tps-health-recipe-ingredient {
+    grid-template-columns: minmax(5rem, 0.75fr) minmax(6.5rem, 1fr);
+    max-width: 100%;
+    padding: 8px;
+    width: 100%;
+  }
+
+  .tps-health-recipe-ingredient-field--food {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .tps-health-recipe-ingredient-food {
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  .tps-health-recipe-ingredient-field--quantity {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .tps-health-recipe-ingredient-field--unit {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .tps-health-recipe-ingredient-field--macros {
+    border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+    grid-column: 1 / -1;
+    grid-row: 3;
+    padding-top: 5px;
+  }
+
+  .tps-health-recipe-ingredient-macros {
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  .tps-health-recipe-add {
+    margin: 8px 0 14px;
+  }
+
+  .tps-health-recipe-add-button {
+    width: 100%;
+  }
+
+  .tps-health-recipe-add-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tps-health-recipe-add-macros {
+    line-height: 1.35;
+    white-space: normal;
+  }
+}
+
+@media (min-width: 700px) {
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient {
+    align-items: center;
+    display: grid !important;
+    gap: 8px;
+    grid-template-columns: minmax(4.5rem, 0.45fr) minmax(6rem, 0.7fr) minmax(10rem, 1.5fr) minmax(11rem, 1fr) !important;
+    width: 100%;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field {
+    display: grid !important;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--quantity,
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--unit,
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--food,
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--macros {
+    border-top: 0;
+    grid-column: auto;
+    grid-row: auto;
+    padding-top: 0;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-food,
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-macros {
+    line-height: 32px;
+    white-space: nowrap;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-add-button {
+    width: auto;
+  }
+}
+
 .tps-health-workout-set-row {
   align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.tps-health-workout-action-bar {
+  align-items: center;
+  background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  box-sizing: border-box;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 8px auto 14px;
+  max-width: var(--file-line-width);
+  padding: 7px 8px;
+  position: sticky;
+  top: 0;
+  width: 100%;
+  z-index: 5;
+}
+
+.tps-health-workout-action-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-workout-action-return {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-workout-action-buttons {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.tps-health-workout-action-button {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+  height: 30px;
+  justify-content: center;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.tps-health-workout-action-button:hover,
+.tps-health-workout-action-button:focus-visible {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  outline: none;
+}
+
+.tps-health-workout-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tps-health-workout-action-summary {
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tps-health-workout-action-button.is-primary {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.tps-health-workout-action-button.is-overflow {
+  min-width: 32px;
+  padding-inline: 8px;
+}
+
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
+  .tps-health-workout-action-bar:not(.tps-health-workout-action-bar--mobile-floating) {
+    align-items: stretch;
+    flex-direction: column;
+    position: static;
+  }
+
+  .tps-health-workout-action-bar:not(.tps-health-workout-action-bar--mobile-floating) .tps-health-workout-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tps-health-workout-action-bar:not(.tps-health-workout-action-bar--mobile-floating) .tps-health-workout-action-button {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating,
+body.is-phone .tps-health-workout-action-bar--mobile-floating,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating {
+  align-items: center;
+  background: color-mix(in srgb, var(--background-primary) 96%, var(--background-secondary));
+  border-color: color-mix(in srgb, var(--background-modifier-border) 86%, transparent);
+  border-radius: 14px;
+  bottom: calc(var(--tps-gcm-mobile-toolbar-offset, 0px) + env(safe-area-inset-bottom, 0px) + 86px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  flex-direction: row;
+  gap: 8px;
+  left: max(10px, env(safe-area-inset-left, 0px));
+  margin: 0;
+  max-width: none;
+  overflow: hidden;
+  padding: 8px;
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right, 0px));
+  top: auto;
+  width: auto;
+  z-index: 9998;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label {
+  flex: 0 0 38px;
+  font-size: var(--font-ui-smaller);
+  max-width: 38px;
+  padding: 0;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  padding: 0;
+  touch-action: manipulation;
+  width: 38px;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:hover,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:hover,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:hover,
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:focus-visible,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:focus-visible,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-return:focus-visible {
+  background: color-mix(in srgb, var(--interactive-accent) 16%, var(--background-modifier-hover));
+  border-color: var(--interactive-accent);
+  outline: none;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons::-webkit-scrollbar,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons::-webkit-scrollbar,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-buttons::-webkit-scrollbar {
+  display: none;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button {
+  flex: 0 0 auto;
+  height: 38px;
+  min-width: 76px;
+  padding: 0 12px;
+  touch-action: manipulation;
+  width: auto;
+}
+
+body.is-mobile.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-scroller,
+body.is-phone.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-scroller,
+body.is-tablet.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-scroller,
+body.is-mobile.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view,
+body.is-phone.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view,
+body.is-tablet.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view {
+  scroll-padding-bottom: calc(var(--tps-gcm-mobile-toolbar-offset, 0px) + env(safe-area-inset-bottom, 0px) + 156px);
+}
+
+body.is-mobile.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-content,
+body.is-phone.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-content,
+body.is-tablet.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-source-view .cm-content,
+body.is-mobile.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view,
+body.is-phone.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view,
+body.is-tablet.tps-health-mobile-workout-actions-active .workspace-leaf.mod-active .markdown-preview-view {
+  padding-bottom: calc(var(--tps-gcm-mobile-toolbar-offset, 0px) + env(safe-area-inset-bottom, 0px) + 156px);
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-label {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  gap: 6px;
+  max-width: none;
+}
+
+body.is-mobile .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button,
+body.is-phone .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button,
+body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-workout-action-button {
+  height: 44px;
+  min-height: 44px;
+}
+
+.tps-health-workout-empty {
+  align-items: center;
+  background: color-mix(in srgb, var(--background-secondary) 78%, transparent);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--font-ui-small);
+  gap: 10px;
+  justify-content: space-between;
+  margin: 8px 0 12px;
+  max-width: 520px;
+  padding: 8px 10px;
 }
 
 .tps-health-workout-set-chip {
@@ -581,6 +1435,566 @@
   white-space: nowrap;
 }
 
+.tps-health-workout-exercise-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.tps-health-workout-exercise-picker-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.tps-health-workout-exercise-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tps-health-workout-exercise-choice {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 10px;
+}
+
+.tps-health-workout-exercise-choice:hover,
+.tps-health-workout-exercise-choice:focus-visible {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.tps-health-workout-exercise-choice--create {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.tps-health-workout-set-editor {
+  align-items: stretch;
+  background: color-mix(in srgb, var(--background-secondary) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 7px;
+  grid-template-columns: 1fr;
+  line-height: 1.25;
+  margin: 5px 0 9px;
+  min-width: 0;
+  padding: 8px;
+  width: 100%;
+}
+
+/* Contiguous set bullets read as one exercise card without changing Markdown storage. */
+.tps-health-workout-set-row {
+  background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
+  border-inline: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  margin-block: 0;
+  padding-inline: 8px;
+}
+
+.tps-health-workout-set-row.is-exercise-start {
+  border-block-start: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  border-radius: 10px 10px 0 0;
+  margin-top: 10px;
+  padding-top: 7px;
+}
+
+.tps-health-workout-set-row.is-exercise-end {
+  border-block-end: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  border-radius: 0 0 10px 10px;
+  margin-bottom: 10px;
+  padding-bottom: 7px;
+}
+
+.tps-health-workout-set-row.is-superset,
+.tps-health-workout-set-editor.is-superset {
+  border-left: 3px solid var(--color-purple);
+}
+
+.tps-health-workout-set-editor {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  gap: 5px;
+  margin: 0;
+  padding: 5px 0;
+}
+
+.tps-health-workout-set-editor.is-exercise-start {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
+.tps-health-workout-set-header {
+  padding-bottom: 3px;
+}
+
+.tps-health-workout-set-grid-header,
+.tps-health-workout-set-metrics {
+  grid-template-columns: minmax(58px, .45fr) minmax(110px, 1fr) minmax(104px, .9fr) minmax(92px, .75fr) minmax(104px, .9fr) minmax(78px, .55fr);
+}
+
+.tps-health-workout-set-advanced {
+  display: none;
+}
+
+.tps-health-workout-set-previous {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.tps-health-workout-set-previous:disabled {
+  cursor: default;
+  opacity: .65;
+}
+
+.tps-health-workout-exercise-add {
+  min-height: 36px;
+  width: 100%;
+}
+
+.tps-health-workout-set-more {
+  font-size: 18px;
+  min-width: 36px;
+}
+
+.tps-health-workout-picker-search {
+  box-sizing: border-box;
+  min-height: 44px;
+  width: 100%;
+}
+
+.tps-health-workout-set-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.tps-health-workout-set-identity {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+}
+
+.tps-health-workout-set-grid-header,
+.tps-health-workout-set-metrics {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(42px, 0.28fr) minmax(92px, 1fr) minmax(90px, 0.75fr) minmax(78px, 0.62fr) minmax(72px, 0.55fr);
+}
+
+.tps-health-workout-set-grid-header {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.tps-health-workout-set-advanced {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(54px, 0.22fr) minmax(88px, 0.35fr) minmax(0, 1fr);
+}
+
+.tps-health-workout-set-editor input,
+.tps-health-workout-set-editor select {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  box-shadow: none;
+  color: var(--text-normal);
+  font: inherit;
+  height: 38px;
+  min-height: 38px;
+  min-width: 0;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+.tps-health-workout-set-editor input:focus,
+.tps-health-workout-set-editor select:focus {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+  outline: none;
+}
+
+.tps-health-workout-set-editor .tps-health-workout-set-perform {
+  height: 30px;
+  justify-self: center;
+  min-height: 30px;
+  min-width: 72px;
+  padding: 4px 10px;
+}
+
+.tps-health-workout-set-exercise-input {
+  color: var(--link-color);
+  font-weight: 650;
+}
+
+.tps-health-workout-set-number {
+  font-size: var(--font-ui-medium);
+  font-weight: 750;
+  text-align: center;
+}
+
+.tps-health-workout-set-badge {
+  align-items: center;
+  background: color-mix(in srgb, var(--background-primary) 84%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font-weight: 800;
+  height: 38px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.tps-health-workout-set-badge.is-drop {
+  color: var(--color-purple);
+}
+
+.tps-health-workout-set-badge.is-failure {
+  color: var(--color-red);
+}
+
+.tps-health-workout-set-badge.is-warmup {
+  color: var(--color-yellow);
+}
+
+.tps-health-workout-set-previous {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-workout-set-stepper {
+  align-items: stretch;
+  background: color-mix(in srgb, var(--background-primary) 88%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  grid-template-rows: auto 38px;
+  min-width: 0;
+  padding: 5px;
+}
+
+.tps-health-workout-set-weight,
+.tps-health-workout-set-reps,
+.tps-health-workout-set-rest {
+  min-width: 0;
+}
+
+.tps-health-workout-set-stepper input {
+  border: 0;
+  grid-column: 2;
+  grid-row: 2;
+  height: 100%;
+  min-height: 38px;
+  padding: 0 4px;
+}
+
+.tps-health-workout-set-field-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  grid-column: 1 / -1;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.tps-health-workout-set-step,
+.tps-health-workout-set-action {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font: inherit;
+  font-weight: 700;
+  height: 34px;
+  justify-content: center;
+  min-width: 34px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.tps-health-workout-set-step {
+  font-size: var(--font-ui-medium);
+  padding: 0;
+}
+
+.tps-health-workout-set-stepper .tps-health-workout-set-step:first-of-type {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.tps-health-workout-set-stepper .tps-health-workout-set-step:last-of-type {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.tps-health-workout-set-unit {
+  text-align: center;
+}
+
+.tps-health-workout-set-editor .tps-health-workout-set-meta {
+  justify-self: start;
+  line-height: 1.8;
+}
+
+.tps-health-workout-set-groups {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(78px, 1fr);
+  min-width: 0;
+}
+
+.tps-health-workout-set-kind,
+.tps-health-workout-set-group {
+  font-size: var(--font-ui-smaller);
+}
+
+.tps-health-workout-rest-status {
+  align-items: center;
+  background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+  border-radius: 999px;
+  color: var(--text-normal);
+  display: flex;
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  gap: 6px;
+  grid-column: 1 / -1;
+  justify-content: center;
+  line-height: 1;
+  min-width: 0;
+  padding: 5px 8px;
+}
+
+.tps-health-workout-rest-countdown {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-workout-rest-countdown.is-done {
+  color: var(--color-green);
+}
+
+.tps-health-workout-set-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* Keep the quick set-entry surface focused: identity first, training inputs
+   second, optional details last. */
+.tps-health-workout-entry-modal {
+  --tps-workout-control-height: 40px;
+}
+
+.tps-health-workout-entry-modal h2 {
+  margin-bottom: 4px;
+}
+
+.tps-health-workout-entry-modal > .tps-health-status {
+  background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-secondary));
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+  border-radius: 10px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+}
+
+.tps-health-workout-entry-modal .setting-item {
+  align-items: center;
+  border-top: 0;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.tps-health-workout-entry-modal .setting-item-info {
+  min-width: 0;
+}
+
+.tps-health-workout-entry-modal .setting-item-name {
+  font-weight: 650;
+}
+
+.tps-health-workout-entry-modal .setting-item-description {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.25;
+}
+
+.tps-health-workout-entry-modal .setting-item-control {
+  flex: 1 1 230px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.tps-health-workout-entry-modal .setting-item-control input[type="text"],
+.tps-health-workout-entry-modal .setting-item-control input[type="number"] {
+  box-sizing: border-box;
+  min-height: var(--tps-workout-control-height);
+  width: min(100%, 260px);
+}
+
+.tps-health-workout-entry-modal .tps-health-workout-exercise-picker {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  margin: 0 0 8px;
+  padding: 8px;
+}
+
+.tps-health-workout-entry-modal .tps-health-workout-exercise-picker-label {
+  margin: 2px 2px 6px;
+}
+
+.tps-health-workout-entry-modal .tps-health-workout-exercise-choice {
+  border-radius: 8px;
+  min-height: 36px;
+}
+
+.tps-health-workout-entry-modal .tps-health-workout-set-kind {
+  min-height: var(--tps-workout-control-height);
+}
+
+@media (max-width: 520px) {
+  .tps-health-workout-entry-modal .setting-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .tps-health-workout-entry-modal .setting-item-control {
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .tps-health-workout-entry-modal .setting-item-control input[type="text"],
+  .tps-health-workout-entry-modal .setting-item-control input[type="number"] {
+    width: 100%;
+  }
+
+  .tps-health-workout-entry-modal .setting-item-control button {
+    flex: 1 1 0;
+    min-height: 42px;
+  }
+}
+
+.tps-health-workout-set-step:focus-visible,
+.tps-health-workout-set-action:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+  outline: none;
+}
+
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
+  .tps-health-workout-set-editor {
+    border-radius: 12px;
+    gap: 9px;
+    margin: 8px 0 12px;
+    padding: 10px;
+  }
+
+  .tps-health-workout-set-grid-header {
+    display: none;
+  }
+
+  .tps-health-workout-set-metrics {
+    grid-template-columns: minmax(48px, .55fr) minmax(92px, 1fr) minmax(84px, .9fr);
+  }
+
+  .tps-health-workout-set-metrics > :nth-child(4),
+  .tps-health-workout-set-metrics > :nth-child(5),
+  .tps-health-workout-set-metrics > :nth-child(6) {
+    grid-row: 2;
+  }
+
+  .tps-health-workout-set-editor input,
+  .tps-health-workout-set-editor select,
+  .tps-health-workout-set-step,
+  .tps-health-workout-set-action,
+  .tps-health-workout-set-perform,
+  .tps-health-workout-exercise-choice {
+    min-height: 44px;
+  }
+
+  .tps-health-workout-set-header {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .tps-health-workout-set-grid-header {
+    display: none;
+  }
+
+  .tps-health-workout-set-metrics {
+    grid-template-columns: minmax(40px, 0.32fr) minmax(84px, 1fr) minmax(88px, 0.84fr) minmax(74px, 0.7fr) minmax(72px, 0.55fr);
+  }
+
+  .tps-health-workout-set-advanced,
+  .tps-health-workout-set-groups {
+    grid-template-columns: 1fr;
+  }
+
+  .tps-health-workout-set-action {
+    height: 38px;
+    min-width: 64px;
+  }
+
+  .tps-health-workout-set-stepper {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-rows: auto 40px;
+  }
+
+  .tps-health-workout-set-stepper input {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 40px;
+  }
+
+  .tps-health-workout-set-stepper .tps-health-workout-set-step:first-of-type {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .tps-health-workout-set-stepper .tps-health-workout-set-step:last-of-type {
+    grid-column: 3;
+    grid-row: 2;
+  }
+}
+
 .markdown-preview-view.tps-health-workout,
 .markdown-source-view.tps-health-workout,
 .tps-health-workout.markdown-rendered,
@@ -624,19 +2038,18 @@
 .markdown-preview-view.tps-health-workout li.tps-health-workout-set-row,
 .tps-health-workout.markdown-rendered li.tps-health-workout-set-row,
 .tps-health-workout .markdown-rendered li.tps-health-workout-set-row {
-  align-items: center;
-  background: color-mix(in srgb, var(--background-secondary) 64%, var(--background-primary));
+  align-items: stretch;
+  background: transparent;
   border: 0;
-  border-left: 3px solid color-mix(in srgb, var(--interactive-accent) 38%, var(--background-modifier-border));
-  border-radius: 0 6px 6px 0;
+  border-radius: 0;
   box-sizing: border-box;
   display: flex;
   font-size: var(--font-ui-small);
-  gap: 8px;
+  gap: 0;
   line-height: 1.35;
   margin: 0;
-  min-height: 30px;
-  padding: 4px 8px;
+  min-height: 0;
+  padding: 0;
 }
 
 .markdown-preview-view.tps-health-workout li.task-list-item > input[type="checkbox"],
@@ -705,7 +2118,7 @@
     bottom: auto;
     left: 0;
     margin: 0 auto;
-    max-height: min(78dvh, calc(var(--tps-health-visual-height, 100dvh) - max(96px, calc(env(safe-area-inset-top) + 72px)) - 12px));
+    max-height: min(78dvh, calc(var(--tps-visible-viewport-height, 100dvh) - max(96px, calc(env(safe-area-inset-top) + 72px)) - 12px));
     max-width: calc(100vw - 20px);
     position: fixed;
     right: 0;
@@ -714,12 +2127,7 @@
   }
 
   .modal.tps-health-food-log-frame {
-    max-height: min(82dvh, calc(var(--tps-health-visual-height, 100dvh) - max(96px, calc(env(safe-area-inset-top) + 72px)) - 12px));
-  }
-
-  .modal.tps-health-modal-frame.is-keyboard-raised {
-    top: max(18px, env(safe-area-inset-top));
-    max-height: calc(var(--tps-health-visual-height, 100dvh) - max(18px, env(safe-area-inset-top)) - 12px);
+    max-height: min(82dvh, calc(var(--tps-visible-viewport-height, 100dvh) - max(96px, calc(env(safe-area-inset-top) + 72px)) - 12px));
   }
 
   .modal.tps-health-modal-frame .modal-content {
@@ -729,9 +2137,36 @@
   }
 
   .tps-health-modal h2 {
-    font-size: 1.5em;
+    font-size: 1.25em;
     line-height: 1.15;
     margin-bottom: 10px;
+  }
+
+  .modal.tps-health-food-editor-frame .modal-content {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .modal.tps-health-food-search-frame .modal-content {
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .tps-health-food-editor-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
+    gap: 9px 10px;
+  }
+
+  .tps-health-food-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tps-health-describe-input {
+    font-size: 16px;
+    min-height: 132px;
+  }
+
+  .tps-health-describe-action {
+    min-height: 48px;
   }
 
   .tps-health-scanner-video {
@@ -745,34 +2180,44 @@
 
   .tps-health-result {
     align-items: flex-start;
-    flex-direction: column;
+    grid-template-areas:
+      "title title"
+      "meta meta"
+      "macros actions";
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tps-health-result > .setting-item,
+  .tps-health-result > .setting-item .setting-item-control {
+    width: 100%;
   }
 
   .tps-health-selection-header,
-  .tps-health-selection-row,
-  .tps-health-selection-controls,
   .tps-health-selection-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .tps-health-floating-selection.is-collapsed .tps-health-selection-header {
-    align-items: center;
-    flex-direction: row;
+  .tps-health-selection-controls {
+    flex-wrap: wrap;
   }
 
   .tps-health-selection-header-actions {
     flex-direction: row;
   }
 
-  .tps-health-selection-controls input,
-  .tps-health-selection-controls select,
   .tps-health-selection-actions button,
   .tps-health-selection-header-actions button {
     width: 100%;
   }
 
-  .tps-health-floating-selection.is-collapsed .tps-health-selection-header-actions button {
+  .tps-health-food-search-frame .tps-health-selection-controls input {
+    min-width: 62px;
+    width: 62px;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls select {
+    flex: 1 1 112px;
     width: auto;
   }
 
@@ -789,5 +2234,154 @@
 
   .tps-health-modal .setting-item-control input {
     min-width: 100%;
+  }
+}
+
+/* Workout table containment: keep the six labels and controls on one readable row. */
+.tps-health-workout-set-editor {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tps-health-workout-set-identity {
+  flex: 1 1 auto;
+}
+
+.tps-health-workout-set-exercise-input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.tps-health-workout-set-grid-header,
+.tps-health-workout-set-metrics {
+  grid-template-columns: 62px minmax(104px, 1fr) minmax(86px, .8fr) minmax(78px, .7fr) minmax(86px, .8fr) 78px;
+  min-width: 530px;
+}
+
+.tps-health-workout-set-grid-header > span,
+.tps-health-workout-set-badge,
+.tps-health-workout-set-perform {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) and (min-width: 521px) {
+  .tps-health-workout-set-stepper {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 38px;
+    padding: 4px;
+  }
+
+  .tps-health-workout-set-stepper .tps-health-workout-set-step {
+    display: none;
+  }
+
+  .tps-health-workout-set-stepper input {
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
+  .tps-health-workout-set-editor {
+    overflow-x: hidden;
+  }
+
+  .tps-health-workout-set-grid-header,
+  .tps-health-workout-set-metrics {
+    min-width: 0;
+  }
+
+  .tps-health-workout-set-exercise-input,
+  .tps-health-workout-set-stepper input,
+  .tps-health-workout-set-perform,
+  .tps-health-workout-set-action {
+    min-height: 44px;
+  }
+}
+.tps-health-workout-options {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.tps-health-workout-options > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+}
+
+.tps-health-workout-options[open] > summary {
+  margin-bottom: 6px;
+}
+
+.tps-health-workout-plan-setting input {
+  min-width: min(280px, 55vw);
+}
+.tps-health-meal-ingredient-editor {
+  margin-top: 14px;
+}
+
+.tps-health-meal-ingredient-editor h3 {
+  margin: 0 0 8px;
+  font-size: var(--font-ui-medium);
+}
+
+.tps-health-meal-ingredient-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tps-health-meal-ingredient-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.7fr) minmax(86px, 0.8fr) minmax(150px, 1.6fr) minmax(180px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.tps-health-meal-ingredient-row input,
+.tps-health-meal-ingredient-row select,
+.tps-health-meal-ingredient-row button {
+  min-width: 0;
+  width: 100%;
+}
+
+.tps-health-meal-ingredient-food {
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-meal-ingredient-macros {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.tps-health-meal-ingredient-remove {
+  width: auto !important;
+}
+
+@media (max-width: 720px) {
+  .tps-health-meal-ingredient-row {
+    grid-template-columns: minmax(76px, 0.8fr) minmax(92px, 1fr) minmax(0, 1.8fr);
+  }
+
+  .tps-health-meal-ingredient-macros {
+    grid-column: 1 / -2;
+    white-space: normal;
   }
 }

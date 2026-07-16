@@ -1,6 +1,30 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, SecretComponent, Setting } from "obsidian";
+import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
-import { DEFAULT_SETTINGS, FoodLogTarget, RestTimerMode, WorkoutExerciseLayout, WorkoutLogTarget, WorkoutSessionBodyMode, WorkoutSetNotation, WorkoutSetStorage } from "./types";
+import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutLogTarget, WorkoutSetNotation } from "./types";
+
+const createCollapsibleSection = (
+  parent: HTMLElement,
+  title: string,
+  description?: string,
+  defaultOpen = false
+): HTMLElement => {
+  const details = parent.createEl("details", { cls: "tps-collapsible-section" });
+  if (defaultOpen) details.setAttr("open", "true");
+
+  const summary = details.createEl("summary", { cls: "tps-collapsible-section-summary" });
+  summary.createSpan({ cls: "tps-collapsible-section-title", text: title });
+
+  if (description) {
+    details.createEl("p", {
+      cls: "tps-collapsible-section-description",
+      text: description,
+    });
+  }
+
+  return details.createDiv({ cls: "tps-collapsible-section-content" });
+};
 
 export class TPSHealthSettingTab extends PluginSettingTab {
   plugin: TPSHealthPlugin;
@@ -19,8 +43,27 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       text: "Reusable foods, exercises, and workout plans live as notes. Daily consumption, workouts, and sets are ephemeral logs.",
     });
 
-    this.addSection(containerEl, "Daily Notes", "Where daily food/workout logs and automatic rollups are written.");
-    new Setting(containerEl)
+    const coreSettings = containerEl.createDiv({ cls: "tps-settings-core" });
+    new Setting(coreSettings).setName("Core settings").setHeading();
+
+    const diagnosticsSection = createCollapsibleSection(
+      containerEl,
+      "Diagnostics",
+      "Concise development logs for tracing health flows in the developer console.",
+      false
+    );
+    new Setting(diagnosticsSection)
+      .setName("Enable debug logging")
+      .setDesc("Logs health API, food, workout, barcode, base, and rollup flow checkpoints. Errors are always logged.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.enableLogging)
+        .onChange(async (value) => {
+          this.plugin.settings.enableLogging = value;
+          await this.plugin.saveSettings();
+        }));
+
+    const dailyNotesSection = coreSettings;
+    new Setting(dailyNotesSection)
       .setName("Daily note format")
       .setDesc("Moment format used to find or create the daily note.")
       .addText((text) => text
@@ -31,7 +74,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(dailyNotesSection)
       .setName("Daily note folder")
       .setDesc("Leave blank when daily notes live at the vault root.")
       .addText((text) => text
@@ -41,10 +84,15 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "Reusable Notes", "Folders for stable health entities that can be linked from logs.");
-    new Setting(containerEl)
+    const foldersSection = createCollapsibleSection(
+      containerEl,
+      "Reusable Health Note Folders",
+      "Folders for stable health entities that can be linked from logs.",
+      false
+    );
+    new Setting(foldersSection)
       .setName("Workouts folder")
-      .setDesc("Standalone workout session files, used when workout log target is Session note or Both.")
+      .setDesc("Canonical workout note files created by Start workout.")
       .addText((text) => text
         .setValue(this.plugin.settings.workoutsFolder)
         .onChange(async (value) => {
@@ -52,7 +100,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foldersSection)
       .setName("Workout plans folder")
       .setDesc("Reusable workout/routine notes live here. Session logs stay in the workouts folder.")
       .addText((text) => text
@@ -62,7 +110,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foldersSection)
       .setName("Exercises folder")
       .addText((text) => text
         .setValue(this.plugin.settings.exercisesFolder)
@@ -71,7 +119,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foldersSection)
       .setName("Foods folder")
       .addText((text) => text
         .setValue(this.plugin.settings.foodsFolder)
@@ -80,7 +128,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foldersSection)
       .setName("Recipes folder")
       .addText((text) => text
         .setValue(this.plugin.settings.recipesFolder)
@@ -89,8 +137,77 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "Templates", "Optional note templates used when TPS Health creates reusable notes or session files.");
-    new Setting(containerEl)
+    const identificationSection = createCollapsibleSection(
+      containerEl,
+      "Reusable Note Identification",
+      "Choose whether TPS Health discovers foods and workouts by frontmatter metadata, folders, tags, or any known signal.",
+      false
+    );
+    new Setting(identificationSection)
+      .setName("Food note identification")
+      .setDesc("Controls which notes are treated as foods, meals, or recipes in search/rendering.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
+        .addOption("folder", "Folders only")
+        .addOption("tag", "Tags only")
+        .addOption("metadata", "Frontmatter only")
+        .setValue(this.plugin.settings.foodIdentificationMode)
+        .onChange(async (value) => {
+          this.plugin.settings.foodIdentificationMode = value as HealthEntityIdentificationMode;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(identificationSection)
+      .setName("Workout note identification")
+      .setDesc("Controls which notes are treated as workout session notes.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
+        .addOption("folder", "Folder only")
+        .addOption("tag", "Tag only")
+        .addOption("metadata", "Frontmatter only")
+        .setValue(this.plugin.settings.workoutIdentificationMode)
+        .onChange(async (value) => {
+          this.plugin.settings.workoutIdentificationMode = value as HealthEntityIdentificationMode;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(identificationSection)
+      .setName("Workout tag")
+      .setDesc("Used when workout identification includes tags. New workout notes include this tag.")
+      .addText((text) => text
+        .setValue(this.plugin.settings.workoutTag)
+        .onChange(async (value) => {
+          this.plugin.settings.workoutTag = value.trim() || DEFAULT_SETTINGS.workoutTag;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(identificationSection)
+      .setName("Food tag")
+      .setDesc("Used when food identification includes tags. New food notes include this tag.")
+      .addText((text) => text
+        .setValue(this.plugin.settings.customFoodTag)
+        .onChange(async (value) => {
+          this.plugin.settings.customFoodTag = value.trim() || DEFAULT_SETTINGS.customFoodTag;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(identificationSection)
+      .setName("Recipe/meal tag")
+      .setDesc("Used when food identification includes tags. New recipe and meal notes include this tag.")
+      .addText((text) => text
+        .setValue(this.plugin.settings.recipeTag)
+        .onChange(async (value) => {
+          this.plugin.settings.recipeTag = value.trim() || DEFAULT_SETTINGS.recipeTag;
+          await this.plugin.saveSettings();
+        }));
+
+    const templatesSection = createCollapsibleSection(
+      containerEl,
+      "Food, Exercise, and Workout Templates",
+      "Optional note templates used when TPS Health creates reusable notes or session files.",
+      false
+    );
+    new Setting(templatesSection)
       .setName("Workout template path")
       .setDesc("Optional note used when creating a workout session file. Supports {{title}}, {{startedAt}}, {{workoutPlanPath}}, and {{cooldownDays}}.")
       .addText((text) => text
@@ -100,7 +217,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(templatesSection)
       .setName("Workout plan template path")
       .setDesc("Optional note used when creating a reusable workout plan. Supports {{name}}, {{cooldownDays}}, {{defaultRestSeconds}}, and {{notes}}.")
       .addText((text) => text
@@ -110,7 +227,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(templatesSection)
       .setName("Exercise template path")
       .setDesc("Optional note used when creating exercises from logged sets. Supports {{name}}, {{category}}, {{defaultRestSeconds}}, and muscle/equipment placeholders.")
       .addText((text) => text
@@ -120,7 +237,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(templatesSection)
       .setName("Food template path")
       .setDesc("Optional note used when creating a food file. Supports {{name}}, {{brand}}, {{servingGrams}}, {{servingMl}}, and nutrient placeholders.")
       .addText((text) => text
@@ -130,8 +247,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "GCM Integration", "Optional controls shown in the TPS Global Context Menu.");
-    new Setting(containerEl)
+    const gcmSection = createCollapsibleSection(
+      containerEl,
+      "GCM Food Log Button Integration",
+      "Optional controls shown in the TPS Global Context Menu.",
+      false
+    );
+    new Setting(gcmSection)
       .setName("Show food log button in GCM")
       .setDesc("Adds a Food button to the GCM note controls. The button shows today's logged food count and opens quick food logging.")
       .addToggle((toggle) => toggle
@@ -142,8 +264,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.refreshGcmFoodLogButtonRegistration();
         }));
 
-    this.addSection(containerEl, "Workout Logging", "Controls rest timing, cooldown defaults, and where workout instances are stored.");
-    new Setting(containerEl)
+    const workoutLoggingSection = createCollapsibleSection(
+      containerEl,
+      "Workout Session Logging",
+      "Controls rest timing, cooldown defaults, and where workout instances are stored.",
+      false
+    );
+    new Setting(workoutLoggingSection)
       .setName("Rest timer mode")
       .setDesc("Count up measures rest until the next set starts. Count down uses the default rest target after each set.")
       .addDropdown((dropdown) => dropdown
@@ -155,7 +282,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(workoutLoggingSection)
       .setName("Default rest seconds")
       .addText((text) => text
         .setValue(String(this.plugin.settings.defaultRestSeconds))
@@ -167,7 +294,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(workoutLoggingSection)
       .setName("Default workout cooldown days")
       .setDesc("Used by new workout plans and ad hoc workouts when no plan-specific cooldown is set.")
       .addText((text) => text
@@ -180,32 +307,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("Workout note body")
-      .setDesc("What TPS Health writes into a new session note when no workout template is configured.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("blank", "Blank")
-        .addOption("sets-section", "Sets section")
-        .setValue(this.plugin.settings.workoutSessionBodyMode)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutSessionBodyMode = value as WorkoutSessionBodyMode;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Exercise layout in workout notes")
-      .setDesc("How logged sets are organized inside standalone workout notes.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("flat", "Flat set tasks")
-        .addOption("exercise-bullets", "Exercise parent bullets")
-        .addOption("exercise-headings", "Exercise headings")
-        .setValue(this.plugin.settings.workoutExerciseLayout)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutExerciseLayout = value as WorkoutExerciseLayout;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
+    new Setting(workoutLoggingSection)
       .setName("Set notation")
       .setDesc("Compact uses gym-log style text like 225 lb x 15. Verbose uses separate reps/weight phrases.")
       .addDropdown((dropdown) => dropdown
@@ -217,19 +319,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("Set line type")
-      .setDesc("Whether logged sets in standalone workout notes are stored as completed tasks or plain bullets.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("task", "Task")
-        .addOption("bullet", "Bullet")
-        .setValue(this.plugin.settings.workoutSetStorage)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutSetStorage = value as WorkoutSetStorage;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
+    new Setting(workoutLoggingSection)
       .setName("Append workout summary to daily note")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.appendWorkoutSummaryToDailyNote)
@@ -238,32 +328,26 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("Workout log heading")
-      .setDesc("Daily note section where workout sessions, summaries, and nested sets are written.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.workoutLogHeading)
-        .setValue(this.plugin.settings.workoutLogHeading)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutLogHeading = value.trim() || DEFAULT_SETTINGS.workoutLogHeading;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
+    new Setting(workoutLoggingSection)
       .setName("Workout log target")
-      .setDesc("Where ephemeral workout sessions and sets are stored. Daily note creates a parent workout bullet with nested set bullets; session note creates a standalone workout file; both writes both.")
+      .setDesc("Choose whether the workout note is canonical, the daily note is canonical, or both are written.")
       .addDropdown((dropdown) => dropdown
-        .addOption("session-note", "Session note")
-        .addOption("daily-note", "Daily note")
-        .addOption("both", "Both")
+        .addOption("session-note", "Workout note")
+        .addOption("daily-note", "Daily note only")
+        .addOption("both", "Workout note + daily receipt")
         .setValue(this.plugin.settings.workoutLogTarget)
         .onChange(async (value) => {
           this.plugin.settings.workoutLogTarget = value as WorkoutLogTarget;
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "Food Logging", "Controls consumed-food instance logs and daily macro rollups.");
-    new Setting(containerEl)
+    const foodLoggingSection = createCollapsibleSection(
+      containerEl,
+      "Food Instance Logging",
+      "Controls consumed-food instance logs and daily macro rollups.",
+      false
+    );
+    new Setting(foodLoggingSection)
       .setName("Default food log section")
       .setDesc("Optional. Blank inserts food logs immediately after daily-note frontmatter.")
       .addText((text) => text
@@ -274,7 +358,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foodLoggingSection)
       .setName("Food log target")
       .setDesc("Where consumed-food instance lines are written. Single file keeps all food logs together and links each entry to its scheduled daily note.")
       .addDropdown((dropdown) => dropdown
@@ -286,7 +370,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foodLoggingSection)
       .setName("Food log file")
       .setDesc("Used when food log target is Single file.")
       .addText((text) => text
@@ -297,7 +381,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    new Setting(foodLoggingSection)
       .setName("Automatic daily rollups")
       .setDesc("Recalculate calories and macros into daily note frontmatter after food is logged.")
       .addToggle((toggle) => toggle
@@ -307,10 +391,15 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "Data Sources", "Live database behavior for food search and barcode lookup.");
-    new Setting(containerEl)
+    const dataSourcesSection = createCollapsibleSection(
+      containerEl,
+      "Nutrition Search Data Sources",
+      "Live database behavior for food search and barcode lookup.",
+      false
+    );
+    new Setting(dataSourcesSection)
       .setName("Include branded search results")
-      .setDesc("Off by default to reduce noisy database matches. Barcode lookup still checks Open Food Facts.")
+      .setDesc("Searches branded provider databases for packaged grocery foods. Ranking and broad-query filters control noisy matches.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.includeBrandedFoodSearch)
         .onChange(async (value) => {
@@ -318,40 +407,42 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.addSection(containerEl, "Goals & Overlays", "Goal definitions used by GCM metric rendering and daily frontmatter rollups.");
-    new Setting(containerEl)
+    const goalsSection = createCollapsibleSection(
+      containerEl,
+      "Calorie, Protein, Activity, and Custom Goals",
+      "Goal definitions used by GCM metric rendering and daily frontmatter rollups.",
+      false
+    );
+    new Setting(goalsSection)
       .setName("Calorie goal")
-      .setDesc("Used by GCM to render cal as a progress metric.")
+      .setDesc("Canonical maximum used by GCM for the built-in consumed-calories metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.calorieGoal))
         .onChange(async (value) => {
-          this.plugin.settings.calorieGoal = positiveNumber(value, DEFAULT_SETTINGS.calorieGoal);
-          await this.plugin.saveSettings();
+          await this.plugin.updateBuiltInHealthGoalTarget("calorieGoal", positiveNumber(value, DEFAULT_SETTINGS.calorieGoal));
         }));
 
-    new Setting(containerEl)
+    new Setting(goalsSection)
       .setName("Protein goal g")
-      .setDesc("Used by GCM to render protein as a progress metric.")
+      .setDesc("Canonical minimum used by GCM for the built-in protein metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.proteinGoalG))
         .onChange(async (value) => {
-          this.plugin.settings.proteinGoalG = positiveNumber(value, DEFAULT_SETTINGS.proteinGoalG);
-          await this.plugin.saveSettings();
+          await this.plugin.updateBuiltInHealthGoalTarget("proteinGoalG", positiveNumber(value, DEFAULT_SETTINGS.proteinGoalG));
         }));
 
-    new Setting(containerEl)
+    new Setting(goalsSection)
       .setName("Activity goal minutes")
-      .setDesc("Used by GCM to render activity as a progress metric.")
+      .setDesc("Canonical minimum used by GCM for the built-in activity metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.activityGoalMinutes))
         .onChange(async (value) => {
-          this.plugin.settings.activityGoalMinutes = positiveNumber(value, DEFAULT_SETTINGS.activityGoalMinutes);
-          await this.plugin.saveSettings();
+          await this.plugin.updateBuiltInHealthGoalTarget("activityGoalMinutes", positiveNumber(value, DEFAULT_SETTINGS.activityGoalMinutes));
         }));
 
-    new Setting(containerEl)
+    new Setting(goalsSection)
       .setName("Health goals")
-      .setDesc("One JSON goal per metric. kind can be min, max, range, or counter.")
+      .setDesc("One JSON goal per metric. Built-in calorie, protein, and activity target bounds come from the canonical fields above; use this JSON for labels, colors, ranges, and additional metrics.")
       .addTextArea((text) => {
         text.inputEl.rows = 8;
         text.inputEl.cols = 48;
@@ -360,27 +451,29 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             try {
               const parsed = JSON.parse(value);
-              if (!Array.isArray(parsed)) return;
-              this.plugin.settings.healthGoals = parsed
-                .map((goal) => ({
-                  propertyKey: String(goal.propertyKey || "").trim(),
-                  label: String(goal.label || goal.propertyKey || "").trim(),
-                  unit: String(goal.unit || "").trim(),
-                  kind: ["min", "max", "range", "counter"].includes(goal.kind) ? goal.kind : "counter",
-                  min: numberOrUndefined(goal.min),
-                  max: numberOrUndefined(goal.max),
-                  color: typeof goal.color === "string" ? goal.color : undefined,
-                }))
-                .filter((goal) => goal.propertyKey && goal.label);
+              if (!Array.isArray(parsed)) {
+                logger.flowWarn("Settings", "health-goals:invalid-shape", { parsedType: typeof parsed });
+                return;
+              }
+              this.plugin.settings.healthGoals = applyBuiltInHealthGoalTargets(parsed
+                .map((goal) => normalizeHealthGoalDefinition(goal))
+                .filter((goal): goal is NonNullable<typeof goal> => Boolean(goal)), this.plugin.settings);
+              logger.flow("Settings", "health-goals:parsed", { count: this.plugin.settings.healthGoals.length });
               await this.plugin.saveSettings();
-            } catch {
+            } catch (error) {
+              logger.flowWarn("Settings", "health-goals:invalid-json", { error: logger.errorSummary(error) });
               // Leave the last valid goal config in place while the user edits JSON.
             }
           });
       });
 
-    this.addSection(containerEl, "External API Keys", "Optional credentials and client identification for remote nutrition databases.");
-    new Setting(containerEl)
+    const apiKeysSection = createCollapsibleSection(
+      containerEl,
+      "Open Food Facts and USDA API Settings",
+      "Optional credentials and client identification for remote nutrition databases.",
+      false
+    );
+    new Setting(apiKeysSection)
       .setName("Open Food Facts User-Agent")
       .setDesc("Open Food Facts asks API clients to identify themselves.")
       .addText((text) => text
@@ -390,30 +483,74 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("USDA FoodData Central API key")
-      .setDesc("Used for generic foods like apple, rice, eggs, and chicken. DEMO_KEY works for light testing.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.usdaApiKey)
-        .onChange(async (value) => {
-          this.plugin.settings.usdaApiKey = value.trim() || DEFAULT_SETTINGS.usdaApiKey;
+    apiKeysSection.createEl("p", {
+      cls: "setting-item-description",
+      text: "USDA credentials are tried in order only when a device secret is empty or USDA returns API_KEY_MISSING/API_KEY_INVALID. Disabled, unverified, unauthorized, generic 403, and HTTP 429 responses do not rotate; TPS Health surfaces the error or waits for Retry-After.",
+    });
+    for (const [index, reference] of this.plugin.settings.usdaApiKeySecrets.entries()) {
+      const label = index === 0 ? "USDA API key — Primary" : `USDA API key — Fallback ${index}`;
+      const setting = new Setting(apiKeysSection)
+        .setName(label)
+        .setDesc(index === 0
+          ? "First populated device-local Obsidian secret used for FoodData Central."
+          : "Used only after an earlier device secret is empty or receives API_KEY_MISSING/API_KEY_INVALID.")
+        .addComponent((element) => new SecretComponent(this.plugin.app, element)
+          .setValue(reference)
+          .onChange(async (value) => {
+            const references = [...this.plugin.settings.usdaApiKeySecrets];
+            references[index] = value;
+            this.plugin.settings.usdaApiKeySecrets = normalizeUsdaApiKeySecrets(references);
+            await this.plugin.saveSettings();
+            this.display();
+          }));
+      if (index > 0) setting.addExtraButton((button) => button
+        .setIcon("arrow-up")
+        .setTooltip("Move USDA key earlier")
+        .onClick(async () => {
+          const references = [...this.plugin.settings.usdaApiKeySecrets];
+          [references[index - 1], references[index]] = [references[index], references[index - 1]];
+          this.plugin.settings.usdaApiKeySecrets = references;
           await this.plugin.saveSettings();
+          this.display();
         }));
-  }
+      if (index < this.plugin.settings.usdaApiKeySecrets.length - 1) setting.addExtraButton((button) => button
+        .setIcon("arrow-down")
+        .setTooltip("Move USDA key later")
+        .onClick(async () => {
+          const references = [...this.plugin.settings.usdaApiKeySecrets];
+          [references[index], references[index + 1]] = [references[index + 1], references[index]];
+          this.plugin.settings.usdaApiKeySecrets = references;
+          await this.plugin.saveSettings();
+          this.display();
+        }));
+      setting.addExtraButton((button) => button
+        .setIcon("trash")
+        .setTooltip("Remove USDA key reference")
+        .onClick(async () => {
+          this.plugin.settings.usdaApiKeySecrets = this.plugin.settings.usdaApiKeySecrets.filter((_entry, entryIndex) => entryIndex !== index);
+          await this.plugin.saveSettings();
+          this.display();
+        }));
+    }
+    if (this.plugin.settings.usdaApiKeySecrets.length < USDA_API_KEY_SECRET_MAX) {
+      new Setting(apiKeysSection)
+        .setName(this.plugin.settings.usdaApiKeySecrets.length ? "Add USDA fallback" : "Add USDA API key")
+        .setDesc(`Up to ${USDA_API_KEY_SECRET_MAX} ordered SecretStorage references. If none contain a value, TPS Health uses DEMO_KEY.`)
+        .addButton((button) => button
+          .setButtonText("Add secret")
+          .onClick(() => {
+            this.plugin.settings.usdaApiKeySecrets = [...this.plugin.settings.usdaApiKeySecrets, ""];
+            this.display();
+          }));
+    }
 
-  private addSection(containerEl: HTMLElement, title: string, description: string): void {
-    const section = containerEl.createDiv({ cls: "tps-health-settings-section" });
-    section.createEl("h3", { text: title });
-    section.createEl("p", { text: description });
+    new Setting(apiKeysSection)
+      .setName("AI-assisted Describe")
+      .setDesc("Provider credentials, models, fallback order, and AI diagnostics are managed centrally in TPS AI Gateway. Describe falls back to deterministic local matching when the gateway is unavailable.");
   }
 }
 
 function positiveNumber(value: string, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
 }

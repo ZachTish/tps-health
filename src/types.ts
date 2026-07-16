@@ -1,12 +1,20 @@
 export type RestTimerMode = "count-up" | "count-down";
 export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual";
+export type FoodNoteType = "food" | "recipe" | "meal";
 export type HealthGoalKind = "min" | "max" | "range" | "counter";
 export type FoodLogTarget = "daily-note" | "single-file";
 export type WorkoutLogTarget = "session-note" | "daily-note" | "both";
-export type WorkoutSessionBodyMode = "blank" | "sets-section";
-export type WorkoutExerciseLayout = "flat" | "exercise-bullets" | "exercise-headings";
+export type ActivitySource = "manual" | "workout" | "apple-health";
 export type WorkoutSetNotation = "compact" | "verbose";
-export type WorkoutSetStorage = "task" | "bullet";
+export type HealthEntityIdentificationMode = "metadata-folder-tag" | "folder" | "tag" | "metadata";
+export type WorkflowRecurrenceMode = "completion-triggered";
+export type WorkflowTemplateKind = "workflow";
+export type WorkflowRunKind = "run";
+export type WorkflowRunType = "workout" | "workflow";
+
+export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
+export const USDA_API_KEY_SECRET_MAX = 5;
+export const USDA_DEMO_API_KEY = "DEMO_KEY";
 
 export interface HealthGoal {
   propertyKey: string;
@@ -33,15 +41,14 @@ export interface TPSHealthSettings {
   restTimerMode: RestTimerMode;
   defaultRestSeconds: number;
   defaultWorkoutCooldownDays: number;
-  workoutSessionBodyMode: WorkoutSessionBodyMode;
-  workoutExerciseLayout: WorkoutExerciseLayout;
   workoutSetNotation: WorkoutSetNotation;
-  workoutSetStorage: WorkoutSetStorage;
   appendWorkoutSummaryToDailyNote: boolean;
   defaultFoodLogSection: string;
   foodLogFilePath: string;
   workoutLogTarget: WorkoutLogTarget;
-  workoutLogHeading: string;
+  foodIdentificationMode: HealthEntityIdentificationMode;
+  workoutIdentificationMode: HealthEntityIdentificationMode;
+  workoutTag: string;
   exerciseTag: string;
   customFoodTag: string;
   recipeTag: string;
@@ -55,7 +62,7 @@ export interface TPSHealthSettings {
   activityGoalMinutes: number;
   rollupHeading: string;
   openFoodFactsUserAgent: string;
-  usdaApiKey: string;
+  usdaApiKeySecrets: string[];
   activeWorkoutPath: string;
   activeWorkoutId: string;
   activeWorkoutTarget: WorkoutLogTarget | "";
@@ -66,6 +73,8 @@ export interface TPSHealthSettings {
   activeWorkoutCooldownDays: number;
   lastSetEndedAt: string;
   activeWorkoutSetCount: number;
+  pendingFoodLogDraft: PendingFoodLogDraft | null;
+  enableLogging: boolean;
 }
 
 export interface Nutrition {
@@ -75,6 +84,8 @@ export interface Nutrition {
   fatG?: number;
   fiberG?: number;
   sugarG?: number;
+  sugarAlcoholG?: number;
+  sugarAlcoholCaloriesPerG?: number;
   alcoholG?: number;
   sodiumMg?: number;
 }
@@ -92,6 +103,7 @@ export interface FoodItem {
   servingUnit?: string;
   servingGrams?: number;
   servingMl?: number;
+  recipeServings?: number;
   source: FoodSource;
   sourcePath?: string;
   confidence?: number;
@@ -116,6 +128,46 @@ export interface FoodLogEntry {
   dailyNotePath?: string;
 }
 
+export interface ActivityLogEntry {
+  id: string;
+  activity: string;
+  activityType: string;
+  startedAt: string;
+  completedDate: string;
+  durationMinutes?: number;
+  distance?: number;
+  distanceUnit?: string;
+  steps?: number;
+  caloriesBurned?: number;
+  source: ActivitySource;
+  sourceId?: string;
+  device?: string;
+  note?: string;
+  dailyNotePath?: string;
+}
+
+export interface PendingFoodLogDraft {
+  id: string;
+  updatedAt: string;
+  activeTab?: "barcode" | "search" | "mine" | "describe";
+  searchInput?: string;
+  consumedDateInput?: string;
+  dateContext?: {
+    dateIso: string;
+    label: string;
+    isToday: boolean;
+    foodLogTarget?: FoodLogTarget;
+    focusAfterLog?: boolean;
+  } | null;
+  selectionItems: Array<{
+    item: FoodItem;
+    quantity: number;
+    unit: string;
+    describedUnit?: string;
+    estimatedUnitGrams?: number;
+  }>;
+}
+
 export interface WorkoutSet {
   id: string;
   exercise: string;
@@ -130,11 +182,13 @@ export interface WorkoutSet {
   reps?: number;
   weight?: number;
   weightUnit?: string;
+  perArm?: boolean;
   distance?: number;
   distanceUnit?: string;
   durationSeconds?: number;
   rpe?: number;
   restSeconds?: number;
+  restStartedAt?: string;
   dropSetGroupId?: string;
   supersetGroupId?: string;
   note?: string;
@@ -165,7 +219,11 @@ export interface WorkoutPlanItem {
   id: string;
   name: string;
   sourcePath?: string;
+  workflowType?: WorkflowRunType;
+  workflowKind?: WorkflowTemplateKind;
+  recurrenceMode?: WorkflowRecurrenceMode;
   cooldownDays?: number;
+  targetGapDays?: number;
   defaultRestSeconds?: number;
   lastCompletedDate?: string;
   nextEligibleDate?: string;
@@ -177,9 +235,17 @@ export interface WorkoutSession {
   title: string;
   path: string;
   workoutPlanPath?: string;
+  runKind?: WorkflowRunKind;
+  runType?: WorkflowRunType;
+  workflowPath?: string;
+  workflowName?: string;
+  recurrenceMode?: WorkflowRecurrenceMode;
   startedAt: string;
   endedAt?: string;
+  previousCompletedDate?: string;
+  secondsSincePreviousCompletion?: number;
   cooldownDays?: number;
+  targetGapDays?: number;
   nextEligibleDate?: string;
   exercises: WorkoutExercise[];
 }
@@ -199,24 +265,23 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   restTimerMode: "count-up",
   defaultRestSeconds: 90,
   defaultWorkoutCooldownDays: 0,
-  workoutSessionBodyMode: "blank",
-  workoutExerciseLayout: "flat",
   workoutSetNotation: "compact",
-  workoutSetStorage: "task",
   appendWorkoutSummaryToDailyNote: true,
   defaultFoodLogSection: "",
   foodLogFilePath: "Health/Food Log.md",
   workoutLogTarget: "session-note",
-  workoutLogHeading: "Workout Log",
+  foodIdentificationMode: "metadata-folder-tag",
+  workoutIdentificationMode: "metadata-folder-tag",
+  workoutTag: "#tps/workout",
   exerciseTag: "#tps/exercise",
   customFoodTag: "#tps/food",
   recipeTag: "#tps/recipe",
   foodLogTarget: "daily-note",
   showFoodLogButtonInGcm: false,
   automaticDailyRollups: true,
-  includeBrandedFoodSearch: false,
+  includeBrandedFoodSearch: true,
   healthGoals: [
-    { propertyKey: "cal", label: "Cal", unit: "kcal", kind: "max", max: 2400, color: "var(--interactive-accent)" },
+    { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400, color: "var(--interactive-accent)" },
     { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 180, color: "var(--color-green)" },
     { propertyKey: "carbs", label: "Carbs", unit: "g", kind: "range", min: 120, max: 260, color: "var(--color-blue)" },
     { propertyKey: "fat", label: "Fat", unit: "g", kind: "range", min: 45, max: 90, color: "var(--color-yellow)" },
@@ -229,7 +294,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   activityGoalMinutes: 45,
   rollupHeading: "Health Rollup",
   openFoodFactsUserAgent: "TPSHealth/0.1 (Obsidian plugin)",
-  usdaApiKey: "DEMO_KEY",
+  usdaApiKeySecrets: [USDA_API_KEY_SECRET],
   activeWorkoutPath: "",
   activeWorkoutId: "",
   activeWorkoutTarget: "",
@@ -240,6 +305,8 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   activeWorkoutCooldownDays: 0,
   lastSetEndedAt: "",
   activeWorkoutSetCount: 0,
+  pendingFoodLogDraft: null,
+  enableLogging: false,
 };
 
 export const TPS_HEALTH_SCHEMA_VERSION = 1;

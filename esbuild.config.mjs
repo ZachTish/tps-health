@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
+import { runtimeDeployPlugin } from "../deploy-runtime.mjs";
 
 const banner =
 `/*
@@ -38,6 +39,7 @@ const context = await esbuild.context({
   treeShaking: true,
   outfile: "main.js",
   minify: prod,
+  plugins: [runtimeDeployPlugin("TPS-health (Dev)")],
 });
 
 if (prod) {

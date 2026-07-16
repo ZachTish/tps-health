@@ -1,4 +1,4 @@
-import { FoodItem, FoodLogEntry, Nutrition, WorkoutPlanItem, WorkoutSet } from "./types";
+import { ActivityLogEntry, FoodItem, FoodLogEntry, Nutrition, WorkoutPlanItem, WorkoutSet } from "./types";
 
 export function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -6,6 +6,11 @@ export function id(prefix: string): string {
 
 export function isoNow(): string {
   return new Date().toISOString();
+}
+
+export function isoDateKey(value: string): string {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : value.slice(0, 10);
 }
 
 export function formatNutrition(nutrition?: Nutrition): string {
@@ -17,6 +22,7 @@ export function formatNutrition(nutrition?: Nutrition): string {
     valuePart("fat", nutrition.fatG, "g"),
     valuePart("fiber", nutrition.fiberG, "g"),
     valuePart("sugar", nutrition.sugarG, "g"),
+    valuePart("sugar alcohol", nutrition.sugarAlcoholG, "g"),
     valuePart("alcohol", nutrition.alcoholG, "g"),
     valuePart("sodium", nutrition.sodiumMg, "mg"),
   ].filter(Boolean);
@@ -35,6 +41,7 @@ export function foodEntryLine(entry: FoodLogEntry): string {
   ].filter(Boolean).join(" - ");
   const nutrition = getLogLineNutrition(entry);
   const fields = [
+    dataviewField("type", "foodLog"),
     dataviewField("food", itemName),
     dataviewField("qty", entry.servingQuantity ?? entry.quantity),
     dataviewField("unit", entry.servingUnit || entry.unit),
@@ -48,26 +55,49 @@ export function foodEntryLine(entry: FoodLogEntry): string {
     dataviewField("fat", nutrition.fatG),
     dataviewField("fiber", nutrition.fiberG),
     dataviewField("sugar", nutrition.sugarG),
+    dataviewField("sugarAlcohol", nutrition.sugarAlcoholG),
     dataviewField("alcohol", nutrition.alcoholG),
     dataviewField("sodium", nutrition.sodiumMg),
     entry.item.sourcePath ? dataviewField("foodPath", entry.item.sourcePath) : "",
     entry.dailyNotePath ? dataviewField("dailyNotePath", entry.dailyNotePath) : "",
-    entry.dailyNotePath ? dataviewField("dailyNote", wikilinkFromPath(entry.dailyNotePath)) : "",
     dataviewField("foodId", entry.id),
     dataviewField("createdDate", entry.createdDate),
     entry.completedDate ? dataviewField("completedDate", entry.completedDate) : "",
     entry.note ? dataviewField("note", entry.note) : "",
   ].filter(Boolean);
-  return `- ${summary} ${fields.join(" ")}`;
+  return `- ${summary} <!-- ${fields.join(" ")} -->`;
 }
 
-function wikilinkFromPath(path: string): string {
-  const normalized = path.replace(/\.md$/i, "");
-  const label = normalized.split("/").pop() || normalized;
-  return `[[${normalized}|${label}]]`;
+export function activityEntryLine(entry: ActivityLogEntry): string {
+  const details = [
+    entry.durationMinutes != null ? `${round(entry.durationMinutes)} min` : "",
+    entry.distance != null ? `${round(entry.distance)}${entry.distanceUnit ? ` ${entry.distanceUnit}` : ""}` : "",
+    entry.steps != null ? `${Math.round(entry.steps)} steps` : "",
+  ].filter(Boolean);
+  const summary = [entry.activity, details.join(" • ")].filter(Boolean).join(" - ");
+  const fields = [
+    dataviewField("type", "activityLog"),
+    dataviewField("activity", entry.activity),
+    dataviewField("activityType", entry.activityType),
+    dataviewField("activityId", entry.id),
+    dataviewField("source", entry.source),
+    entry.sourceId ? dataviewField("sourceId", entry.sourceId) : "",
+    entry.device ? dataviewField("device", entry.device) : "",
+    dataviewField("startedAt", entry.startedAt),
+    dataviewField("completedDate", entry.completedDate),
+    entry.durationMinutes != null ? dataviewField("durationMinutes", entry.durationMinutes) : "",
+    entry.distance != null ? dataviewField("distance", entry.distance) : "",
+    entry.distanceUnit ? dataviewField("distanceUnit", entry.distanceUnit) : "",
+    entry.steps != null ? dataviewField("steps", entry.steps) : "",
+    entry.caloriesBurned != null ? dataviewField("caloriesBurned", entry.caloriesBurned) : "",
+    entry.dailyNotePath ? dataviewField("dailyNotePath", entry.dailyNotePath) : "",
+    entry.note ? dataviewField("note", entry.note) : "",
+  ].filter(Boolean);
+  return `- ${summary} <!-- ${fields.join(" ")} -->`;
 }
 
 function foodItemMetadataFields(item: FoodItem): string[] {
+  if (item.sourcePath) return [];
   return [
     item.brand ? dataviewField("brand", item.brand) : "",
     item.barcode ? dataviewField("barcode", item.barcode) : "",
@@ -94,6 +124,7 @@ function scaleNutrition(nutrition: Nutrition, multiplier: number): Nutrition {
     fatG: scaledValue(nutrition.fatG, safeMultiplier),
     fiberG: scaledValue(nutrition.fiberG, safeMultiplier),
     sugarG: scaledValue(nutrition.sugarG, safeMultiplier),
+    sugarAlcoholG: scaledValue(nutrition.sugarAlcoholG, safeMultiplier),
     alcoholG: scaledValue(nutrition.alcoholG, safeMultiplier),
     sodiumMg: scaledValue(nutrition.sodiumMg, safeMultiplier),
   };
@@ -104,12 +135,13 @@ function scaledValue(value: number | undefined, multiplier: number): number | un
   return Math.round(value * multiplier * 10) / 10;
 }
 
-export function workoutSetLine(set: WorkoutSet, options: { asTask?: boolean; notation?: "compact" | "verbose"; includeExercise?: boolean } = {}): string {
+export function workoutSetLine(set: WorkoutSet, options: { notation?: "compact" | "verbose"; includeExercise?: boolean } = {}): string {
   const exerciseLabel = set.exercisePath
     ? `[[${set.exercisePath.replace(/\.md$/, "")}|${set.exercise}]]`
     : set.exercise;
   const summary = workoutSetSummary(set, exerciseLabel, options);
   const fields = [
+    dataviewField("type", "workoutSet"),
     dataviewField("exercise", set.exercise),
     set.exercisePath ? dataviewField("exercisePath", set.exercisePath) : "",
     set.workoutPath ? dataviewField("workout", pathLabel(set.workoutPath)) : "",
@@ -125,16 +157,18 @@ export function workoutSetLine(set: WorkoutSet, options: { asTask?: boolean; not
     set.reps == null ? "" : dataviewField("reps", set.reps),
     set.weight == null ? "" : dataviewField("weight", set.weight),
     set.weightUnit ? dataviewField("unit", set.weightUnit) : "",
+    set.perArm ? dataviewField("perArm", "true") : "",
     set.durationSeconds == null ? "" : dataviewField("duration", set.durationSeconds),
     set.distance == null ? "" : dataviewField("distance", set.distance),
     set.distanceUnit ? dataviewField("distanceUnit", set.distanceUnit) : "",
     set.rpe == null ? "" : dataviewField("rpe", set.rpe),
     set.restSeconds == null ? "" : dataviewField("rest", set.restSeconds),
+    set.restStartedAt ? dataviewField("restStartedAt", set.restStartedAt) : "",
     set.dropSetGroupId ? dataviewField("dropSet", set.dropSetGroupId) : "",
     set.supersetGroupId ? dataviewField("superset", set.supersetGroupId) : "",
     set.note ? dataviewField("note", set.note) : "",
   ].filter(Boolean);
-  return `- ${options.asTask ? "[x] " : ""}${summary} ${fields.join(" ")}`;
+  return `- ${summary} ${fields.join(" ")}`;
 }
 
 function pathLabel(path: string): string {
@@ -198,12 +232,24 @@ export function workoutSessionLine(input: {
       ? `[[${input.plan.sourcePath.replace(/\.md$/, "")}|${input.title}]]`
       : input.title;
   const fields = [
+    dataviewField("type", "activityLog"),
+    dataviewField("activity", input.title),
+    dataviewField("activityType", "workout"),
+    dataviewField("activityId", input.id),
+    dataviewField("source", "workout"),
     dataviewField("workout", workoutLabel),
     dataviewField("workoutId", input.id),
     input.path ? dataviewField("workoutPath", input.path) : "",
     input.plan?.sourcePath ? dataviewField("workoutPlanPath", input.plan.sourcePath) : "",
     input.plan?.name ? dataviewField("workoutPlan", input.plan.name) : "",
+    dataviewField("runKind", "run"),
+    dataviewField("runType", "workout"),
+    dataviewField("workflowType", "workout"),
+    dataviewField("recurrenceMode", "completion-triggered"),
+    input.plan?.sourcePath ? dataviewField("workflowPath", input.plan.sourcePath) : "",
+    input.plan?.name ? dataviewField("workflowName", input.plan.name) : "",
     dataviewField("createdDate", input.startedAt),
+    dataviewField("workoutDate", isoDateKey(input.startedAt)),
     dataviewField("startedAt", input.startedAt),
     dataviewField("status", input.status || "active"),
     input.cooldownDays != null ? dataviewField("cooldownDays", input.cooldownDays) : "",

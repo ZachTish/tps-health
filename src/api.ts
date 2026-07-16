@@ -1,4 +1,5 @@
-import { ExerciseItem, FoodItem, FoodLogEntry, HealthGoalKind, Nutrition, TPSHealthSettings, WorkoutLogTarget, WorkoutPlanItem, WorkoutSet } from "./types";
+import { ActivityLogEntry, ActivitySource, ExerciseItem, FoodItem, FoodLogEntry, FoodNoteType, HealthGoalKind, Nutrition, TPSHealthSettings, WorkoutLogTarget, WorkoutPlanItem, WorkoutSet } from "./types";
+import type { TPSHealthHomeActionProvider } from "./home-actions";
 
 export interface LogFoodInput {
   item?: FoodItem;
@@ -14,7 +15,7 @@ export interface LogFoodInput {
 }
 
 export interface CreateFoodInput {
-  type?: "food" | "recipe";
+  type?: FoodNoteType;
   name: string;
   brand?: string;
   aliases?: string[];
@@ -25,6 +26,7 @@ export interface CreateFoodInput {
   servingUnit?: string;
   servingGrams?: number;
   servingMl?: number;
+  recipeServings?: number;
   nutrition?: Nutrition;
   sourceImagePath?: string;
   confidence?: number;
@@ -45,6 +47,14 @@ export interface FoodLabelInput extends UpsertFoodInput {
 export interface LogFoodByNameInput extends Omit<LogFoodInput, "item" | "query" | "barcode"> {
   name: string;
   brand?: string;
+}
+
+export interface LogFoodByBarcodeInput extends Omit<LogFoodInput, "item" | "query" | "barcode"> {
+  barcode: string;
+}
+
+export interface LogFoodByFoodPathInput extends Omit<LogFoodInput, "item" | "query" | "barcode"> {
+  foodPath: string;
 }
 
 export interface LogSetInput extends Omit<WorkoutSet, "id" | "endedAt" | "restSeconds"> {
@@ -93,6 +103,23 @@ export interface StartWorkoutInput {
   openFile?: boolean;
 }
 
+export interface LogActivityInput {
+  activity: string;
+  activityType?: string;
+  startedAt?: string;
+  completedDate?: string;
+  durationMinutes?: number;
+  distance?: number;
+  distanceUnit?: string;
+  steps?: number;
+  caloriesBurned?: number;
+  source?: ActivitySource;
+  sourceId?: string;
+  device?: string;
+  note?: string;
+  dailyNoteDate?: string;
+}
+
 export interface FinishWorkoutInput {
   endedAt?: string;
   cooldownDays?: number;
@@ -105,6 +132,7 @@ export interface DailyRollup {
   fatG: number;
   fiberG: number;
   sugarG: number;
+  sugarAlcoholG: number;
   alcoholG: number;
   sodiumMg: number;
 }
@@ -125,6 +153,7 @@ export interface TPSHealthApiSchema {
   entities: {
     food: string[];
     foodLog: string[];
+    activityLog: string[];
     exercise: string[];
     workoutPlan: string[];
     workoutSession: string[];
@@ -146,8 +175,14 @@ export interface ActiveWorkoutState {
   setCount: number;
 }
 
+export interface DailyFoodMacroTotals extends Required<Nutrition> {
+  dateIso: string;
+  entryCount: number;
+}
+
 export interface TPSHealthApi {
   version: 1;
+  homeActions?: TPSHealthHomeActionProvider;
   getSchema(): TPSHealthApiSchema;
   searchFoods(query: string): Promise<FoodItem[]>;
   lookupBarcode(barcode: string): Promise<FoodItem | null>;
@@ -156,6 +191,13 @@ export interface TPSHealthApi {
   createFoodFromLabel(input: FoodLabelInput): Promise<FoodItem>;
   findOrCreateFood(item: FoodItem): Promise<FoodItem>;
   logFoodByName(input: LogFoodByNameInput): Promise<FoodLogEntry>;
+  logFoodByBarcode(input: LogFoodByBarcodeInput): Promise<FoodLogEntry>;
+  logFoodByFoodPath(input: LogFoodByFoodPathInput): Promise<FoodLogEntry>;
+  ensureFoodLogBase(): Promise<string>;
+  getDailyFoodMacroTotals(dateIso: string): Promise<DailyFoodMacroTotals>;
+  ensureWorkoutLogBase(): Promise<string>;
+  ensureActivityLogBase(): Promise<string>;
+  logActivity(input: LogActivityInput): Promise<ActivityLogEntry>;
   searchExercises(query: string): Promise<ExerciseItem[]>;
   createExercise(input: CreateExerciseInput): Promise<ExerciseItem>;
   upsertExercise(input: UpsertExerciseInput): Promise<ExerciseItem>;
@@ -175,4 +217,5 @@ export interface TPSHealthApi {
   updateDailyRollup(): Promise<DailyRollup>;
   getMetricRenderConfigs(): HealthMetricRenderConfig[];
   getMetricRenderConfig(propertyKey: string): HealthMetricRenderConfig | null;
+  openFoodLogEntryMenuFromLine(event: MouseEvent, filePath: string, lineNumber: number, line: string): Promise<void>;
 }

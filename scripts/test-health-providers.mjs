@@ -3,8 +3,13 @@ import test from "node:test";
 import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { readFileSync } from "node:fs";
 
 const USER_AGENT = "TPSHealth/0.1 (Obsidian plugin test)";
+const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const apiSource = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const sharedMobileOverlaySource = readFileSync(new URL("../../TPS-Global-Context-Menu (Dev)/src/utils/mobile-overlay.ts", import.meta.url), "utf8");
 
 async function importFormatUtility() {
   const build = await esbuild.build({
@@ -21,6 +26,18 @@ async function importFormatUtility() {
 async function importSettingsNormalizationUtility() {
   const build = await esbuild.build({
     entryPoints: [fileURLToPath(new URL("../src/settings-normalization.ts", import.meta.url))],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    write: false,
+  });
+  const bundled = build.outputFiles[0].text;
+  return import(`data:text/javascript;base64,${Buffer.from(bundled).toString("base64")}`);
+}
+
+async function importLoggerUtility() {
+  const build = await esbuild.build({
+    entryPoints: [fileURLToPath(new URL("../src/logger.ts", import.meta.url))],
     bundle: true,
     format: "esm",
     platform: "node",
@@ -52,20 +69,38 @@ async function importPluginWithObsidianStub() {
       saveData() {}
     }
     export class Modal { constructor(app) { this.app = app; } open() {} close() {} }
+    export class Menu {
+      addItem(callback) {
+        callback?.({ setTitle() { return this; }, setIcon() { return this; }, onClick() { return this; } });
+        return this;
+      }
+      showAtMouseEvent() {}
+    }
     export class Notice { constructor(message) { globalThis.__TPSHealthTestNotices?.push(String(message)); } }
     export class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = {}; } display() {} }
     export class Setting { constructor() {} setName() { return this; } setDesc() { return this; } addText() { return this; } addButton() { return this; } }
+    export class SecretComponent { constructor() {} setValue() { return this; } onChange() { return this; } }
     export class MarkdownView {}
+    globalThis.__TPSHealthTestMarkdownView = MarkdownView;
+    export class MarkdownRenderChild { constructor(containerEl) { this.containerEl = containerEl; } onload() {} onunload() {} }
     export class EditorSuggest {}
     export class BasesView {}
     export class App {}
+    export const Platform = { isDesktop: true, isMobile: false, isDesktopApp: true, isMobileApp: false, isIosApp: false, isAndroidApp: false };
     export const editorLivePreviewField = {};
     export function normalizePath(path) {
       return String(path || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/").replace(/^\\.\\//, "");
     }
-    export async function requestUrl() { return { json: {} }; }
+    export function setIcon(el, icon) {
+      if (el) el.dataset = { ...(el.dataset || {}), icon };
+      return el;
+    }
+    export async function requestUrl(options) {
+      if (typeof globalThis.__TPSHealthTestRequestUrl === "function") return globalThis.__TPSHealthTestRequestUrl(options);
+      return { status: 200, headers: {}, json: {} };
+    }
   `;
-  const emptyModule = "export class RangeSetBuilder {} export class Decoration {} export class ViewPlugin {} export class WidgetType {} export const EditorView = {}; export const DecorationSet = {}; export class ViewUpdate {}";
+  const emptyModule = "export class RangeSetBuilder { add() {} finish() { return {}; } } export const StateField = { define: (spec) => spec }; export class EditorState {} export class Decoration { static none = {}; static widget() { return {}; } static replace() { return {}; } } export class ViewPlugin { static fromClass() { return {}; } } export class WidgetType {} export const EditorView = { decorations: { from: () => ({}) } }; export const DecorationSet = {}; export class ViewUpdate {}";
   const zxingBrowserStub = "export class BrowserMultiFormatOneDReader {} export class BrowserMultiFormatReader {}";
   const zxingLibraryStub = "export const BarcodeFormat = {}; export const DecodeHintType = {};";
   const virtualModules = new Map([
@@ -102,7 +137,9 @@ async function importPluginWithObsidianStub() {
 function createFakeHealthApp() {
   const files = new Map();
   const folders = new Set();
+  const secrets = new Map();
   const writes = [];
+  const openedFiles = [];
   const TFile = globalThis.__TPSHealthTestTFile;
   const metadataCache = {
     getFileCache(file) {
@@ -147,6 +184,10 @@ function createFakeHealthApp() {
     app: {
       vault,
       metadataCache,
+      secretStorage: {
+        getSecret: (name) => secrets.get(name) || null,
+        setSecret: (name, value) => secrets.set(name, value),
+      },
       fileManager: {
         async processFrontMatter(file, updater) {
           const current = parseFrontmatter(files.get(file.path) || "");
@@ -159,7 +200,9 @@ function createFakeHealthApp() {
       workspace: {
         getActiveFile: () => null,
         getLeaf: () => ({
-          openFile: async () => {},
+          openFile: async (file, options) => {
+            openedFiles.push({ path: file.path, options });
+          },
           setPinned: () => {},
           view: {},
         }),
@@ -170,6 +213,8 @@ function createFakeHealthApp() {
     files,
     folders,
     writes,
+    openedFiles,
+    secrets,
   };
 }
 
@@ -219,14 +264,1016 @@ function installDeterministicBrowserGlobals() {
   globalThis.document = { querySelectorAll: () => [] };
 }
 
+test("food logger queues searched foods without leaving the search flow", () => {
+  assert.match(mainSource, /activeFoodLogTab: "barcode" \| "search" \| "mine"/);
+  assert.doesNotMatch(mainSource, /Quick add/);
+  assert.doesNotMatch(mainSource, /parseQuickFoodEntries/);
+  assert.doesNotMatch(mainSource, /handleQuickAdd/);
+  assert.match(mainSource, /private searchInputEl: HTMLInputElement \| null = null;/);
+  assert.match(mainSource, /this\.selectionItems\.unshift\(\{/);
+  assert.doesNotMatch(mainSource, /this\.selectionItems\.push\(\{\s*item: selectedItem/);
+  assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
+  assert.match(mainSource, /getPendingFoodLogDraft\(dateContext: FoodLogDateContext \| null\): PendingFoodLogDraft \| null/);
+  assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null\): Promise<void>/);
+  assert.match(mainSource, /clearPendingFoodLogDraft\(\): Promise<void>/);
+  assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:none"/);
+  assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:context-mismatch"/);
+  assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:found"/);
+  assert.match(mainSource, /const pendingDraft = initialDraft \? null : plugin\.getPendingFoodLogDraft\(dateContext\)/);
+  assert.match(mainSource, /Restored \$\{this\.selectionItems\.length\} unlogged food/);
+  assert.match(mainSource, /private async persistDraft\(\): Promise<void>/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-empty"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:create-recipe-empty"/);
+  assert.match(mainSource, /await this\.plugin\.clearPendingFoodLogDraft\(\);[\s\S]+new Notice\(`Logged \$\{this\.selectionItems\.length\} foods\.`\);/);
+  assert.match(mainSource, /Added \$\{addedName\}\. Search for another food or log selected\./);
+  assert.match(mainSource, /this\.searchInput = "";/);
+  assert.match(mainSource, /this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);\s+this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);/);
+  assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
+  assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
+  assert.match(stylesSource, /\.tps-health-selection\.is-empty/);
+  assert.match(stylesSource, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
+  assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\);/);
+  assert.match(mainSource, /const edit = controls\.createEl\("button", \{ text: "Edit", cls: "mod-muted" \}\);/);
+  assert.match(mainSource, /private async openSelectionFoodEditor\(entry: BatchFoodSelection\): Promise<void>/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-open"/);
+  assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, type, freshItem\.name, false, freshItem, this\.dateContext, freshItem\.sourcePath, async \(saved\) => \{/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:edit-missing-entry"/);
+  assert.match(mainSource, /current\.item = saved;/);
+  assert.match(mainSource, /if \(!unitOptions\.includes\(current\.unit\)\) current\.unit = preferredFoodLogUnit\(saved\);/);
+  assert.match(mainSource, /await this\.persistDraft\(\);\s+this\.renderSelection\(\);/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-saved"/);
+  assert.match(mainSource, /logger\.flow\("CustomFoodModal", "callback:start"/);
+  assert.match(mainSource, /logger\.flow\("CustomFoodModal", "callback:done"/);
+  assert.match(mainSource, /private async refreshSelectionItemsFromSources\(\): Promise<void>/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "selection:refresh-no-change"/);
+  assert.match(mainSource, /private async refreshFoodItemFromSource\(item: FoodItem\): Promise<FoodItem \| null>/);
+  assert.match(mainSource, /foodNoteTypeFromFrontmatter\(fm, file, this\.plugin\.settings\)/);
+  assert.match(mainSource, /function foodQueueItemSignature\(item: FoodItem\): string/);
+  assert.match(mainSource, /private onSaved\?: \(saved: FoodItem\) => void \| Promise<void>/);
+});
+
+test("food search ranks messy out-of-order branded queries and gram servings", () => {
+  assert.match(mainSource, /function foodSearchTokenMatchScore/);
+  assert.match(mainSource, /likelyBrandFirstFoodQuery\(tokens\)/);
+  assert.match(mainSource, /const COMMON_FOOD_BRANDS = new Set\(\[/);
+  assert.match(mainSource, /"great value"/);
+  assert.match(mainSource, /breyers: "breyer"/);
+  assert.match(mainSource, /"breyer"/);
+  assert.match(mainSource, /score \+= tokenMatch\.exact \* 16 \+ tokenMatch\.fuzzy \* 7/);
+  assert.match(mainSource, /exactNameTokenMatch\.total \+ brandTokenMatch\.total >= tokens\.length/);
+  assert.match(mainSource, /item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
+  assert.match(mainSource, /metricServing\.unit === "g" \? 36 : 10/);
+  assert.match(mainSource, /replace\(\/\[’'\]\/g, ""\)/);
+  assert.match(mainSource, /function hasSearchableMacroData\(nutrition: Nutrition \| undefined\): boolean/);
+  assert.match(mainSource, /const macros = \[nutrition\.proteinG, nutrition\.carbsG, nutrition\.fatG, nutrition\.sugarAlcoholG, nutrition\.alcoholG\]\.map\(numberOrUndefined\);/);
+  assert.match(mainSource, /return macros\.some\(\(value\) => value != null && value > 0\)/);
+  assert.match(mainSource, /nutrition\.sugarAlcoholG != null \? `SA \$\{round\(nutrition\.sugarAlcoholG\)\}g` : ""/);
+  assert.match(mainSource, /nutrition\.alcoholG != null \? `Alc \$\{round\(nutrition\.alcoholG\)\}g` : ""/);
+});
+
+test("meal creation keeps the name input visible above mobile keyboards", () => {
+  assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
+  assert.match(mainSource, /this\.contentEl\.createEl\("h2", \{ text: "Create meal" \}\)/);
+  assert.match(mainSource, /\.setName\("Meal name"\)/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "meal:create-empty"/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "meal:create-done"/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "meal:log-modal-open"/);
+  assert.match(mainSource, /logger\.flowError\("FoodModal", "meal:create-failed"/);
+  assert.match(mainSource, /const mealNameInput = this\.contentEl\.querySelector<HTMLInputElement>\('\.setting-item input\[type="text"\]'\)/);
+  assert.match(mainSource, /mealNameInput\?\.addEventListener\("focus", \(\) => scrollHealthModalInputIntoView\(mealNameInput\)\)/);
+  assert.match(mainSource, /type: "meal",\s+name,\s+servingAmount: 1,\s+servingUnit: "meal",\s+recipeServings: 1/);
+  assert.match(mainSource, /function scrollHealthModalInputIntoView\(element: HTMLElement\): void/);
+  assert.match(mainSource, /window\.setTimeout\(\(\) => element\.scrollIntoView\(\{ block: "center", inline: "nearest", behavior: "smooth" \}\), 180\)/);
+  assert.match(mainSource, /this\.modalEl\.addClass\("tps-keyboard-aware-modal", "tps-health-modal-frame"\)/);
+  assert.doesNotMatch(mainSource, /setupKeyboardAwareHealthModal/);
+  assert.match(sharedMobileOverlaySource, /target\.scrollIntoView\(\{ block: 'center'/);
+  assert.match(stylesSource, /var\(--tps-visible-viewport-height, 100dvh\)/);
+});
+
+test("meal reads and writes enforce the single-serving recipe contract", () => {
+  assert.match(mainSource, /function recipeServingsForFood\(item: FoodItem, type: FoodNoteType\): number \{\s*if \(type === "meal"\) return 1;/);
+  assert.match(mainSource, /const isMeal = type === "meal";/);
+  assert.match(mainSource, /servingAmount: isMeal \? 1 : Number\(fm\.servingAmount \|\| 1\)/);
+  assert.match(mainSource, /servingUnit: isMeal \? "meal" : String\(fm\.servingUnit \|\| "serving"\)/);
+  assert.match(mainSource, /recipeServings: isMeal \? 1 : numberOrUndefined\(fm\.recipeServings\)/);
+});
+
+test("food and recipe edits require an explicit linked-instance versioning choice", () => {
+  assert.match(mainSource, /type FoodEditLinkScope = "update-linked" \| "new-version" \| "cancel"/);
+  assert.match(mainSource, /text: "Create new version"/);
+  assert.match(mainSource, /text: "Update linked instances"/);
+  assert.match(mainSource, /const linkScope = this\.editPath \? await chooseFoodEditLinkScope\(this\.app, typeLabel\) : "update-linked"/);
+  assert.match(mainSource, /if \(linkScope === "cancel"\) return/);
+  assert.match(mainSource, /path: createNewVersion \? undefined : this\.editPath/);
+  assert.match(mainSource, /merge: !createNewVersion/);
+  assert.match(mainSource, /getMarkdownFiles\(\)\.slice\(\)\.sort\(\(a, b\) => \(b\.stat\?\.ctime \|\| b\.stat\?\.mtime \|\| 0\) - \(a\.stat\?\.ctime \|\| a\.stat\?\.mtime \|\| 0\)\)/);
+});
+
+test("logged meal editing exposes draft ingredient amounts before linked-instance save", () => {
+  assert.match(mainSource, /tps-health-meal-ingredient-editor/);
+  assert.match(mainSource, /Adjust the amount or unit, or add an ingredient/);
+  assert.match(mainSource, /parseRecipeIngredientLine\(line, \(foodName\) => this\.plugin\.findRecipeIngredientFoodByName\(foodName\)\)/);
+  assert.match(mainSource, /tps-health-meal-ingredient-quantity/);
+  assert.match(mainSource, /tps-health-meal-ingredient-unit/);
+  assert.match(mainSource, /tps-health-meal-ingredient-food/);
+  assert.match(mainSource, /tps-health-meal-ingredient-macros/);
+  assert.match(mainSource, /interface RecipeIngredientDraft extends RecipeIngredientLine/);
+  assert.match(mainSource, /text: "\+ Add ingredient"/);
+  assert.match(mainSource, /new RecipeIngredientModal\(this\.app, this\.plugin, null, async \(selection\) => \{/);
+  assert.match(mainSource, /recipeIngredients\.push\(\{\s+quantity: selection\.quantity,\s+unit: selection\.unit,\s+foodPath: selection\.food\.sourcePath,\s+foodName: selection\.food\.name,\s+food: selection\.food,/);
+  assert.match(mainSource, /const persistDraftIngredients = async \(\): Promise<RecipeIngredientLine\[\]> => \{[\s\S]+?await this\.plugin\.findOrCreateFoodNote\(ingredient\.food\)/);
+  assert.match(mainSource, /if \(linkScope === "cancel"\) return;\s+const createNewVersion = linkScope === "new-version";\s+const savedIngredients = isRecipeLikeFoodType\(this\.type\) \? await persistDraftIngredients\(\) : \[\];/);
+  assert.match(mainSource, /const ingredientsForSave = isRecipeLikeFoodType\(this\.type\)\s+\? savedIngredients\.map\(recipeIngredientMarkdown\)\.join\("\\n"\)/);
+  assert.match(mainSource, /ingredients: ingredientsForSave/);
+  assert.match(mainSource, /const linkScope = this\.editPath \? await chooseFoodEditLinkScope/);
+  assert.match(stylesSource, /\.tps-health-meal-ingredient-row/);
+});
+
+test("meal ingredient picker returns a local draft without directly mutating the meal", () => {
+  const pickerSource = mainSource.slice(
+    mainSource.indexOf("class RecipeIngredientModal extends Modal"),
+    mainSource.indexOf("function recipeIngredientUnitOptions"),
+  );
+  assert.match(pickerSource, /private onIngredientSelected\?: \(selection: RecipeIngredientSelection\) => void \| Promise<void>/);
+  assert.match(pickerSource, /if \(this\.onIngredientSelected\) \{\s+if \(!isFoodLogUnitSupported\(this\.selectedFood, unit\)\) \{[\s\S]+?\}\s+const canonical = recipeIngredientCanonicalAmount\(this\.selectedFood, quantity, unit\);\s+await this\.onIngredientSelected\(\{ food: this\.selectedFood, quantity: canonical\.quantity, unit: canonical\.unit \}\);\s+logger\.flow\("RecipeIngredient", "add:draft-done"[\s\S]+?this\.close\(\);\s+return;/);
+  assert.ok(
+    pickerSource.indexOf("if (this.onIngredientSelected)") < pickerSource.indexOf("await this.plugin.findOrCreateFoodNote(this.selectedFood)"),
+    "the callback route must run before the direct recipe-note persistence route",
+  );
+});
+
+test("recipe notes keep ingredient lines editable and food buttons open linked notes safely", () => {
+  assert.match(mainSource, /this\.registerEditorExtension\(createRecipeIngredientEditorExtension\(this\)\)/);
+  assert.match(mainSource, /function createRecipeIngredientEditorExtension\(plugin: TPSHealthPlugin\)/);
+  assert.match(mainSource, /return StateField\.define<DecorationSet>\(\{/);
+  assert.match(mainSource, /provide: \(field\) => EditorView\.decorations\.from\(field\)/);
+  assert.match(mainSource, /function buildRecipeIngredientEditorDecorations\(plugin: TPSHealthPlugin, state: EditorState\): DecorationSet/);
+  assert.match(mainSource, /if \(!state\.field\(editorLivePreviewField, false\)\) return Decoration\.none/);
+  assert.match(mainSource, /class RecipeIngredientWidget extends WidgetType/);
+  assert.match(mainSource, /this\.filePath = this\.activeFilePath\(view\)/);
+  assert.match(mainSource, /const filePath = this\.activeFilePath\(update\.view\)/);
+  assert.match(mainSource, /filePath !== this\.filePath/);
+  assert.match(mainSource, /const owningFile = markdownFilePathForRenderedElement\(plugin, view\.dom\)/);
+  assert.match(mainSource, /if \(isRecipeLikeMarkdownFile\(plugin, activeFilePath\)\) return Decoration\.none/);
+  assert.match(mainSource, /builder\.add\(line\.from, line\.to, Decoration\.replace\(\{\s+widget: new RecipeIngredientWidget\(plugin, ingredient, \{ filePath: sourcePath, lineNumber: line\.number - 1, line: line\.text \}\),\s+block: true,/);
+  assert.doesNotMatch(mainSource, /builder\.add\(line\.to, line\.to, Decoration\.widget\(\{\s+widget: new RecipeIngredientWidget/);
+  assert.match(mainSource, /class RecipeIngredientAddWidget extends WidgetType/);
+  assert.match(mainSource, /widget: new RecipeIngredientAddWidget\(plugin, sourcePath\),\s+block: true,/);
+  assert.match(mainSource, /class TPSHealthRenderedControlsChild extends MarkdownRenderChild/);
+  assert.match(mainSource, /ctx\.addChild\(new TPSHealthRenderedControlsChild\(root, this, ctx\)\)/);
+  assert.match(mainSource, /logger\.flowError\("RenderedControls", "postprocessor:failed"/);
+  assert.match(mainSource, /function recipeIngredientElement\(plugin: TPSHealthPlugin, ingredient: RecipeIngredientLine, source: FoodLogLineSource\): HTMLElement/);
+  assert.match(mainSource, /function safeRecipeIngredientElement\(plugin: TPSHealthPlugin, ingredient: RecipeIngredientLine, source: FoodLogLineSource\): HTMLElement \| null/);
+  assert.match(mainSource, /function recipeIngredientField\(label: string, control: HTMLElement, className: string\): HTMLElement/);
+  assert.match(mainSource, /recipeIngredientField\("Qty", quantity/);
+  assert.match(mainSource, /recipeIngredientField\("Macros", macros/);
+  assert.match(mainSource, /let currentUnit = preferredRecipeIngredientUnit\(foodItem, ingredient\.unit\)/);
+  assert.match(mainSource, /recipeIngredientQuantityForUnit\(ingredient, foodItem, currentUnit\)/);
+  assert.match(mainSource, /recipeIngredientConvertQuantity\(foodItem, parsedQuantity, currentUnit, nextUnit\)/);
+  assert.match(mainSource, /const canonical = recipeIngredientCanonicalAmount\(resolvedFood \|\| foodItem, parsedQuantity, parsedUnit\)/);
+  assert.match(mainSource, /logger\.flowError\("RecipeIngredient", "render:failed"/);
+  assert.match(mainSource, /const row = document\.createElement\("div"\)/);
+  assert.match(mainSource, /quantity\.type = "number"/);
+  assert.match(mainSource, /const unit = document\.createElement\("select"\)/);
+  assert.match(mainSource, /for \(const option of recipeIngredientUnitOptions\(foodItem, ingredient\.unit\)\)/);
+  assert.match(mainSource, /function recipeIngredientUnitOptions\(food: FoodItem \| null, currentUnit: string\): string\[\]/);
+  assert.match(mainSource, /function preferredRecipeIngredientUnit\(food: FoodItem \| null, currentUnit: string\): string/);
+  assert.match(mainSource, /function recipeIngredientQuantityForUnit\(ingredient: RecipeIngredientLine, food: FoodItem \| null, targetUnit: string\): number/);
+  assert.match(mainSource, /function recipeIngredientConvertQuantity\(food: FoodItem, quantity: number, fromUnit: string, toUnit: string\): number/);
+  assert.match(mainSource, /function recipeIngredientCanonicalAmount\(food: FoodItem \| null, quantity: number, unit: string\): \{ quantity: number; unit: string \}/);
+  assert.match(mainSource, /function quantityFromMetricAmount\(amount: number, amountUnit: "g" \| "ml", targetUnit: string\): number \| null/);
+  assert.match(mainSource, /await plugin\.updateRecipeIngredientLine\(source, updated\)/);
+  assert.match(mainSource, /async updateRecipeIngredientLine\(source: FoodLogLineSource, ingredient: RecipeIngredientLine\): Promise<boolean>/);
+  assert.match(mainSource, /async addRecipeIngredientLine\(sourcePath: string, ingredient: RecipeIngredientLine\): Promise<boolean>/);
+  assert.match(mainSource, /logger\.flow\("Recipe", "ingredient:add-done"/);
+  assert.match(mainSource, /class RecipeIngredientModal extends Modal/);
+  assert.match(mainSource, /new RecipeIngredientModal\(plugin\.app, plugin, sourcePath\)\.open\(\)/);
+  assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
+  assert.match(mainSource, /FOOD_SEARCH_DEBOUNCE_MS = 450/);
+  assert.match(mainSource, /if \(this\.searchTimer !== null\) window\.clearTimeout\(this\.searchTimer\)/);
+  assert.match(mainSource, /const savedFood = await this\.plugin\.findOrCreateFoodNote\(this\.selectedFood\)/);
+  assert.match(mainSource, /await this\.plugin\.addRecipeIngredientLine\(this\.sourcePath, \{/);
+  assert.match(mainSource, /await this\.refreshRecipeNutrition\(file\)/);
+  assert.match(mainSource, /logger\.flow\("Recipe", "ingredient:update-done"/);
+  assert.match(mainSource, /async refreshRecipeNutrition\(file: TFile\): Promise<void>/);
+  assert.match(mainSource, /function parseRecipeIngredientLine\(line: string, resolveFoodByName\?: \(name: string\) => FoodItem \| null\): RecipeIngredientLine \| null/);
+  assert.match(mainSource, /findRecipeIngredientFoodByName\(name: string\): FoodItem \| null/);
+  assert.match(mainSource, /private normalizeRecipeIngredientLines\(ingredients: string\): string/);
+  assert.match(mainSource, /logger\.flow\("Recipe", "ingredients:normalize"/);
+  assert.match(mainSource, /async function recipeIngredientLineFromBatchSelection\(plugin: TPSHealthPlugin, entry: BatchFoodSelection\): Promise<string>/);
+  assert.match(mainSource, /await plugin\.findOrCreateFoodNote\(entry\.item\)/);
+  assert.match(mainSource, /function parseRecipeIngredientRenderedItem\(item: Element, resolveFoodByName\?: \(name: string\) => FoodItem \| null\): RecipeIngredientLine \| null/);
+  assert.match(mainSource, /parseRecipeIngredientRenderedItem\(item, \(name\) => plugin\.findRecipeIngredientFoodByName\(name\)\)/);
+  assert.match(mainSource, /const rawPath = link\.getAttribute\("data-href"\) \|\| link\.getAttribute\("href"\) \|\| ""/);
+  assert.match(mainSource, /parseQuantity\(match\[1\]\)/);
+  assert.doesNotMatch(mainSource, /line\.text\.matchAll\(\/<!--\[\\s\\S\]\*\?-->/);
+  assert.match(mainSource, /renderRecipeIngredientChips\(root, plugin, ctx\)/);
+  assert.match(mainSource, /renderRecipeIngredientAddAction\(root, plugin, ctx\.sourcePath, lastRenderedItem\)/);
+  assert.match(mainSource, /if \(!lastRenderedItem\) return/);
+  assert.match(mainSource, /function recipeIngredientAddElement\(plugin: TPSHealthPlugin, sourcePath: string\): HTMLElement/);
+  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient \{\s+align-items: center;\s+display: grid !important;/);
+  assert.match(stylesSource, /grid-template-columns: minmax\(4\.5rem, 0\.45fr\) minmax\(6rem, 0\.7fr\) minmax\(10rem, 1\.5fr\) minmax\(11rem, 1fr\) !important;/);
+  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient-field--food,\s+\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient-field--macros \{\s+border-top: 0;\s+grid-column: auto;/);
+  assert.match(mainSource, /function isRecipeLikeMarkdownFile\(plugin: TPSHealthPlugin, path: string \| null \| undefined\): boolean/);
+  assert.match(mainSource, /fileIsInConfiguredFolder\(file\.path, plugin\.settings\.recipesFolder\)/);
+  assert.match(mainSource, /function recipeIngredientLine\(item: FoodItem, quantity: number, unit: string\): string/);
+  assert.match(mainSource, /return `- \$\{formatQuantityUnit\(quantity, unit \|\| "serving"\)\} - \$\{itemLabel\}`/);
+  assert.match(mainSource, /function resolveRecipeIngredientNutrition\(line: string, resolveFood\?: \(foodPath: string\) => FoodItem \| null\): Required<Nutrition> \| null/);
+  assert.match(mainSource, /const quantity = parseQuantity\(match\[1\]\)/);
+  assert.match(mainSource, /if \(resolved\.unsupportedUnit\) return null/);
+  assert.match(mainSource, /async openFoodNoteFile\(file: TFile\): Promise<void>/);
+  assert.match(mainSource, /const leafMode = Platform\.isMobileApp \? false : "tab"/);
+  assert.match(mainSource, /logger\.flow\("Food", "note-open:start", \{ path: file\.path, leafMode: leafMode === false \? "current" : leafMode \}\)/);
+  assert.match(mainSource, /const leaf = workspace\.getLeaf\(leafMode\);\s+await leaf\.openFile\(file\);/);
+  assert.match(mainSource, /logger\.flow\("Food", "note-open:done", \{ path: file\.path, leafMode: leafMode === false \? "current" : leafMode \}\)/);
+  assert.match(mainSource, /logger\.flowError\("Food", "note-open:failed", error, \{ path: file\.path, leafMode: leafMode === false \? "current" : leafMode \}\)/);
+  assert.match(mainSource, /food\.addEventListener\("pointerdown", keepFoodButtonTapLocal\)/);
+  assert.match(mainSource, /food\.addEventListener\("touchstart", keepFoodButtonTapLocal\)/);
+  assert.match(mainSource, /logger\.flow\("RecipeIngredient", "food-open"/);
+  assert.match(mainSource, /logger\.flowWarn\("RecipeIngredient", "food-open:missing-file"/);
+  assert.match(mainSource, /logger\.flowWarn\("RecipeIngredient", "save:invalid-quantity"/);
+  assert.match(mainSource, /logger\.flowWarn\("RecipeIngredient", "save:missing-unit"/);
+  assert.match(mainSource, /logger\.flowWarn\("RecipeIngredient", "save:unsupported-unit"/);
+  assert.match(mainSource, /logger\.flow\("RecipeIngredient", "save:submit"/);
+  assert.match(mainSource, /logger\.flowWarn\("RecipeIngredient", "save:not-written"/);
+  assert.match(mainSource, /logger\.flow\("RecipeIngredient", "save:done"/);
+  assert.match(mainSource, /logger\.flowError\("RecipeIngredient", "save:failed"/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient \{/);
+  assert.match(stylesSource, /width: 100%/);
+  assert.match(stylesSource, /overflow: hidden/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-row::marker/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--quantity/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-label/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient select/);
+  assert.match(stylesSource, /button\.tps-health-recipe-ingredient-food|\.tps-health-recipe-ingredient-food \{/);
+});
+
+test("food search excludes macro-less candidates and matches Breyer's spelling variants", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    includeBrandedFoodSearch: false,
+    openFoodFactsUserAgent: USER_AGENT,
+    usdaApiKey: "DEMO_KEY",
+  };
+  fake.files.set("Health/Foods/Breyers Vanilla.md", [
+    "---",
+    "kind: food",
+    "name: \"Breyer's Vanilla Ice Cream\"",
+    "brand: \"Breyer's\"",
+    "servingAmount: 1",
+    "servingUnit: \"2/3 cup\"",
+    "calories: 170",
+    "proteinG: 3",
+    "carbsG: 29",
+    "fatG: 5",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Breyers Missing Macros.md", [
+    "---",
+    "kind: food",
+    "name: \"Breyers Missing Macros\"",
+    "brand: \"Breyers\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 170",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Breyers Zero Macros.md", [
+    "---",
+    "kind: food",
+    "name: \"Breyers Zero Macros\"",
+    "brand: \"Breyers\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 0",
+    "proteinG: 0",
+    "carbsG: 0",
+    "fatG: 0",
+    "---",
+    "",
+  ].join("\n"));
+
+  const results = await plugin.searchFoods("breyers");
+  assert.ok(results.some((item) => item.name === "Breyer's Vanilla Ice Cream"));
+  assert.equal(results.some((item) => item.name === "Breyers Missing Macros"), false);
+  assert.equal(results.some((item) => item.name === "Breyers Zero Macros"), false);
+  assert.ok(results.every((item) => [item.nutrition?.proteinG, item.nutrition?.carbsG, item.nutrition?.fatG, item.nutrition?.sugarAlcoholG, item.nutrition?.alcoholG].some((value) => value != null && value > 0)));
+});
+
+test("food search matches tokens across name brand aliases notes and ingredients", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    includeBrandedFoodSearch: false,
+    openFoodFactsUserAgent: USER_AGENT,
+    usdaApiKey: "DEMO_KEY",
+  };
+  fake.files.set("Health/Foods/Barebells Peanut Butter.md", [
+    "---",
+    "kind: food",
+    "name: \"Peanut Butter Protein Bar\"",
+    "brand: \"Barebells\"",
+    "aliases:",
+    "  - barebells peanut",
+    "servingAmount: 1",
+    "servingUnit: bar",
+    "servingGrams: 55",
+    "calories: 200",
+    "proteinG: 20",
+    "carbsG: 17",
+    "fatG: 7",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Barebells Peanut Butter Jelly.md", [
+    "---",
+    "kind: food",
+    "name: \"Peanut Butter and Jelly Protein Bar\"",
+    "brand: \"Barebells\"",
+    "aliases:",
+    "  - pbj protein bar",
+    "notes: \"limited flavor\"",
+    "ingredients: \"peanuts, strawberry filling, milk protein\"",
+    "servingAmount: 1",
+    "servingUnit: bar",
+    "servingGrams: 55",
+    "calories: 200",
+    "proteinG: 20",
+    "carbsG: 20",
+    "fatG: 7",
+    "---",
+    "",
+  ].join("\n"));
+
+  const crossFieldResults = await plugin.searchFoods("Barebells peanut butter");
+  assert.ok(crossFieldResults.some((item) => item.name === "Peanut Butter Protein Bar"));
+  assert.ok(crossFieldResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
+
+  const fuzzyResults = await plugin.searchFoods("Barebels peannut buter");
+  assert.ok(fuzzyResults.some((item) => item.name === "Peanut Butter Protein Bar"));
+  assert.ok(fuzzyResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
+
+  const ingredientResults = await plugin.searchFoods("barebells strawberry");
+  assert.ok(ingredientResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
+});
+
+test("food search keeps specific common foods available after provider filtering", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    includeBrandedFoodSearch: true,
+    openFoodFactsUserAgent: USER_AGENT,
+    usdaApiKey: "DEMO_KEY",
+  };
+  plugin.searchUsdaFoods = async () => [];
+  plugin.searchOpenFoodFacts = async () => [];
+
+  const results = await plugin.searchFoods("hawaiian roll");
+  assert.ok(results.some((item) => item.name === "Hawaiian sweet roll"));
+
+  const alcoholResults = await plugin.searchFoods("whisky");
+  const whiskey = alcoholResults.find((item) => item.name === "Whiskey, 80 proof");
+  assert.ok(whiskey, "expected curated whiskey result");
+  assert.equal(whiskey.nutrition?.alcoholG, 14);
+  assert.equal(whiskey.nutrition?.proteinG, undefined);
+});
+
+test("food search honors the branded-provider toggle", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+  };
+  plugin.searchCustomFoods = async () => [];
+  plugin.getLoggedFoodStats = async () => new Map();
+  const searchUsdaFoods = plugin.searchUsdaFoods.bind(plugin);
+
+  const brandedFlags = [];
+  let openFoodFactsCalls = 0;
+  plugin.searchUsdaFoods = async (_query, includeBranded) => {
+    brandedFlags.push(includeBranded);
+    return [];
+  };
+  plugin.searchOpenFoodFacts = async () => {
+    openFoodFactsCalls += 1;
+    return [];
+  };
+
+  plugin.settings.includeBrandedFoodSearch = false;
+  await plugin.searchFoods("apple");
+  assert.deepEqual(brandedFlags, [false]);
+  assert.equal(openFoodFactsCalls, 0);
+
+  plugin.settings.includeBrandedFoodSearch = true;
+  await plugin.searchFoods("apple");
+  assert.deepEqual(brandedFlags, [false, true]);
+  assert.equal(openFoodFactsCalls, 1);
+
+  const usdaDataTypes = [];
+  plugin.searchUsdaByDataTypes = async (_query, dataTypes) => {
+    usdaDataTypes.push(dataTypes.join(","));
+    return [];
+  };
+  await searchUsdaFoods("apple", false);
+  assert.equal(usdaDataTypes.length, 1);
+  assert.equal(usdaDataTypes[0].split(",").includes("Branded"), false);
+  usdaDataTypes.length = 0;
+  await searchUsdaFoods("apple", true);
+  assert.equal(usdaDataTypes.length, 1);
+  assert.equal(usdaDataTypes[0].split(",").includes("Branded"), true);
+});
+
+test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, usdaApiKeySecrets: ["usda-primary-ref", "usda-fallback-ref"] };
+  fake.secrets.set("usda-primary-ref", "test-only-usda-primary");
+  fake.secrets.set("usda-fallback-ref", "test-only-usda-fallback");
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return {
+      status: 200,
+      headers: { "x-ratelimit-remaining": "999" },
+      json: {
+        foods: [{
+          fdcId: 123,
+          description: "APPLE RAW",
+          foodNutrients: [
+            { nutrientId: 1008, value: 52 },
+            { nutrientId: 1005, value: 13.8 },
+          ],
+        }],
+      },
+    };
+  };
+  try {
+    const [first, joined] = await Promise.all([
+      plugin.searchUsdaFoods("apple", true),
+      plugin.searchUsdaFoods("Apple", true),
+    ]);
+    assert.equal(requests.length, 1, "normalized concurrent queries should share one request");
+    assert.equal(first[0]?.name, "Apple Raw");
+    assert.equal(first[0]?.nutrition?.calories, 52);
+    assert.equal(joined[0]?.nutrition?.carbsG, 13.8);
+    const requestBody = JSON.parse(requests[0].body);
+    assert.deepEqual(requestBody.dataType, ["Foundation", "SR Legacy", "Survey (FNDDS)", "Branded"]);
+    assert.equal(requestBody.query, "apple");
+    assert.equal(requestBody.pageSize, 20);
+    assert.equal(requests[0].throw, false);
+    assert.match(requests[0].url, /test-only-usda-primary/);
+    assert.doesNotMatch(requests[0].url, /test-only-usda-fallback/);
+
+    const cached = await plugin.searchUsdaFoods("apple", true);
+    assert.equal(cached.length, 1);
+    assert.equal(requests.length, 1, "successful responses should use the TTL cache");
+    const internalKeys = [...plugin.usdaSearchCache.keys(), ...plugin.usdaRejectedCredentials, ...plugin.usdaRateLimitedUntil.keys()].join("|");
+    assert.doesNotMatch(internalKeys, /test-only-usda|usda-primary-ref|usda-fallback-ref/, "provider state must not contain credential names or values");
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("USDA credentials use the first populated reference and fall back to DEMO_KEY only when all are empty", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const dataTypes = ["Foundation"];
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return { status: 200, headers: {}, json: { foods: [] } };
+  };
+  try {
+    const fallbackApp = createFakeHealthApp();
+    const fallbackPlugin = new TPSHealthPlugin(fallbackApp.app);
+    fallbackPlugin.settings = { ...fallbackPlugin.settings, usdaApiKeySecrets: ["missing-primary-ref", "populated-fallback-ref"] };
+    fallbackApp.secrets.set("populated-fallback-ref", "test-only-fallback-key");
+    await fallbackPlugin.searchUsdaByDataTypes("apple", dataTypes, 8);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /test-only-fallback-key/);
+    assert.doesNotMatch(requests[0].url, /DEMO_KEY/);
+
+    const demoApp = createFakeHealthApp();
+    const demoPlugin = new TPSHealthPlugin(demoApp.app);
+    demoPlugin.settings = { ...demoPlugin.settings, usdaApiKeySecrets: ["missing-primary-ref", "missing-fallback-ref"] };
+    await demoPlugin.searchUsdaByDataTypes("pear", dataTypes, 8);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].url, /api_key=DEMO_KEY/);
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("USDA rotates only on exact missing or invalid key responses", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const dataTypes = ["Foundation"];
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, usdaApiKeySecrets: ["primary-ref", "fallback-ref"] };
+  fake.secrets.set("primary-ref", "test-only-invalid-primary");
+  fake.secrets.set("fallback-ref", "test-only-valid-fallback");
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    if (options.url.includes("test-only-invalid-primary")) {
+      return { status: 403, headers: {}, json: { error: { code: "API_KEY_INVALID" } } };
+    }
+    return { status: 200, headers: {}, json: { foods: [] } };
+  };
+  try {
+    await plugin.searchUsdaByDataTypes("apple", dataTypes, 8);
+    assert.equal(requests.length, 2);
+    assert.match(requests[0].url, /test-only-invalid-primary/);
+    assert.match(requests[1].url, /test-only-valid-fallback/);
+
+    const disabledApp = createFakeHealthApp();
+    const disabledPlugin = new TPSHealthPlugin(disabledApp.app);
+    disabledPlugin.settings = { ...disabledPlugin.settings, usdaApiKeySecrets: ["disabled-ref", "unused-ref"] };
+    disabledApp.secrets.set("disabled-ref", "test-only-disabled-key");
+    disabledApp.secrets.set("unused-ref", "test-only-unused-key");
+    let disabledRequests = 0;
+    globalThis.__TPSHealthTestRequestUrl = async () => {
+      disabledRequests += 1;
+      return { status: 403, headers: {}, json: { error: { code: "API_KEY_DISABLED" } } };
+    };
+    await assert.rejects(() => disabledPlugin.searchUsdaByDataTypes("apple", dataTypes, 8), /API_KEY_DISABLED/);
+    assert.equal(disabledRequests, 1, "disabled credentials must surface without trying a fallback");
+
+    const serverErrorApp = createFakeHealthApp();
+    const serverErrorPlugin = new TPSHealthPlugin(serverErrorApp.app);
+    serverErrorPlugin.settings = { ...serverErrorPlugin.settings, usdaApiKeySecrets: ["server-error-ref", "server-error-fallback-ref"] };
+    serverErrorApp.secrets.set("server-error-ref", "test-only-server-error-key");
+    serverErrorApp.secrets.set("server-error-fallback-ref", "test-only-server-error-fallback");
+    let serverErrorRequests = 0;
+    globalThis.__TPSHealthTestRequestUrl = async () => {
+      serverErrorRequests += 1;
+      return { status: 503, headers: {}, json: {} };
+    };
+    await assert.rejects(() => serverErrorPlugin.searchUsdaByDataTypes("apple", dataTypes, 8), /HTTP 503/);
+    assert.equal(serverErrorRequests, 1, "server errors must not rotate credentials");
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("USDA 429 opens one configured-stack circuit and never rotates", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, usdaApiKeySecrets: ["primary-ref", "fallback-ref"] };
+  fake.secrets.set("primary-ref", "test-only-primary-key");
+  fake.secrets.set("fallback-ref", "test-only-fallback-key");
+  let requests = 0;
+  globalThis.__TPSHealthTestRequestUrl = async () => {
+    requests += 1;
+    return { status: 429, headers: { "Retry-After": "120" }, json: { error: { code: "OVER_RATE_LIMIT" } } };
+  };
+  try {
+    const dataTypes = ["Foundation"];
+    await plugin.searchUsdaByDataTypes("apple", dataTypes, 8);
+    assert.equal(requests, 1, "429 must not try the configured fallback");
+    plugin.settings.usdaApiKeySecrets = ["fallback-ref", "primary-ref"];
+    await plugin.searchUsdaByDataTypes("pear", dataTypes, 8);
+    assert.equal(requests, 1, "reordering must not bypass the configured-stack circuit");
+    assert.ok(plugin.usdaRateLimitedUntil.get("secret") > Date.now());
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("USDA queue opens a source-scoped 429 circuit without blocking a secret credential", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, retryAfterMs } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  let requests = 0;
+  globalThis.__TPSHealthTestRequestUrl = async () => {
+    requests += 1;
+    if (requests === 1) return { status: 429, headers: { "rEtRy-AfTeR": "120" }, json: { error: { code: "OVER_RATE_LIMIT" } } };
+    return { status: 200, headers: {}, json: { foods: [{ fdcId: 456, description: "PEAR RAW", foodNutrients: [{ nutrientId: 1005, value: 15 }] }] } };
+  };
+  try {
+    const dataTypes = ["Foundation", "SR Legacy", "Survey (FNDDS)"];
+    const startedAt = Date.now();
+    const burst = await Promise.all([
+      plugin.searchUsdaByDataTypes("apple", dataTypes, 12),
+      plugin.searchUsdaByDataTypes("banana", dataTypes, 12),
+      plugin.searchUsdaByDataTypes("orange", dataTypes, 12),
+    ]);
+    assert.deepEqual(burst, [[], [], []]);
+    assert.equal(requests, 1, "queued distinct demo queries must re-check the circuit before requesting");
+    assert.equal(plugin.usdaSearchCache.size, 0, "429 and circuit skips must not be cached");
+    const demoDelay = plugin.usdaRateLimitedUntil.get("demo") - startedAt;
+    assert.ok(demoDelay >= 119_000 && demoDelay <= 121_000, "Retry-After seconds should control the demo circuit");
+
+    fake.secrets.set(plugin.settings.usdaApiKeySecrets[0], "test-only-usda-secret");
+    const secretResult = await plugin.searchUsdaByDataTypes("pear", dataTypes, 12);
+    assert.equal(requests, 2, "the demo circuit must not block a selected secret credential");
+    assert.equal(secretResult.length, 1);
+    assert.equal(plugin.usdaSearchCache.size, 1, "only the successful response should be cached");
+
+    fake.secrets.delete(plugin.settings.usdaApiKeySecrets[0]);
+    plugin.usdaRateLimitedUntil.set("demo", Date.now() - 1);
+    const recoveredDemo = await plugin.searchUsdaByDataTypes("apple", dataTypes, 12);
+    assert.equal(requests, 3, "an expired demo circuit should allow a fresh request");
+    assert.equal(recoveredDemo.length, 1);
+
+    const now = Date.now();
+    assert.equal(retryAfterMs({ "Retry-After": "invalid" }, now), 60 * 60 * 1000);
+    assert.equal(retryAfterMs({ "Retry-After": new Date(now - 1000).toUTCString() }, now), 60 * 60 * 1000);
+    assert.equal(retryAfterMs({ "Retry-After": "999999" }, now), 24 * 60 * 60 * 1000);
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("queued USDA work re-resolves credentials and discards stale callers before network execution", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, usdaApiKeySecrets: ["usda-primary-ref"] };
+  fake.secrets.set("usda-primary-ref", "test-only-usda-secret");
+  let requests = 0;
+  const requestUrls = [];
+  let releaseFirst;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests += 1;
+    requestUrls.push(options.url);
+    if (requests === 1) {
+      markFirstStarted();
+      await firstGate;
+    }
+    return { status: 200, headers: {}, json: { foods: [] } };
+  };
+  try {
+    const dataTypes = ["Foundation"];
+    const first = plugin.searchUsdaByDataTypes("apple", dataTypes, 8);
+    await firstStarted;
+    const refreshed = plugin.searchUsdaByDataTypes("banana", dataTypes, 8);
+    let active = true;
+    const stale = plugin.searchUsdaByDataTypes("orange", dataTypes, 8, () => active);
+    active = false;
+    fake.secrets.set("usda-primary-ref", "test-only-usda-replacement");
+    releaseFirst();
+    await Promise.all([first, refreshed, stale]);
+    assert.equal(requests, 2, "a stale queued query must never reach requestUrl");
+    assert.match(requestUrls[0], /test-only-usda-secret/);
+    assert.match(requestUrls[1], /test-only-usda-replacement/, "queued work must re-read SecretStorage immediately before sending");
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("health notes can be identified by folder or tag according to settings", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    workoutsFolder: "Health/Workouts",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    workoutTag: "#tps/workout",
+    includeBrandedFoodSearch: false,
+    openFoodFactsUserAgent: USER_AGENT,
+    usdaApiKey: "DEMO_KEY",
+  };
+  plugin.searchUsdaFoods = async () => [];
+  plugin.searchOpenFoodFacts = async () => [];
+
+  fake.files.set("Other/Tagged Food.md", [
+    "---",
+    "tags: \"#tps/food\"",
+    "name: \"Tagged Food\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 100",
+    "proteinG: 10",
+    "carbsG: 5",
+    "fatG: 2",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Folder Food.md", [
+    "---",
+    "name: \"Folder Food\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 120",
+    "proteinG: 12",
+    "carbsG: 4",
+    "fatG: 3",
+    "---",
+    "",
+  ].join("\n"));
+
+  plugin.settings.foodIdentificationMode = "tag";
+  let foods = await plugin.searchFoods("food");
+  assert.ok(foods.some((item) => item.name === "Tagged Food"));
+  assert.equal(foods.some((item) => item.name === "Folder Food"), false);
+
+  plugin.settings.foodIdentificationMode = "folder";
+  foods = await plugin.searchFoods("food");
+  assert.ok(foods.some((item) => item.name === "Folder Food"));
+  assert.equal(foods.some((item) => item.name === "Tagged Food"), false);
+
+  const taggedWorkoutPath = "Other/Tagged Workout.md";
+  fake.files.set(taggedWorkoutPath, [
+    "---",
+    "tags: \"#tps/workout\"",
+    "title: \"Tagged Workout\"",
+    "---",
+    "## Sets",
+    "- [x] Squat - 225 lb x 5",
+    "",
+  ].join("\n"));
+  plugin.settings.workoutIdentificationMode = "tag";
+  await plugin.handleWorkoutFileModify(fake.app.vault.getAbstractFileByPath(taggedWorkoutPath));
+  assert.match(fake.files.get(taggedWorkoutPath), /\[setId::/);
+
+  const ignoredWorkoutPath = "Other/Ignored Workout.md";
+  fake.files.set(ignoredWorkoutPath, [
+    "---",
+    "tags: \"#tps/workout\"",
+    "title: \"Ignored Workout\"",
+    "---",
+    "## Sets",
+    "- [x] Bench press - 135 lb x 8",
+    "",
+  ].join("\n"));
+  plugin.settings.workoutIdentificationMode = "folder";
+  await plugin.handleWorkoutFileModify(fake.app.vault.getAbstractFileByPath(ignoredWorkoutPath));
+  assert.doesNotMatch(fake.files.get(ignoredWorkoutPath), /\[setId::/);
+});
+
+test("health API exposes deterministic agent food logging entry points", () => {
+  assert.match(apiSource, /export interface LogFoodByBarcodeInput/);
+  assert.match(apiSource, /barcode: string/);
+  assert.match(apiSource, /export interface LogFoodByFoodPathInput/);
+  assert.match(apiSource, /foodPath: string/);
+  assert.match(apiSource, /logFoodByBarcode\(input: LogFoodByBarcodeInput\): Promise<FoodLogEntry>/);
+  assert.match(apiSource, /logFoodByFoodPath\(input: LogFoodByFoodPathInput\): Promise<FoodLogEntry>/);
+  assert.match(apiSource, /ensureFoodLogBase\(\): Promise<string>/);
+  assert.match(apiSource, /ensureWorkoutLogBase\(\): Promise<string>/);
+  assert.match(apiSource, /export interface DailyFoodMacroTotals extends Required<Nutrition>/);
+  assert.match(apiSource, /getDailyFoodMacroTotals\(dateIso: string\): Promise<DailyFoodMacroTotals>/);
+  assert.match(mainSource, /logFoodByBarcode: \(input\) => this\.traceApiCall\("logFoodByBarcode", input, \(\) => this\.logFoodByBarcode\(input\)\)/);
+  assert.match(mainSource, /logFoodByFoodPath: \(input\) => this\.traceApiCall\("logFoodByFoodPath", input, \(\) => this\.logFoodByFoodPath\(input\)\)/);
+  assert.match(mainSource, /ensureFoodLogBase: \(\) => this\.traceApiCall\("ensureFoodLogBase", \{\}, async \(\) => \(await this\.ensureFoodLogBase\(\)\)\.path\)/);
+  assert.match(mainSource, /ensureWorkoutLogBase: \(\) => this\.traceApiCall\("ensureWorkoutLogBase", \{\}, async \(\) => \(await this\.ensureWorkoutLogBase\(\)\)\.path\)/);
+  assert.match(mainSource, /ensureActivityLogBase: \(\) => this\.traceApiCall\("ensureActivityLogBase", \{\}, async \(\) => \(await this\.ensureActivityLogBase\(\)\)\.path\)/);
+  assert.match(mainSource, /logActivity: \(input\) => this\.traceApiCall\("logActivity", input, \(\) => this\.logActivity\(input\)\)/);
+  assert.match(mainSource, /getDailyFoodMacroTotals: \(dateIso\) => this\.traceApiCall\("getDailyFoodMacroTotals", \{ dateIso \}, \(\) => this\.getDailyFoodMacroTotals\(dateIso\)\)/);
+  assert.match(mainSource, /lookupBarcode: \(barcode\) => this\.traceApiCall\("lookupBarcode", \{ barcode \}, \(\) => this\.lookupFoodByBarcode\(barcode\)\)/);
+  assert.match(mainSource, /logFoodByBarcode: \{ barcode: "012345678905"/);
+  assert.match(mainSource, /logFoodByFoodPath: \{ foodPath: "Health\/Foods\/Example Protein Bar\.md"/);
+
+  const macroTotalsMethod = mainSource.slice(
+    mainSource.indexOf("async getDailyFoodMacroTotals"),
+    mainSource.indexOf("private createApi"),
+  );
+  assert.match(macroTotalsMethod, /window\.moment\(normalizedDate, "YYYY-MM-DD", true\)\.isValid\(\)/);
+  assert.match(macroTotalsMethod, /createFoodLogBaseEntry\(this, file, lineIndex, line\)/);
+  assert.match(macroTotalsMethod, /entry\.dateKey === normalizedDate/);
+  assert.match(macroTotalsMethod, /const totals = sumFoodLogNutrition\(entries\)/);
+  assert.match(macroTotalsMethod, /logger\.flow\("FoodMacroTotals", "read"/);
+
+  const barcodeMethod = mainSource.slice(
+    mainSource.indexOf("async logFoodByBarcode"),
+    mainSource.indexOf("async logFoodByFoodPath"),
+  );
+  const pathMethod = mainSource.slice(
+    mainSource.indexOf("async logFoodByFoodPath"),
+    mainSource.indexOf("async searchExercises"),
+  );
+  assert.match(barcodeMethod, /lookupFoodByBarcode\(barcode\)/);
+  assert.match(barcodeMethod, /logger\.flowWarn\("Food", "log-by-barcode:invalid"/);
+  assert.match(barcodeMethod, /logger\.flowWarn\("Food", "log-by-barcode:miss"/);
+  assert.match(barcodeMethod, /logger\.flow\("Food", "log-by-barcode:hit"/);
+  assert.doesNotMatch(barcodeMethod, /searchFoods/);
+  assert.match(pathMethod, /getAbstractFileByPath\(path\)/);
+  assert.match(pathMethod, /logger\.flowWarn\("Food", "log-by-path:missing"/);
+  assert.doesNotMatch(pathMethod, /searchFoods/);
+  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:item"/);
+  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:barcode-local"/);
+  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:barcode-remote"/);
+  assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:barcode-miss"/);
+  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:query-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:query-miss"/);
+  assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:failed"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "lookup:local-hit"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "lookup:remote-hit"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "lookup:no-match"/);
+});
+
+test("selected food tray shows per-line macros for the chosen serving amount", () => {
+  assert.match(mainSource, /tps-health-food-search-frame/);
+  assert.match(mainSource, /tps-health-selection-copy/);
+  assert.match(mainSource, /tps-health-selection-line-macros/);
+  assert.match(mainSource, /foodLogQuantityStep\(entry\.unit\)/);
+  assert.match(mainSource, /existing\.quantity = roundFoodLogQuantity\(existing\.quantity \+ \(draft\?\.quantity \|\| 1\)\)/);
+  assert.match(mainSource, /Decrease amount for \$\{entry\.item\.name\}/);
+  assert.match(mainSource, /Increase amount for \$\{entry\.item\.name\}/);
+  assert.match(mainSource, /Math\.max\(step, roundFoodLogQuantity\(entry\.quantity \+ delta\)\)/);
+  assert.match(mainSource, /function foodLogQuantityStep\(unit: string\): number/);
+  assert.match(mainSource, /function roundFoodLogQuantity\(value: number\): number/);
+  assert.match(mainSource, /Math\.round\(value \* 100\) \/ 100/);
+  assert.match(mainSource, /multiplyNutrition\(entry\.item\.nutrition \|\| \{\}, resolveBatchFoodSelectionServing\(entry\)\.servings\)/);
+  assert.match(mainSource, /function normalizeServingMultiplier\(value: number\): number/);
+  assert.match(mainSource, /Math\.round\(value \* 1000000\) \/ 1000000/);
+  assert.doesNotMatch(mainSource, /return \{ servings: round\(servings\), inputQuantity, inputUnit/);
+  assert.match(stylesSource, /\.tps-health-selection-copy/);
+  assert.match(stylesSource, /\.tps-health-selection-line-macros/);
+  assert.match(stylesSource, /\.tps-health-selection-step/);
+  assert.match(stylesSource, /\.tps-health-selection-quantity/);
+  assert.match(stylesSource, /body\.is-mobile \.tps-health-selection-row/);
+  assert.match(stylesSource, /grid-template-areas:\s*"name name"\s*"copy controls"/);
+  assert.match(stylesSource, /> \.tps-health-selection-name/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-step/);
+  assert.match(stylesSource, /grid-template-areas:\s*"title title"\s*"meta meta"\s*"macros actions"/);
+  assert.match(stylesSource, /> \.tps-health-result-title/);
+});
+
+test("alternate gram servings scale from a known serving weight without rounding to zero", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const { app, files } = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFormat: "YYYY-MM-DD",
+    dailyNoteFolder: "Daily Notes",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    defaultFoodLogSection: "",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+  };
+
+  await plugin.logFood({
+    id: "weighted-food",
+    name: "Weighted Food",
+    source: "manual",
+    servingAmount: 1,
+    servingUnit: "serving",
+    servingGrams: 46,
+    nutrition: { calories: 92, proteinG: 23, carbsG: 4.6, fatG: 2.3 },
+  }, 1, "g", undefined, "2026-06-24T12:00:00.000Z", false, "daily-note", { focusAfterLog: false });
+
+  const dailyContent = files.get("Daily Notes/2026-06-24.md");
+  assert.match(dailyContent, /\[servings:: 0\.02\]/);
+  assert.match(dailyContent, /\[amount:: 1\]/);
+  assert.match(dailyContent, /\[amountUnit:: g\]/);
+  assert.doesNotMatch(dailyContent, /\[servings:: 0\]/);
+
+  const oneGramTotals = calculateFoodTotals(dailyContent);
+  assert.equal(round(oneGramTotals.calories), 2);
+  assert.equal(round(oneGramTotals.proteinG), 0.5);
+
+  const oneHundredFiftyGramLine = "- 150 g - Weighted Food <!-- [food:: Weighted Food] [qty:: 150] [unit:: g] [servings:: 3.26087] [amount:: 150] [amountUnit:: g] [cal:: 300] [protein:: 75] [carbs:: 15] [fat:: 7.5] -->";
+  const oneHundredFiftyGramTotals = calculateFoodTotals(oneHundredFiftyGramLine);
+  assert.equal(round(oneHundredFiftyGramTotals.calories), 300);
+  assert.equal(round(oneHundredFiftyGramTotals.proteinG), 75);
+  assert.equal(round(oneHundredFiftyGramTotals.carbsG), 15);
+  assert.equal(round(oneHundredFiftyGramTotals.fatG), 7.5);
+});
+
+test("unsupported serving units fail closed instead of becoming a full serving", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const { app, files } = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFormat: "YYYY-MM-DD",
+    dailyNoteFolder: "Daily Notes",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    defaultFoodLogSection: "",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+  };
+
+  await plugin.logFood({
+    id: "gram-food",
+    name: "Gram Food",
+    source: "manual",
+    servingAmount: 1,
+    servingUnit: "serving",
+    servingGrams: 46,
+    nutrition: { calories: 92, proteinG: 23, carbsG: 4.6, fatG: 2.3 },
+  }, 1, "ml", undefined, "2026-06-25T12:00:00.000Z", false, "daily-note", { focusAfterLog: false });
+
+  const dailyContent = files.get("Daily Notes/2026-06-25.md");
+  assert.match(dailyContent, /\[qty:: 1\]/);
+  assert.match(dailyContent, /\[unit:: ml\]/);
+  assert.match(dailyContent, /\[servings:: 0\]/);
+  assert.match(dailyContent, /\[amount:: 1\]/);
+  assert.match(dailyContent, /\[amountUnit:: ml\]/);
+  const totals = calculateFoodTotals(dailyContent);
+  assert.equal(totals.calories, 0);
+  assert.equal(totals.proteinG, 0);
+});
+
+test("custom food creation validates manual input and writes deterministic food notes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const { app, files, writes } = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(app);
+  plugin.settings = {
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    foodTemplatePath: "",
+  };
+
+  const created = await plugin.createFoodFromInput({
+    name: "  Manual Shake  ",
+    servingAmount: 250,
+    servingUnit: "g",
+    nutrition: { proteinG: 30, carbsG: 12, fatG: 4 },
+  });
+
+  assert.equal(created.name, "Manual Shake");
+  assert.equal(created.sourcePath, "Health/Foods/Manual Shake.md");
+  assert.equal(files.has("Health/Foods/Manual Shake.md"), true);
+  const content = files.get("Health/Foods/Manual Shake.md");
+  assert.match(content, /kind: food/);
+  assert.match(content, /name: "Manual Shake"/);
+  assert.match(content, /servingAmount: 250/);
+  assert.match(content, /servingUnit: "g"/);
+  assert.match(content, /calories: 204/);
+  assert.match(content, /proteinG: 30/);
+  assert.match(content, /#tps\/food/);
+
+  await assert.rejects(
+    () => plugin.createFoodFromInput({ name: "   ", servingAmount: 1, servingUnit: "serving" }),
+    /Food name is required/,
+  );
+  await assert.rejects(
+    () => plugin.createFoodFromInput({ name: "Bad serving", servingAmount: 0, servingUnit: "serving" }),
+    /Serving amount must be greater than 0/,
+  );
+  assert.equal(writes.filter((write) => write.op === "create" && write.path.endsWith("Untitled food.md")).length, 0);
+});
+
 function createFakeMoment(value) {
   const date = value ? new Date(value) : new Date("2026-06-24T12:00:00.000Z");
   return {
     isValid: () => !Number.isNaN(date.getTime()),
     format(format) {
       if (format === "YYYY-MM-DD") return date.toISOString().slice(0, 10);
+      if (format === "YYYY-MM-DDTHH:mm") return date.toISOString().slice(0, 16);
       return date.toISOString().slice(0, 10);
     },
+    toISOString: () => date.toISOString(),
     isSame(other, unit) {
       const otherDate = other?.toDate?.() || new Date("2026-06-24T12:00:00.000Z");
       return unit === "day" && date.toISOString().slice(0, 10) === otherDate.toISOString().slice(0, 10);
@@ -236,7 +1283,12 @@ function createFakeMoment(value) {
 }
 
 test("USDA Foundation search returns generic apple macros per 100g", async (t) => {
-  const response = await fetch("https://api.nal.usda.gov/fdc/v1/foods/search?api_key=DEMO_KEY", {
+  const apiKey = String(process.env.USDA_FDC_TEST_API_KEY || "").trim();
+  if (!apiKey) {
+    t.skip("Set USDA_FDC_TEST_API_KEY to run the live USDA integration check");
+    return;
+  }
+  const response = await fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -247,10 +1299,7 @@ test("USDA Foundation search returns generic apple macros per 100g", async (t) =
       requireAllWords: false,
     }),
   });
-  if (!response.ok) {
-    t.skip(`USDA public API returned HTTP ${response.status}`);
-    return;
-  }
+  assert.equal(response.ok, true, `USDA integration returned HTTP ${response.status}`);
   const json = await response.json();
   assert.equal(Array.isArray(json.foods), true);
   assert.ok(json.foods.length > 0);
@@ -271,6 +1320,19 @@ test("Open Food Facts barcode lookup returns a packaged product with macro data"
   assert.equal(json.status, 1);
   assert.ok(json.product.product_name);
   assert.ok(hasMacroData(json.product.nutriments));
+});
+
+test("Open Food Facts serving nutrition validates provider serving fields against metric serving math", () => {
+  assert.match(mainSource, /const hasMetricServing = Boolean\(serving\.grams \|\| serving\.ml\)/);
+  assert.match(mainSource, /function foodFactsServingValue\(nutrients: any, key: string, multiplier: number, hasMetricServing: boolean\)/);
+  assert.match(mainSource, /foodFactsChooseServingValue\(serving, scaled, hasMetricServing\)/);
+  assert.match(mainSource, /function foodFactsValuesAgree\(left: number, right: number, toleranceRatio: number, absoluteTolerance: number\)/);
+  assert.match(mainSource, /if \(!hasMetricServing\) return serving;/);
+  assert.match(mainSource, /if \(serving == null\) return scaled;/);
+  assert.match(mainSource, /return serving;/);
+  assert.match(mainSource, /foodFactsScaledValue\(n, "energy-kcal", multiplier\)/);
+  assert.match(mainSource, /caloriesFromMacros\(nutrition\)/);
+  assert.match(mainSource, /unitMatch = lower\.match\(\/\\b\(bag\|bags\|bar\|bars/);
 });
 
 test("daily food rollup parser handles TPS Health food lines", () => {
@@ -375,18 +1437,19 @@ test("linked food entry lines store instance data and resolve nutrition from the
     dailyNotePath: "Daily Notes/Thu, Jun 04 2026.md",
   });
   assert.match(line, /^- 2 bar - \[\[Health\/Foods\/Barebells Cookies & Cream Protein Bar\|Barebells Cookies & Cream Protein Bar\]\]/);
+  assert.match(line, /\[type:: foodLog\]/);
   assert.match(line, /\[servings:: 2\]/);
   assert.match(line, /\[amount:: 110\]/);
   assert.match(line, /\[amountUnit:: g\]/);
   assert.match(line, /\[foodPath:: Health\/Foods\/Barebells Cookies & Cream Protein Bar\.md\]/);
   assert.match(line, /\[dailyNotePath:: Daily Notes\/Thu, Jun 04 2026\.md\]/);
-  assert.match(line, /\[dailyNote:: \[\[Daily Notes\/Thu, Jun 04 2026\|Thu, Jun 04 2026\]\]\]/);
+  assert.doesNotMatch(line, /\[dailyNote::/);
   assert.match(line, /\[cal:: 400\]/);
   assert.match(line, /\[protein:: 40\]/);
   assert.match(line, /\[carbs:: 40\]/);
   assert.match(line, /\[fat:: 14\]/);
   assert.match(line, /\[sodium:: 380\]/);
-  assert.match(line, /\[source:: custom-note\]/);
+  assert.doesNotMatch(line, /\[source::/);
   assert.doesNotMatch(line, /\[brand::/);
 });
 
@@ -406,15 +1469,66 @@ test("health source keeps session-note workouts and fast rollup paths available"
   const typesSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/types.ts", import.meta.url)), "utf8"));
   assert.match(typesSource, /export type WorkoutLogTarget = "session-note" \| "daily-note" \| "both"/);
   assert.match(typesSource, /workoutLogTarget: "session-note"/);
+  assert.doesNotMatch(typesSource, /workoutSessionBodyMode|workoutExerciseLayout|workoutSetStorage/);
   assert.match(mainSource, /logTarget === "session-note" \|\| logTarget === "both"/);
   assert.match(mainSource, /await this\.app\.vault\.create\(path, body\)/);
-  assert.match(mainSource, /const dailyFile = await this\.getOrCreateDailyNoteForDate\(completedDate\)/);
+  assert.match(mainSource, /id: "open-workout-log-base"/);
+  assert.match(mainSource, /async ensureWorkoutLogBase\(\): Promise<TFile>/);
+  assert.match(mainSource, /return this\.openActivityLogBase\(\)/);
+  assert.match(mainSource, /return this\.ensureActivityLogBase\(\)/);
+  assert.match(mainSource, /function defaultActivityLogBaseContent\(\): string/);
+  assert.match(mainSource, /!file\.path\.startsWith\(\\"Archive\/\\"\)/);
+  assert.match(mainSource, /lineFilterAnyKeys:/);
+  assert.match(mainSource, /createCommandId: tps-health:log-activity/);
+  assert.match(mainSource, /async logActivity\(input: LogActivityInput\)/);
+  assert.match(mainSource, /new ActivityLogModal/);
+  assert.match(mainSource, /const consumedAt = completedDate \|\| isoNow\(\);/);
+  assert.match(mainSource, /const dailyFile = await this\.getOrCreateDailyNoteForDate\(consumedAt\)/);
+  assert.match(mainSource, /completedDate: consumedAt/);
   assert.match(mainSource, /await this\.insertIntoDailyNote\(foodEntryLine\(entry\), section \|\| this\.settings\.defaultFoodLogSection, dailyFile\)/);
+  assert.match(mainSource, /logger\.flow\("FoodLog", "write:inserted", \{/);
   assert.match(mainSource, /if \(this\.settings\.automaticDailyRollups\) await this\.updateDailyRollupForFile\(dailyFile\)/);
+  assert.match(mainSource, /logger\.flow\("FoodLog", "focus:skipped"/);
+  assert.match(mainSource, /logger\.flow\("Rollup", "update:start"/);
+  assert.match(mainSource, /logger\.flow\("Rollup", "legacy-block:removed"/);
+  assert.match(mainSource, /logger\.flow\("Rollup", "content:daily-note"/);
+  assert.match(mainSource, /logger\.flowWarn\("Rollup", "content:single-file-missing"/);
+  assert.match(mainSource, /logger\.flow\("Rollup", "content:single-file"/);
+  assert.match(typesSource, /propertyKey: "consumedCalories", label: "Consumed calories"/);
+  assert.match(mainSource, /const FOOD_ROLLUP_PROPERTY_KEYS = \["consumedCalories", "cal", "protein"/);
+  assert.match(mainSource, /case "consumedCalories": return totals\.calories/);
+  assert.match(mainSource, /case "cal": return totals\.calories/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "open-food-facts:done"/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "custom-scan:done", \{ query, \.\.\.stats \}\)/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:path-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("Food", "upsert-resolve:path-missing"/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:barcode-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("Food", "upsert-resolve:barcode-stale"/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:name-hit"/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:miss"/);
+  assert.match(mainSource, /const openRequested = input\.openFile === true/);
+  assert.match(mainSource, /const openReason = openRequested \? "requested" : input\.openFile === false \? "openFile=false" : "not requested"/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert:create", \{ name: item\.name, requestedPath: input\.path \|\| "", merge: input\.merge !== false, openRequested, openReason \}\)/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert:merge", \{ path: file\.path, name: item\.name, type, openRequested, openReason \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\(log\.scope, `\$\{log\.event\}:timeout`/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "usda:done"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "lookup-candidate:v2-miss"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "lookup-candidate:v0-miss"/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "lookup-candidate:no-macros"/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "lookup-candidate:failed"/);
+  assert.match(mainSource, /private async readConfiguredTemplate\(kind: "workout" \| "workout-plan" \| "exercise" \| "food", configuredPath: string\): Promise<string>/);
+  assert.match(mainSource, /logger\.flow\("Template", `\$\{kind\}:not-configured`\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Template", `\$\{kind\}:missing`, \{ path: configuredPath \}\)/);
+  assert.match(mainSource, /logger\.flow\("Template", `\$\{kind\}:read`, \{ path: file\.path, bytes: content\.length \}\)/);
+  assert.match(mainSource, /logger\.flowError\("Template", `\$\{kind\}:read-failed`, error, \{ path: file\.path \}\)/);
 });
 
 test("settings normalization removes stale fields while preserving live vault config", async () => {
-  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const { applyBuiltInHealthGoalTargets, normalizeTPSHealthSettings, normalizeHealthGoalDefinition } = await importSettingsNormalizationUtility();
+  const [mainSource, settingsSource] = await Promise.all([
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/settings.ts", import.meta.url)), "utf8")),
+  ]);
   const normalized = normalizeTPSHealthSettings({
     foodLogHeading: "Food Log",
     dailyNoteFolder: "Dailynotes",
@@ -422,13 +1536,31 @@ test("settings normalization removes stale fields while preserving live vault co
     foodLogFilePath: "Tracked/Food.md",
     workoutLogTarget: "both",
     workoutLogHeading: "Training",
+    foodIdentificationMode: "bad-mode",
+    workoutIdentificationMode: "tag",
+    workoutTag: " #custom/workout ",
     rollupHeading: "Legacy Rollup",
     includeBrandedFoodSearch: true,
     defaultWorkoutCooldownDays: 3,
     activeWorkoutSetCount: "bad",
     workoutSetStorage: "invalid",
+    pendingFoodLogDraft: {
+      id: "draft-1",
+      updatedAt: "2026-07-06T12:00:00.000Z",
+      activeTab: "search",
+      searchInput: "eggs",
+      consumedDateInput: "2026-07-06T07:30",
+      dateContext: { dateIso: "2026-07-06", label: "Mon, Jul 6", isToday: true, foodLogTarget: "daily-note" },
+      selectionItems: [
+        { item: { id: "food-1", name: "Eggs", source: "manual", nutrition: { calories: 70 } }, quantity: 2, unit: "serving" },
+        { item: { id: "", name: "", source: "" }, quantity: 1, unit: "serving" },
+      ],
+    },
     healthGoals: [
       { propertyKey: " cal ", label: " Calories ", unit: " kcal ", kind: "max", max: 2100 },
+      { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 250, max: 50 },
+      { propertyKey: "fiber", label: "Fiber", unit: "g", kind: "range", min: 30 },
+      { propertyKey: "sodium", label: "Sodium", unit: "mg", kind: "range", max: 2300 },
       { propertyKey: "steps", label: "Steps", unit: "", kind: "not-real", min: "bad" },
     ],
   });
@@ -438,22 +1570,278 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.foodLogTarget, "single-file");
   assert.equal(normalized.foodLogFilePath, "Tracked/Food.md");
   assert.equal(normalized.workoutLogTarget, "both");
-  assert.equal(normalized.workoutLogHeading, "Training");
+  assert.equal(Object.hasOwn(normalized, "workoutLogHeading"), false);
+  assert.equal(normalized.foodIdentificationMode, "metadata-folder-tag");
+  assert.equal(normalized.workoutIdentificationMode, "tag");
+  assert.equal(normalized.workoutTag, "#custom/workout");
   assert.equal(normalized.rollupHeading, "Legacy Rollup");
   assert.equal(normalized.includeBrandedFoodSearch, true);
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
-  assert.equal(normalized.workoutSetStorage, "task");
+  assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
+  assert.equal(normalized.pendingFoodLogDraft?.activeTab, "search");
+  assert.equal(normalized.pendingFoodLogDraft?.searchInput, "eggs");
+  assert.equal(normalized.pendingFoodLogDraft?.consumedDateInput, "2026-07-06T07:30");
+  assert.equal(normalized.pendingFoodLogDraft?.dateContext?.dateIso, "2026-07-06");
+  assert.equal(normalized.pendingFoodLogDraft?.selectionItems.length, 1);
+  assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].item.name, "Eggs");
+  assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].quantity, 2);
   assert.deepEqual(normalized.healthGoals, [
     { propertyKey: "cal", label: "Calories", unit: "kcal", kind: "max", min: undefined, max: 2100, color: undefined },
+    { propertyKey: "protein", label: "Protein", unit: "g", kind: "range", min: 50, max: 250, color: undefined },
+    { propertyKey: "fiber", label: "Fiber", unit: "g", kind: "min", min: 30, max: undefined, color: undefined },
+    { propertyKey: "sodium", label: "Sodium", unit: "mg", kind: "max", min: undefined, max: 2300, color: undefined },
     { propertyKey: "steps", label: "Steps", unit: "", kind: "counter", min: undefined, max: undefined, color: undefined },
   ]);
+  assert.deepEqual(normalizeHealthGoalDefinition({ propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 100, max: 250 }), {
+    propertyKey: "protein",
+    label: "Protein",
+    unit: "g",
+    kind: "range",
+    min: 100,
+    max: 250,
+    color: undefined,
+  });
+  assert.deepEqual(applyBuiltInHealthGoalTargets(normalized.healthGoals, {
+    calorieGoal: 1675,
+    proteinGoalG: 140,
+    activityGoalMinutes: 45,
+  }).slice(0, 2).map(({ propertyKey, min, max }) => ({ propertyKey, min, max })), [
+    { propertyKey: "cal", min: undefined, max: 1675 },
+    { propertyKey: "protein", min: 140, max: 250 },
+  ]);
+
+  const migratedWorkout = normalizeTPSHealthSettings({
+    workoutLogTarget: "daily-note",
+    workoutSessionBodyMode: "blank",
+    workoutExerciseLayout: "flat",
+    activeWorkoutTarget: "daily-note",
+  });
+  assert.equal(migratedWorkout.workoutLogTarget, "daily-note");
+  assert.equal(migratedWorkout.activeWorkoutTarget, "daily-note");
+  assert.equal(Object.hasOwn(migratedWorkout, "workoutSessionBodyMode"), false);
+  assert.equal(Object.hasOwn(migratedWorkout, "workoutExerciseLayout"), false);
+  assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
+  assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
+  assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-shape"/);
+  assert.match(settingsSource, /\.map\(\(goal\) => normalizeHealthGoalDefinition\(goal\)\)/);
+  assert.match(settingsSource, /logger\.flow\("Settings", "health-goals:parsed", \{ count: this\.plugin\.settings\.healthGoals\.length \}\)/);
+  assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-json", \{ error: logger\.errorSummary\(error\) \}\)/);
+  assert.match(mainSource, /goal: goal\.kind === "counter" \? undefined : goal\.max \?\? goal\.min/);
+  assert.match(mainSource, /private lastSavedSettingsSnapshot: TPSHealthSettings \| null = null/);
+  assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(this\.settings\)/);
+  assert.match(mainSource, /const changedKeys = changedSettingsKeys\(this\.lastSavedSettingsSnapshot, snapshot\)/);
+  assert.match(mainSource, /changedKeys,\s+changedCount: changedKeys\.length,\s+enableLogging: snapshot\.enableLogging/);
+  assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(snapshot\)/);
+  assert.match(mainSource, /function changedSettingsKeys\(previous: TPSHealthSettings \| null, next: TPSHealthSettings\): string\[\]/);
+  assert.match(mainSource, /function stableSettingsValue\(value: unknown\): string/);
 });
 
-test("blank default food log section stays a no-heading frontmatter insertion contract", async () => {
+test("USDA credential references and legacy plaintext migrate without destructive overwrite", async () => {
+  const { normalizeTPSHealthSettings, normalizeUsdaApiKeySecrets, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } = await importSettingsNormalizationUtility();
+  const { errorSummary } = await importLoggerUtility();
+  const [settingsSource, typesSource, manifestSource, versionsSource, readmeSource] = await Promise.all([
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/settings.ts", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/types.ts", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../manifest.json", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../versions.json", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8")),
+  ]);
+  const normalized = normalizeTPSHealthSettings({ usdaApiKey: " legacy-private-key " });
+  assert.equal(Object.hasOwn(normalized, "usdaApiKey"), false);
+  assert.deepEqual(normalized.usdaApiKeySecrets, ["tps-health-usda-api-key"]);
+  assert.deepEqual(
+    planLegacyUsdaApiKeyMigration({ usdaApiKey: " legacy-private-key " }, normalized, () => null),
+    { secretName: "tps-health-usda-api-key", secretNames: ["tps-health-usda-api-key"], value: "legacy-private-key" },
+  );
+  assert.equal(planLegacyUsdaApiKeyMigration({ usdaApiKey: "DEMO_KEY" }, normalized, () => null), null);
+  assert.equal(planLegacyUsdaApiKeyMigration({ usdaApiKey: "legacy-private-key" }, normalized, () => "legacy-private-key"), null);
+  const stacked = normalizeTPSHealthSettings({ usdaApiKeySecret: "occupied-ref", usdaApiKey: "legacy-private-key" });
+  assert.deepEqual(stacked.usdaApiKeySecrets, ["occupied-ref"]);
+  assert.deepEqual(
+    planLegacyUsdaApiKeyMigration({ usdaApiKey: "legacy-private-key" }, stacked, (name) => name === "occupied-ref" ? "different-key" : null),
+    { secretName: "tps-health-usda-api-key", secretNames: ["occupied-ref", "tps-health-usda-api-key"], value: "legacy-private-key" },
+    "an occupied different secret must be preserved while legacy plaintext receives a new reference",
+  );
+  assert.deepEqual(normalizeUsdaApiKeySecrets([" one ", "one", "two", "three", "four", "five", "six"]), ["one", "two", "three", "four", "five"]);
+  const persistedStack = settingsPersistencePayload(normalizeTPSHealthSettings({ usdaApiKeySecrets: ["primary-ref", "fallback-ref"] }));
+  assert.deepEqual(persistedStack.usdaApiKeySecrets, ["primary-ref", "fallback-ref"]);
+  assert.equal(Object.hasOwn(persistedStack, "usdaApiKeySecret"), false);
+  assert.equal(
+    errorSummary(new Error("failed https://api.nal.usda.gov/fdc/v1/foods/search?api_key=private-key&mode=1 Bearer private-key")),
+    "Error: failed https://api.nal.usda.gov/fdc/v1/foods/search?api_key=[redacted]&mode=1 Bearer [redacted]",
+  );
+
+  const onloadSource = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("async saveSettings()"));
+  assert.match(onloadSource, /planLegacyUsdaApiKeyMigration/);
+  assert.ok(onloadSource.indexOf("secretStorage.setSecret") < onloadSource.indexOf("SecretStorage did not confirm"));
+  assert.ok(onloadSource.indexOf("SecretStorage did not confirm") < onloadSource.indexOf("saveData(this.settings)"));
+  assert.match(onloadSource, /usda-api-key:migrated/);
+  assert.match(onloadSource, /usda-api-key:migration-failed/);
+  assert.match(mainSource, /private readUsdaCredentials\(\): UsdaCredential\[\]/);
+  assert.match(mainSource, /this\.settings\.usdaApiKeySecrets/);
+  assert.match(mainSource, /credentialPosition: credential\.position/);
+  assert.match(settingsSource, /new SecretComponent\(this\.plugin\.app, element\)/);
+  assert.match(settingsSource, /USDA API key — Primary/);
+  assert.match(settingsSource, /API_KEY_MISSING\/API_KEY_INVALID/);
+  assert.match(settingsSource, /HTTP 429 responses do not rotate/);
+  assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.usdaApiKey\b/);
+  assert.match(typesSource, /usdaApiKeySecrets: \[USDA_API_KEY_SECRET\]/);
+  assert.doesNotMatch(typesSource, /usdaApiKeySecret:\s*string/);
+  assert.doesNotMatch(typesSource, /usdaApiKey:\s*string/);
+  assert.equal(JSON.parse(manifestSource).minAppVersion, "1.12.0");
+  assert.equal(JSON.parse(versionsSource)["0.1.0"], "1.12.0");
+  assert.match(readmeSource, /device-local Obsidian SecretStorage/);
+  assert.match(readmeSource, /`DEMO_KEY` fallback/);
+});
+
+test("legacy USDA single-reference settings persist canonically before the stale field is removed", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of [
+    "registerEditorSuggest",
+    "registerMarkdownPostProcessor",
+    "register",
+    "registerWorkoutTaskCompletionTracking",
+    "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback",
+    "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh",
+    "scheduleWorkoutActionBars",
+  ]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ usdaApiKeySecret: "legacy-reference" });
+  const savedPayloads = [];
+  plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
+
+  await plugin.onload();
+  assert.equal(savedPayloads.length, 1);
+  assert.deepEqual(savedPayloads[0].usdaApiKeySecrets, ["legacy-reference"]);
+  assert.equal(Object.hasOwn(savedPayloads[0], "usdaApiKeySecret"), false);
+});
+
+test("failed USDA SecretStorage migration keeps Health online without purging the retry value", async () => {
+  const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
+  const normalized = normalizeTPSHealthSettings({ usdaApiKey: "legacy-private-key" });
+  assert.equal(Object.hasOwn(settingsPersistencePayload(normalized), "usdaApiKey"), false);
+  assert.equal(settingsPersistencePayload(normalized, " legacy-private-key ").usdaApiKey, "legacy-private-key");
+
+  const onloadSource = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("async saveSettings()"));
+  const migrationCatch = onloadSource.slice(onloadSource.indexOf("} catch (error) {"), onloadSource.indexOf("const migrationNeeded"));
+  const saveSource = mainSource.slice(mainSource.indexOf("async saveSettings()"), mainSource.indexOf("async updateBuiltInHealthGoalTarget"));
+  const readKeySource = mainSource.slice(mainSource.indexOf("private readUsdaCredentials()"), mainSource.indexOf("private availableUsdaCredentials()"));
+  assert.match(migrationCatch, /this\.retainedLegacyUsdaApiKey = legacyUsdaApiKey/);
+  assert.doesNotMatch(migrationCatch, /throw error/);
+  assert.match(migrationCatch, /TPS Health will stay available/);
+  assert.match(onloadSource, /initial-save:blocked-usda-migration/);
+  assert.match(onloadSource, /if \(this\.retainedLegacyUsdaApiKey\) \{[\s\S]+?\} else \{\s+await this\.saveData\(this\.settings\);/);
+  assert.match(saveSource, /settingsPersistencePayload\(snapshot, this\.retainedLegacyUsdaApiKey\)/);
+  assert.match(saveSource, /save:retaining-legacy-usda-key/);
+  assert.match(readKeySource, /const references = this\.retainedLegacyUsdaApiKey \? \[\] : this\.settings\.usdaApiKeySecrets/);
+
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.secretStorage = {
+    getSecret: () => null,
+    setSecret: () => { throw new Error("simulated SecretStorage outage"); },
+  };
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of [
+    "registerEditorSuggest",
+    "registerMarkdownPostProcessor",
+    "register",
+    "registerWorkoutTaskCompletionTracking",
+    "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback",
+    "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh",
+    "scheduleWorkoutActionBars",
+  ]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ usdaApiKey: "legacy-private-key" });
+  const savedPayloads = [];
+  plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
+
+  await assert.doesNotReject(() => plugin.onload());
+  assert.equal(savedPayloads.length, 0, "initial sanitized save must be blocked when migration fails");
+  assert.equal(plugin.readUsdaCredentials()[0].apiKey, "DEMO_KEY");
+  assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("TPS Health will stay available")));
+
+  plugin.settings.calorieGoal = 1900;
+  await plugin.saveSettings();
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].calorieGoal, 1900);
+  assert.equal(savedPayloads[0].usdaApiKey, "legacy-private-key", "later settings saves must retain the migration retry value");
+  assert.deepEqual(savedPayloads[0].usdaApiKeySecrets, ["tps-health-usda-api-key"]);
+  assert.equal(Object.hasOwn(savedPayloads[0], "usdaApiKeySecret"), false);
+});
+
+test("built-in scalar health goals migrate, save, reload, and render canonically", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
-  const normalized = normalizeTPSHealthSettings({ defaultFoodLogSection: "   " });
+  const stale = normalizeTPSHealthSettings({
+    calorieGoal: 1675,
+    proteinGoalG: 140,
+    activityGoalMinutes: 45,
+    healthGoals: [
+      { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400 },
+      { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 180 },
+      { propertyKey: "activity", label: "Activity", unit: "min", kind: "min", min: 45 },
+      { propertyKey: "fiber", label: "Fiber", unit: "g", kind: "min", min: 30 },
+    ],
+  });
+  assert.deepEqual(stale.healthGoals.slice(0, 3).map(({ propertyKey, min, max }) => ({ propertyKey, min, max })), [
+    { propertyKey: "consumedCalories", min: undefined, max: 1675 },
+    { propertyKey: "protein", min: 140, max: undefined },
+    { propertyKey: "activity", min: 45, max: undefined },
+  ]);
+
+  const explicitCustom = normalizeTPSHealthSettings({
+    calorieGoal: 1675,
+    healthGoals: [{ propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2100 }],
+  });
+  assert.equal(explicitCustom.healthGoals[0].max, 2100, "load migration must not overwrite an explicit non-default JSON bound");
+
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = stale;
+  let persisted = null;
+  plugin.saveData = async (settings) => {
+    persisted = JSON.parse(JSON.stringify(settings));
+  };
+
+  await plugin.updateBuiltInHealthGoalTarget("calorieGoal", 1800);
+  await plugin.updateBuiltInHealthGoalTarget("proteinGoalG", 150);
+  await plugin.updateBuiltInHealthGoalTarget("activityGoalMinutes", 60);
+  assert.ok(persisted);
+
+  const reloaded = normalizeTPSHealthSettings(persisted);
+  plugin.settings = reloaded;
+  const rendered = new Map(plugin.getMetricRenderConfigs().map((config) => [config.propertyKey, config]));
+  assert.equal(rendered.get("consumedCalories")?.max, 1800);
+  assert.equal(rendered.get("consumedCalories")?.goal, 1800);
+  assert.equal(rendered.get("protein")?.min, 150);
+  assert.equal(rendered.get("protein")?.goal, 150);
+  assert.equal(rendered.get("activity")?.min, 60);
+  assert.equal(rendered.get("activity")?.goal, 60);
+  assert.equal(rendered.get("fiber")?.min, 30);
+});
+
+test("blank daily log sections stay a no-heading frontmatter insertion contract", async () => {
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const normalized = normalizeTPSHealthSettings({ defaultFoodLogSection: "   ", workoutLogHeading: "   " });
   assert.equal(normalized.defaultFoodLogSection, "");
+  assert.equal("workoutLogHeading" in normalized, false);
 
   const [mainSource, settingsSource, typesSource, readmeSource] = await Promise.all([
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8")),
@@ -462,46 +1850,281 @@ test("blank default food log section stays a no-heading frontmatter insertion co
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8")),
   ]);
   assert.match(typesSource, /defaultFoodLogSection: ""/);
-  assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);\s+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
-  assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);\s+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
+  assert.doesNotMatch(typesSource, /workoutLogHeading/);
+  assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);[\s\S]+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
+  assert.match(mainSource, /await this\.insertIntoDailyNote\(workoutSummaryLine\(path, startedAt\), undefined, await this\.getOrCreateDailyNoteForDate\(dailyNoteDate\)\)/);
+  assert.match(mainSource, /return this\.insertIntoDailyNote\(line, undefined, await this\.getOrCreateDailyNoteForDate\(dateValue\)\)/);
+  assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);[\s\S]+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
   assert.match(settingsSource, /\.setName\("Default food log section"\)\s+\.setDesc\("Optional\. Blank inserts food logs immediately after daily-note frontmatter\."\)[\s\S]+\.setPlaceholder\("Food Log"\)[\s\S]+defaultFoodLogSection = value\.trim\(\);/);
+  assert.doesNotMatch(settingsSource, /\.setName\("Workout log heading"\)/);
   assert.match(readmeSource, /`Default food log section` is intentionally blank by default\. Blank keeps food entries unheaded and inserts daily-note entries immediately after frontmatter; `Food Log` is only the settings placeholder suggestion, not the persisted default\./);
+  assert.match(readmeSource, /Workout daily receipts are always inserted into the daily note body immediately after frontmatter\. Persisted legacy `workoutLogHeading` values are ignored for daily-note writes\./);
 });
 
-test("whole-note workouts use calendar fields and set task tracking", async () => {
+test("whole-note workouts use workout-specific date fields and plain set logs", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   const typesSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/types.ts", import.meta.url)), "utf8"));
   assert.match(typesSource, /activeWorkoutSetCount: number/);
-  assert.match(typesSource, /workoutSessionBodyMode: "blank"/);
-  assert.match(typesSource, /workoutExerciseLayout: "flat"/);
   assert.match(typesSource, /workoutSetNotation: "compact"/);
-  assert.match(typesSource, /workoutSetStorage: "task"/);
-  assert.match(mainSource, /frontmatter\.scheduled = frontmatter\.scheduled \|\| startedAt/);
+  assert.doesNotMatch(typesSource, /workoutSessionBodyMode|workoutExerciseLayout|workoutSetStorage/);
+  assert.match(typesSource, /foodIdentificationMode: "metadata-folder-tag"/);
+  assert.match(typesSource, /workoutIdentificationMode: "metadata-folder-tag"/);
+  assert.match(typesSource, /workoutTag: "#tps\/workout"/);
+  assert.match(mainSource, /frontmatter\.workoutDate = frontmatter\.workoutDate \|\| isoDateKey\(startedAt\)/);
+  assert.doesNotMatch(mainSource, /frontmatter\.scheduled =/);
   assert.match(mainSource, /frontmatter\.timeEstimate = durationMinutes/);
   assert.match(mainSource, /frontmatter\.durationSeconds = durationSeconds/);
   assert.match(mainSource, /frontmatter\.allDay = false/);
   assert.match(mainSource, /frontmatter\.setCount = Math\.max/);
-  assert.match(mainSource, /asTask: this\.settings\.workoutSetStorage === "task"/);
+  assert.doesNotMatch(mainSource, /asTask:|this\.settings\.workoutSetStorage/);
   assert.match(mainSource, /appendSetToWorkoutNote/);
+  assert.match(mainSource, /storage: "bullet"/);
+  assert.doesNotMatch(mainSource, /lines\.push\("## Sets", line\)/);
   assert.doesNotMatch(mainSource, /"# \{\{title\}\}"/);
   assert.match(mainSource, /normalizeWorkoutNoteSetTasks/);
   assert.match(mainSource, /frontmatterLineEnd\(lines\)/);
-  assert.match(mainSource, /if \(!isChecked && !hasSetId\) continue/);
-  assert.match(mainSource, /workoutSession: \["workoutId", "workout", "workoutPlanPath", "scheduled", "startedAt", "endedAt", "timeEstimate"/);
-  assert.match(mainSource, /new StartWorkoutModal\(this\.app, this, await this\.getActiveDailyNoteDateContext\(\)\)\.open\(\)/);
-  assert.match(mainSource, /await this\.openPinnedWorkoutFile\(file\)/);
+  assert.match(mainSource, /if \(isWorkoutSetLine\(line\) && existingEndedAt\)/);
+  assert.match(mainSource, /workoutSession: \["workoutId", "workout", "workoutPlanPath", "workoutDate", "startedAt", "endedAt", "timeEstimate", "durationSeconds", "caloriesBurned"/);
+  assert.match(typesSource, /export type WorkflowRecurrenceMode = "completion-triggered"/);
+  assert.match(typesSource, /export type WorkflowRunKind = "run"/);
+  assert.match(mainSource, /frontmatter\.runKind = frontmatter\.runKind \|\| "run"/);
+  assert.match(mainSource, /frontmatter\.workflowType = frontmatter\.workflowType \|\| "workout"/);
+  assert.match(mainSource, /frontmatter\.recurrenceMode = frontmatter\.recurrenceMode \|\| "completion-triggered"/);
+  assert.match(mainSource, /frontmatter\.secondsSincePreviousCompletion = frontmatter\.secondsSincePreviousCompletion \?\? secondsSincePreviousCompletion/);
+  assert.match(mainSource, /frontmatter\.targetGapDays = frontmatter\.targetGapDays \?\? cooldownDays/);
+  assert.match(mainSource, /repairActivityLogBaseContent/);
+  assert.match(mainSource, /lineFilterAnyKeys:/);
+  assert.match(mainSource, /- activity/);
+  assert.match(mainSource, /- workout/);
+  assert.match(mainSource, /logger\.flow\("FoodDateContext", "start-workout:active-file"/);
+  assert.match(mainSource, /const dateContext = await this\.getActiveDailyNoteDateContext\(\);[\s\S]+new StartWorkoutModal\(this\.app, this, dateContext\)\.open\(\)/);
+  assert.match(mainSource, /logger\.flow\("WorkoutModal", "start-blank:done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutModal", "start-blank:failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutModal", "start:done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutModal", "start:failed"/);
+  assert.match(mainSource, /logger\.flow\("Workout", "start:note-created"/);
+  assert.match(mainSource, /logger\.flow\("Workout", "start:state-saved"/);
+  assert.match(mainSource, /await this\.openWorkoutFile\(file\)/);
   assert.match(mainSource, /await this\.startGcmWorkoutTimer/);
   assert.match(mainSource, /await this\.stopGcmWorkoutTimer/);
+  assert.match(mainSource, /logger\.flow\("Workout", "finish:frontmatter-done"/);
   assert.match(mainSource, /timeTracking\.startTimer/);
   assert.match(mainSource, /timeTracking\.stopActiveTimerForFile/);
+  assert.match(mainSource, /const timerEnd: Date \| string = Number\.isFinite\(parsedEnd\.getTime\(\)\) \? parsedEnd : endedAt/);
+  assert.match(mainSource, /timeTracking\.stopActiveTimerForFile\(file, timerEnd\)/);
 });
 
-test("active workout template commands guard before opening modals", async () => {
+test("active workout commands expose set logging and layout saving", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
-  assert.match(mainSource, /id: "finish-and-save-workout-template",\s*name: "Finish active workout and save template",\s*callback: \(\) => this\.openFinishWorkoutTemplateModal\(\)/);
-  assert.match(mainSource, /id: "save-active-workout-template",\s*name: "Save active workout template",\s*callback: \(\) => this\.openSaveWorkoutTemplateModal\(\)/);
-  assert.match(mainSource, /private openFinishWorkoutTemplateModal\(\): void \{\s*if \(!this\.getActiveWorkoutState\(\)\) \{\s*new Notice\("No active workout"\);\s*return;\s*\}\s*new FinishWorkoutTemplateModal\(this\.app, this\)\.open\(\);/);
-  assert.match(mainSource, /private openSaveWorkoutTemplateModal\(\): void \{\s*if \(!this\.getActiveWorkoutState\(\)\) \{\s*new Notice\("No active workout"\);\s*return;\s*\}\s*new SaveWorkoutTemplateModal\(this\.app, this\)\.open\(\);/);
+  assert.match(mainSource, /id: "start-blank-workout"/);
+  assert.match(mainSource, /id: "start-blank-workout"[\s\S]+?this\.startWorkout\(\{ openFile: false \}\)[\s\S]+?new WorkoutExercisePickerModal/);
+  assert.doesNotMatch(mainSource, /startWorkout\(\{ openFile: true \}\)/);
+  assert.match(mainSource, /id: "log-workout-set"/);
+  assert.match(mainSource, /id: "save-active-workout-layout"/);
+  assert.match(mainSource, /id: "finish-workout-and-save-layout"/);
+  assert.match(mainSource, /interface WorkoutOpenResult/);
+  assert.match(mainSource, /let openResult: WorkoutOpenResult = \{/);
+  assert.match(mainSource, /await this\.startGcmWorkoutTimer\(file instanceof TFile \? file : dailyNotePath\);\s+if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && file instanceof TFile\) openResult = await this\.openWorkoutFile\(file\);/);
+  assert.match(mainSource, /openRequested: openResult\.requested/);
+  assert.match(mainSource, /openRoute: openResult\.route/);
+  assert.match(mainSource, /openReason: openResult\.reason \|\| ""/);
+  assert.match(mainSource, /private async openWorkoutFile\(file: TFile\): Promise<WorkoutOpenResult>/);
+  assert.match(mainSource, /private async showWorkoutReadingMode\(file: TFile\): Promise<void>/);
+  assert.match(mainSource, /await this\.showWorkoutReadingMode\(file\)/);
+  assert.match(mainSource, /mode: "preview", source: false/);
+  assert.match(mainSource, /logger\.flow\("WorkoutOpen", "start", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /typeof gcmApi\?\.openFileInLeaf === "function"/);
+  assert.match(mainSource, /gcmApi\.openFileInLeaf\(\s*file,\s*false,\s*\(\) => this\.app\.workspace\.getLeaf\(false\),\s*\{ revealLeaf: true \}/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:declined", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutOpen", "obsidian:failed", error, \{ path: file\.path \}\)/);
+  assert.match(mainSource, /private async startGcmWorkoutTimer\(target: TFile \| string \| null\): Promise<void>/);
+  assert.match(mainSource, /await timeTracking\.startTimer\(\{\s*file,\s*type: "note",\s*title: this\.settings\.activeWorkoutTitle \|\| file\.basename,\s*\}\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-unavailable", \{ hasTimeTracking: !!timeTracking \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:start-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-done", \{ path: file\.path, title: this\.settings\.activeWorkoutTitle \|\| file\.basename \}\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-unavailable"\)/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-done", \{ path: file\.path, route: "file", endedAt \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-active-mismatch"/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-method-missing", \{ path: file\.path \}\)/);
+  assert.doesNotMatch(mainSource, /setPinned\?\.\(true\)/);
+  assert.match(mainSource, /new SetModal\(this\.app, this\)\.open\(\)/);
+  assert.match(mainSource, /callback: \(\) => this\.traceCommand\("log-workout-set", async \(\) => \{\s+new SetModal\(this\.app, this\)\.open\(\);/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "log:resolved"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSetModal", "start-blank:done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutSetModal", "start-blank:failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSetModal", "done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutSetModal", "failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "log-file:resolved"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSetModal", "exercise-picker:stale"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutFileSetModal", "done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutFileSetModal", "failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutFileSetModal", "exercise-picker:stale"/);
+  assert.match(mainSource, /tps-health-workout-exercise-picker/);
+  assert.match(mainSource, /getActiveWorkoutExerciseNames/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "active-workout-names:no-active"/);
+  assert.match(mainSource, /logger\.flowWarn\("Exercise", "active-workout-names:missing-file"/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "active-workout-names:done"/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "search:done", \{ query, \.\.\.stats \}\)/);
+  assert.match(mainSource, /foodLike: 0,\s+recognized: 0,\s+queryMiss: 0,\s+returned: 0/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "active-workout" \}\)/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "workout-file", path: file\.path \}\)/);
+  assert.match(mainSource, /private resolveExistingExerciseFile\(path: string \| undefined, name: string\): TFile \| null/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:path-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("Exercise", "upsert-resolve:path-missing"/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:name-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("Exercise", "upsert-resolve:name-stale"/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:miss"/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "find-or-create:create"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "search:done", \{ query, \.\.\.stats \}\)/);
+  assert.match(mainSource, /private resolveExistingWorkoutPlanFile\(path: string \| undefined, name: string\): TFile \| null/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "upsert-resolve:path-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "upsert-resolve:path-missing"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "upsert-resolve:name-hit"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "upsert-resolve:name-stale"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "upsert-resolve:miss"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "find-or-create:create"/);
+  assert.match(mainSource, /new WorkoutLayoutModal\(this\.app, this, false\)\.open\(\)/);
+  assert.match(mainSource, /new WorkoutLayoutModal\(this\.app, this, true\)\.open\(\)/);
+  assert.match(mainSource, /async finishWorkoutAndSaveTemplate\(input: \{ title\?: string; cooldownDays\?: number; defaultRestSeconds\?: number \} = \{\}\): Promise<string \| undefined> \{/);
+  assert.match(mainSource, /async saveActiveWorkoutTemplate\(input: \{ title\?: string; cooldownDays\?: number; defaultRestSeconds\?: number \} = \{\}\): Promise<string \| undefined> \{/);
+  assert.match(mainSource, /class WorkoutLayoutModal extends Modal/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "template-from-active:no-active", \{ finishAfterSave: true \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "template-from-active:no-active", \{ finishAfterSave: false \}\)/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "template-from-active:layout-source"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "template-from-active:fallback-task-names"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "template-from-active:no-entries"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "layout-extract:missing-session"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "layout-extract:missing-daily-note"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "layout-extract:missing-daily-parent"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "layout-extract:session"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "layout-extract:daily-note"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "task-extract:missing-session"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "task-extract:missing-daily-note"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "task-extract:missing-daily-parent"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "task-extract:session"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "task-extract:daily-note"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "open"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutLayoutModal", "open:no-active-workout"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutLayoutModal", "submit:missing-name"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "submit"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutLayoutModal", "failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "cancel"/);
+  assert.match(mainSource, /async addSetForExerciseToActiveWorkout\(exercise: string, after\?: WorkoutSetLineSource\): Promise<void>/);
+  assert.match(mainSource, /async addSetForExerciseToWorkoutFile\(filePath: string, exercise: string, after\?: WorkoutSetLineSource, options: \{ focusAfter\?: boolean \} = \{\}\): Promise<void>/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:create-workout-missing"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:missing-file"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "placeholder:open-modal"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "duplicate:missing-file"/);
+  assert.match(mainSource, /logger\.flowWarn\("NoteWrite", "workout-set:daily-note-missing", \{ dailyNotePath, workoutId \}\)/);
+  assert.match(mainSource, /logger\.flow\("NoteWrite", "workout-set:daily-fallback-append", \{ dailyNotePath: file\.path, workoutId \}\)/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "focus:start", \{ path: file\.path, line: lineNumber, setId \}\)/);
+  assert.match(mainSource, /view\.getMode\(\) !== "preview"[\s\S]*setState\.call\(view, \{ \.\.\.state, mode: "preview", source: false \}, \{ history: false \}\)[\s\S]*"focus:switch-reading"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "focus:no-editor-scroll", \{ path: file\.path, line: lineNumber \}\)/);
+  assert.match(mainSource, /card\.scrollIntoView\(\{ behavior: "smooth", block: "center" \}\)/);
+  assert.match(mainSource, /EditorView\.scrollIntoView\(documentLine\.from, \{ y: "center" \}\)/);
+  assert.match(mainSource, /\.tps-health-workout-set-editor\[data-tps-health-set-id=/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "focus:done", \{ path: file\.path, line: lineNumber, setId, route: "set-card" \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "focus:card-missing", \{ path: file\.path, line: lineNumber, setId \}\)/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutSet", "focus:failed", error, \{ path: file\.path, line: lineNumber, setId \}\)/);
+  assert.match(mainSource, /class WorkoutSetEmptyWidget extends WidgetType/);
+  assert.match(mainSource, /new WorkoutSetEmptyWidget\(plugin, filePath\)/);
+  assert.match(mainSource, /docHasWorkoutSetLine\(view\.state\.doc\.toString\(\)\)/);
+  assert.match(mainSource, /workoutLikeFile \? workoutSetChipDataFromLine\(text\) : isWorkoutSetLine\(text\) \? workoutSetChipDataFromLine\(text\) : null/);
+  assert.match(mainSource, /tps-health-workout-empty/);
+  assert.match(mainSource, /void plugin\.addSeededWorkoutSetAfterBlock\(source\)/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "tracking:registered"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "snapshot:cached"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutTask", "snapshot:cache-failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "modify:skip-processing"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "modify:no-new-completions"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutTask", "modify:failed"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "annotate:detected"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutTask", "annotate:no-change"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "frontmatter:update"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutTask", "finish-prompt:duplicate"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "finish-prompt:finish"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "finish-prompt:add-set"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutTask", "finish-prompt:dismiss"/);
+  assert.match(mainSource, /logger\.flowWarn\("Workout", "daily-complete:missing-file", \{ dailyNotePath, workoutId \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Workout", "daily-complete:missing-row", \{ path: file\.path, workoutId, lines: lines\.length \}\)/);
+  assert.match(mainSource, /logger\.flow\("Workout", "daily-complete:done", \{ path: file\.path, workoutId, line: index, nextEligibleDate: nextEligibleDate \|\| "" \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "resolve:path-missing"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "apply:start"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "apply:missing-plan"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "apply:no-exercises"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "apply:missing-session"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutPlan", "apply:done"/);
+});
+
+test("workout starts use existing plans and blank starts use the slim exercise picker", () => {
+  assert.match(mainSource, /workoutPlanList\.id = `tps-health-workout-plan-options-\$\{Date\.now\(\)\}`/);
+  assert.match(mainSource, /this\.plugin\.searchWorkoutPlans\(""\)\.then\(\(items\) =>/);
+  assert.match(mainSource, /const resolveSelectedPlanPath = async \(\): Promise<string \| undefined>/);
+  assert.match(mainSource, /new Notice\("Choose an existing workout plan or start empty\."\)/);
+  assert.match(mainSource, /setButtonText\("Start empty"\)/);
+  assert.match(mainSource, /setButtonText\("Start with plan"\)/);
+  assert.match(mainSource, /createEl\("details", \{ cls: "tps-health-workout-options" \}\)/);
+  assert.match(mainSource, /startWithPlanButton\.disabled = !plan/);
+  assert.doesNotMatch(mainSource, /this\.selectedWorkoutDate = "";\s*this\.onOpen\(\)/);
+  assert.match(mainSource, /if \(path\) new WorkoutExercisePickerModal\(this\.app, this\.plugin, path\)\.open\(\);/);
+  assert.doesNotMatch(mainSource, /if \(path\) new WorkoutFileSetModal\(this\.app, this\.plugin, path\)\.open\(\);/);
+  const blankCommandStart = mainSource.indexOf('id: "start-blank-workout"');
+  const blankCommandEnd = mainSource.indexOf('id: "finish-workout"', blankCommandStart);
+  const blankCommand = mainSource.slice(blankCommandStart, blankCommandEnd);
+  assert.match(blankCommand, /new WorkoutExercisePickerModal\(this\.app, this, path\)\.open\(\)/);
+  assert.doesNotMatch(blankCommand, /new (?:SetModal|WorkoutFileSetModal)\(/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutExercisePicker", "choose:failed", error/);
+  assert.match(mainSource, /new Notice\(`Could not add \$\{exercise\}: \$\{errorMessage\}`\)/);
+  assert.match(mainSource, /status\.setText\("Adding…"\)/);
+  assert.match(mainSource, /\{ focusAfter: false \}/);
+  assert.match(mainSource, /focusLatestWorkoutSetAfterPicker/);
+  assert.doesNotMatch(mainSource, /\.setName\("Superset group"\)/);
+  assert.doesNotMatch(mainSource, /\.setName\("Dropset group"\)/);
+  assert.match(mainSource, /repsInput\?\.focus\(\);\s+repsInput\?\.select\(\);/);
+  assert.match(mainSource, /linkWorkoutExerciseWithPrevious/);
+  assert.match(mainSource, /linkWorkoutSetWithPreviousDropSet/);
+});
+
+test("command palette only exposes polished everyday health actions", async () => {
+  const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
+  for (const id of [
+    "start-workout",
+    "start-blank-workout",
+    "finish-workout",
+    "log-workout-set",
+    "save-active-workout-layout",
+    "finish-workout-and-save-layout",
+    "log-food",
+    "open-food-log-base",
+    "open-workout-log-base",
+    "scan-food-barcode",
+    "edit-current-food",
+  ]) {
+    assert.match(mainSource, new RegExp(`id: "${id}"`));
+  }
+  for (const id of [
+    "finish-and-save-workout-template",
+    "save-active-workout-template",
+    "create-workout-plan",
+    "complete-inline-food-log",
+    "create-custom-food",
+    "create-recipe",
+  ]) {
+    assert.doesNotMatch(mainSource, new RegExp(`id: "${id}"`));
+  }
+  assert.match(mainSource, /logger\.flowError\("BaseOpen", "food-log:ensure-failed", error, \{ path: DEFAULT_FOOD_LOG_BASE_PATH \}\)/);
+  assert.match(mainSource, /logger\.flow\("BaseOpen", "food-log:open-start", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flow\("BaseOpen", "food-log:open-done", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flowError\("BaseOpen", "food-log:open-failed", error, \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flowError\("BaseOpen", "activity-log:ensure-failed", error, \{ path: DEFAULT_ACTIVITY_LOG_BASE_PATH \}\)/);
+  assert.match(mainSource, /logger\.flow\("BaseOpen", "activity-log:open-start", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flow\("BaseOpen", "activity-log:open-done", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flowError\("BaseOpen", "activity-log:open-failed", error, \{ path: file\.path \}\)/);
+  assert.match(mainSource, /class ActivityLogModal extends Modal/);
+  assert.match(mainSource, /await this\.plugin\.logActivity\(\{/);
+  assert.match(mainSource, /logger\.flowError\("ActivityLogModal", "failed"/);
 });
 
 test("one-off food entry lines without a food note keep nutrition for rollups", async () => {
@@ -552,13 +2175,18 @@ test("linked food entry lines keep nutrition overrides out of the note", async (
   assert.match(line, /\[protein:: 10\]/);
 });
 
-test("food log modal displays serving conversion and computed macros without persisting them", async () => {
+test("food log modal displays serving conversion and food log lines persist scaled macros", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   const formatSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/format.ts", import.meta.url)), "utf8"));
   assert.match(mainSource, /const summaryEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-log-summary" \}\)/);
   assert.match(mainSource, /servingEl\.setText\(parts\.join\(" = "\)\)/);
   assert.match(mainSource, /renderMacroPills\(nutritionEl, multiplyNutrition\(this\.item\.nutrition \|\| \{\}, resolved\.servings\)\)/);
   assert.match(formatSource, /if \(entry\.nutritionOverride\) return entry\.nutritionOverride;\s+return scaleNutrition\(entry\.item\.nutrition \|\| \{\}, entry\.quantity\);/);
+  assert.match(mainSource, /private async repairFoodLogNutritionFieldsInVault\(\): Promise<void>/);
+  assert.match(mainSource, /this\.registerEvent\(this\.app\.metadataCache\.on\("resolved", \(\) => this\.scheduleFoodLogNutritionRepair\("metadata-resolved", 250\)\)\);/);
+  assert.match(mainSource, /private async foodFromFileForRepair\(file: TFile\): Promise<FoodItem>/);
+  assert.match(mainSource, /const fm = frontmatterFromMarkdown\(content\);/);
+  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "nutrition-repair:done"/);
 });
 
 test("inline food draft parser handles overrides and half servings", () => {
@@ -606,12 +2234,20 @@ test("complete inline food log command only targets the cursor line", async () =
   assert.doesNotMatch(mainSource, /const finalParsed = parsed \|\|/);
 });
 
+test("barcode normalization keeps valid UPC candidates without creating 11-digit artifacts", async () => {
+  const { barcodeCandidates } = await importPluginWithObsidianStub();
+  assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "012345678905"]);
+  assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905"]);
+  assert.ok(barcodeCandidates("0012345678905").every((candidate) => candidate.length !== 11));
+});
+
 test("log food command seeds search and amount from the active inline food draft", async () => {
   const [mainSource, readmeSource] = await Promise.all([
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8")),
   ]);
-  assert.match(mainSource, /this\.openFoodSearchModal\(this\.getActiveInlineFoodDraft\(\), await this\.getActiveDailyNoteDateContext\(\)\)/);
+  assert.match(mainSource, /logger\.flow\("FoodDateContext", "log-food:active-file"/);
+  assert.match(mainSource, /this\.openFoodSearchModal\(this\.getActiveInlineFoodDraft\(\), dateContext\)/);
   assert.match(mainSource, /new FoodSearchModal\(this\.app, this, initialDraft, dateContext\)\.open\(\)/);
   assert.doesNotMatch(mainSource, /private async handleNaturalAdd\(input: string\): Promise<void>/);
   assert.match(mainSource, /private async handleBarcodeAdd\(input: string\): Promise<void>/);
@@ -620,11 +2256,24 @@ test("log food command seeds search and amount from the active inline food draft
   assert.doesNotMatch(mainSource, /function splitQuickFoodConsumedTime\(input: string\)/);
   assert.match(mainSource, /function barcodeFromInput\(input: string\): string \| null/);
   assert.match(mainSource, /async lookupFoodByBarcode\(barcode: string\): Promise<FoodItem \| null>/);
-  assert.match(mainSource, /private async lookup\(rawBarcode: string, statusEl\?: HTMLElement\): Promise<void> \{\s+const trimmed = rawBarcode\.trim\(\);\s+if \(!trimmed\) \{\s+new Notice\("Barcode is required"\);\s+return;\s+\}\s+const barcode = barcodeFromInput\(trimmed\);\s+if \(!barcode\) \{\s+new Notice\("Enter a valid UPC or EAN barcode\."\);\s+return;\s+\}/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "scanner-lookup:empty"\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "scanner-lookup:invalid", \{ input: maskBarcode\(trimmed\) \}\)/);
+  assert.match(mainSource, /if \(!trimmed\) \{[\s\S]+new Notice\("Barcode is required"\);[\s\S]+return;/);
+  assert.match(mainSource, /if \(!barcode\) \{[\s\S]+new Notice\("Enter a valid UPC or EAN barcode\."\);[\s\S]+return;/);
   assert.doesNotMatch(mainSource, /const barcode = rawBarcode\.replace\(\/\\D\/g, ""\);\s+if \(!barcode\) \{\s+new Notice\("Barcode is required"\)/);
   assert.match(mainSource, /new BarcodeScannerModal\(this\.app, this\.plugin, this\.dateContext, async \(item\) =>/);
+  assert.match(mainSource, /new BarcodeScannerModal\(this\.app, this\.plugin, this\.dateContext, async \(item\) => \{\s+await this\.addSelection\(item, null, \{ enrich: false \}\);/);
+  assert.match(mainSource, /logger\.flow\("FoodLogModal", "barcode-review:open"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogModal", "barcode-review:missing-name"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogModal", "barcode-review:invalid-serving"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogModal", "barcode-review:submit"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogModal", "barcode-review:done"/);
+  assert.match(mainSource, /logger\.flowError\("FoodLogModal", "barcode-review:failed"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogModal", "done"/);
+  assert.match(mainSource, /logger\.flowError\("FoodLogModal", "failed"/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "open-search:suppressed"/);
   assert.match(mainSource, /private barcodeScannerModal: BarcodeScannerModal \| null = null/);
-  assert.match(mainSource, /private openBarcodeScanner\(\): void \{\s+if \(this\.barcodeScannerModal\) return;/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "barcode-scanner:suppressed-active"/);
   assert.match(mainSource, /autoStart: true/);
   assert.match(mainSource, /onClose: \(\) => \{\s+if \(this\.barcodeScannerModal === scanner\) this\.barcodeScannerModal = null;/);
   assert.match(mainSource, /this\.statusEl\.setText\("Enter or scan a UPC\/EAN barcode\."\);\s+this\.openBarcodeScanner\(\);/);
@@ -635,15 +2284,34 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /\["barcode", "Barcode"\], \["search", "Search"\], \["mine", "My foods\/recipes"\]/);
   assert.match(mainSource, /\.setName\("Search food"\)/);
   assert.match(mainSource, /\.setName\("Barcode"\)/);
-  assert.match(mainSource, /this\.resultsEl\.empty\(\);\s+this\.actionsEl\.empty\(\);\s+if \(mode === "mine"\) \{\s+void this\.renderQuickPicks\(\);/);
+  assert.match(mainSource, /const token = \+\+this\.searchToken;\s+this\.activeFoodLogTab = mode;/);
+  assert.match(mainSource, /this\.resultsEl\.empty\(\);\s+this\.actionsEl\.empty\(\);\s+if \(mode === "mine"\) \{\s+void this\.renderQuickPicks\(token\);/);
   assert.match(mainSource, /else if \(mode === "search"\) \{\s+if \(this\.searchInput\.trim\(\)\.length >= 2\) this\.queueSearch\(this\.searchInput\);/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "search:stale"/);
+  assert.match(mainSource, /private async renderQuickPicks\(token = this\.searchToken\): Promise<void>/);
+  assert.match(mainSource, /logger\.flow\("FoodModal", "quick-picks:stale"/);
+  assert.match(mainSource, /onClose\(\): void \{[\s\S]+this\.searchToken \+= 1;/);
   assert.match(mainSource, /createDiv\(\{ cls: "tps-health-food-tabs" \}\)/);
   assert.match(mainSource, /panelByMode\[candidate\]\.toggleClass\("is-active", active\)/);
-  assert.match(mainSource, /this\.selectionEl\.addClass\("tps-health-floating-selection"\)/);
-  assert.match(mainSource, /this\.selectionCollapsed = true;\s+this\.renderSelection\(\);/);
+  assert.match(mainSource, /this\.selectionEl\.addClass\("tps-health-inline-selection"\)/);
+  assert.match(mainSource, /private consumedDateInput: string;/);
+  assert.doesNotMatch(mainSource, /private recipeNameInput/);
+  assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
+  assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, \[\.\.\.this\.selectionItems\], this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /export function initialFoodLogConsumedDateInput/);
+  assert.match(mainSource, /export function restoredFoodLogDraftConsumedDateInput/);
+  assert.match(mainSource, /this\.consumedDateInput = restoredFoodLogDraftConsumedDateInput\(dateContext, pendingDraft\);/);
+  assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:consumed-time"/);
+  assert.match(mainSource, /let consumedDateInput = initialFoodLogConsumedDateInput\(this\.dateContext\);/);
+  assert.match(mainSource, /function configureFoodLogDateTimeInput\(inputEl: HTMLInputElement\): void \{\s+inputEl\.type = "datetime-local";\s+inputEl\.step = "60";/);
+  assert.match(mainSource, /\.setName\("Consumed time"\)\s+\.setDesc\("Uses Obsidian's local date-time picker\. Clear it to log at the current time\."\)/);
+  assert.match(mainSource, /if \(!trimmed \|\| \/\^now\$\/i\.test\(trimmed\)\) return isoNow\(\);/);
+  assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
+  assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
   assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);/);
   assert.match(mainSource, /row\.addEventListener\("click", async \(\) => \{\s+await this\.addSelection\(item\);/);
-  assert.match(mainSource, /setButtonText\("Review"\)/);
+  assert.match(mainSource, /setButtonText\("Choose amount"\)/);
+  assert.match(mainSource, /if \(!item\.sourcePath\) actions\.addButton/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
   assert.match(mainSource, /requestCameraStream\?: \(constraints: MediaStreamConstraints\) => Promise<MediaStream>/);
   assert.match(mainSource, /createLiveReader\?: \(\) => any/);
@@ -653,7 +2321,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /navigatorInfo\?: Pick<Navigator, "userAgent" \| "platform" \| "maxTouchPoints">/);
   assert.match(mainSource, /private options: BarcodeScannerOptions = \{\}/);
   assert.match(mainSource, /if \(this\.options\.autoStart\) window\.setTimeout\(\(\) => \{\s+if \(!this\.stopped\) void this\.startCamera\(status\);/);
-  assert.match(mainSource, /if \(this\.cameraStartInProgress \|\| this\.stream \|\| this\.scanInterval != null\) return;/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "camera:start-skipped-active"/);
   assert.match(mainSource, /private desiredFacingMode: "environment" \| "user" \| "" = ""/);
   assert.match(mainSource, /private torchEnabled = false/);
   assert.match(mainSource, /setButtonText\("Flash"\)\s+\.onClick\(\(\) => this\.toggleTorch\(status\)\)/);
@@ -661,6 +2329,9 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const capabilities = track\?\.getCapabilities\?\.\(\) as any/);
   assert.match(mainSource, /await \(track\.applyConstraints as any\)\(\{ advanced: \[\{ torch: next \}\] \}\)/);
   assert.match(mainSource, /this\.desiredFacingMode = this\.desiredFacingMode === "environment" \? "user" : "environment"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "torch:unavailable"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "camera:flip-busy"\)/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "camera:flip", \{ facingMode: this\.desiredFacingMode \}\)/);
   assert.match(mainSource, /this\.stopScanning\(\);\s+this\.updateCameraControlButtons\(\);\s+statusEl\.setText\(`Switching to \$\{this\.desiredFacingMode === "environment" \? "rear" : "front"\} camera\.\.\.`\);/);
   assert.match(mainSource, /facingMode: \{ ideal: this\.desiredFacingMode \|\| this\.defaultFacingMode\(\) \}/);
   assert.match(mainSource, /statusEl\.setText\("Checking native barcode scanner\.\.\."\);\s+if \(await this\.tryNativeBarcodeBridge\(statusEl\)\) return;\s+statusEl\.setText\("Web camera scanner active\. Scanning\.\.\."\);/);
@@ -684,11 +2355,15 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private shortcutInboxEventRefs: EventRef\[\] = \[\]/);
   assert.match(mainSource, /if \(this\.shouldShowAppleShortcutButton\(\)\) \{\s+controls\.addButton\(\(button\) => button\s+\.setButtonText\("Apple Shortcut"\)\s+\.onClick\(\(\) => this\.openAppleShortcut\(status\)\)\);/);
   assert.match(mainSource, /statusEl\.setText\(`Opening Apple Shortcut\. TPS Health is watching \$\{SHORTCUT_BARCODE_INBOX_PATH\} for the scanned barcode\.`\);/);
-  assert.match(mainSource, /const opened = window\.open\(url, "_blank"\);\s+if \(!opened\) window\.location\.href = url;/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut:open", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut:popup-blocked", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
   assert.match(mainSource, /this\.app\.vault\.on\("create", \(changed\) => \{/);
   assert.match(mainSource, /this\.app\.vault\.on\("modify", \(changed\) => \{/);
   assert.match(mainSource, /this\.shortcutInboxPollInterval = window\.setInterval\(\(\) => \{/);
   assert.match(mainSource, /const barcode = shortcutBarcodeFromContent\(content\);/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:watch-start"/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut-inbox:no-barcode"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:duplicate"/);
   assert.match(mainSource, /await this\.app\.vault\.modify\(file, `Processed by TPS Health at \$\{isoNow\(\)\}\\n`\);/);
   assert.match(mainSource, /await this\.lookup\(barcode, statusEl\);/);
   assert.match(mainSource, /function appleShortcutBarcodeUrl\(\): string \{\s+return `shortcuts:\/\/run-shortcut\?name=\$\{encodeURIComponent\(SHORTCUT_BARCODE_NAME\)\}`;/);
@@ -701,14 +2376,18 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /delayBetweenScanAttempts: 90/);
   assert.match(mainSource, /await this\.startZxingVideoScan\(statusEl\)/);
   assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+this\.zxingVideoControls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
-  assert.match(mainSource, /this\.scheduleCanvasScanFallback\(statusEl, sessionId\)/);
-  assert.match(mainSource, /this\.fallbackScanTimeout = window\.setTimeout\(\(\) => \{/);
-  assert.match(mainSource, /\}, 900\);/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(String\(text\)\) \}\)/);
+  assert.doesNotMatch(mainSource, /scheduleCanvasScanFallback/);
+  assert.doesNotMatch(mainSource, /fallbackScanTimeout/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "zxing-video:failed"[\s\S]+await this\.startCanvasScanLoop\(statusEl\);/);
   assert.match(mainSource, /this\.zxingVideoControls\?\.stop\?\.\(\)/);
   assert.match(mainSource, /DecodeHintType\.POSSIBLE_FORMATS/);
   assert.match(mainSource, /BarcodeFormat\.UPC_A/);
   assert.match(mainSource, /DecodeHintType\.TRY_HARDER, true/);
   assert.match(mainSource, /barcodeScanCanvases\(this\.canvasEl, heavy\)/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "canvas:decoded", \{ barcode: maskBarcode\(result\) \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "image-scan:not-image"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "image-scan:decoded", \{ barcode: maskBarcode\(result\) \}\)/);
   assert.match(mainSource, /const getUserMedia = this\.options\.adapters\?\.requestCameraStream \|\| navigator\.mediaDevices\?\.getUserMedia\?\.bind\(navigator\.mediaDevices\)/);
   assert.match(mainSource, /return await getUserMedia\(\{\s+video: \{/);
   assert.match(mainSource, /return await getUserMedia\(\{ video: true \}\)/);
@@ -725,6 +2404,10 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /function cropCanvas\(/);
   assert.match(mainSource, /ctx\.rotate\(Math\.PI \/ 2\)/);
   assert.match(mainSource, /function barcodeImageCanvases\(img: HTMLImageElement\): HTMLCanvasElement\[\]/);
+  assert.match(mainSource, /const BARCODE_LOOKUP_TIMEOUT_MS = 5000;/);
+  assert.match(mainSource, /this\.withTimeout\(\s*this\.lookupOpenFoodFactsBarcodeCandidate\(code\),\s*BARCODE_LOOKUP_TIMEOUT_MS,\s*null,/);
+  assert.match(mainSource, /await this\.addSelection\(item, null, \{ enrich: false \}\);\s+logger\.flow\("FoodModal", "barcode:add-hit"/);
+  assert.match(mainSource, /const loggedStats = await this\.plugin\.getLoggedFoodStats\(""\);\s+const localFoods = await this\.plugin\.searchFoods\("", loggedStats\);/);
   assert.match(readmeSource, /Apple's true VisionKit scanner is native app code/);
   assert.match(readmeSource, /probes for known native barcode bridge shapes/);
   assert.match(readmeSource, /when no bridge exists, is cancelled, or errors/);
@@ -736,6 +2419,36 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(readmeSource, /obsidian:\/\/advanced-uri\?vault=TishOS%20v0\.1&filepath=TPS%20Health%20Barcode%20Scan\.md&data=<Shortcut Scanned Code>&mode=overwrite/);
   assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \|\| 1;/);
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
+});
+
+test("food logging modal consumed-time defaults are date-context aware", async () => {
+  const { initialFoodLogConsumedDateInput, restoredFoodLogDraftConsumedDateInput } = await importPluginWithObsidianStub();
+  assert.match(initialFoodLogConsumedDateInput(null), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+  assert.match(initialFoodLogConsumedDateInput({ dateIso: "2026-07-04", isToday: true }), /^2026-07-04T\d{2}:\d{2}$/);
+  assert.match(initialFoodLogConsumedDateInput({ dateIso: "2026-06-30", isToday: false }), /^2026-06-30T\d{2}:\d{2}$/);
+  const selectedDateContext = { dateIso: "2026-06-24", isToday: true };
+  const selectedDateDefault = initialFoodLogConsumedDateInput(selectedDateContext);
+  assert.equal(
+    restoredFoodLogDraftConsumedDateInput(selectedDateContext, {
+      consumedDateInput: "2026-06-23T19:46",
+      updatedAt: "2026-06-23T19:46:00.000Z",
+    }),
+    selectedDateDefault,
+  );
+  assert.equal(
+    restoredFoodLogDraftConsumedDateInput(selectedDateContext, {
+      consumedDateInput: "2026-06-24T09:00",
+      updatedAt: "2026-06-24T09:00:00.000Z",
+    }),
+    selectedDateDefault,
+  );
+  assert.equal(
+    restoredFoodLogDraftConsumedDateInput(selectedDateContext, {
+      consumedDateInput: "2026-06-24T11:45",
+      updatedAt: new Date().toISOString(),
+    }),
+    "2026-06-24T11:45",
+  );
 });
 
 test("fake vault food writes cover no-write cancel, upsert, single-file, daily-note, and recipe paths", async () => {
@@ -840,29 +2553,125 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.equal(dailyEntry.item.sourcePath, "Health/Foods/Search Yogurt.md");
   assert.match(fake.files.get("Daily/2026-06-21.md"), /## Food\n\n- 1 cup - \[\[Health\/Foods\/Search Yogurt\|Search Yogurt\]\]/);
   assert.match(fake.files.get("Daily/2026-06-21.md"), /\[foodPath:: Health\/Foods\/Search Yogurt\.md\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[servings:: 1\.6\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[cal:: 192\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[protein:: 24\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[carbs:: 14\.4\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[fat:: 3\.2\]/);
   assert.equal(fake.files.has("Calendar.md"), false);
+
+  plugin.settings.defaultFoodLogSection = "";
+  fake.files.set("Daily/2026-06-22.md", "---\ntitle: 2026-06-22\n---\n\nExisting body\n");
+  await plugin.logFoodFromInput({
+    item: {
+      id: "manual-shake",
+      name: "Manual Shake",
+      source: "custom-inline",
+      nutrition: { calories: 180, proteinG: 25, carbsG: 10, fatG: 3 },
+    },
+    quantity: 1,
+    unit: "serving",
+    completedDate: "2026-06-22T07:30:00.000Z",
+    createFoodNote: false,
+  });
+  const unheadedDailyContent = fake.files.get("Daily/2026-06-22.md");
+  assert.match(unheadedDailyContent, /^---\ntitle: 2026-06-22\n---\n\n- 1 serving - Manual Shake <!-- /);
+  assert.match(unheadedDailyContent, /\[cal:: 180\]/);
+  assert.doesNotMatch(unheadedDailyContent, /## Food/);
+  assert.ok(unheadedDailyContent.indexOf("Manual Shake") < unheadedDailyContent.indexOf("Existing body"));
 
   const recipe = await plugin.createFoodFromInput({
     type: "recipe",
     name: "Provider Snack Plate",
     servingAmount: 1,
     servingUnit: "recipe",
-    nutrition: { calories: 330, proteinG: 35, carbsG: 31, fatG: 10 },
-    notes: "- 0.5 bar Provider Bar (Health/Foods/Provider Bar.md)\n- 1 cup Search Yogurt (Health/Foods/Search Yogurt.md)",
+    ingredients: [
+      "- 0.5 bar - [[Health/Foods/Provider Bar|Provider Bar]]",
+      "- 1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
+    ].join("\n"),
   });
   assert.equal(recipe.sourcePath, "Health/Recipes/Provider Snack Plate.md");
-  assert.match(fake.files.get("Health/Recipes/Provider Snack Plate.md"), /kind: recipe/);
-  assert.match(fake.files.get("Health/Recipes/Provider Snack Plate.md"), /#tps\/recipe/);
-  assert.match(fake.files.get("Health/Recipes/Provider Snack Plate.md"), /Provider Bar/);
+  const recipeContent = fake.files.get("Health/Recipes/Provider Snack Plate.md");
+  assert.match(recipeContent, /kind: recipe/);
+  assert.match(recipeContent, /#tps\/recipe/);
+  assert.match(recipeContent, /servingUnit: "serving"/);
+  assert.match(recipeContent, /recipeServings: 1/);
+  assert.match(recipeContent, /calories: 316/);
+  assert.match(recipeContent, /proteinG: 34\.5/);
+  assert.match(recipeContent, /carbsG: 25\.9/);
+  assert.match(recipeContent, /fatG: 7\.2/);
+  assert.match(recipeContent, /#tps\/recipe\n- 0\.5 bar - \[\[Health\/Foods\/Provider Bar\|Provider Bar\]\]/);
+  assert.match(recipeContent, /- 1 cup - \[\[Health\/Foods\/Search Yogurt\|Search Yogurt\]\]/);
+  assert.doesNotMatch(recipeContent, /<!--/);
+  assert.doesNotMatch(recipeContent, /\[foodPath:: Health\/Foods\/Search Yogurt\.md\]/);
+  assert.doesNotMatch(recipeContent, /\ningredients:/);
+  assert.doesNotMatch(recipeContent, /## Notes\n- 0\.5 bar/);
+  assert.doesNotMatch(recipeContent, /## Ingredients/);
+
+  const plainRecipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Plain Ingredient Recipe",
+    servingAmount: 1,
+    servingUnit: "recipe",
+    ingredients: [
+      "- 1 bar - Provider Bar",
+      "- 2 scoop - Missing Protein Powder",
+    ].join("\n"),
+  });
+  assert.equal(plainRecipe.sourcePath, "Health/Recipes/Plain Ingredient Recipe.md");
+  const plainRecipeContent = fake.files.get("Health/Recipes/Plain Ingredient Recipe.md");
+  assert.match(plainRecipeContent, /- 1 bar - \[\[Health\/Foods\/Provider Bar\|Provider Bar\]\]/);
+  assert.match(plainRecipeContent, /- 2 scoop - Missing Protein Powder/);
+
+  const multiServingRecipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Four Serving Snack Plate",
+    servingAmount: 1,
+    servingUnit: "serving",
+    recipeServings: 4,
+    ingredients: [
+      "- 0.5 bar - [[Health/Foods/Provider Bar|Provider Bar]]",
+      "- 1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
+    ].join("\n"),
+  });
+  assert.equal(multiServingRecipe.nutrition.calories, 79);
+  assert.equal(multiServingRecipe.nutrition.proteinG, 8.625);
+  const multiServingRecipeContent = fake.files.get("Health/Recipes/Four Serving Snack Plate.md");
+  assert.match(multiServingRecipeContent, /kind: recipe/);
+  assert.match(multiServingRecipeContent, /recipeServings: 4/);
+  assert.match(multiServingRecipeContent, /calories: 79/);
+  assert.match(multiServingRecipeContent, /proteinG: 8\.625/);
+
+  const meal = await plugin.createFoodFromInput({
+    type: "meal",
+    name: "Single Serving Snack Plate",
+    servingAmount: 1,
+    servingUnit: "meal",
+    recipeServings: 12,
+    ingredients: [
+      "- 0.5 bar - [[Health/Foods/Provider Bar|Provider Bar]]",
+      "- 1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
+    ].join("\n"),
+  });
+  assert.equal(meal.nutrition.calories, 316);
+  const mealContent = fake.files.get("Health/Recipes/Single Serving Snack Plate.md");
+  assert.match(mealContent, /kind: meal/);
+  assert.match(mealContent, /servingUnit: "meal"/);
+  assert.match(mealContent, /recipeServings: 1/);
+  assert.match(mealContent, /calories: 316/);
 
   const touchedPaths = new Set(fake.writes.filter((write) => write.op !== "mkdir").map((write) => write.path));
   assert.deepEqual([...touchedPaths].sort(), [
     "Daily/2026-06-20.md",
     "Daily/2026-06-21.md",
+    "Daily/2026-06-22.md",
     "Health/Food Log.md",
     "Health/Foods/Provider Bar.md",
     "Health/Foods/Search Yogurt.md",
+    "Health/Recipes/Four Serving Snack Plate.md",
+    "Health/Recipes/Plain Ingredient Recipe.md",
     "Health/Recipes/Provider Snack Plate.md",
+    "Health/Recipes/Single Serving Snack Plate.md",
   ]);
 });
 
@@ -871,6 +2680,10 @@ test("create from food search upserts canonical local foods instead of creating 
   assert.doesNotMatch(mainSource, /\$\{item\.name\} copy/);
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, await this\.plugin\.enrichFoodSearchItem\(item\), this\.dateContext\)\.open\(\)/);
   assert.match(mainSource, /const saved = await this\.plugin\.upsertFoodFromInput\(\{/);
+  assert.match(mainSource, /logger\.flow\("CustomFoodModal", "submit:done"/);
+  assert.match(mainSource, /logger\.flow\("CustomFoodModal", "edit:done"/);
+  assert.match(mainSource, /logger\.flow\("CustomFoodModal", "log-modal:open"/);
+  assert.match(mainSource, /logger\.flowError\("CustomFoodModal", "submit:failed"/);
   assert.match(mainSource, /barcode: this\.baseFood\?\.barcode/);
   assert.match(mainSource, /function foodDedupeKey\(item: FoodItem\): string/);
   assert.match(mainSource, /if \(item\.barcode\) return `barcode:\$\{normalizeLookup\(item\.barcode\)\}`/);
@@ -879,67 +2692,97 @@ test("create from food search upserts canonical local foods instead of creating 
   assert.match(mainSource, /const multiplier = 100 \/ metric\.amount/);
 });
 
-test("food log base view renders existing food log lines without task conversion", async () => {
-  const [mainSource, stylesSource, readmeSource] = await Promise.all([
+test("food detail editors use a compact responsive field grid", () => {
+  assert.match(mainSource, /class BarcodeFoodReviewModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
+  assert.match(mainSource, /class CustomFoodModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
+  assert.match(stylesSource, /\.tps-health-food-editor-grid \{[\s\S]+grid-template-columns: repeat\(auto-fit, minmax\(min\(190px, 100%\), 1fr\)\)/);
+  assert.match(stylesSource, /\.tps-health-food-editor-grid > \.setting-item \{[\s\S]+flex-direction: column/);
+  assert.match(stylesSource, /\.tps-health-food-editor-grid \.setting-item-control input,[\s\S]+font-size: var\(--font-ui-small\)/);
+  assert.match(stylesSource, /@media \(max-width: 600px\)[\s\S]+minmax\(min\(132px, 100%\), 1fr\)/);
+});
+
+test("food logging uses TPS Table without registering the retired custom Bases view", async () => {
+  const [mainSource, stylesSource, readmeSource, foodLogBaseSource] = await Promise.all([
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("./fixtures/Food Log.base", import.meta.url)), "utf8")),
   ]);
-  assert.match(mainSource, /const FOOD_LOG_BASE_VIEW_TYPE = "tps-health-food-log"/);
-  assert.match(mainSource, /this\.registerBasesView\(FOOD_LOG_BASE_VIEW_TYPE, \{/);
-  assert.match(mainSource, /name: "Food Log"/);
-  assert.match(mainSource, /factory: \(controller: QueryController, containerEl: HTMLElement\): BasesView =>\s+new FoodLogBaseView\(controller, containerEl, this\)/);
+
+  assert.match(mainSource, /const LEGACY_FOOD_LOG_BASE_VIEW_TYPE = "tps-health-food-log"/);
+  assert.doesNotMatch(mainSource, /registerBasesView\([^)]*LEGACY_FOOD_LOG_BASE_VIEW_TYPE/);
+  assert.doesNotMatch(mainSource, /class FoodLogBaseView/);
+  assert.doesNotMatch(mainSource, /\bBasesView\b|\bQueryController\b/);
+  assert.doesNotMatch(stylesSource, /\.tps-health-food-log-base\b/);
+  assert.doesNotMatch(stylesSource, /\.tps-health-food-log-table-row\b/);
+
   assert.match(mainSource, /id: "open-food-log-base"/);
   assert.match(mainSource, /name: "Open Food Log base"/);
   assert.match(mainSource, /vault\.create\(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent\(this\.settings\)\)/);
   assert.match(mainSource, /const repaired = repairFoodLogBaseContent\(await this\.app\.vault\.cachedRead\(file\), this\.settings\);/);
-  assert.match(mainSource, /if \(repaired\) await this\.app\.vault\.modify\(file, repaired\);/);
-  assert.match(mainSource, /class FoodLogBaseView extends BasesView/);
-  assert.match(mainSource, /const baseFiles = this\.getBaseFilteredFiles\(\);\s+if \(baseFiles\.length\) return baseFiles;\s+return this\.getHealthFoodLogFiles\(\);/);
-  assert.match(mainSource, /const groups = queryData\?\.groupedData;/);
-  assert.match(mainSource, /const entries = queryData\?\.data;\s+if \(!files\.length && Array\.isArray\(entries\)\) entries\.forEach\(addEntry\);/);
-  assert.match(mainSource, /const configured = normalizePath\(this\.plugin\.settings\.foodLogFilePath \|\| ""\);/);
-  assert.match(mainSource, /isFoodLogBaseDailyNoteFile\(file\.path, dailyFolder\) \|\| \/\^Dailynotes\\\/\//);
-  assert.match(mainSource, /const entry = createFoodLogBaseEntry\(this\.plugin, file, index, line\);/);
-  assert.match(mainSource, /if \(dateContext && entry\.dateKey !== dateContext\.dateIso\) continue;/);
-  assert.match(mainSource, /entries\.push\(entry\);/);
-  assert.match(mainSource, /private async getDateContext\(\): Promise<FoodLogDateContext \| null>/);
-  assert.match(mainSource, /this\.plugin\.getFoodLogDateContextForFile\(contextFile\)/);
-  assert.match(mainSource, /resolveFoodLogNutrition\(line, \(foodPath\) =>/);
-  assert.match(mainSource, /const completedDate = readStringField\(line, "completedDate"\) \|\| "";/);
-  assert.match(mainSource, /const createdDate = readStringField\(line, "createdDate"\) \|\| "";/);
-  assert.match(mainSource, /const date = foodLogBaseDate\(completedDate, dailyNotePath \|\| file\.path, createdDate\);/);
-  assert.match(mainSource, /groupFoodLogEntries\(entries\)/);
-  assert.match(mainSource, /sumFoodLogNutrition\(group\.entries\)/);
-  assert.match(mainSource, /this\.plugin\.openFoodLogger\(dateContext\)/);
-  assert.match(mainSource, /new BarcodeScannerModal\(this\.plugin\.app, this\.plugin, dateContext, async \(item\) =>/);
-  assert.match(mainSource, /new FoodLogModal\(this\.plugin\.app, this\.plugin, item, null, dateContext\)\.open\(\)/);
-  assert.match(mainSource, /type: \$\{FOOD_LOG_BASE_VIEW_TYPE\}/);
+  assert.match(mainSource, /logger\.flow\("Base", "food-log:repair", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /await this\.app\.vault\.modify\(file, repaired\)/);
+
+  assert.match(mainSource, /const GCM_TABLE_BASE_VIEW_TYPE = "tps-table"/);
+  assert.match(mainSource, /const GCM_LEGACY_LOG_BASE_VIEW_TYPE = "tps-log-table"/);
   assert.match(mainSource, /function defaultFoodLogBaseContent\(settings: TPSHealthSettings\): string/);
-  assert.match(mainSource, /const filters = foodLogBaseDefaultFilters\(settings\);/);
+  assert.match(mainSource, /const filters = foodLogBaseDefaultFilters\(settings\)/);
+  assert.match(mainSource, /"    lineFilterKey: food"/);
+  assert.match(mainSource, /"    totalsRow: top"/);
+  assert.match(mainSource, /"    createAction: command"/);
+  assert.match(mainSource, /"    createCommandId: tps-health:log-food"/);
+  assert.match(mainSource, /"    groupBy:"/);
+  assert.match(mainSource, /"      property: completedDate"/);
+  assert.match(mainSource, /"        direction: DESC"/);
   assert.match(mainSource, /function legacyBroadFoodLogBaseContent\(\): string/);
-  assert.match(mainSource, /"    - file\.name != \\"\\""/);
-  assert.match(mainSource, /if \(normalized === legacyBroadFoodLogBaseContent\(\)\.trimEnd\(\)\) return defaultFoodLogBaseContent\(settings\);/);
-  assert.match(mainSource, /if \(content\.includes\(`type: \$\{FOOD_LOG_BASE_VIEW_TYPE\}`\)\) return null;/);
-  assert.match(mainSource, /if \(!normalized\) return defaultFoodLogBaseContent\(settings\);/);
-  assert.match(mainSource, /filters\.add\(`file\.path == \$\{baseString\(foodLogPath\)\}`\);/);
-  assert.match(mainSource, /filters\.add\(`file\.folder == \$\{baseString\(dailyFolder\)\}`\);/);
-  assert.match(mainSource, /filters\.add\(`file\.folder == \$\{baseString\("Dailynotes"\)\}`\);/);
+  assert.match(mainSource, /function replaceLegacyFoodLogBaseViewConfig\(content: string\): string/);
+  assert.match(mainSource, /const migrated = replaceLegacyFoodLogBaseViewConfig\(normalized\)/);
+  assert.match(mainSource, /function repairLogBaseViewConfig\(content: string\): string/);
+  assert.match(mainSource, /const repairedView = repairLogBaseViewConfig\(normalized\)/);
+  assert.match(mainSource, /if \(!normalized\) return defaultFoodLogBaseContent\(settings\)/);
+  assert.match(mainSource, /function foodLogBaseDefaultFilters\(settings: TPSHealthSettings\): string\[\]/);
   assert.doesNotMatch(mainSource, /const files = this\.plugin\.app\.vault\.getMarkdownFiles\(\);\s+for \(const file of files\)/);
-  assert.doesNotMatch(mainSource, /tps-health-food-log[^\n]+task-line/);
-  assert.match(stylesSource, /\.tps-health-food-log-base/);
-  assert.match(stylesSource, /\.tps-health-food-log-entry/);
-  assert.match(readmeSource, /`tps-health-food-log`/);
-  assert.match(readmeSource, /respects the active Base query\/filter result/);
-  assert.match(readmeSource, /When embedded in a daily note, it detects that note's daily-note date/);
-  assert.match(readmeSource, /configured single food log file, the configured daily-note folder, and the legacy `Dailynotes\/` folder/);
-  assert.match(readmeSource, /native Bases table\/list views operate on files and tasks/);
+
+  assert.match(mainSource, /async openFoodLogEntryMenu\(event: MouseEvent, entry: FoodLogBaseEntry\): Promise<void>/);
+  assert.match(mainSource, /const selectedEntries = await this\.getSelectedFoodLogEntries\(entry\)/);
+  assert.match(mainSource, /Create recipe from/);
+  assert.match(mainSource, /new FoodLogRecipeModal\(this\.app, this, selectedEntries\)\.open\(\)/);
+  assert.match(mainSource, /class FoodLogRecipeModal extends Modal/);
+  assert.match(mainSource, /sumFoodLogNutrition\(this\.entries\)/);
+  assert.match(mainSource, /setTitle\("Adjust serving consumed"\)/);
+  assert.match(mainSource, /setTitle\("Edit food macros\/title"\)/);
+  assert.match(mainSource, /Delete food log entry/);
+  assert.match(mainSource, /async deleteFoodLogEntries\(entries: FoodLogBaseEntry\[\]/);
+  assert.match(mainSource, /class FoodLogAdjustModal extends Modal/);
+  assert.match(mainSource, /async replaceFoodLogEntryLine\(entry: FoodLogBaseEntry/);
+  assert.match(mainSource, /async openFoodLogFoodNote\(entry: FoodLogBaseEntry\)/);
+  assert.match(mainSource, /setTitle\("Change consumed date\/time"\)/);
+  assert.match(mainSource, /class FoodLogConsumedDateModal extends Modal/);
+  assert.match(mainSource, /updateFoodLogEntryConsumedDate\(entry: FoodLogBaseEntry/);
+
+  assert.match(foodLogBaseSource, /^\s*- type: tps-table\s*$/m);
+  assert.match(foodLogBaseSource, /^\s+lineFilterKey: food\s*$/m);
+  assert.match(foodLogBaseSource, /^\s+totalsRow: top\s*$/m);
+  assert.match(foodLogBaseSource, /^\s+createCommandId: tps-health:log-food\s*$/m);
+  assert.doesNotMatch(foodLogBaseSource, /tps-health-food-log|tps-log-table/);
+
+  assert.match(readmeSource, /no longer registers .*tps-health-food-log/);
+  assert.match(readmeSource, /GCM's generic .*tps-table/);
+  assert.match(readmeSource, /lineFilterKey: food/);
+  assert.match(readmeSource, /totalsRow: top/);
+  assert.match(readmeSource, /createCommandId: tps-health:log-food/);
+  assert.match(readmeSource, /GCM TPS Table scans matching Markdown inline-property lines/);
 });
 
 test("inline food autocomplete supports linked food amounts without property brackets", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.match(mainSource, /!lineHasFoodDraftProperties\(line\) && !parsed\.hasExplicitAmount && !parsed\.sourcePath/);
   assert.match(mainSource, /draft\.sourcePath/);
+  assert.match(mainSource, /logger\.flowWarn\("InlineFood", "suggest:source-missing", \{ sourcePath: draft\.sourcePath \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("InlineFood", "suggest:select-missing-line"/);
+  assert.match(mainSource, /logger\.flowWarn\("InlineFood", "suggest:select-no-completion"/);
+  assert.match(mainSource, /logger\.flowWarn\("InlineFood", "suggest:select-no-editor"/);
+  assert.match(mainSource, /logger\.flow\("InlineFood", "suggest:select-done"/);
   assert.match(mainSource, /resolveFoodLogServing\(saved, parsed\.quantity, parsed\.unit \|\| preferredFoodLogUnit\(saved\)\)/);
 });
 
@@ -947,42 +2790,798 @@ test("completed inline food logs render as live preview chips", async () => {
   const fs = await import("node:fs/promises");
   const mainSource = await fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8");
   const stylesSource = await fs.readFile(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
-  assert.match(mainSource, /registerEditorExtension\(createFoodLogChipExtension\(this\)\)/);
-  assert.match(mainSource, /registerEditorExtension\(createWorkoutSetChipExtension\(\)\)/);
-  assert.match(mainSource, /renderFoodLogChips\(root, this\)/);
-  assert.match(mainSource, /renderWorkoutSetChips\(root, ctx\.sourcePath\)/);
+  assert.match(mainSource, /if \(Platform\.isMobileApp\) \{\s+logger\.flow\("FoodLog", "editor-extension:skip-mobile", \{ reason: "avoid-mobile-note-open-regressions" \}\);\s+\} else \{\s+this\.registerEditorExtension\(createFoodLogChipExtension\(this\)\);\s+\}/);
+  assert.match(mainSource, /registerEditorExtension\(createWorkoutSetChipExtension\(this\)\)/);
+  assert.match(mainSource, /class WorkoutExercisePickerModal extends Modal/);
+  assert.match(mainSource, /text: "Workout • 0\/0"/);
+  assert.match(mainSource, /async addSeededWorkoutSetAfterBlock\(source: WorkoutSetLineSource\)/);
+  assert.match(mainSource, /previous\.textContent = data\.previous\?\.details \? `Last:/);
+  assert.match(mainSource, /"render:legacy-readonly"/);
+  assert.match(stylesSource, /\.tps-health-workout-exercise-add[\s\S]*width: 100%/);
+  assert.match(mainSource, /scheduleWorkoutActionBars\(\)/);
+  assert.match(mainSource, /ensureWorkoutActionBar\(view: MarkdownView \| null, file: TFile, source: "view" \| "active-workout" \| "active-view" = "view"\)/);
+  assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "refresh:scheduled"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "refresh:done"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutActionBar", "refresh:failed"/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutActionBar", "render:no-host"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "render:done"/);
+  assert.match(mainSource, /new WorkoutExercisePickerModal\(this\.app, this, file\.path\)\.open\(\)/);
+  assert.match(mainSource, /async logSetToWorkoutFile\(filePath: string, set: LogSetInput\): Promise<WorkoutSet>/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "log-file:missing-file"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "log-file:done"/);
+  assert.match(mainSource, /countWorkoutSetRecords\(content\) \+ 1/);
+  assert.match(mainSource, /ctx\.addChild\(new TPSHealthRenderedControlsChild\(root, this, ctx\)\)/);
+  assert.match(mainSource, /renderFoodLogChips\(this\.containerEl, this\.plugin, this\.ctx\)/);
+  assert.match(mainSource, /renderWorkoutSetChips\(this\.containerEl, this\.plugin, this\.ctx\)/);
   assert.match(mainSource, /class FoodLogChipWidget extends WidgetType/);
+  assert.match(mainSource, /new FoodLogChipWidget\(plugin, chip, \{ filePath, lineNumber: line\.number - 1, line: text \}\)/);
+  assert.match(mainSource, /menuButton\.className = "tps-health-food-chip-menu"/);
+  assert.match(mainSource, /macros\.setAttribute\("aria-label", `Nutrition: \$\{data\.macros\.join\(", "\)\}`\)/);
+  assert.match(mainSource, /macro\.className = "tps-health-food-chip-macro"/);
+  assert.match(mainSource, /macro\.textContent = value/);
+  assert.match(mainSource, /void plugin\.openFoodLogEntryMenuFromLine\(event, ctx\.sourcePath, lineNumber, text\)/);
+  assert.match(mainSource, /looksLikeFoodLogVisibleLine\(visibleText\)/);
+  assert.match(mainSource, /findFoodLogEntryByVisibleText\(file, foodLogVisibleSummary\(line\) \|\| line\)/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "contextmenu:no-match"/);
+  assert.match(mainSource, /logger\.flowError\("FoodLogEntry", "contextmenu:failed"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:missing-file"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:stale-line"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "menu-from-line:fallback-match"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:no-match"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "source-line:open-start"/);
+  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "source-line:open-done"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "source-line:no-active-view"/);
+  assert.match(mainSource, /logger\.flowError\("FoodLogEntry", "source-line:open-failed"/);
   assert.match(mainSource, /class WorkoutSetChipWidget extends WidgetType/);
+  assert.match(mainSource, /safeWorkoutSetEditorElement\(this\.plugin, this\.data, this\.source\) \|\| document\.createElement\("span"\)/);
+  assert.match(mainSource, /function safeWorkoutSetEditorElement\(plugin: TPSHealthPlugin, data: WorkoutSetChipData, source: WorkoutSetLineSource\): HTMLElement \| null/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutSet", "render:failed"/);
+  assert.match(mainSource, /plugin\.updateWorkoutSetLine\(source, \{/);
+  assert.match(mainSource, /void plugin\.addSeededWorkoutSetAfterBlock\(source\)/);
+  assert.match(mainSource, /void plugin\.duplicateWorkoutSetBelow\(source\)/);
+  assert.match(mainSource, /function workoutSetPlaceholderLine\(exercise: string\): string/);
+  assert.doesNotMatch(mainSource, /\[exercise:: Exercise\] \[setId::/);
+  assert.match(mainSource, /rest\.setAttribute\("aria-label", "Rest seconds"\)/);
+  assert.match(mainSource, /restLabel\.textContent = "Rest"/);
+  assert.match(mainSource, /perform\.textContent = data\.status === "complete" \? "Performed" : "Play"/);
+  assert.match(mainSource, /perform\.setAttribute\("aria-label", data\.status === "complete"/);
+  assert.match(mainSource, /restControl\.append\(restLabel, restDown, rest, restUp, restStatus\)/);
+  assert.match(mainSource, /restCountdown\.textContent = remaining > 0 \? formatRestDuration\(remaining\) : "done"/);
+  assert.match(mainSource, /void plugin\.linkWorkoutExerciseWithPrevious\(source\)/);
+  assert.match(mainSource, /void plugin\.linkWorkoutSetWithPreviousDropSet\(source\)/);
+  assert.match(mainSource, /const metrics = document\.createElement\("span"\)/);
+  assert.match(mainSource, /metrics\.className = "tps-health-workout-set-metrics"/);
+  assert.match(mainSource, /setBadge\.className = `tps-health-workout-set-badge is-\$\{data\.setType \|\| "normal"\}`/);
+  assert.match(mainSource, /previous\.className = "tps-health-workout-set-previous"/);
+  assert.match(mainSource, /gridHeader\.className = "tps-health-workout-set-grid-header"/);
+  assert.match(mainSource, /input\.addEventListener\("focus", \(\) => input\.select\(\)\)/);
+  assert.match(mainSource, /event\.key === "ArrowUp" \|\| event\.key === "ArrowDown"/);
+  assert.match(mainSource, /restSeconds: restValue/);
+  assert.match(mainSource, /restStartedAt: currentRestStartedAt \|\| undefined/);
+  assert.match(mainSource, /performed: options\.perform/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", performsSet \? "line:perform" : "line:update"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "line:update-rebased"/);
+  assert.match(mainSource, /"line:update-duplicate-set-id" : "line:update-missing-set-id"/);
+  assert.match(mainSource, /ignoreEvent\(\): boolean \{\s+return true;/);
   assert.match(mainSource, /foodLogChipDataFromLine\(text\)/);
   assert.match(mainSource, /foodLogNutritionForLine\(line, plugin\)/);
   assert.match(mainSource, /foodLogChipDataFromRenderedItem\(item, plugin\)/);
   assert.match(mainSource, /workoutSetChipDataFromLine/);
-  assert.match(mainSource, /view\.state\.field\(editorLivePreviewField, false\)/);
+  const workoutSetExtensionSource = mainSource.slice(
+    mainSource.indexOf("function createWorkoutSetChipExtension"),
+    mainSource.indexOf("function docHasWorkoutSetLine"),
+  );
+  assert.match(workoutSetExtensionSource, /view\.state\.field\(editorLivePreviewField, false\)/);
+  assert.match(workoutSetExtensionSource, /workoutFilePathForEditorView\(plugin, view\)/);
+  assert.match(workoutSetExtensionSource, /if \(!filePath \|\| !isWorkoutLikeMarkdownPath\(plugin, filePath\)\) return Decoration\.none;/);
+  assert.doesNotMatch(workoutSetExtensionSource, /Decoration\.replace/);
+  assert.match(workoutSetExtensionSource, /builder\.add\(line\.to, line\.to, Decoration\.widget/);
+  assert.match(mainSource, /function workoutFilePathForRenderedRoot\(plugin: TPSHealthPlugin, root: HTMLElement, sourcePath: string \| null \| undefined\): string/);
+  assert.match(mainSource, /function markdownFilePathForRenderedElement\(plugin: TPSHealthPlugin, element: HTMLElement\): string/);
+  assert.match(mainSource, /const items = root\.matches\("li"\) \? \[root, \.\.\.Array\.from\(root\.querySelectorAll\("li"\)\)\] : Array\.from\(root\.querySelectorAll\("li"\)\);/);
   assert.match(stylesSource, /\.tps-health-food-chip/);
+  assert.match(stylesSource, /grid-template-areas:/);
+  assert.match(stylesSource, /@media \(max-width: 520px\), \(hover: none\) and \(pointer: coarse\) \{/);
+  assert.match(stylesSource, /"food menu"\s+"macros macros"\s+"serving amount"/);
+  assert.match(stylesSource, /width: min\(100%, calc\(100vw - 96px\)\)/);
   assert.match(stylesSource, /\.tps-health-food-chip-serving/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros/);
+  assert.match(stylesSource, /"food macros menu"\s+"serving amount menu"/);
+  assert.match(stylesSource, /\.tps-health-food-chip-macro \{[\s\S]*font-variant-numeric: tabular-nums;/);
+  assert.match(stylesSource, /\.tps-health-food-chip-macros \{[\s\S]*justify-content: flex-end;/);
+  assert.match(stylesSource, /\.tps-health-food-chip-menu/);
   assert.match(stylesSource, /\.tps-health-macro-pill/);
   assert.match(stylesSource, /\.tps-health-workout-set-chip/);
+  assert.match(stylesSource, /\.tps-health-workout-action-bar/);
+  assert.match(stylesSource, /\.tps-health-workout-action-bar--mobile-floating/);
+  assert.match(stylesSource, /\.tps-health-workout-action-return/);
+  assert.match(stylesSource, /flex: 0 0 38px/);
+  assert.match(stylesSource, /width: 38px/);
+  assert.match(stylesSource, /bottom: calc\(var\(--tps-gcm-mobile-toolbar-offset, 0px\) \+ env\(safe-area-inset-bottom, 0px\) \+ 86px\)/);
+  assert.match(stylesSource, /body\.is-mobile\.tps-health-mobile-workout-actions-active/);
+  assert.match(stylesSource, /\.tps-health-workout-action-button/);
+  assert.match(stylesSource, /\.tps-health-workout-set-header/);
+  assert.match(stylesSource, /\.tps-health-workout-set-grid-header/);
+  assert.match(stylesSource, /\.tps-health-workout-set-metrics/);
+  assert.match(stylesSource, /\.tps-health-workout-set-badge/);
+  assert.match(stylesSource, /\.tps-health-workout-set-previous/);
+  assert.match(stylesSource, /\.tps-health-workout-set-field-label/);
   assert.match(stylesSource, /\.tps-health-workout-set-meta/);
+  assert.match(stylesSource, /\.tps-health-workout-set-stepper/);
+  assert.match(stylesSource, /\.tps-health-workout-set-rest/);
+  assert.match(stylesSource, /\.tps-health-workout-set-actions/);
+  assert.match(stylesSource, /\.tps-health-workout-rest-status/);
+  assert.match(stylesSource, /\.tps-health-workout-rest-countdown/);
+  assert.match(mainSource, /private shouldFloatWorkoutActionBar\(\): boolean/);
+  assert.match(mainSource, /private resolveMobileWorkoutActionBarTarget\(\): \{ file: TFile; source: "active-view" \} \| null/);
+  assert.match(mainSource, /private findActiveWorkoutFileFromState\(\): TFile \| null/);
+  assert.match(mainSource, /logger\.flow\("Workout", "active-file:recovered"/);
+  assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:missing"/);
+  assert.doesNotMatch(mainSource, /return \{ file: active, source: "active-workout" \};/);
+  assert.match(mainSource, /const view = this\.app\.workspace\.getActiveViewOfType\(MarkdownView\);/);
+  assert.match(mainSource, /const target = this\.resolveMobileWorkoutActionBarTarget\(\);/);
+  assert.match(mainSource, /ensureWorkoutActionBar\(null, target\.file, target\.source\)/);
+  assert.match(mainSource, /Platform\.isMobile\s+\|\|\s+Platform\.isMobileApp/);
+  assert.match(mainSource, /tps-health-workout-action-bar--mobile-floating tps-gcm-hover-element/);
+  assert.match(mainSource, /bar\.setAttribute\("data-tps-hover-element", "true"\)/);
+  assert.match(mainSource, /cls: "tps-health-workout-action-return"/);
+  assert.match(mainSource, /setIcon\(open, "file-text"\)/);
+  assert.doesNotMatch(mainSource, /text: this\.settings\.activeWorkoutTitle \|\| "Workout"/);
+  assert.match(mainSource, /private async openWorkoutFileFromActionBar\(file: TFile, source: "view" \| "active-workout" \| "active-view"\): Promise<void>/);
+  assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "open-active:submit"/);
+  assert.match(mainSource, /logger\.flowError\("WorkoutActionBar", "open-active:failed"/);
+  assert.match(mainSource, /void this\.openWorkoutFileFromActionBar\(file, source\)/);
+  assert.match(mainSource, /skippedInactiveMobileLeaves/);
+  assert.match(mainSource, /document\.body\.classList\.toggle\(\s+"tps-health-mobile-workout-actions-active"/);
 });
 
 test("workout checklist completion tracks rest and prompts on the final planned set", async () => {
-  const fs = await import("node:fs/promises");
-  const mainSource = await fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8");
-  assert.match(mainSource, /registerWorkoutTaskCompletionTracking\(\)/);
-  assert.match(mainSource, /metadataCache\.on\("changed"/);
-  assert.match(mainSource, /handleWorkoutFileModify\(file: TFile\)/);
-  assert.match(mainSource, /annotateCompletedWorkoutTasks/);
-  assert.match(mainSource, /latestCompletedSetEndedAt\(lines, completedIndexes\[0\]\)/);
-  assert.match(mainSource, /secondsBetween\(previousEndedAt, completedAt\)/);
-  assert.match(mainSource, /upsertDataviewField\(nextLine, "rest", restSeconds\)/);
-  assert.match(mainSource, /parseWorkoutTaskSetLine\(lines\[index\]\)/);
-  assert.match(mainSource, /hasUncheckedPlannedWorkoutTask\(lines\)/);
-  assert.match(mainSource, /promptFinishWorkoutAfterLastSet\(file\)/);
-  assert.match(mainSource, /class FinishWorkoutPromptModal extends Modal/);
-  assert.match(mainSource, /Finish workout\?/);
-  assert.match(mainSource, /setButtonText\("Add set"\)/);
-  assert.match(mainSource, /new SetModal\(this\.app, this\)\.open\(\)/);
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    activeWorkoutId: "workout-active",
+    activeWorkoutPath: "Health/Workouts/Workout Checklist QA.md",
+    activeWorkoutStartedAt: "2026-06-24T10:00:00.000Z",
+    activeWorkoutPlanPath: "Health/Workout Plans/Checklist Plan.md",
+    activeWorkoutSetCount: 0,
+    workoutSetStorage: "task",
+    defaultRestSeconds: 90,
+  };
+  const path = plugin.settings.activeWorkoutPath;
+  const initial = [
+    "---",
+    "kind: workout",
+    "workoutId: workout-active",
+    "status: active",
+    "workoutDate: 2026-06-24",
+    "---",
+    "## Sets",
+    "- [ ] Bench press - warmup - 45 lb x 10",
+    "- [ ] Bench press - 135 lb x 8",
+    "",
+  ].join("\n");
+  fake.files.set(path, initial);
+  const file = fake.app.vault.getAbstractFileByPath(path);
+  const prompted = [];
+  plugin.promptFinishWorkoutAfterLastSet = (promptFile) => prompted.push(promptFile.path);
+  plugin.workoutFileSnapshots.set(path, initial);
+
+  fake.files.set(path, initial.replace("- [ ] Bench press - warmup - 45 lb x 10", "- [x] Bench press - warmup - 45 lb x 10"));
+  await plugin.handleWorkoutFileModify(file);
+
+  let content = fake.files.get(path);
+  assert.match(content, /- \[x\] Bench press - warmup - 45 lb x 10 .*?\[exercise:: Bench press\]/);
+  assert.match(content, /\[setType:: warmup\]/);
+  assert.match(content, /\[reps:: 10\]/);
+  assert.match(content, /\[weight:: 45\]/);
+  assert.match(content, /\[unit:: lb\]/);
+  assert.match(content, /\[setId:: set-/);
+  assert.match(content, /\[workoutPlanPath:: Health\/Workout Plans\/Checklist Plan\.md\]/);
+  assert.match(content, /setCount: 1/);
+  assert.equal(plugin.settings.activeWorkoutSetCount, 1);
+  assert.deepEqual(prompted, [], "non-final planned set should not prompt to finish");
+
+  fake.files.set(path, content.replace("- [ ] Bench press - 135 lb x 8", "- [x] Bench press - 135 lb x 8"));
+  await plugin.handleWorkoutFileModify(file);
+
+  content = fake.files.get(path);
+  assert.match(content, /- \[x\] Bench press - 135 lb x 8 .*?\[exercise:: Bench press\]/);
+  assert.match(content, /\[reps:: 8\]/);
+  assert.match(content, /\[weight:: 135\]/);
+  assert.match(content, /setCount: 2/);
+  assert.equal(plugin.settings.activeWorkoutSetCount, 2);
+  assert.deepEqual(prompted, [path], "final planned set should prompt to finish active workout");
+});
+
+test("blank active workouts can log sets with rest and save repeated planned sets as a layout", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFolder: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD",
+    workoutsFolder: "Health/Workouts",
+    workoutPlansFolder: "Health/Workout Plans",
+    exercisesFolder: "Health/Exercises",
+    workoutTemplatePath: "",
+    workoutPlanTemplatePath: "",
+    exerciseTemplatePath: "",
+    workoutLogTarget: "session-note",
+    activeWorkoutTarget: "session-note",
+    workoutSessionBodyMode: "sets-section",
+    workoutExerciseLayout: "flat",
+    workoutSetNotation: "compact",
+    workoutSetStorage: "task",
+    appendWorkoutSummaryToDailyNote: false,
+    defaultRestSeconds: 90,
+    restTimerMode: "count-up",
+    defaultWorkoutCooldownDays: 2,
+  };
+
+  const workoutPath = await plugin.startWorkout({
+    title: "Blank Active QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-06T10:00:00.000Z",
+    openFile: false,
+  });
+  assert.equal(workoutPath, "Health/Workouts/Blank Active QA.md");
+  assert.match(fake.files.get(workoutPath), /kind: "workout"/);
+  assert.doesNotMatch(fake.files.get(workoutPath), /## Sets|### Bench press/);
+  assert.equal(plugin.getActiveWorkoutState().title, "Blank Active QA");
+
+  await plugin.logSet({
+    exercise: "Bench press",
+    reps: 8,
+    weight: 185,
+    weightUnit: "lb",
+    restSeconds: 120,
+    completedDate: "2026-07-06T10:05:00.000Z",
+  });
+  await plugin.logSet({
+    exercise: "Bench press",
+    reps: 8,
+    weight: 185,
+    weightUnit: "lb",
+    restSeconds: 120,
+    completedDate: "2026-07-06T10:10:00.000Z",
+  });
+
+  const workout = fake.files.get(workoutPath);
+  assert.doesNotMatch(workout, /- \[[ xX]\]/);
+  assert.doesNotMatch(workout, /## Sets|### Bench press/);
+  assert.equal((workout.match(/^\s*- .*?\[type:: workoutSet\]/gm) || []).length, 2);
+  assert.match(workout, /\[rest:: 120\]/);
+  assert.match(workout, /setCount: 2/);
+  assert.equal(plugin.getActiveWorkoutState().setCount, 2);
+
+  const layoutPath = await plugin.saveActiveWorkoutTemplate({
+    title: "Blank Push Layout",
+    cooldownDays: 3,
+    defaultRestSeconds: 120,
+  });
+  assert.equal(layoutPath, "Health/Workout Plans/Blank Push Layout.md");
+  const layout = fake.files.get(layoutPath);
+  assert.match(layout, /kind: workout-plan/);
+  assert.match(layout, /cooldownDays: 3/);
+  assert.match(layout, /defaultRestSeconds: 120/);
+  assert.equal((layout.match(/- \[\[Health\/Exercises\/Bench press\|Bench press\]\] - 185 lb x 8 \[rest:: 120\]/g) || []).length, 2);
+});
+
+test("concurrent workout set logs serialize per file without losing a set", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Concurrent Sets QA.md";
+  plugin.settings = {
+    ...plugin.settings,
+    activeWorkoutPath: path,
+    activeWorkoutId: "workout-concurrent",
+    activeWorkoutTarget: "session-note",
+    activeWorkoutTitle: "Concurrent Sets QA",
+    activeWorkoutStartedAt: "2026-07-11T12:00:00.000Z",
+    activeWorkoutSetCount: 0,
+    workoutLogTarget: "session-note",
+    workoutSetNotation: "compact",
+    restTimerMode: "count-up",
+    defaultRestSeconds: 90,
+  };
+  fake.files.set(path, [
+    "---",
+    "kind: workout",
+    "workoutId: workout-concurrent",
+    "status: active",
+    "setCount: 0",
+    "---",
+    "#tps/workout",
+    "",
+  ].join("\n"));
+
+  const [squat, press] = await Promise.all([
+    plugin.logSet({
+      exercise: "Squat",
+      reps: 5,
+      weight: 225,
+      weightUnit: "lb",
+      createExerciseNote: false,
+      completedDate: "2026-07-11T12:05:00.000Z",
+    }),
+    plugin.logSet({
+      exercise: "Bench press",
+      reps: 8,
+      weight: 185,
+      weightUnit: "lb",
+      createExerciseNote: false,
+      completedDate: "2026-07-11T12:10:00.000Z",
+    }),
+  ]);
+
+  const content = fake.files.get(path);
+  assert.notEqual(squat.id, press.id);
+  assert.equal((content.match(/\[type:: workoutSet\]/g) || []).length, 2);
+  assert.match(content, /Squat - 225 lb x 5/);
+  assert.match(content, /Bench press - 185 lb x 8/);
+  assert.match(content, /setCount: 2/);
+  assert.equal(plugin.getActiveWorkoutState().setCount, 2);
+  assert.equal(plugin.workoutMutationQueues.size, 0);
+
+  const logSetSource = mainSource.slice(mainSource.indexOf("async logSet(set:"), mainSource.indexOf("async logFood(item:"));
+  assert.match(logSetSource, /serializeWorkoutMutation\(mutationPath, "log-active-set"/);
+  assert.match(logSetSource, /serializeWorkoutMutation\(filePath, "log-file-set"/);
+  assert.match(mainSource, /logger\.flow\("WorkoutSet", "mutation:queued", \{ path: filePath, operation, queuedBehindExisting \}\)/);
+});
+
+test("active workout set rows recover stale state and stay simple in the workout note", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutsFolder: "Health/Workouts",
+    workoutPlansFolder: "Health/Workout Plans",
+    exercisesFolder: "Health/Exercises",
+    foodsFolder: "Health/Exercises",
+    workoutLogTarget: "session-note",
+    activeWorkoutPath: "Health/Workouts/Missing Workout.md",
+    activeWorkoutId: "workout-missing",
+    activeWorkoutTarget: "session-note",
+    activeWorkoutTitle: "Missing Workout",
+    activeWorkoutSetCount: 4,
+  };
+
+  await plugin.addSetForExerciseToActiveWorkout("Squat");
+  assert.notEqual(plugin.settings.activeWorkoutPath, "Health/Workouts/Missing Workout.md");
+  assert.match(plugin.settings.activeWorkoutPath, /^Health\/Workouts\/Workout /);
+  const activePath = plugin.settings.activeWorkoutPath;
+  assert.match(fake.files.get(activePath), /#tps\/workout\n\n- Squat - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.doesNotMatch(fake.files.get(activePath), /## Sets|### Squat|- \[ \] Squat/);
+
+  await plugin.addSetForExerciseToActiveWorkout("Squat", {
+    filePath: activePath,
+    lineNumber: fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 0 lb x 0")),
+    line: fake.files.get(activePath).split("\n").find((line) => line.includes("Squat - 0 lb x 0")),
+  });
+  assert.equal((fake.files.get(activePath).match(/- Squat - 0 lb x 0/g) || []).length, 2);
+
+  const lineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 0 lb x 0"));
+  await plugin.updateWorkoutSetLine({
+    filePath: activePath,
+    lineNumber,
+    line: fake.files.get(activePath).split("\n")[lineNumber],
+  }, {
+    exercise: "Squat",
+    reps: 5,
+    weight: 225,
+    weightUnit: "lb",
+    completed: false,
+  });
+  assert.match(fake.files.get(activePath), /- Squat - 225 lb x 5/);
+  assert.doesNotMatch(fake.files.get(activePath), /\[superset::|\[dropSet::/);
+
+  const groupedLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 225 lb x 5"));
+  await plugin.updateWorkoutSetLine({
+    filePath: activePath,
+    lineNumber: groupedLineNumber,
+    line: fake.files.get(activePath).split("\n")[groupedLineNumber],
+  }, {
+    exercise: "Squat",
+    reps: 5,
+    weight: 225,
+    weightUnit: "lb",
+    setType: "drop",
+    supersetGroupId: "A",
+    dropSetGroupId: "B",
+    completed: false,
+  });
+  assert.match(fake.files.get(activePath), /- Squat - 225 lb x 5 .*?\[setType:: drop\] \[superset:: A\] \[dropSet:: B\]/);
+  assert.match(fake.files.get(activePath), /\[exercise:: Squat\] \[reps:: 5\] \[weight:: 225\] \[unit:: lb\]/);
+
+  const squatLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 225 lb x 5"));
+  await plugin.duplicateWorkoutSetBelow({
+    filePath: activePath,
+    lineNumber: squatLineNumber,
+    line: fake.files.get(activePath).split("\n")[squatLineNumber],
+  });
+  assert.equal((fake.files.get(activePath).match(/- Squat - 225 lb x 5/g) || []).length, 2);
+  assert.equal((fake.files.get(activePath).match(/\[superset:: A\]/g) || []).length, 2);
+  assert.equal((fake.files.get(activePath).match(/\[dropSet:: B\]/g) || []).length, 2);
+  assert.equal((fake.files.get(activePath).match(/\[setId::/g) || []).length, 3);
+
+  const inactivePath = "Health/Workouts/Inactive Empty Workout.md";
+  fake.files.set(inactivePath, [
+    "---",
+    "kind: workout",
+    "status: active",
+    "cssclasses:",
+    "  - tps-health-workout",
+    "---",
+    "#tps/workout",
+    "## Sets",
+  ].join("\n"));
+  await plugin.addSetForExerciseToWorkoutFile(inactivePath, "Bench press");
+  assert.match(fake.files.get(inactivePath), /## Sets\n\n- Bench press - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.equal((fake.files.get(activePath).match(/- Squat - 0 lb x 0/g) || []).length, 1);
+});
+
+test("active workout session loads after a stale saved path by recovering the workout id", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutsFolder: "Health/Workouts",
+    exercisesFolder: "Health/Exercises",
+    workoutLogTarget: "session-note",
+    activeWorkoutPath: "Health/Workouts/Missing Workout.md",
+    activeWorkoutId: "workout-recover",
+    activeWorkoutTarget: "session-note",
+    activeWorkoutTitle: "Recovered Workout",
+    activeWorkoutSetCount: 1,
+  };
+  fake.files.set("Health/Workouts/Renamed Workout.md", [
+    "---",
+    "kind: workout",
+    "status: active",
+    "title: Recovered Workout",
+    "workoutId: workout-recover",
+    "---",
+    "",
+    "## Sets",
+    "",
+  ].join("\n"));
+
+  const recovered = plugin["activeWorkoutFile"]();
+  assert.equal(recovered?.path, "Health/Workouts/Renamed Workout.md");
+  assert.equal(plugin.settings.activeWorkoutPath, "Health/Workouts/Renamed Workout.md");
+
+  await plugin.addSetForExerciseToActiveWorkout("Row");
+  assert.match(fake.files.get("Health/Workouts/Renamed Workout.md"), /## Sets\n\n- Row - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.doesNotMatch(fake.files.get("Health/Workouts/Renamed Workout.md"), /### Row|- \[ \] Row/);
+});
+
+test("workout set Play rebases a stale rendered line number by stable set id", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutIdentificationMode: "metadata-folder-tag",
+    defaultRestSeconds: 90,
+  };
+  const path = "Health/Workouts/Stale Set Row QA.md";
+  const originalLine = "- Dumbbell shoulder press - 40 lb x 8 [type:: workoutSet] [setId:: set-original] [exercise:: Dumbbell shoulder press] [reps:: 8] [weight:: 40] [unit:: lb] [completedDate:: 2026-07-09T20:00:00.000Z] [endedAt:: 2026-07-09T20:00:00.000Z]";
+  const plannedLine = "- Dumbbell shoulder press - 0 lb x 0 [type:: workoutSet] [setId:: set-planned] [exercise:: Dumbbell shoulder press] [reps:: 0] [weight:: 0] [unit:: lb]";
+  fake.files.set(path, [
+    "---",
+    "kind: workout",
+    "status: active",
+    "---",
+    originalLine,
+    plannedLine,
+  ].join("\n"));
+
+  const capturedPlannedLineNumber = 5;
+  await plugin.addSetForExerciseToWorkoutFile(path, "Dumbbell shoulder press", {
+    filePath: path,
+    lineNumber: 4,
+    line: originalLine,
+  });
+  assert.equal(fake.files.get(path).split("\n").findIndex((line) => line.includes("[setId:: set-planned]")), 6);
+
+  await plugin.updateWorkoutSetLine({
+    filePath: path,
+    lineNumber: capturedPlannedLineNumber,
+    line: plannedLine,
+  }, {
+    exercise: "Dumbbell shoulder press",
+    reps: 10,
+    weight: 45,
+    weightUnit: "lb",
+    restSeconds: 90,
+    performed: true,
+  });
+
+  const content = fake.files.get(path);
+  const originalAfter = content.split("\n").find((line) => line.includes("[setId:: set-original]")) || "";
+  const plannedAfter = content.split("\n").find((line) => line.includes("[setId:: set-planned]")) || "";
+  const insertedAfter = content.split("\n").find((line) => line.includes("[setId::") && !line.includes("set-original") && !line.includes("set-planned")) || "";
+  assert.match(originalAfter, /40 lb x 8/);
+  assert.match(originalAfter, /\[reps:: 8\] \[weight:: 40\]/);
+  assert.match(plannedAfter, /45 lb x 10/);
+  assert.match(plannedAfter, /\[completedDate:: .+?\]/);
+  assert.match(plannedAfter, /\[restStartedAt:: .+?\]/);
+  assert.match(insertedAfter, /0 lb x 0/);
+  assert.doesNotMatch(insertedAfter, /\[completedDate::|\[endedAt::/);
+});
+
+test("source to Reading workout views stay synchronized while truly unwritable source buffers fail closed", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+
+  const preview = createFakeHealthApp();
+  const previewPlugin = new TPSHealthPlugin(preview.app);
+  const previewPath = "Health/Workouts/Source Reading Sequence QA.md";
+  const previewInitial = ["---", "kind: workout", "status: active", "---", "#tps/workout"].join("\n");
+  preview.files.set(previewPath, previewInitial);
+  let previewMode = "source";
+  let previewViewData = previewInitial;
+  let previewRenders = 0;
+  const previewView = new globalThis.__TPSHealthTestMarkdownView();
+  previewView.file = new globalThis.__TPSHealthTestTFile(previewPath);
+  previewView.getMode = () => previewMode;
+  previewView.editor = { getValue: () => previewViewData };
+  previewView.getViewData = () => previewViewData;
+  previewView.setViewData = (content, clear) => {
+    assert.equal(clear, false);
+    previewViewData = content;
+  };
+  previewView.previewMode = {
+    rerender: (force) => {
+      assert.equal(force, true);
+      previewRenders++;
+    },
+  };
+  preview.app.workspace.iterateAllLeaves = (callback) => callback({ view: previewView });
+  await previewPlugin.addSetForExerciseToWorkoutFile(previewPath, "Squat", undefined, { focusAfter: false });
+  const firstLineNumber = previewViewData.split("\n").findIndex((line) => line.includes("[type:: workoutSet]"));
+  const firstLine = previewViewData.split("\n")[firstLineNumber];
+  assert.match(firstLine, /\[setId::/);
+  previewMode = "preview";
+  await previewPlugin.addSeededWorkoutSetAfterBlock({ filePath: previewPath, lineNumber: firstLineNumber, line: firstLine });
+  assert.equal((previewViewData.match(/\[type:: workoutSet\]/g) || []).length, 2);
+  assert.equal((preview.files.get(previewPath).match(/\[type:: workoutSet\]/g) || []).length, 2);
+  assert.equal(previewRenders, 1);
+  await preview.app.vault.modify(previewView.file, previewViewData);
+  assert.equal((preview.files.get(previewPath).match(/\[type:: workoutSet\]/g) || []).length, 2);
+
+  const source = createFakeHealthApp();
+  const sourcePlugin = new TPSHealthPlugin(source.app);
+  const sourcePath = "Health/Workouts/Unwritable Source QA.md";
+  const sourceInitial = ["---", "kind: workout", "status: active", "---", "#tps/workout"].join("\n");
+  source.files.set(sourcePath, sourceInitial);
+  const sourceView = new globalThis.__TPSHealthTestMarkdownView();
+  sourceView.file = new globalThis.__TPSHealthTestTFile(sourcePath);
+  sourceView.getMode = () => "source";
+  sourceView.editor = { getValue: () => sourceInitial };
+  source.app.workspace.iterateAllLeaves = (callback) => callback({ view: sourceView });
+  await assert.rejects(
+    () => sourcePlugin.addSetForExerciseToWorkoutFile(sourcePath, "Squat", undefined, { focusAfter: false }),
+    /Could not synchronize 1 open workout editor/,
+  );
+  assert.equal(source.files.get(sourcePath), sourceInitial);
+});
+
+test("seeded workout add keeps the active editor buffer and disk in sync through a later row save", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Editor Buffer QA.md";
+  const originalLine = "- Squat - 225 lb x 5 [type:: workoutSet] [setId:: set-buffer-original] [exercise:: Squat] [reps:: 5] [weight:: 225] [unit:: lb] [rest:: 90]";
+  const initial = ["---", "kind: workout", "status: active", "---", "#tps/workout", "", originalLine].join("\n");
+  fake.files.set(path, initial);
+
+  let editorContent = initial;
+  const editorDoc = () => ({
+    length: editorContent.length,
+    toString: () => editorContent,
+  });
+  const cm = {
+    state: { doc: editorDoc() },
+    dispatch: ({ changes }) => {
+      assert.equal(changes.from, 0);
+      assert.equal(changes.to, editorContent.length);
+      editorContent = changes.insert;
+      cm.state.doc = editorDoc();
+    },
+  };
+  const view = new globalThis.__TPSHealthTestMarkdownView();
+  view.file = new globalThis.__TPSHealthTestTFile(path);
+  view.editor = {
+    getValue: () => editorContent,
+    cm,
+    setValue: () => assert.fail("CM6 dispatch should synchronize before generic setValue"),
+    lastLine: () => editorContent.split("\n").length - 1,
+    getLine: (line) => editorContent.split("\n")[line] || "",
+    replaceRange: (content) => { editorContent = content; },
+  };
+  view.setViewData = () => assert.fail("source-mode synchronization must update the CodeMirror buffer before setViewData");
+  fake.app.workspace.iterateAllLeaves = (callback) => callback({ view });
+
+  const source = { filePath: path, lineNumber: 6, line: originalLine };
+  await plugin.addSeededWorkoutSetAfterBlock(source);
+  assert.equal((editorContent.match(/\[type:: workoutSet\]/g) || []).length, 2);
+  assert.equal((fake.files.get(path).match(/\[type:: workoutSet\]/g) || []).length, 2);
+  assert.match(editorContent, /\[setId:: set-buffer-original\]/);
+
+  editorContent = "---\nkind: workout\n";
+  cm.state.doc = editorDoc();
+  await plugin.addSetForExerciseToWorkoutFile(path, "Cable row", undefined, { focusAfter: false });
+  assert.equal((editorContent.match(/\[type:: workoutSet\]/g) || []).length, 3, "incomplete editor frontmatter should fall back to complete disk content");
+  assert.equal((fake.files.get(path).match(/\[type:: workoutSet\]/g) || []).length, 3);
+  assert.match(editorContent, /^---[\s\S]+\n---\n/);
+
+  editorContent = initial;
+  cm.state.doc = editorDoc();
+  await plugin.addSetForExerciseToWorkoutFile(path, "Bench press", undefined, { focusAfter: false });
+  assert.equal((editorContent.match(/\[type:: workoutSet\]/g) || []).length, 4, "stale editor should merge all disk sets before append");
+  assert.equal((fake.files.get(path).match(/\[type:: workoutSet\]/g) || []).length, 4);
+  assert.match(editorContent, /\[exercise:: Bench press\]/);
+
+  await plugin.updateWorkoutSetLine(source, {
+    exercise: "Squat",
+    reps: 5,
+    weight: 225,
+    weightUnit: "lb",
+    restSeconds: 90,
+  });
+  assert.equal((editorContent.match(/\[type:: workoutSet\]/g) || []).length, 4);
+  assert.equal((fake.files.get(path).match(/\[type:: workoutSet\]/g) || []).length, 4);
+
+  await fake.app.vault.modify(view.file, editorContent);
+  assert.equal((fake.files.get(path).match(/\[type:: workoutSet\]/g) || []).length, 4);
+});
+
+test("workout row controls link adjacent exercises and sets while starting inline rest", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutIdentificationMode: "metadata-folder-tag",
+    defaultRestSeconds: 90,
+  };
+  const path = "Health/Workouts/Adjacent Link QA.md";
+  fake.files.set(path, [
+    "---",
+    "kind: workout",
+    "status: active",
+    "---",
+    "## Sets",
+    "### Bench press",
+    "- [ ] Bench press - 185 lb x 8 [setId:: set-b1] [exercise:: Bench press] [reps:: 8] [weight:: 185] [unit:: lb]",
+    "- [ ] Bench press - 185 lb x 8 [setId:: set-b2] [exercise:: Bench press] [reps:: 8] [weight:: 185] [unit:: lb]",
+    "### Chest-supported row",
+    "- [ ] Chest-supported row - 100 lb x 10 [setId:: set-r1] [exercise:: Chest-supported row] [reps:: 10] [weight:: 100] [unit:: lb]",
+    "- [ ] Chest-supported row - 90 lb x 12 [setId:: set-r2] [exercise:: Chest-supported row] [reps:: 12] [weight:: 90] [unit:: lb]",
+    "",
+  ].join("\n"));
+
+  await plugin.linkWorkoutExerciseWithPrevious({
+    filePath: path,
+    lineNumber: 9,
+    line: "- [ ] Chest-supported row - 100 lb x 10 [setId:: set-r1] [exercise:: Chest-supported row]",
+  });
+  let content = fake.files.get(path);
+  assert.equal((content.match(/\[superset:: A\]/g) || []).length, 4);
+
+  await plugin.linkWorkoutSetWithPreviousDropSet({
+    filePath: path,
+    lineNumber: 10,
+    line: "- [ ] Chest-supported row - 90 lb x 12 [setId:: set-r2] [exercise:: Chest-supported row]",
+  });
+  content = fake.files.get(path);
+  assert.equal((content.match(/\[dropSet:: A\]/g) || []).length, 2);
+  assert.match(content.split("\n")[10], /\[setType:: drop\]/);
+
+  await plugin.updateWorkoutSetLine({
+    filePath: path,
+    lineNumber: 10,
+    line: content.split("\n")[10],
+  }, {
+    exercise: "Chest-supported row",
+    reps: 12,
+    weight: 90,
+    weightUnit: "lb",
+    restSeconds: 75,
+    performed: true,
+  });
+  content = fake.files.get(path);
+  const performedLine = content.split("\n").find((line) => line.includes("[setId:: set-r2]")) || "";
+  assert.match(performedLine, /- Chest-supported row - 90 lb x 12/);
+  assert.doesNotMatch(performedLine, /- \[[ xX]\]/);
+  assert.match(performedLine, /\[type:: workoutSet\]/);
+  assert.match(performedLine, /\[completedDate:: .+?\]/);
+  assert.match(performedLine, /\[endedAt:: .+?\]/);
+  assert.match(performedLine, /\[rest:: 75\]/);
+  assert.match(performedLine, /\[restStartedAt:: .+?\]/);
+});
+
+test("active workout can log five exercises with superset and dropset groups", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutsFolder: "Health/Workouts",
+    workoutPlansFolder: "Health/Workout Plans",
+    exercisesFolder: "Health/Exercises",
+    workoutLogTarget: "session-note",
+    activeWorkoutTarget: "session-note",
+    workoutSessionBodyMode: "sets-section",
+    workoutExerciseLayout: "flat",
+    workoutSetNotation: "compact",
+    workoutSetStorage: "task",
+    appendWorkoutSummaryToDailyNote: false,
+    restTimerMode: "count-up",
+  };
+
+  await plugin.upsertFoodFromInput({
+    name: "TPS Food Not Exercise",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 100, proteinG: 5, carbsG: 10, fatG: 2 },
+  });
+  fake.files.set("Archive/TPS Archived Exercise.md", [
+    "---",
+    "kind: exercise",
+    "name: TPS Archived Exercise",
+    "---",
+    "#tps/exercise",
+  ].join("\n"));
+  assert.deepEqual(await plugin.searchExercises("TPS Food Not Exercise"), []);
+  assert.deepEqual(await plugin.searchExercises("TPS Archived Exercise"), []);
+
+  const workoutPath = await plugin.startWorkout({
+    title: "Five Exercise QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-06T12:00:00.000Z",
+    openFile: false,
+  });
+
+  await plugin.logSet({ exercise: "Squat", reps: 5, weight: 225, weightUnit: "lb", completedDate: "2026-07-06T12:05:00.000Z" });
+  await plugin.logSet({ exercise: "Bench press", reps: 8, weight: 185, weightUnit: "lb", supersetGroupId: "A", completedDate: "2026-07-06T12:10:00.000Z" });
+  await plugin.logSet({ exercise: "Chest-supported row", reps: 10, weight: 100, weightUnit: "lb", supersetGroupId: "A", completedDate: "2026-07-06T12:12:00.000Z" });
+  await plugin.logSet({ exercise: "Lateral raise", reps: 12, weight: 25, weightUnit: "lb", dropSetGroupId: "B", completedDate: "2026-07-06T12:18:00.000Z" });
+  await plugin.logSet({ exercise: "Lateral raise", reps: 10, weight: 15, weightUnit: "lb", setType: "drop", dropSetGroupId: "B", completedDate: "2026-07-06T12:19:00.000Z" });
+  await plugin.logSet({ exercise: "Plank", durationSeconds: 60, completedDate: "2026-07-06T12:25:00.000Z" });
+
+  const workout = fake.files.get(workoutPath);
+  assert.equal(plugin.getActiveWorkoutState().setCount, 6);
+  assert.match(workout, /setCount: 6/);
+  assert.match(workout, /Bench press\]\] - superset A - 185 lb x 8/);
+  assert.match(workout, /Chest-supported row\]\] - superset A - 100 lb x 10/);
+  assert.match(workout, /Lateral raise\]\] - drop B - 25 lb x 12/);
+  assert.match(workout, /Lateral raise\]\] - drop - 15 lb x 10/);
+  assert.equal((workout.match(/\[superset:: A\]/g) || []).length, 2);
+  assert.equal((workout.match(/\[dropSet:: B\]/g) || []).length, 2);
+  assert.equal((workout.match(/\[setId::/g) || []).length, 6);
+  assert.deepEqual(await plugin.getActiveWorkoutExerciseNames(), [
+    "Plank",
+    "Lateral raise",
+    "Chest-supported row",
+    "Bench press",
+    "Squat",
+  ]);
 });
 
 test("food note template placeholders render source-of-truth fields", () => {
@@ -1017,12 +3616,25 @@ test("custom food calories are calculated from macros including alcohol", () => 
   assert.equal(nutrition.calories, 179);
 });
 
+test("sugar alcohol calories subtract polyols from regular carb calories", () => {
+  assert.equal(caloriesFromMacros({ carbsG: 100, sugarAlcoholG: 100, sugarAlcoholCaloriesPerG: 0 }), 0);
+  assert.equal(caloriesFromMacros({ carbsG: 20, sugarAlcoholG: 10, sugarAlcoholCaloriesPerG: 2 }), 60);
+  assert.match(mainSource, /foodFactsServingValue\(nutrients, "polyols"/);
+  assert.match(mainSource, /foodFactsLooksLikePureSugarAlcohol\(product\)/);
+  assert.match(mainSource, /if \(\/\\berythritol\\b\/\.test\(text\)\) return 0;/);
+});
+
 test("food log unit options are scoped to the food serving type", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.match(mainSource, /function foodLogUnitOptions\(item: FoodItem\): string\[\]/);
-  assert.match(mainSource, /metricServing\?\.unit === "ml" \|\| isLikelyLiquidFood\(item\)/);
+  assert.match(mainSource, /if \(metricServing\?\.unit === "ml"\)/);
   assert.match(mainSource, /for \(const unit of \["cup", "ml", "fl oz"\]\) units\.add\(unit\)/);
   assert.match(mainSource, /for \(const unit of \["g", "oz"\]\) units\.add\(unit\)/);
+  assert.match(mainSource, /if \(directMetric\.unit === metricServing\.unit\)/);
+  assert.match(mainSource, /return unsupportedFoodLogServing\(inputQuantity, inputUnit, directMetric\)/);
+  assert.match(mainSource, /function unsupportedFoodLogServing\(inputQuantity: number, inputUnit: string, amount\?: \{ amount: number; unit: "g" \| "ml" \}\): ResolvedFoodLogServing/);
+  assert.match(mainSource, /function isFoodLogUnitSupported\(item: FoodItem, unit: string\): boolean/);
+  assert.match(mainSource, /unsupportedUnit: true/);
   assert.match(mainSource, /function foodLogUnitOptionLabel\(item: FoodItem, unit: string\): string/);
   assert.match(mainSource, /`serving \(\$\{label\}\)`/);
   assert.match(mainSource, /function inferredFoodFactsDrinkServing\(product: any\): \{ unit: string; ml: number \} \| null/);
@@ -1042,27 +3654,268 @@ test("food log unit options are scoped to the food serving type", async () => {
 test("food search expands colloquial grocery queries like protein doritos", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.match(mainSource, /private openFoodSearchModal\(initialDraft: InlineFoodDraft \| null, dateContext: FoodLogDateContext \| null\): void/);
+  assert.match(mainSource, /logger\.flow\("FoodDateContext", "open-food-logger:provided"/);
+  assert.match(mainSource, /logger\.flow\("FoodDateContext", "scan-barcode:active-file"/);
+  assert.match(mainSource, /private async summarizeDailyNoteDateContext\(file: TFile \| null \| undefined, dateContext: FoodLogDateContext \| null\): Promise<Record<string, unknown>>/);
+  assert.match(mainSource, /formatSource = "daily-notes-plugin"/);
+  assert.match(mainSource, /folderSource = "daily-notes-plugin"/);
+  assert.match(mainSource, /formatSource = "daily-notes-config"/);
+  assert.match(mainSource, /folderSource = "daily-notes-config"/);
+  assert.match(mainSource, /logger\.flowWarn\("DailyNote", "settings:plugin-read-failed", \{ error: logger\.errorSummary\(error\) \}\)/);
+  assert.match(mainSource, /logger\.flow\("DailyNote", "settings:config-read-failed", \{ error: logger\.errorSummary\(error\) \}\)/);
+  assert.match(mainSource, /logger\.flow\("DailyNote", "settings:resolved", \{ \.\.\.resolved, formatSource, folderSource \}\)/);
+  assert.match(mainSource, /reason: "folder-mismatch"/);
+  assert.match(mainSource, /reason: "date-format-mismatch"/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "food-log-action:fallback-not-daily-note"/);
+  assert.match(mainSource, /logger\.flow\("GCM", "food-log-action:visibility"/);
+  assert.match(mainSource, /candidates: candidates\.length/);
   assert.match(mainSource, /private registerGcmFoodLogButtonTapFallback\(\): void/);
   assert.match(mainSource, /document\.addEventListener\("pointerdown", handler, \{ capture: true \}\)/);
+  assert.match(mainSource, /target\?\.closest<HTMLElement>\('\[data-tps-gcm-external-action-id="tps-health:food-log"\]'\)/);
+  assert.doesNotMatch(mainSource, /button\[aria-label="Log food"\]/);
+  assert.doesNotMatch(mainSource, /button\[title="Log food"\]/);
   assert.match(mainSource, /function foodSearchQueryVariants\(query: string\): string\[\]/);
+  assert.match(mainSource, /private async searchOpenFoodFactsRoute\(query: string, route: "search" \| "legacy"/);
+  assert.match(mainSource, /open-food-facts:\$\{route\}:failed/);
+  assert.match(mainSource, /const FOOD_SEARCH_TOKEN_CORRECTIONS: Record<string, string> = \{/);
+  assert.match(mainSource, /carmel: "caramel"/);
+  assert.match(mainSource, /caramal: "caramel"/);
+  assert.match(mainSource, /mozarella: "mozzarella"/);
+  assert.match(mainSource, /const FOOD_SEARCH_CONNECTOR_WORDS = new Set\(\["an", "and", "by", "of", "or", "the", "with"\]\)/);
+  assert.match(mainSource, /!FOOD_SEARCH_CONNECTOR_WORDS\.has\(token\)/);
+  assert.match(mainSource, /\.replace\(\/&\/g, " and "\)/);
+  assert.match(mainSource, /function foodSearchCorrectedQuery\(normalizedQuery: string\): string/);
+  assert.match(mainSource, /foodSearchTokenVariants\(token\)/);
+  assert.match(mainSource, /function foodSearchHasFuzzyTokenMatch\(queryToken: string, haystackTokens: Set<string>\): boolean/);
+  assert.match(mainSource, /function foodSearchEditDistance\(left: string, right: string, maxDistance: number\): number/);
   assert.match(mainSource, /variants\.add\("quest protein chips nacho cheese"\)/);
-  assert.match(mainSource, /tokens\.every\(\(token\) => haystack\.includes\(token\) \|\| haystackTokens\.has\(token\)\)/);
+  assert.match(mainSource, /tokens\.every\(\(token\) => foodSearchTokenVariants\(token\)/);
   assert.match(mainSource, /aliases: aliasesFromFrontmatter\(fm\.aliases\)/);
   assert.match(mainSource, /aliases: foodAliasesForItem\(item\)\.length \? foodAliasesForItem\(item\) : undefined/);
   assert.match(mainSource, /function aliasesFromFrontmatter\(value: unknown\): string\[\] \| undefined/);
   assert.match(mainSource, /function inferredFoodAliases\(item: FoodItem\): string\[\]/);
   assert.match(mainSource, /aliases\.add\(`\$\{first\} cereal`\)/);
   assert.match(mainSource, /function foodSearchFields\(item: FoodItem\): Array<unknown>/);
+  assert.match(mainSource, /function foodFactsProductSearchFields\(product: any\): Array<unknown>/);
+  assert.match(mainSource, /function foodFactsProductAliases\(product: any\): string\[\] \| undefined/);
+  assert.match(mainSource, /replace\(\/\\bsugar\[\\s-\]\*free\\b\/g, "sugar free"\)/);
   assert.match(mainSource, /isRelevantFoodResult\(query, \[item\.name, item\.brand, item\.aliases\?\.join\(" "\)\]\)/);
   assert.match(mainSource, /isRelevantFoodResult\(query, foodSearchFields\(item\)\)/);
   assert.match(mainSource, /name: "Egg, whole, cooked", aliases: \["eggs"\], servingUnit: "egg", servingGrams: 50/);
+  assert.match(mainSource, /name: "Mozzarella cheese, whole milk", aliases: \["mozarella", "mozzarella", "mozzarella cheese", "whole milk mozzarella"\]/);
+  assert.match(mainSource, /name: "Mozzarella cheese, part skim"/);
+  assert.match(mainSource, /name: "Mozzarella string cheese"/);
+  assert.match(mainSource, /name: "Great Value Shredded Hash Browns", brand: "Great Value"/);
+  assert.match(mainSource, /aliases: \["great value hash brown potatoes", "great value hash browns", "great value shredded hash brown potatoes", "walmart hash browns", "hash brown potatoes"\]/);
+  assert.match(mainSource, /const scoreQueryVariants = correctedQuery && correctedQuery !== normalizedQuery/);
+  assert.match(mainSource, /if \(item\.source === "curated"\) score \+= 80/);
+  assert.match(mainSource, /if \(item\.source === "usda" && !item\.brand\) score \+= 18/);
+  assert.match(mainSource, /if \(item\.source === "custom-note"\) score \+= 45/);
+  assert.match(mainSource, /if \(usage\.count\) score \+= 90 \+ Math\.min\(usage\.count, 10\) \* 10/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodSearch", "usage-read:failed", \{ path: file\.path, error: logger\.errorSummary\(error\) \}\)/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:done", \{ query, files: files\.length, readFailures, usageKeys: stats\.size \}\)/);
+  assert.match(mainSource, /if \(item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
+  assert.match(mainSource, /if \(item\.source === "usda" && item\.brand\) score -= 24/);
+  assert.match(mainSource, /tokens\.length === 1 && item\.source === "open-food-facts" && !usage\.count/);
+  assert.match(mainSource, /function isUnloggedBroadExternalFoodResult\(item: FoodItem, tokens: string\[\], usageStats: Map<string, FoodUsageStats>\): boolean/);
+  assert.match(mainSource, /item\.source !== "open-food-facts" && !\(item\.source === "usda" && item\.brand\)/);
+  assert.doesNotMatch(mainSource, /item\.source === "open-food-facts" && !metricServingForFood\(item\)\) return true/);
+  assert.match(mainSource, /function foodSearchTrustedSingleTokenExternalMatch\(item: FoodItem, token: string\): boolean/);
+  assert.match(mainSource, /COMMON_FOOD_BRANDS\.has\(variant\) && normalizedBrand\.includes\(variant\)/);
+  assert.match(mainSource, /const FOOD_SEARCH_GENERIC_SINGLE_TOKEN_QUERIES = new Set/);
+  assert.match(mainSource, /\.filter\(\(item\) => !isUnloggedBroadExternalFoodResult\(item, tokens, usageStats\)\)/);
+  assert.match(mainSource, /if \(!hasSearchableMacroData\(item\.nutrition\)\) \{/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "lookup-candidate:no-macros"/);
   assert.match(mainSource, /aliases: \["quest protein chips", "quest chips", "protein chips", "protein doritos", "doritos protein chips", "nacho protein chips"\]/);
   assert.match(mainSource, /Quest Tortilla Style Protein Chips, Nacho Cheese/);
+  assert.match(mainSource, /name: "Hawaiian sweet roll", aliases: \["hawaiian roll", "hawaiian rolls", "sweet roll", "dinner roll"\]/);
+
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    includeBrandedFoodSearch: false,
+  };
+  const greatValueResults = await plugin.searchFoods("great value hash brown potatoes");
+  assert.equal(greatValueResults[0]?.name, "Great Value Shredded Hash Browns");
+  assert.equal(greatValueResults[0]?.servingGrams, 85);
+  assert.deepEqual(greatValueResults[0]?.nutrition, { calories: 70, proteinG: 1, carbsG: 17, fatG: 0 });
+  const hashBrownResults = await plugin.searchFoods("hash browns");
+  assert.ok(hashBrownResults.some((item) => item.name === "Great Value Shredded Hash Browns"));
+  for (const [query, expected] of [
+    ["kraft mac and cheese", "Kraft Original Macaroni & Cheese Dinner"],
+    ["hidden valley ranch", "Hidden Valley Original Ranch Dressing"],
+    ["tyson chicken nuggets", "Tyson White Meat Chicken Nuggets"],
+    ["pepperidge farm goldfish", "Pepperidge Farm Goldfish Cheddar Crackers"],
+    ["nature valley granola bar", "Nature Valley Crunchy Oats 'n Honey Granola Bars"],
+    ["sugarfree jolly ranchers", "Jolly Rancher Sugar Free Hard Candy"],
+  ]) {
+    const results = await plugin.searchFoods(query);
+    assert.equal(results[0]?.name, expected, query);
+    assert.ok(results[0]?.nutrition?.calories > 0, query);
+  }
+});
+
+test("food logging can write dashboard-launched daily-note entries without focusing the daily note", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    dailyNoteFolder: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD",
+    workoutsFolder: "Health/Workouts",
+    workoutPlansFolder: "Health/Workout Plans",
+    exercisesFolder: "Health/Exercises",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    workoutTemplatePath: "Templates/Workout.md",
+    workoutPlanTemplatePath: "Templates/Workout Plan.md",
+    exerciseTemplatePath: "Templates/Exercise.md",
+    foodTemplatePath: "Templates/Food.md",
+    workoutTag: "#tps/workout",
+    workoutPlanTag: "#tps/workout-plan",
+    exerciseTag: "#tps/exercise",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    defaultFoodLogSection: "",
+    foodLogFilePath: "Health/Food Log.md",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+    rollupHeading: "Health Rollup",
+    calorieGoal: 2200,
+    proteinGoalG: 180,
+    activityGoalMinutes: 45,
+    healthGoals: [],
+    usdaApiKey: "DEMO_KEY",
+    openFoodFactsUserAgent: USER_AGENT,
+    includeBrandedFoodSearch: false,
+    workoutLogHeading: "Workouts",
+    workoutLogTarget: "session-note",
+    activeWorkoutTarget: "session-note",
+    workoutNoteBodyMode: "blank",
+    workoutExerciseLayout: "flat",
+    workoutSetNotation: "compact",
+    workoutSetStorage: "task",
+    defaultRestSeconds: 90,
+    restTimerMode: "count-up",
+    defaultWorkoutCooldownDays: 2,
+    activeWorkoutSetCount: 0,
+    showFoodLogButtonInGcm: false,
+  };
+
+  const entry = await plugin.logFood(
+    {
+      id: "dashboard-yogurt",
+      name: "Dashboard Yogurt",
+      source: "custom-inline",
+      nutrition: { calories: 120, proteinG: 15, carbsG: 9, fatG: 2 },
+    },
+    1,
+    "serving",
+    undefined,
+    "2026-07-04T09:30:00.000Z",
+    false,
+    "daily-note",
+    { focusAfterLog: false },
+  );
+
+  assert.equal(entry.dailyNotePath, "Daily/2026-07-04.md");
+  assert.match(fake.files.get("Daily/2026-07-04.md"), /- 1 serving - Dashboard Yogurt/);
+  assert.match(fake.files.get("Daily/2026-07-04.md"), /\[foodId:: food-/);
+  assert.deepEqual(fake.openedFiles, [], "dashboard logging must not open or focus the target daily note");
+});
+
+test("food log entry consumed date edits move daily-note lines and refresh both rollups", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFolder: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD",
+    foodLogTarget: "daily-note",
+    defaultFoodLogSection: "",
+    automaticDailyRollups: true,
+    healthGoals: [
+      { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400, color: "" },
+      { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 120, color: "" },
+    ],
+  };
+
+  await plugin.logFood(
+    {
+      id: "date-yogurt",
+      name: "Date Yogurt",
+      source: "custom-inline",
+      nutrition: { calories: 100, proteinG: 10, carbsG: 12, fatG: 2 },
+    },
+    1,
+    "serving",
+    undefined,
+    "2026-07-04T08:00:00.000Z",
+    false,
+    "daily-note",
+    { focusAfterLog: false },
+  );
+
+  const oldPath = "Daily/2026-07-04.md";
+  const oldFile = fake.app.vault.getAbstractFileByPath(oldPath);
+  const oldLines = fake.files.get(oldPath).split("\n");
+  const lineNumber = oldLines.findIndex((line) => line.includes("Date Yogurt"));
+  assert.ok(lineNumber >= 0, "expected logged food line in original daily note");
+
+  await plugin.updateFoodLogEntryConsumedDate({
+    file: oldFile,
+    lineNumber,
+    line: oldLines[lineNumber],
+    id: `${oldPath}:${lineNumber}`,
+    name: "Date Yogurt",
+    serving: "1 serving",
+    source: oldPath,
+    foodPath: "",
+    dateKey: "2026-07-04",
+    dateLabel: "Sat, Jul 4 2026",
+    nutrition: { calories: 100, proteinG: 10, carbsG: 12, fatG: 2, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, sugarAlcoholCaloriesPerG: 0, alcoholG: 0, sodiumMg: 0 },
+  }, "2026-07-05T09:30");
+
+  const newPath = "Daily/2026-07-05.md";
+  assert.doesNotMatch(fake.files.get(oldPath), /Date Yogurt/);
+  assert.match(fake.files.get(newPath), /Date Yogurt/);
+  assert.match(fake.files.get(newPath), /\[completedDate:: 2026-07-05T/);
+  assert.match(fake.files.get(newPath), /\[dailyNotePath:: Daily\/2026-07-05\.md\]/);
+  assert.equal(parseFrontmatter(fake.files.get(oldPath)).consumedCalories, 0);
+  assert.equal(parseFrontmatter(fake.files.get(newPath)).consumedCalories, 100);
+  assert.equal(parseFrontmatter(fake.files.get(newPath)).protein, 10);
 });
 
 test("workout cooldown date math writes the next eligible date", () => {
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 3), "2026-06-06");
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 0), "2026-06-03");
+});
+
+test("workout finish hands GCM an absolute Date instead of a schedule-parsed ISO string", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Timer Date QA.md";
+  fake.files.set(path, "---\nkind: workout\n---\n");
+  const file = fake.app.vault.getAbstractFileByPath(path);
+  let receivedEnd = null;
+  plugin.getGcmApi = () => ({
+    timeTracking: {
+      stopActiveTimerForFile: async (_file, end) => { receivedEnd = end; },
+    },
+  });
+
+  await plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:58:57.086Z");
+
+  assert.ok(receivedEnd instanceof Date);
+  assert.equal(receivedEnd.toISOString(), "2026-07-09T22:58:57.086Z");
 });
 
 test("workout set line uses Dataview fields for reusable exercise and set groups", () => {
@@ -1105,8 +3958,9 @@ test("workout set line uses Dataview fields for reusable exercise and set groups
     endedAt: "2026-06-03T17:41:00.000Z",
     reps: 5,
     restSeconds: 90,
-  }, { asTask: true });
-  assert.match(taskLine, /^- \[x\] Squat - 5/);
+  });
+  assert.match(taskLine, /^- Squat - 5/);
+  assert.doesNotMatch(taskLine, /^- \[[ xX]\]/);
   assert.match(taskLine, /\[startedAt:: 2026-06-03T17:40:00.000Z\]/);
   assert.match(taskLine, /\[endedAt:: 2026-06-03T17:41:00.000Z\]/);
 
@@ -1119,8 +3973,9 @@ test("workout set line uses Dataview fields for reusable exercise and set groups
     weightUnit: "lb",
     setType: "drop",
     supersetGroupId: "A",
-  }, { asTask: true, notation: "compact" });
-  assert.match(compactLine, /^- \[x\] Bench Press - drop - superset A - 225 lb x 15/);
+  }, { notation: "compact" });
+  assert.match(compactLine, /^- Bench Press - drop - superset A - 225 lb x 15/);
+  assert.match(compactLine, /\[type:: workoutSet\]/);
   assert.match(compactLine, /\[setType:: drop\]/);
   assert.match(compactLine, /\[superset:: A\]/);
 });
@@ -1137,9 +3992,16 @@ test("daily-note workout session line is a parent bullet with queryable state", 
   assert.match(line, /^- \[\[Health\/Workout Plans\/Push Day\|Push Day\]\]/);
   assert.match(line, /\[workoutId:: workout-1\]/);
   assert.match(line, /\[workoutPlanPath:: Health\/Workout Plans\/Push Day\.md\]/);
+  assert.match(line, /\[workoutDate:: 2026-06-03\]/);
   assert.match(line, /\[startedAt:: 2026-06-03T17:30:00.000Z\]/);
   assert.match(line, /\[status:: active\]/);
   assert.match(line, /\[cooldownDays:: 3\]/);
+  assert.match(line, /\[runKind:: run\]/);
+  assert.match(line, /\[runType:: workout\]/);
+  assert.match(line, /\[workflowType:: workout\]/);
+  assert.match(line, /\[recurrenceMode:: completion-triggered\]/);
+  assert.match(line, /\[workflowPath:: Health\/Workout Plans\/Push Day\.md\]/);
+  assert.match(line, /\[workflowName:: Push Day\]/);
 });
 
 function nutrientValue(nutrients, nutrientIds) {
@@ -1162,7 +4024,7 @@ function hasMacroData(nutriments) {
 }
 
 function calculateFoodTotals(content, resolveFood, dailyNotePath) {
-  const totals = { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, alcoholG: 0, sodiumMg: 0 };
+  const totals = { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, sugarAlcoholCaloriesPerG: 0, alcoholG: 0, sodiumMg: 0 };
   for (const line of content.split("\n")) {
     if (!isFoodLogLine(line)) continue;
     if (!isFoodLogForDailyNote(line, dailyNotePath)) continue;
@@ -1173,6 +4035,7 @@ function calculateFoodTotals(content, resolveFood, dailyNotePath) {
     totals.fatG += resolved.fatG;
     totals.fiberG += resolved.fiberG;
     totals.sugarG += resolved.sugarG;
+    totals.sugarAlcoholG += resolved.sugarAlcoholG;
     totals.alcoholG += resolved.alcoholG;
     totals.sodiumMg += resolved.sodiumMg;
   }
@@ -1204,7 +4067,7 @@ function resolveFoodLogNutrition(line, resolveFood) {
 }
 
 function hasLineNutritionFields(line) {
-  return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "alcohol", "sodium"].some((key) => readNumber(line, key) != null);
+  return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"].some((key) => readNumber(line, key) != null);
 }
 
 function readLineNutrition(line) {
@@ -1216,6 +4079,8 @@ function readLineNutrition(line) {
     fatG: readNumber(line, "fat") || 0,
     fiberG: readNumber(line, "fiber") || 0,
     sugarG: readNumber(line, "sugar") || 0,
+    sugarAlcoholG: readNumber(line, "sugarAlcohol") || 0,
+    sugarAlcoholCaloriesPerG: 0,
     alcoholG: readNumber(line, "alcohol") || 0,
     sodiumMg: readNumber(line, "sodium") || 0,
   };
@@ -1229,13 +4094,15 @@ function mergeLineNutritionOverrides(base, line) {
     fatG: readNumber(line, "fat") ?? base.fatG,
     fiberG: readNumber(line, "fiber") ?? base.fiberG,
     sugarG: readNumber(line, "sugar") ?? base.sugarG,
+    sugarAlcoholG: readNumber(line, "sugarAlcohol") ?? base.sugarAlcoholG,
+    sugarAlcoholCaloriesPerG: base.sugarAlcoholCaloriesPerG || 0,
     alcoholG: readNumber(line, "alcohol") ?? base.alcoholG,
     sodiumMg: readNumber(line, "sodium") ?? base.sodiumMg,
   };
 }
 
 function zeroNutrition() {
-  return { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, alcoholG: 0, sodiumMg: 0 };
+  return { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, sugarAlcoholCaloriesPerG: 0, alcoholG: 0, sodiumMg: 0 };
 }
 
 function shouldTreatLineNutritionAsLegacyPerServing(lineNutrition, foodNutrition, multiplier) {
@@ -1247,6 +4114,7 @@ function shouldTreatLineNutritionAsLegacyPerServing(lineNutrition, foodNutrition
     ["fatG", "fatG"],
     ["fiberG", "fiberG"],
     ["sugarG", "sugarG"],
+    ["sugarAlcoholG", "sugarAlcoholG"],
     ["alcoholG", "alcoholG"],
     ["sodiumMg", "sodiumMg"],
   ];
@@ -1276,6 +4144,8 @@ function multiplyNutrition(nutrition, multiplier) {
     fatG: (nutrition.fatG || 0) * multiplier,
     fiberG: (nutrition.fiberG || 0) * multiplier,
     sugarG: (nutrition.sugarG || 0) * multiplier,
+    sugarAlcoholG: (nutrition.sugarAlcoholG || 0) * multiplier,
+    sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG || 0,
     alcoholG: (nutrition.alcoholG || 0) * multiplier,
     sodiumMg: (nutrition.sodiumMg || 0) * multiplier,
   };
@@ -1292,10 +4162,18 @@ function normalizedQuantity(value) {
 }
 
 function readNumber(line, key) {
-  const dataviewMatch = line.match(new RegExp(`\\[${key}::\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
-  if (dataviewMatch) return Number(dataviewMatch[1]);
-  const match = line.match(new RegExp(`${key}=(-?\\d+(?:\\.\\d+)?)`));
-  return match ? Number(match[1]) : undefined;
+  for (const candidate of nutritionFieldAliases(key)) {
+    const dataviewMatch = line.match(new RegExp(`\\[${candidate}::\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
+    if (dataviewMatch) return Number(dataviewMatch[1]);
+    const match = line.match(new RegExp(`${candidate}=(-?\\d+(?:\\.\\d+)?)`, "i"));
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+function nutritionFieldAliases(key) {
+  if (key === "sugarAlcohol") return ["sugarAlcohol", "sugarAlcohols", "polyol", "polyols"];
+  return [key];
 }
 
 function readStringField(line, key) {
@@ -1387,6 +4265,7 @@ function normalizeNutrientKey(key) {
   if (normalized === "fat" || normalized === "f") return "fat";
   if (normalized === "fiber" || normalized === "fibre") return "fiber";
   if (normalized === "sugar" || normalized === "sugars") return "sugar";
+  if (normalized === "sugaralcohol" || normalized === "sugaralcohols" || normalized === "polyol" || normalized === "polyols") return "sugarAlcohol";
   if (normalized === "alcohol" || normalized === "alcoholg" || normalized === "alc") return "alcohol";
   if (normalized === "sodium" || normalized === "salt") return "sodium";
   return null;
@@ -1412,6 +4291,7 @@ function renderFoodTemplate(template, item, type, tag) {
     fatG: String(nutrition.fatG || 0),
     fiberG: String(nutrition.fiberG || 0),
     sugarG: String(nutrition.sugarG || 0),
+    sugarAlcoholG: String(nutrition.sugarAlcoholG || 0),
     alcoholG: String(nutrition.alcoholG || 0),
     sodiumMg: String(nutrition.sodiumMg || 0),
   };
@@ -1423,12 +4303,20 @@ function round(value) {
 }
 
 function caloriesFromMacros(nutrition) {
+  const sugarAlcoholG = Math.max(0, nutrition.sugarAlcoholG || 0);
+  const regularCarbsG = Math.max(0, (nutrition.carbsG || 0) - sugarAlcoholG);
   return round(
     (nutrition.proteinG || 0) * 4
-    + (nutrition.carbsG || 0) * 4
+    + regularCarbsG * 4
+    + sugarAlcoholG * sugarAlcoholCaloriesPerGram(nutrition)
     + (nutrition.fatG || 0) * 9
     + (nutrition.alcoholG || 0) * 7
   );
+}
+
+function sugarAlcoholCaloriesPerGram(nutrition) {
+  const explicit = Number(nutrition.sugarAlcoholCaloriesPerG);
+  return Number.isFinite(explicit) ? explicit : 2;
 }
 
 function nutritionWithMacroCalories(nutrition) {
@@ -1452,6 +4340,7 @@ function workoutSetLine(set, options = {}) {
     : set.exercise;
   const summary = workoutSetSummary(set, exerciseLabel, options);
   const fields = [
+    dataviewField("type", "workoutSet"),
     dataviewField("exercise", set.exercise),
     set.exercisePath ? dataviewField("exercisePath", set.exercisePath) : "",
     set.workoutPath ? dataviewField("workout", pathLabel(set.workoutPath)) : "",
@@ -1472,11 +4361,12 @@ function workoutSetLine(set, options = {}) {
     set.distanceUnit ? dataviewField("distanceUnit", set.distanceUnit) : "",
     set.rpe == null ? "" : dataviewField("rpe", set.rpe),
     set.restSeconds == null ? "" : dataviewField("rest", set.restSeconds),
+    set.restStartedAt ? dataviewField("restStartedAt", set.restStartedAt) : "",
     set.dropSetGroupId ? dataviewField("dropSet", set.dropSetGroupId) : "",
     set.supersetGroupId ? dataviewField("superset", set.supersetGroupId) : "",
     set.note ? dataviewField("note", set.note) : "",
   ].filter(Boolean);
-  return `- ${options.asTask ? "[x] " : ""}${summary} ${fields.join(" ")}`;
+  return `- ${summary} ${fields.join(" ")}`;
 }
 
 function workoutSetSummary(set, exerciseLabel, options = {}) {
@@ -1530,7 +4420,14 @@ function workoutSessionLine(input) {
     input.path ? dataviewField("workoutPath", input.path) : "",
     input.plan?.sourcePath ? dataviewField("workoutPlanPath", input.plan.sourcePath) : "",
     input.plan?.name ? dataviewField("workoutPlan", input.plan.name) : "",
+    dataviewField("runKind", "run"),
+    dataviewField("runType", "workout"),
+    dataviewField("workflowType", "workout"),
+    dataviewField("recurrenceMode", "completion-triggered"),
+    input.plan?.sourcePath ? dataviewField("workflowPath", input.plan.sourcePath) : "",
+    input.plan?.name ? dataviewField("workflowName", input.plan.name) : "",
     dataviewField("createdDate", input.startedAt),
+    dataviewField("workoutDate", input.startedAt.slice(0, 10)),
     dataviewField("startedAt", input.startedAt),
     dataviewField("status", input.status || "active"),
     input.cooldownDays != null ? dataviewField("cooldownDays", input.cooldownDays) : "",

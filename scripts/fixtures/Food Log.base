@@ -1,0 +1,36 @@
+model:
+  version: 1
+  kind: Table
+  columns: []
+pluginVersion: 1.0.0
+filters:
+  and:
+    - file.ext == "md"
+views:
+  - type: tps-table
+    name: Food Log
+    groupBy:
+      property: completedDate
+      direction: DESC
+    order:
+      - food
+      - qty
+      - unit
+      - amount
+      - amountUnit
+      - cal
+      - protein
+      - carbs
+      - fat
+      - completedDate
+      - file.name
+      - title
+    sort:
+      - property: completedDate
+        direction: DESC
+      - property: createdDate
+        direction: ASC
+    lineFilterKey: food
+    totalsRow: top
+    createAction: command
+    createCommandId: tps-health:log-food
