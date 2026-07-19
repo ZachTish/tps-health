@@ -265,6 +265,7 @@ export default class TPSHealthPlugin extends Plugin {
   private retainedLegacyUsdaApiKey = "";
   api!: TPSHealthApi;
   private unregisterGcmFoodLogButton: (() => void) | null = null;
+  private gcmFoodLogButtonRetryRef: EventRef | null = null;
   private lastFoodLogOpenAt = 0;
   private workoutFileSnapshots = new Map<string, string>();
   private processingWorkoutFiles = new Set<string>();
@@ -546,6 +547,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.removeWorkoutActionBars();
     this.unregisterGcmFoodLogButton?.();
     this.unregisterGcmFoodLogButton = null;
+    this.clearGcmFoodLogButtonRetry();
     if ((this.app as any).tpsHealth === this.api) delete (this.app as any).tpsHealth;
   }
 
@@ -553,43 +555,72 @@ export default class TPSHealthPlugin extends Plugin {
     this.unregisterGcmFoodLogButton?.();
     this.unregisterGcmFoodLogButton = null;
     if (!this.settings.showFoodLogButtonInGcm) {
+      this.clearGcmFoodLogButtonRetry();
       logger.flow("GCM", "food-log-action:disabled");
       this.scheduleGcmMenuRefresh();
       return;
     }
 
     const gcmApi = this.getGcmApi();
-    const register = gcmApi?.externalActions?.register;
-    if (typeof register !== "function") {
-      logger.flowWarn("GCM", "food-log-action:register-unavailable");
-      this.registerEvent(this.app.workspace.on("layout-change", () => {
-        if (!this.unregisterGcmFoodLogButton && this.settings.showFoodLogButtonInGcm) this.refreshGcmFoodLogButtonRegistration();
-      }));
+    const externalActions = gcmApi?.externalActions;
+    const register = externalActions?.register;
+    if (externalActions?.version !== 1 || typeof register !== "function") {
+      logger.flowWarn("GCM", "food-log-action:register-unavailable", { apiVersion: externalActions?.version ?? null });
+      this.ensureGcmFoodLogButtonRetry();
       return;
     }
 
-    this.unregisterGcmFoodLogButton = register({
-      id: "food-log",
-      pluginId: this.manifest.id,
-      order: 15,
-      icon: "apple",
-      label: "Log food",
-      title: "Log food",
-      isVisible: async ({ file }: { file: TFile }) => Boolean(await this.getDailyNoteDateContext(file)),
-      onClick: async ({ file }: { file: TFile }) => {
-        const dateContext = await this.getDailyNoteDateContext(file);
-        if (!dateContext) {
-          logger.flowWarn("GCM", "food-log-action:not-daily-note", await this.summarizeDailyNoteDateContext(file, dateContext));
-          new Notice("Food logging is only available from daily notes.");
-          this.scheduleGcmMenuRefresh();
-          return;
-        }
-        logger.flow("GCM", "food-log-action:click", { path: file.path, ...summarizeDateContext(dateContext) });
-        this.openFoodSearchModal(null, dateContext);
-      },
-    });
+    let unregister: unknown;
+    try {
+      unregister = register({
+        id: "food-log",
+        pluginId: this.manifest.id,
+        order: 15,
+        icon: "apple",
+        label: "Log food",
+        title: "Log food",
+        isVisible: async ({ file }: { file: TFile }) => Boolean(await this.getDailyNoteDateContext(file)),
+        onClick: async ({ file }: { file: TFile }) => {
+          const dateContext = await this.getDailyNoteDateContext(file);
+          if (!dateContext) {
+            logger.flowWarn("GCM", "food-log-action:not-daily-note", await this.summarizeDailyNoteDateContext(file, dateContext));
+            new Notice("Food logging is only available from daily notes.");
+            this.scheduleGcmMenuRefresh();
+            return;
+          }
+          logger.flow("GCM", "food-log-action:click", { path: file.path, ...summarizeDateContext(dateContext) });
+          this.openFoodSearchModal(null, dateContext);
+        },
+      });
+    } catch (error) {
+      logger.flowWarn("GCM", "food-log-action:register-failed", { error: logger.errorSummary(error) });
+      this.ensureGcmFoodLogButtonRetry();
+      return;
+    }
+    if (typeof unregister !== "function") {
+      logger.flowWarn("GCM", "food-log-action:register-invalid-disposer");
+      this.ensureGcmFoodLogButtonRetry();
+      return;
+    }
+    this.unregisterGcmFoodLogButton = unregister as () => void;
+    this.clearGcmFoodLogButtonRetry();
     logger.flow("GCM", "food-log-action:registered");
     this.scheduleGcmMenuRefresh();
+  }
+
+  private ensureGcmFoodLogButtonRetry(): void {
+    if (this.gcmFoodLogButtonRetryRef) return;
+    this.gcmFoodLogButtonRetryRef = this.app.workspace.on("layout-change", () => {
+      if (!this.unregisterGcmFoodLogButton && this.settings.showFoodLogButtonInGcm) this.refreshGcmFoodLogButtonRegistration();
+    });
+    logger.flow("GCM", "food-log-action:register-retry-armed");
+  }
+
+  private clearGcmFoodLogButtonRetry(): void {
+    if (!this.gcmFoodLogButtonRetryRef) return;
+    this.app.workspace.offref(this.gcmFoodLogButtonRetryRef);
+    this.gcmFoodLogButtonRetryRef = null;
+    logger.flow("GCM", "food-log-action:register-retry-cleared");
   }
 
   private openFoodSearchModal(initialDraft: InlineFoodDraft | null, dateContext: FoodLogDateContext | null): void {

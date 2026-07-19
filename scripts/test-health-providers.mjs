@@ -3897,6 +3897,89 @@ test("workout cooldown date math writes the next eligible date", () => {
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 0), "2026-06-03");
 });
 
+test("GCM food-log registration owns one retry listener through success, disable, and unload", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const listeners = new Set();
+  fake.app.workspace.on = (event, callback) => {
+    const ref = { event, callback };
+    listeners.add(ref);
+    return ref;
+  };
+  fake.app.workspace.offref = (ref) => {
+    assert.equal(listeners.delete(ref), true, "the owned retry listener must be released exactly once");
+  };
+
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings, showFoodLogButtonInGcm: true };
+  plugin.scheduleGcmMenuRefresh = () => {};
+  plugin.removeWorkoutActionBars = () => {};
+
+  plugin.refreshGcmFoodLogButtonRegistration();
+  plugin.refreshGcmFoodLogButtonRegistration();
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.equal(listeners.size, 1, "repeated unavailable refreshes must reuse one retry listener");
+
+  const retryRef = [...listeners][0];
+  assert.equal(retryRef.event, "layout-change");
+  retryRef.callback();
+  retryRef.callback();
+  assert.equal(listeners.size, 1, "an unavailable retry callback must not multiply itself");
+
+  plugin.settings.showFoodLogButtonInGcm = false;
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.equal(listeners.size, 0, "disabling the action must release an armed retry listener");
+  plugin.settings.showFoodLogButtonInGcm = true;
+  plugin.refreshGcmFoodLogButtonRegistration();
+  const successfulRetryRef = [...listeners][0];
+
+  let registrationAttempts = 0;
+  let registrations = 0;
+  let unregistrations = 0;
+  let registeredAction = null;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      externalActions: {
+        version: 1,
+        register(action) {
+          registrationAttempts += 1;
+          if (registrationAttempts === 1) throw new Error("GCM still initializing");
+          if (registrationAttempts === 2) return null;
+          registrations += 1;
+          registeredAction = action;
+          return () => { unregistrations += 1; };
+        },
+      },
+    },
+  };
+
+  successfulRetryRef.callback();
+  assert.equal(registrationAttempts, 1);
+  assert.equal(listeners.size, 1, "a thrown registration must retain the same retry listener");
+  successfulRetryRef.callback();
+  assert.equal(registrationAttempts, 2);
+  assert.equal(listeners.size, 1, "an invalid disposer must retain the same retry listener");
+  successfulRetryRef.callback();
+  assert.equal(registrationAttempts, 3);
+  assert.equal(registrations, 1);
+  assert.equal(registeredAction.id, "food-log");
+  assert.equal(listeners.size, 0, "successful registration must release the retry listener");
+
+  plugin.settings.showFoodLogButtonInGcm = false;
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.equal(unregistrations, 1);
+  assert.equal(listeners.size, 0);
+
+  plugin.settings.showFoodLogButtonInGcm = true;
+  delete fake.app.plugins.plugins["tps-global-context-menu"];
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.equal(listeners.size, 1);
+  plugin.onunload();
+  assert.equal(listeners.size, 0, "plugin unload must release an armed retry listener");
+});
+
 test("workout finish hands GCM an absolute Date instead of a schedule-parsed ISO string", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
