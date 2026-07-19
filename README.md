@@ -6,6 +6,10 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 
 - 2026-07-16 isolation validation: the Food Log Base test was made source-owned; the declared suite passed 97 tests with only its intentionally gated USDA live check skipped, and the emailed api.data.gov key then passed that optional USDA Foundation check 1/1. The required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Health in the registered test vault with independent default state. No live promotion occurred, and production runtime checksums remained unchanged.
 
+## Install with BRAT
+
+Add the private repository `ZachTish/tps-health` to BRAT and select **Latest** tracking so BRAT follows the newest GitHub release. For private-repository access, give BRAT a fine-grained GitHub token scoped to this repository with **Contents: Read-only** permission. Never commit the token to this repository, an Obsidian vault, or any synced note.
+
 ## Mobile modal contract
 
 All Health food, barcode, recipe, and workout modals use `tps-keyboard-aware-modal`. TPS GCM supplies the shared visible-viewport rules, keeping modal inputs and actions above the mobile keyboard without Health maintaining separate keyboard-positioning logic.
