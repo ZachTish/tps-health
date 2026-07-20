@@ -156,6 +156,7 @@ export interface PendingFoodLogDraft {
     dateIso: string;
     label: string;
     isToday: boolean;
+    dailyNotePath?: string;
     foodLogTarget?: FoodLogTarget;
     focusAfterLog?: boolean;
   } | null;

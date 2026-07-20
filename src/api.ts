@@ -100,6 +100,7 @@ export interface StartWorkoutInput {
   logTarget?: WorkoutLogTarget;
   startedAt?: string;
   dailyNoteDate?: string;
+  dailyNotePath?: string;
   openFile?: boolean;
 }
 
@@ -118,6 +119,7 @@ export interface LogActivityInput {
   device?: string;
   note?: string;
   dailyNoteDate?: string;
+  dailyNotePath?: string;
 }
 
 export interface FinishWorkoutInput {

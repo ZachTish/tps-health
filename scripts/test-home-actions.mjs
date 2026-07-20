@@ -83,12 +83,21 @@ test('TPS Health Home provider rejects unknown commands and incomplete context w
   assert.equal(opens, 0);
 });
 
-test('TPS Health exposes provider after API creation without active-file inference', () => {
+test('TPS Health exposes a lifecycle-fenced provider after API creation without active-file inference', () => {
   const source = readFileSync(new URL('../src/home-actions.ts', import.meta.url), 'utf8');
   const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /getActiveFile|activeLeaf|workspace/);
-  assert.match(mainSource, /this\.api\.homeActions = createTPSHealthHomeActionProvider\(this\)/);
+  assert.match(mainSource, /const assertHomeActionCurrent = \(\) => this\.assertLegacyApiCurrent\(lifecycleEpoch\)/);
+  assert.match(mainSource, /const homeActions = createTPSHealthHomeActionProvider\(\{[\s\S]*?openFoodLogger: \(dateContext\) => this\.openFoodLogger\(dateContext, assertHomeActionCurrent\)[\s\S]*?openActivityLogger: \(dateContext\) => this\.openActivityLogger\(dateContext, assertHomeActionCurrent\)[\s\S]*?openWorkoutStarter: \(dateContext\) => this\.openWorkoutStarter\(dateContext, assertHomeActionCurrent\)/);
+  assert.match(mainSource, /this\.api\.homeActions = \{[\s\S]*runLegacyApiSync\(lifecycleEpoch/);
   assert.match(mainSource, /home-actions:ready/);
   assert.match(apiSource, /homeActions\?: TPSHealthHomeActionProvider/);
+});
+
+test('public Food modal descendants retain the originating lifecycle guard', () => {
+  const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(mainSource, /new BarcodeScannerModal\(this\.app, this\.plugin, this\.dateContext,[\s\S]*?\}, this\.assertCurrent\);/);
+  assert.match(mainSource, /new BarcodeFoodReviewModal\(this\.app, this\.plugin, reviewItem,[\s\S]*?this\.dateContext, this\.assertCurrent\)\.open\(\)/);
+  assert.match(mainSource, /new FoodLogModal\(this\.app, this\.plugin, saved, null, this\.dateContext, this\.assertCurrent\)\.open\(\)/);
 });

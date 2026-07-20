@@ -53,6 +53,7 @@ async function importPluginWithObsidianStub() {
       constructor(path) {
         this.path = path;
         this.basename = path.split("/").pop().replace(/\\.md$/i, "");
+        this.extension = path.split(".").pop().toLowerCase();
         const parentPath = path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
         this.parent = parentPath ? { path: parentPath } : null;
       }
@@ -140,6 +141,11 @@ function createFakeHealthApp() {
   const secrets = new Map();
   const writes = [];
   const openedFiles = [];
+  const vaultHooks = {
+    beforeModify: null,
+    beforeProcess: null,
+    afterProcessUpdate: null,
+  };
   const TFile = globalThis.__TPSHealthTestTFile;
   const metadataCache = {
     getFileCache(file) {
@@ -172,8 +178,21 @@ function createFakeHealthApp() {
       return files.get(file.path) || "";
     },
     async modify(file, content) {
+      await vaultHooks.beforeModify?.(file, content);
       files.set(file.path, content);
       writes.push({ op: "modify", path: file.path, content });
+    },
+    async process(file, update) {
+      await vaultHooks.beforeProcess?.(file, files.get(file.path) || "");
+      const current = files.get(file.path) || "";
+      const content = update(current);
+      if (content && typeof content.then === "function") {
+        throw new TypeError("Vault.process update callbacks must be synchronous.");
+      }
+      await vaultHooks.afterProcessUpdate?.(file, content, current);
+      files.set(file.path, content);
+      writes.push({ op: "process", path: file.path, content });
+      return content;
     },
     async append(file, content) {
       files.set(file.path, `${files.get(file.path) || ""}${content}`);
@@ -215,6 +234,7 @@ function createFakeHealthApp() {
     writes,
     openedFiles,
     secrets,
+    vaultHooks,
   };
 }
 
@@ -274,7 +294,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.doesNotMatch(mainSource, /this\.selectionItems\.push\(\{\s*item: selectedItem/);
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /getPendingFoodLogDraft\(dateContext: FoodLogDateContext \| null\): PendingFoodLogDraft \| null/);
-  assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null\): Promise<void>/);
+  assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null, assertCurrent\?: \(\) => void\): Promise<void>/);
   assert.match(mainSource, /clearPendingFoodLogDraft\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:none"/);
   assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:context-mismatch"/);
@@ -295,7 +315,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
 });
 
 test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
-  assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\);/);
+  assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\)\.catch\(/);
   assert.match(mainSource, /const edit = controls\.createEl\("button", \{ text: "Edit", cls: "mod-muted" \}\);/);
   assert.match(mainSource, /private async openSelectionFoodEditor\(entry: BatchFoodSelection\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-open"/);
@@ -1483,7 +1503,7 @@ test("health source keeps session-note workouts and fast rollup paths available"
   assert.match(mainSource, /async logActivity\(input: LogActivityInput\)/);
   assert.match(mainSource, /new ActivityLogModal/);
   assert.match(mainSource, /const consumedAt = completedDate \|\| isoNow\(\);/);
-  assert.match(mainSource, /const dailyFile = await this\.getOrCreateDailyNoteForDate\(consumedAt\)/);
+  assert.match(mainSource, /const dailyFile = explicitDailyFile \|\| await this\.getOrCreateDailyNoteForDate\(consumedAt\)/);
   assert.match(mainSource, /completedDate: consumedAt/);
   assert.match(mainSource, /await this\.insertIntoDailyNote\(foodEntryLine\(entry\), section \|\| this\.settings\.defaultFoodLogSection, dailyFile\)/);
   assert.match(mainSource, /logger\.flow\("FoodLog", "write:inserted", \{/);
@@ -1550,7 +1570,7 @@ test("settings normalization removes stale fields while preserving live vault co
       activeTab: "search",
       searchInput: "eggs",
       consumedDateInput: "2026-07-06T07:30",
-      dateContext: { dateIso: "2026-07-06", label: "Mon, Jul 6", isToday: true, foodLogTarget: "daily-note" },
+      dateContext: { dateIso: "2026-07-06", label: "Mon, Jul 6", isToday: true, dailyNotePath: " Daily/2026-07-06.md ", foodLogTarget: "daily-note" },
       selectionItems: [
         { item: { id: "food-1", name: "Eggs", source: "manual", nutrition: { calories: 70 } }, quantity: 2, unit: "serving" },
         { item: { id: "", name: "", source: "" }, quantity: 1, unit: "serving" },
@@ -1583,6 +1603,7 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.pendingFoodLogDraft?.searchInput, "eggs");
   assert.equal(normalized.pendingFoodLogDraft?.consumedDateInput, "2026-07-06T07:30");
   assert.equal(normalized.pendingFoodLogDraft?.dateContext?.dateIso, "2026-07-06");
+  assert.equal(normalized.pendingFoodLogDraft?.dateContext?.dailyNotePath, "Daily/2026-07-06.md");
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems.length, 1);
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].item.name, "Eggs");
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].quantity, 2);
@@ -1852,8 +1873,8 @@ test("blank daily log sections stay a no-heading frontmatter insertion contract"
   assert.match(typesSource, /defaultFoodLogSection: ""/);
   assert.doesNotMatch(typesSource, /workoutLogHeading/);
   assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);[\s\S]+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
-  assert.match(mainSource, /await this\.insertIntoDailyNote\(workoutSummaryLine\(path, startedAt\), undefined, await this\.getOrCreateDailyNoteForDate\(dailyNoteDate\)\)/);
-  assert.match(mainSource, /return this\.insertIntoDailyNote\(line, undefined, await this\.getOrCreateDailyNoteForDate\(dateValue\)\)/);
+  assert.match(mainSource, /workoutSummaryLine\(path, startedAt\),\s+undefined,\s+explicitDailyFile \|\| await this\.getOrCreateDailyNoteForDate\(dailyNoteDate\)/);
+  assert.match(mainSource, /return this\.insertIntoDailyNote\(line, undefined, targetFile \|\| await this\.getOrCreateDailyNoteForDate\(dateValue\)\)/);
   assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);[\s\S]+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
   assert.match(settingsSource, /\.setName\("Default food log section"\)\s+\.setDesc\("Optional\. Blank inserts food logs immediately after daily-note frontmatter\."\)[\s\S]+\.setPlaceholder\("Food Log"\)[\s\S]+defaultFoodLogSection = value\.trim\(\);/);
   assert.doesNotMatch(settingsSource, /\.setName\("Workout log heading"\)/);
@@ -2248,7 +2269,7 @@ test("log food command seeds search and amount from the active inline food draft
   ]);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "log-food:active-file"/);
   assert.match(mainSource, /this\.openFoodSearchModal\(this\.getActiveInlineFoodDraft\(\), dateContext\)/);
-  assert.match(mainSource, /new FoodSearchModal\(this\.app, this, initialDraft, dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new FoodSearchModal\(this\.app, this, initialDraft, dateContext, assertCurrent\)\.open\(\)/);
   assert.doesNotMatch(mainSource, /private async handleNaturalAdd\(input: string\): Promise<void>/);
   assert.match(mainSource, /private async handleBarcodeAdd\(input: string\): Promise<void>/);
   assert.doesNotMatch(mainSource, /function parseQuickFoodInput\(input: string\): QuickFoodInput \| null/);
@@ -2297,10 +2318,10 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private consumedDateInput: string;/);
   assert.doesNotMatch(mainSource, /private recipeNameInput/);
   assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
-  assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, \[\.\.\.this\.selectionItems\], this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, \[\.\.\.this\.selectionItems\], this\.dateContext, this\.assertCurrent\)\.open\(\)/);
   assert.match(mainSource, /export function initialFoodLogConsumedDateInput/);
   assert.match(mainSource, /export function restoredFoodLogDraftConsumedDateInput/);
-  assert.match(mainSource, /this\.consumedDateInput = restoredFoodLogDraftConsumedDateInput\(dateContext, pendingDraft\);/);
+  assert.match(mainSource, /this\.consumedDateInput = restoredFoodLogDraftConsumedDateInput\(this\.dateContext, pendingDraft\);/);
   assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:consumed-time"/);
   assert.match(mainSource, /let consumedDateInput = initialFoodLogConsumedDateInput\(this\.dateContext\);/);
   assert.match(mainSource, /function configureFoodLogDateTimeInput\(inputEl: HTMLInputElement\): void \{\s+inputEl\.type = "datetime-local";\s+inputEl\.step = "60";/);
@@ -2678,7 +2699,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
 test("create from food search upserts canonical local foods instead of creating duplicate copies", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.doesNotMatch(mainSource, /\$\{item\.name\} copy/);
-  assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, await this\.plugin\.enrichFoodSearchItem\(item\), this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);[\s\S]*?new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, enriched, this\.dateContext, undefined, undefined, this\.assertCurrent\)\.open\(\)/);
   assert.match(mainSource, /const saved = await this\.plugin\.upsertFoodFromInput\(\{/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "submit:done"/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "edit:done"/);
@@ -2719,9 +2740,9 @@ test("food logging uses TPS Table without registering the retired custom Bases v
   assert.match(mainSource, /id: "open-food-log-base"/);
   assert.match(mainSource, /name: "Open Food Log base"/);
   assert.match(mainSource, /vault\.create\(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent\(this\.settings\)\)/);
-  assert.match(mainSource, /const repaired = repairFoodLogBaseContent\(await this\.app\.vault\.cachedRead\(file\), this\.settings\);/);
+  assert.match(mainSource, /const content = await this\.app\.vault\.cachedRead\(file\);[\s\S]+const repaired = repairFoodLogBaseContent\(content, this\.settings\);/);
   assert.match(mainSource, /logger\.flow\("Base", "food-log:repair", \{ path: file\.path \}\)/);
-  assert.match(mainSource, /await this\.app\.vault\.modify\(file, repaired\)/);
+  assert.match(mainSource, /await this\.app\.vault\.process\(file, \(current\) => \{[\s\S]+repairFoodLogBaseContent\(current, this\.settings\) \|\| current/);
 
   assert.match(mainSource, /const GCM_TABLE_BASE_VIEW_TYPE = "tps-table"/);
   assert.match(mainSource, /const GCM_LEGACY_LOG_BASE_VIEW_TYPE = "tps-log-table"/);
@@ -2744,7 +2765,8 @@ test("food logging uses TPS Table without registering the retired custom Bases v
   assert.doesNotMatch(mainSource, /const files = this\.plugin\.app\.vault\.getMarkdownFiles\(\);\s+for \(const file of files\)/);
 
   assert.match(mainSource, /async openFoodLogEntryMenu\(event: MouseEvent, entry: FoodLogBaseEntry\): Promise<void>/);
-  assert.match(mainSource, /const selectedEntries = await this\.getSelectedFoodLogEntries\(entry\)/);
+  assert.match(mainSource, /this\.showFoodLogEntryMenuAtPosition\(\{ x: event\.clientX, y: event\.clientY \}, entry\)/);
+  assert.match(mainSource, /const selectedEntries = allowSelection \? await this\.getSelectedFoodLogEntries\(entry\) : \[entry\]/);
   assert.match(mainSource, /Create recipe from/);
   assert.match(mainSource, /new FoodLogRecipeModal\(this\.app, this, selectedEntries\)\.open\(\)/);
   assert.match(mainSource, /class FoodLogRecipeModal extends Modal/);
@@ -2754,8 +2776,8 @@ test("food logging uses TPS Table without registering the retired custom Bases v
   assert.match(mainSource, /Delete food log entry/);
   assert.match(mainSource, /async deleteFoodLogEntries\(entries: FoodLogBaseEntry\[\]/);
   assert.match(mainSource, /class FoodLogAdjustModal extends Modal/);
-  assert.match(mainSource, /async replaceFoodLogEntryLine\(entry: FoodLogBaseEntry/);
-  assert.match(mainSource, /async openFoodLogFoodNote\(entry: FoodLogBaseEntry\)/);
+  assert.match(mainSource, /async replaceFoodLogEntryLine\(\s*entry: FoodLogBaseEntry,/);
+  assert.match(mainSource, /async openFoodLogFoodNote\(entry: FoodLogBaseEntry,/);
   assert.match(mainSource, /setTitle\("Change consumed date\/time"\)/);
   assert.match(mainSource, /class FoodLogConsumedDateModal extends Modal/);
   assert.match(mainSource, /updateFoodLogEntryConsumedDate\(entry: FoodLogBaseEntry/);
@@ -2821,13 +2843,12 @@ test("completed inline food logs render as live preview chips", async () => {
   assert.match(mainSource, /macro\.textContent = value/);
   assert.match(mainSource, /void plugin\.openFoodLogEntryMenuFromLine\(event, ctx\.sourcePath, lineNumber, text\)/);
   assert.match(mainSource, /looksLikeFoodLogVisibleLine\(visibleText\)/);
-  assert.match(mainSource, /findFoodLogEntryByVisibleText\(file, foodLogVisibleSummary\(line\) \|\| line\)/);
+  assert.match(mainSource, /findFoodLogEntryByVisibleText\(file, visibleText\)/);
   assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "contextmenu:no-match"/);
   assert.match(mainSource, /logger\.flowError\("FoodLogEntry", "contextmenu:failed"/);
-  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:missing-file"/);
-  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:stale-line"/);
-  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "menu-from-line:fallback-match"/);
-  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "menu-from-line:no-match"/);
+  assert.match(mainSource, /const resolved = await this\.resolveFoodLogEntryFromSnapshot\(filePath, lineNumber, line\)/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", `menu-from-line:\$\{resolved\.status\}`/);
+  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "menu-from-line:matched"/);
   assert.match(mainSource, /logger\.flow\("FoodLogEntry", "source-line:open-start"/);
   assert.match(mainSource, /logger\.flow\("FoodLogEntry", "source-line:open-done"/);
   assert.match(mainSource, /logger\.flowWarn\("FoodLogEntry", "source-line:no-active-view"/);
@@ -3653,7 +3674,7 @@ test("food log unit options are scoped to the food serving type", async () => {
 
 test("food search expands colloquial grocery queries like protein doritos", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
-  assert.match(mainSource, /private openFoodSearchModal\(initialDraft: InlineFoodDraft \| null, dateContext: FoodLogDateContext \| null\): void/);
+  assert.match(mainSource, /private openFoodSearchModal\([\s\S]*?initialDraft: InlineFoodDraft \| null,[\s\S]*?dateContext: FoodLogDateContext \| null,[\s\S]*?assertCurrent\?: \(\) => void,[\s\S]*?\): void/);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "open-food-logger:provided"/);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "scan-barcode:active-file"/);
   assert.match(mainSource, /private async summarizeDailyNoteDateContext\(file: TFile \| null \| undefined, dateContext: FoodLogDateContext \| null\): Promise<Record<string, unknown>>/);
@@ -3828,6 +3849,319 @@ test("food logging can write dashboard-launched daily-note entries without focus
   assert.deepEqual(fake.openedFiles, [], "dashboard logging must not open or focus the target daily note");
 });
 
+function selectedDailyNoteTestSettings(overrides = {}) {
+  return {
+    dailyNoteFolder: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    workoutsFolder: "Health/Workouts",
+    workoutPlansFolder: "Health/Workout Plans",
+    exercisesFolder: "Health/Exercises",
+    defaultFoodLogSection: "",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+    workoutLogTarget: "daily-note",
+    appendWorkoutSummaryToDailyNote: false,
+    defaultWorkoutCooldownDays: 2,
+    activeWorkoutSetCount: 0,
+    healthGoals: [],
+    ...overrides,
+  };
+}
+
+test("explicit selected Daily Note path wins for food, activity, and daily-note workout writes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = selectedDailyNoteTestSettings();
+
+  const selectedPath = "Selected/2026-07-04.md";
+  const dateDerivedCandidate = "Daily/2026-07-04.md";
+  const secondSameDateCandidate = "Archive/Daily/2026-07-04.md";
+  const unrelatedActivePath = "Projects/Unrelated.md";
+  fake.files.set(selectedPath, "# Exact selected note\n");
+  fake.files.set(dateDerivedCandidate, "# Date-derived candidate\n");
+  fake.files.set(secondSameDateCandidate, "# Archived same-date candidate\n");
+  fake.files.set(unrelatedActivePath, "# Unrelated active file\n");
+  fake.app.workspace.getActiveFile = () => new globalThis.__TPSHealthTestTFile(unrelatedActivePath);
+
+  const foodEntry = await plugin.logFood(
+    {
+      id: "exact-path-food",
+      name: "Exact Path Yogurt",
+      source: "custom-inline",
+      nutrition: { calories: 120, proteinG: 15, carbsG: 9, fatG: 2 },
+    },
+    1,
+    "serving",
+    undefined,
+    "2026-07-04T09:30:00.000Z",
+    false,
+    "daily-note",
+    {
+      focusAfterLog: false,
+      dailyNoteDate: "2026-07-04",
+      dailyNotePath: selectedPath,
+    },
+  );
+  const activityEntry = await plugin.logActivity({
+    activity: "Exact Path Walk",
+    durationMinutes: 30,
+    completedDate: "2026-07-04T10:30:00.000Z",
+    dailyNoteDate: "2026-07-04",
+    dailyNotePath: selectedPath,
+  });
+  const workoutPath = await plugin.startWorkout({
+    title: "Exact Path Workout",
+    logTarget: "daily-note",
+    startedAt: "2026-07-04T11:30:00.000Z",
+    dailyNoteDate: "2026-07-04",
+    dailyNotePath: selectedPath,
+    openFile: false,
+  });
+
+  assert.equal(foodEntry.dailyNotePath, selectedPath);
+  assert.equal(activityEntry.dailyNotePath, selectedPath);
+  assert.equal(workoutPath, selectedPath, "daily-note-only workouts return the exact daily-note target");
+  assert.equal(plugin.settings.activeWorkoutDailyNotePath, selectedPath);
+  const selectedContent = fake.files.get(selectedPath);
+  assert.match(selectedContent, /Exact Path Yogurt/);
+  assert.match(selectedContent, /Exact Path Walk/);
+  assert.match(selectedContent, /Exact Path Workout/);
+  assert.equal(fake.files.get(dateDerivedCandidate), "# Date-derived candidate\n");
+  assert.equal(fake.files.get(secondSameDateCandidate), "# Archived same-date candidate\n");
+  assert.equal(fake.files.get(unrelatedActivePath), "# Unrelated active file\n");
+  assert.deepEqual(
+    [...new Set(fake.writes.map((write) => write.path).filter(Boolean))],
+    [selectedPath],
+    "every vault mutation must stay on the explicitly selected file",
+  );
+});
+
+test("missing, non-Markdown, and unsafe explicit Daily Note paths fail closed before any write", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const operations = [
+    {
+      name: "food",
+      invoke: (plugin, dailyNotePath) => plugin.logFood(
+        { id: "missing-path-food", name: "Must Not Persist", source: "manual", nutrition: { calories: 1 } },
+        1,
+        "serving",
+        undefined,
+        "2026-07-04T09:00:00.000Z",
+        true,
+        "daily-note",
+        { focusAfterLog: false, dailyNoteDate: "2026-07-04", dailyNotePath },
+      ),
+    },
+    {
+      name: "activity",
+      invoke: (plugin, dailyNotePath) => plugin.logActivity({
+        activity: "Must Not Persist",
+        completedDate: "2026-07-04T10:00:00.000Z",
+        dailyNoteDate: "2026-07-04",
+        dailyNotePath,
+      }),
+    },
+    {
+      name: "workout",
+      invoke: (plugin, dailyNotePath) => plugin.startWorkout({
+        title: "Must Not Persist",
+        logTarget: "both",
+        startedAt: "2026-07-04T11:00:00.000Z",
+        dailyNoteDate: "2026-07-04",
+        dailyNotePath,
+        openFile: false,
+      }),
+    },
+  ];
+  const invalidPaths = [
+    { name: "missing", path: "Selected/Missing-2026-07-04.md" },
+    {
+      name: "non-Markdown",
+      path: "Selected/2026-07-04.txt",
+      prepare: (fake) => fake.files.set("Selected/2026-07-04.txt", "not markdown\n"),
+    },
+    { name: "unsafe", path: "../Selected/2026-07-04.md" },
+  ];
+
+  for (const invalidPath of invalidPaths) {
+    for (const operation of operations) {
+      const fake = createFakeHealthApp();
+      const plugin = new TPSHealthPlugin(fake.app);
+      plugin.settings = selectedDailyNoteTestSettings();
+      fake.files.set("Projects/Unrelated.md", "# Keep me\n");
+      invalidPath.prepare?.(fake);
+      fake.app.workspace.getActiveFile = () => new globalThis.__TPSHealthTestTFile("Projects/Unrelated.md");
+      const before = new Map(fake.files);
+      const label = `${invalidPath.name} ${operation.name}`;
+
+      await assert.rejects(() => operation.invoke(plugin, invalidPath.path), /selected Daily Note is unavailable/i, label);
+      assert.deepEqual(fake.writes, [], `${label} must not write after explicit-path validation fails`);
+      assert.deepEqual(fake.files, before, `${label} must leave every file untouched`);
+    }
+  }
+});
+
+test("changing the submitted date releases the original Daily Note path and uses normal date resolution", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = selectedDailyNoteTestSettings();
+  const staleMissingPath = "Selected/Missing-2026-07-04.md";
+  fake.files.set("Projects/Unrelated.md", "# Unrelated active file\n");
+  fake.app.workspace.getActiveFile = () => new globalThis.__TPSHealthTestTFile("Projects/Unrelated.md");
+
+  const foodEntry = await plugin.logFood(
+    { id: "released-food", name: "Changed Date Food", source: "manual", nutrition: { calories: 1 } },
+    1,
+    "serving",
+    undefined,
+    "2026-07-05T09:00:00.000Z",
+    false,
+    "daily-note",
+    { focusAfterLog: false, dailyNoteDate: "2026-07-04", dailyNotePath: staleMissingPath },
+  );
+  const activityEntry = await plugin.logActivity({
+    activity: "Changed Date Activity",
+    completedDate: "2026-07-06T10:00:00.000Z",
+    dailyNoteDate: "2026-07-04",
+    dailyNotePath: staleMissingPath,
+  });
+  await plugin.startWorkout({
+    title: "Changed Date Workout",
+    logTarget: "daily-note",
+    startedAt: "2026-07-07T11:00:00.000Z",
+    dailyNoteDate: "2026-07-04",
+    dailyNotePath: staleMissingPath,
+    openFile: false,
+  });
+
+  assert.equal(foodEntry.dailyNotePath, "Daily/2026-07-05.md");
+  assert.equal(activityEntry.dailyNotePath, "Daily/2026-07-06.md");
+  assert.equal(plugin.settings.activeWorkoutDailyNotePath, "Daily/2026-07-07.md");
+  assert.match(fake.files.get("Daily/2026-07-05.md"), /Changed Date Food/);
+  assert.match(fake.files.get("Daily/2026-07-06.md"), /Changed Date Activity/);
+  assert.match(fake.files.get("Daily/2026-07-07.md"), /Changed Date Workout/);
+  assert.equal(fake.files.has(staleMissingPath), false);
+  assert.equal(fake.files.get("Projects/Unrelated.md"), "# Unrelated active file\n");
+});
+
+test("Describe pending tray round-trip preserves and compares the exact Daily Note path", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = selectedDailyNoteTestSettings();
+  const dateContext = {
+    dateIso: "2026-07-04",
+    label: "2026-07-04",
+    isToday: false,
+    dailyNotePath: "Selected/2026-07-04.md",
+    foodLogTarget: "daily-note",
+  };
+  plugin.searchFoods = async () => [{
+    id: "draft-food",
+    name: "Draft Food",
+    source: "manual",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 1 },
+  }];
+
+  assert.equal(await plugin.openFoodDescriber("1 serving Draft Food", dateContext), null);
+  const draft = plugin.settings.pendingFoodLogDraft;
+  assert.equal(draft?.dateContext?.dailyNotePath, "Selected/2026-07-04.md");
+  assert.equal(draft?.selectionItems?.[0]?.item.name, "Draft Food");
+  assert.equal(plugin.getPendingFoodLogDraft({
+    dateIso: "2026-07-04",
+    label: "2026-07-04",
+    isToday: false,
+    dailyNotePath: "Selected//2026-07-04.md",
+    foodLogTarget: "daily-note",
+  })?.id, draft?.id, "normalized forms of the same explicit path may restore");
+  assert.equal(plugin.getPendingFoodLogDraft({
+    dateIso: "2026-07-04",
+    label: "2026-07-04",
+    isToday: false,
+    dailyNotePath: "Daily/2026-07-04.md",
+    foodLogTarget: "daily-note",
+  }), null, "another same-date-looking file must not restore the draft");
+  assert.equal(plugin.getPendingFoodLogDraft({
+    dateIso: "2026-07-04",
+    label: "2026-07-04",
+    isToday: false,
+    foodLogTarget: "daily-note",
+  }), null, "pathless context must not absorb an exact-path draft");
+});
+
+function consumedDateMoveRow(foodId = "move-row") {
+  const identity = foodId ? ` [foodId:: ${foodId}]` : "";
+  return `- 1 serving - Date Yogurt <!-- [type:: foodLog] [food:: Date Yogurt] [qty:: 1] [unit:: serving]${identity} [completedDate:: 2026-07-04T08:00:00.000Z] [dailyNotePath:: Daily/2026-07-04.md] -->`;
+}
+
+async function createConsumedDateMoveFixture({ foodId = "move-row", targetContent = "# Target note\n" } = {}) {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFolder: "Daily",
+    dailyNoteFormat: "YYYY-MM-DD",
+    foodLogTarget: "daily-note",
+    foodLogFilePath: "Food Log.md",
+    defaultFoodLogSection: "",
+    automaticDailyRollups: false,
+  };
+  const sourcePath = "Daily/2026-07-04.md";
+  const targetPath = "Daily/2026-07-05.md";
+  const sourceRow = consumedDateMoveRow(foodId);
+  const sourceContent = `# Source note\n${sourceRow}\nSource tail\n`;
+  fake.files.set(sourcePath, sourceContent);
+  fake.files.set(targetPath, targetContent);
+  const sourceFile = fake.app.vault.getAbstractFileByPath(sourcePath);
+  const entry = {
+    file: sourceFile,
+    lineNumber: 1,
+    line: sourceRow,
+    id: `${sourcePath}:1`,
+    name: "Date Yogurt",
+    serving: "1 serving",
+    source: sourcePath,
+    foodPath: "",
+    dateKey: "2026-07-04",
+    dateLabel: "Sat, Jul 4 2026",
+    nutrition: {
+      calories: 100,
+      proteinG: 10,
+      carbsG: 12,
+      fatG: 2,
+      fiberG: 0,
+      sugarG: 0,
+      sugarAlcoholG: 0,
+      sugarAlcoholCaloriesPerG: 0,
+      alcoholG: 0,
+      sodiumMg: 0,
+    },
+  };
+  return {
+    fake,
+    plugin,
+    sourcePath,
+    targetPath,
+    sourceRow,
+    sourceContent,
+    targetContent,
+    entry,
+    move: () => plugin.updateFoodLogEntryConsumedDate(entry, "2026-07-05T09:30"),
+  };
+}
+
 test("food log entry consumed date edits move daily-note lines and refresh both rollups", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -3890,6 +4224,104 @@ test("food log entry consumed date edits move daily-note lines and refresh both 
   assert.equal(parseFrontmatter(fake.files.get(oldPath)).consumedCalories, 0);
   assert.equal(parseFrontmatter(fake.files.get(newPath)).consumedCalories, 100);
   assert.equal(parseFrontmatter(fake.files.get(newPath)).protein, 10);
+});
+
+test("consumed-date move preserves concurrent source and target edits", async () => {
+  const fixture = await createConsumedDateMoveFixture();
+  const sourceConcurrentLine = "Concurrent source edit";
+  const targetConcurrentLine = "Concurrent target edit";
+  const injected = new Set();
+  const injectConcurrentEdit = async (file) => {
+    if (injected.has(file.path)) return;
+    if (file.path === fixture.sourcePath) {
+      injected.add(file.path);
+      fixture.fake.files.set(file.path, `${fixture.fake.files.get(file.path)}${sourceConcurrentLine}\n`);
+    }
+    if (file.path === fixture.targetPath) {
+      injected.add(file.path);
+      fixture.fake.files.set(file.path, `${fixture.fake.files.get(file.path)}${targetConcurrentLine}\n`);
+    }
+  };
+  fixture.fake.vaultHooks.beforeModify = injectConcurrentEdit;
+  fixture.fake.vaultHooks.beforeProcess = injectConcurrentEdit;
+
+  await fixture.move();
+
+  const source = fixture.fake.files.get(fixture.sourcePath);
+  const target = fixture.fake.files.get(fixture.targetPath);
+  assert.match(source, new RegExp(sourceConcurrentLine));
+  assert.doesNotMatch(source, /\[foodId:: move-row\]/);
+  assert.match(target, new RegExp(targetConcurrentLine));
+  assert.equal((target.match(/\[foodId:: move-row\]/g) || []).length, 1);
+  assert.match(target, /\[dailyNotePath:: Daily\/2026-07-05\.md\]/);
+});
+
+test("consumed-date move target insertion failure leaves the source byte-identical", async () => {
+  const fixture = await createConsumedDateMoveFixture();
+  const targetFailure = new Error("synthetic target insertion failure");
+  const failTarget = async (file) => {
+    if (file.path === fixture.targetPath) throw targetFailure;
+  };
+  fixture.fake.vaultHooks.beforeModify = failTarget;
+  fixture.fake.vaultHooks.beforeProcess = failTarget;
+
+  await assert.rejects(fixture.move(), (error) => error === targetFailure);
+
+  assert.equal(fixture.fake.files.get(fixture.sourcePath), fixture.sourceContent);
+  assert.equal(fixture.fake.files.get(fixture.targetPath), fixture.targetContent);
+});
+
+test("consumed-date move source deletion failure leaves both copies and retry converges", async () => {
+  const fixture = await createConsumedDateMoveFixture();
+  const sourceFailure = new Error("synthetic source deletion failure");
+  const failSource = async (file) => {
+    if (file.path === fixture.sourcePath) throw sourceFailure;
+  };
+  fixture.fake.vaultHooks.beforeModify = failSource;
+  fixture.fake.vaultHooks.beforeProcess = failSource;
+
+  await assert.rejects(
+    fixture.move(),
+    /saved in Daily\/2026-07-05\.md, but the original could not be removed/i,
+  );
+
+  assert.equal((fixture.fake.files.get(fixture.sourcePath).match(/\[foodId:: move-row\]/g) || []).length, 1);
+  assert.equal((fixture.fake.files.get(fixture.targetPath).match(/\[foodId:: move-row\]/g) || []).length, 1);
+
+  fixture.fake.vaultHooks.beforeModify = null;
+  fixture.fake.vaultHooks.beforeProcess = null;
+  await fixture.move();
+
+  assert.equal((fixture.fake.files.get(fixture.sourcePath).match(/\[foodId:: move-row\]/g) || []).length, 0);
+  assert.equal((fixture.fake.files.get(fixture.targetPath).match(/\[foodId:: move-row\]/g) || []).length, 1);
+});
+
+test("consumed-date move fails closed on a divergent target row with the same foodId", async () => {
+  const divergentTargetRow = consumedDateMoveRow("move-row")
+    .replace("[qty:: 1]", "[qty:: 9]")
+    .replace("Daily/2026-07-04.md", "Daily/2026-07-05.md");
+  const targetContent = `# Target note\n${divergentTargetRow}\n`;
+  const fixture = await createConsumedDateMoveFixture({ targetContent });
+
+  await assert.rejects(
+    fixture.move(),
+    /foodId|identity|conflict|different|divergent|already exists/i,
+  );
+
+  assert.equal(fixture.fake.files.get(fixture.sourcePath), fixture.sourceContent);
+  assert.equal(fixture.fake.files.get(fixture.targetPath), targetContent);
+});
+
+test("consumed-date move fails closed for a legacy row without foodId", async () => {
+  const fixture = await createConsumedDateMoveFixture({ foodId: "" });
+
+  await assert.rejects(
+    fixture.move(),
+    /foodId|identity|legacy|cannot move/i,
+  );
+
+  assert.equal(fixture.fake.files.get(fixture.sourcePath), fixture.sourceContent);
+  assert.equal(fixture.fake.files.get(fixture.targetPath), fixture.targetContent);
 });
 
 test("workout cooldown date math writes the next eligible date", () => {

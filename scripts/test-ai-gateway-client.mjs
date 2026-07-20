@@ -159,10 +159,11 @@ test("Health main uses only the public Gateway client and retains the local unav
   assert.match(main, /const aiGatewayClient = new TPSAiGatewayClient\(this\.app, this\.manifest\.id\)/);
   assert.match(main, /aiGatewayClient\.start\(/);
   assert.match(main, /const lifecycleEpoch = \+\+this\.lifecycleEpoch/);
-  assert.match(main, /this\.lifecycleEpoch \+= 1;\s+logger\.flow\("Lifecycle", "unload"\)/);
+  assert.match(main, /this\.lifecycleEpoch \+= 1;\s+this\.withdrawHealthUiService\("unload"\);\s+logger\.flow\("Lifecycle", "unload"\)/);
   assert.match(main, /return this\.aiGatewayClient\?\.getApi\(\);/);
   assert.match(main, /this\.aiGatewayClient = undefined;\s+aiGatewayClient\?\.dispose\(\);/);
-  assert.match(main, /return this\.legacyOpenFoodDescriber\(description, dateContext, onProgress\);/);
+  assert.match(main, /if \(mutationState\.started\) \{[\s\S]*?throw error;/);
+  assert.match(main, /return this\.legacyOpenFoodDescriber\([\s\S]*?assertMutationAllowed,[\s\S]*?\);/);
   assert.doesNotMatch(main, /\(this\.app as any\)\.tpsAiGateway/);
   assert.doesNotMatch(main, /getPlugin\?\.\("tps-ai-gateway"\)/);
 });

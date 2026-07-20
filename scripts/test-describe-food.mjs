@@ -77,7 +77,8 @@ test("Describe delegates AI transport to TPS AI Gateway and retains the local pa
   assert.doesNotMatch(mainSource, /api\.openai\.com/);
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(mainSource, /\/api\/chat/);
-  assert.match(mainSource, /return this\.legacyOpenFoodDescriber\(description, dateContext, onProgress\)/);
+  assert.match(mainSource, /return this\.legacyOpenFoodDescriber\([\s\S]*?assertMutationAllowed,[\s\S]*?\)/);
+  assert.match(mainSource, /if \(mutationState\.started\) \{[\s\S]*?provider:ai-failed-after-mutation[\s\S]*?throw error;/);
   assert.match(settingsSource, /managed centrally in TPS AI Gateway/);
 });
 
@@ -107,9 +108,9 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
   assert.match(mainSource, /describeAction\.setText\("Building tray…"\)/);
   assert.match(mainSource, /describeInput\.blur\(\)/);
   assert.match(mainSource, /if \(!this\.describeDismissed\) this\.statusEl\.setText\(message\)/);
-  assert.match(mainSource, /new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext, this\.assertCurrent\)\.open\(\)/);
   assert.match(mainSource, /describeAction\.setText\("Try again"\)/);
   assert.match(mainSource, /Your description is still here\./);
   assert.match(mainSource, /job:dismissed-while-running/);
-  assert.match(mainSource, /openTray\.addEventListener\("click", \(\) => new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)\)/);
+  assert.match(mainSource, /openTray\.addEventListener\("click", \(\) => \{[\s\S]*?this\.assertCurrent\?\.\(\);[\s\S]*?new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext, this\.assertCurrent\)\.open\(\);[\s\S]*?\}\)/);
 });

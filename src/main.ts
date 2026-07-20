@@ -1,17 +1,32 @@
 import { RangeSetBuilder, StateField, type EditorState } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, Events, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine, workoutSummaryLine } from "./format";
 import { resolveFoodLogDateKey } from "./food-log-date";
+import { isFoodLogSnapshotLine, resolveFoodLogEntrySnapshot } from "./food-log-entry-snapshot";
 import { applyBuiltInHealthGoalTargets, legacyUsdaApiKeyValue, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { assessFoodPlausibility, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodPlan, parseFoodDescription, type DescribeFoodPlan } from "./describe-food";
-import { createTPSHealthHomeActionProvider } from "./home-actions";
+import { createTPSHealthHomeActionProvider, toTPSHealthHomeDateContext } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import { TPSAiGatewayClient } from "./tps-ai-gateway-client";
 import type { TPSAiGatewayApiSnapshot } from "./tps-ai-gateway-contract";
+import {
+  createTPSHealthUiServiceDescriptor,
+  parseTPSHealthUiServiceRequest,
+  TPS_HEALTH_UI_SERVICE_EVENTS,
+  TPS_HEALTH_UI_SUPPORTED_HOME_ACTION_IDS,
+  type TPSHealthUiApi,
+  type TPSHealthUiExactContext,
+  type TPSHealthUiFoodDescriptionRequest,
+  type TPSHealthUiFoodDescriptionResult,
+  type TPSHealthUiFoodLogEntryMenuRequest,
+  type TPSHealthUiFoodLogEntryMenuResult,
+  type TPSHealthUiLogBaseKind,
+  type TPSHealthUiServiceDescriptor,
+} from "./tps-health-ui-contract";
 import * as logger from "./logger";
 import {
   DEFAULT_SETTINGS,
@@ -35,6 +50,7 @@ interface FoodLogDateContext {
   dateIso: string;
   label: string;
   isToday: boolean;
+  dailyNotePath?: string;
   foodLogTarget?: FoodLogTarget;
   focusAfterLog?: boolean;
 }
@@ -42,7 +58,13 @@ interface FoodLogDateContext {
 interface LogFoodOptions {
   focusAfterLog?: boolean;
   amountGrams?: number;
+  dailyNoteDate?: string;
+  dailyNotePath?: string;
 }
+
+type FoodLogEntryFileResolution =
+  | { readonly status: "matched"; readonly entry: FoodLogBaseEntry }
+  | { readonly status: "missing-file" | "stale-line" | "no-match" };
 
 interface BarcodeScannerAdapters {
   requestCameraStream?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
@@ -179,6 +201,7 @@ function summarizeDateContext(dateContext: FoodLogDateContext | null | undefined
   return {
     dateIso: dateContext.dateIso,
     isToday: dateContext.isToday,
+    dailyNotePath: dateContext.dailyNotePath || "",
     foodLogTarget: dateContext.foodLogTarget || "",
     focusAfterLog: !!dateContext.focusAfterLog,
   };
@@ -283,9 +306,21 @@ export default class TPSHealthPlugin extends Plugin {
   private usdaRequestQueue: Promise<void> = Promise.resolve();
   private aiGatewayClient?: TPSAiGatewayClient;
   private lifecycleEpoch = 0;
+  private healthUiDescriptor?: Readonly<TPSHealthUiServiceDescriptor>;
+  private healthUiRequestRef: EventRef | null = null;
+  private healthUiDescribeInFlight = new Map<string, Promise<Readonly<TPSHealthUiFoodDescriptionResult>>>();
+  private describeMutationInFlight: {
+    lifecycleEpoch: number;
+    operation: Promise<InlineFoodDraft | null>;
+  } | null = null;
+  private logBaseInFlight = new Map<TPSHealthUiLogBaseKind, {
+    lifecycleEpoch: number;
+    operation: Promise<TFile>;
+  }>();
 
   async onload() {
     const lifecycleEpoch = ++this.lifecycleEpoch;
+    this.withdrawHealthUiService("reload");
     const previousAiGatewayClient = this.aiGatewayClient;
     this.aiGatewayClient = undefined;
     previousAiGatewayClient?.dispose();
@@ -340,8 +375,18 @@ export default class TPSHealthPlugin extends Plugin {
     }
     if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
-    this.api = this.createApi();
-    this.api.homeActions = createTPSHealthHomeActionProvider(this);
+    this.api = this.createApi(lifecycleEpoch);
+    const assertHomeActionCurrent = () => this.assertLegacyApiCurrent(lifecycleEpoch);
+    const homeActions = createTPSHealthHomeActionProvider({
+      openFoodLogger: (dateContext) => this.openFoodLogger(dateContext, assertHomeActionCurrent),
+      openActivityLogger: (dateContext) => this.openActivityLogger(dateContext, assertHomeActionCurrent),
+      openWorkoutStarter: (dateContext) => this.openWorkoutStarter(dateContext, assertHomeActionCurrent),
+    });
+    this.api.homeActions = {
+      version: 1,
+      canHandle: (commandId) => this.runLegacyApiSync(lifecycleEpoch, () => homeActions.canHandle(commandId)),
+      execute: (commandId, context) => this.runLegacyApiSync(lifecycleEpoch, () => homeActions.execute(commandId, context)),
+    };
     (this.app as any).tpsHealth = this.api;
     logger.flow("GCM", "home-actions:ready", {
       commands: ["tps-health:log-food", "tps-health:log-activity", "tps-health:start-workout"],
@@ -512,11 +557,263 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEvent(this.app.metadataCache.on("resolved", () => this.scheduleFoodLogNutritionRepair("metadata-resolved", 250)));
     this.scheduleFoodLogNutritionRepair("load", 1500);
     this.scheduleWorkoutActionBars();
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
+    this.publishHealthUiService(lifecycleEpoch);
 
   }
 
   private isCurrentLifecycle(lifecycleEpoch: number): boolean {
     return lifecycleEpoch === this.lifecycleEpoch;
+  }
+
+  private createLifecycleGuard(additional?: () => void): () => void {
+    const lifecycleEpoch = this.lifecycleEpoch;
+    return () => {
+      if (!this.isCurrentLifecycle(lifecycleEpoch)) {
+        throw new Error("TPS Health is unavailable.");
+      }
+      additional?.();
+    };
+  }
+
+  private assertLegacyApiCurrent(lifecycleEpoch: number): void {
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) {
+      throw new Error("TPS Health API is unavailable.");
+    }
+  }
+
+  private runLegacyApiSync<T>(lifecycleEpoch: number, action: () => T): T {
+    this.assertLegacyApiCurrent(lifecycleEpoch);
+    const result = action();
+    this.assertLegacyApiCurrent(lifecycleEpoch);
+    return result;
+  }
+
+  private publishHealthUiService(lifecycleEpoch: number): void {
+    if (!this.isCurrentLifecycle(lifecycleEpoch) || this.healthUiDescriptor) return;
+    let descriptor: Readonly<TPSHealthUiServiceDescriptor> | undefined;
+    const rawApi: TPSHealthUiApi = {
+      apiVersion: 1,
+      supportedHomeActionIds: TPS_HEALTH_UI_SUPPORTED_HOME_ACTION_IDS,
+      executeHomeAction: async (commandId, context) => {
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        await this.assertHealthUiExactDailyNote(
+          context,
+          () => this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor),
+        );
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        const homeActions = this.api.homeActions;
+        const executed = homeActions ? homeActions.execute(commandId, context) : false;
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        return executed;
+      },
+      prepareFoodDescription: (request) => this.prepareHealthUiFoodDescription(request, lifecycleEpoch, descriptor),
+      ensureLogBase: (kind) => this.ensureHealthUiLogBase(kind, lifecycleEpoch, descriptor),
+      getMetricRenderConfigs: () => {
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        const configs = this.getMetricRenderConfigs();
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        return configs;
+      },
+      isWorkoutFile: (path) => {
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        const file = this.app.vault.getAbstractFileByPath(path);
+        const isWorkout = file instanceof TFile
+          && file.extension.toLowerCase() === "md"
+          && (file.path === this.settings.activeWorkoutPath
+            || isWorkoutLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file)));
+        this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+        return isWorkout;
+      },
+      openFoodLogEntryMenu: (request) => this.openHealthUiFoodLogEntryMenu(request, lifecycleEpoch, descriptor),
+    };
+    descriptor = createTPSHealthUiServiceDescriptor(rawApi);
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
+
+    let requestRef: EventRef | undefined;
+    try {
+      requestRef = (this.app.workspace as Events).on(TPS_HEALTH_UI_SERVICE_EVENTS.REQUEST, (value: unknown) => {
+        const request = parseTPSHealthUiServiceRequest(value);
+        if (!request
+          || !this.isCurrentLifecycle(lifecycleEpoch)
+          || this.healthUiDescriptor !== descriptor) return;
+        try {
+          request.accept(descriptor);
+        } catch (error) {
+          logger.flowWarn("HealthUi", "request:accept-failed", { error: logger.errorSummary(error) });
+        }
+      });
+      this.registerEvent(requestRef);
+    } catch (error) {
+      if (requestRef) {
+        try {
+          this.app.workspace.offref(requestRef);
+        } catch {
+          // The failed publication has no descriptor and cannot serve requests.
+        }
+      }
+      throw error;
+    }
+    if (!requestRef) throw new Error("TPS Health UI request listener was not created.");
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) {
+      try {
+        this.app.workspace.offref(requestRef);
+      } catch {
+        // Lifecycle fencing keeps a failed physical removal inert.
+      }
+      return;
+    }
+
+    this.healthUiDescriptor = descriptor;
+    this.healthUiRequestRef = requestRef;
+    try {
+      this.app.workspace.trigger(TPS_HEALTH_UI_SERVICE_EVENTS.AVAILABLE, descriptor);
+    } catch (error) {
+      logger.flowWarn("HealthUi", "available:listener-failed", { error: logger.errorSummary(error) });
+    }
+    if (!this.isCurrentLifecycle(lifecycleEpoch) || this.healthUiDescriptor !== descriptor) return;
+    logger.flow("HealthUi", "available", { apiVersion: descriptor.api.apiVersion });
+  }
+
+  private withdrawHealthUiService(reason: "reload" | "unload"): void {
+    const descriptor = this.healthUiDescriptor;
+    const requestRef = this.healthUiRequestRef;
+    this.healthUiDescriptor = undefined;
+    this.healthUiRequestRef = null;
+    this.healthUiDescribeInFlight.clear();
+    if (descriptor) {
+      try {
+        this.app.workspace.trigger(TPS_HEALTH_UI_SERVICE_EVENTS.UNAVAILABLE, descriptor);
+      } catch (error) {
+        logger.flowWarn("HealthUi", "unavailable:listener-failed", { reason, error: logger.errorSummary(error) });
+      }
+    }
+    if (requestRef) {
+      try {
+        this.app.workspace.offref(requestRef);
+      } catch (error) {
+        logger.flowWarn("HealthUi", "request-listener:remove-failed", { reason, error: logger.errorSummary(error) });
+      }
+    }
+    if (descriptor || requestRef) logger.flow("HealthUi", "unavailable", { reason });
+  }
+
+  private assertHealthUiServiceCurrent(
+    lifecycleEpoch: number,
+    descriptor: Readonly<TPSHealthUiServiceDescriptor> | undefined,
+  ): asserts descriptor is Readonly<TPSHealthUiServiceDescriptor> {
+    if (!descriptor
+      || !this.isCurrentLifecycle(lifecycleEpoch)
+      || this.healthUiDescriptor !== descriptor) {
+      throw new Error("TPS Health UI API is unavailable.");
+    }
+  }
+
+  private resolveHealthUiDailyNoteFile(context: TPSHealthUiExactContext): TFile | null {
+    const file = this.app.vault.getAbstractFileByPath(context.dailyNotePath);
+    return file instanceof TFile && file.extension.toLowerCase() === "md" ? file : null;
+  }
+
+  private async assertHealthUiExactDailyNote(
+    context: TPSHealthUiExactContext,
+    assertCurrent: () => void,
+  ): Promise<void> {
+    assertCurrent();
+    const file = this.resolveHealthUiDailyNoteFile(context);
+    if (!file) throw new Error("The selected Daily Note is unavailable.");
+    const dateContext = await this.getDailyNoteDateContext(file);
+    assertCurrent();
+    if (!dateContext
+      || dateContext.dailyNotePath !== context.dailyNotePath
+      || dateContext.dateIso !== context.dateIso) {
+      throw new Error("The selected Daily Note no longer matches the requested date.");
+    }
+  }
+
+  private prepareHealthUiFoodDescription(
+    request: TPSHealthUiFoodDescriptionRequest,
+    lifecycleEpoch: number,
+    descriptor: Readonly<TPSHealthUiServiceDescriptor> | undefined,
+  ): Promise<Readonly<TPSHealthUiFoodDescriptionResult>> {
+    this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+    const key = JSON.stringify([
+      request.description,
+      request.context.source,
+      request.context.dateIso,
+      request.context.dailyNotePath,
+      request.context.componentId,
+      request.context.basePath || "",
+    ]);
+    const existing = this.healthUiDescribeInFlight.get(key);
+    if (existing) return existing;
+    if (this.healthUiDescribeInFlight.size > 0) {
+      return Promise.reject(new Error("TPS Health is already preparing another food description."));
+    }
+    const dateContext = toTPSHealthHomeDateContext(request.context);
+    const assertCurrent = () => this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+    const operation = (async (): Promise<Readonly<TPSHealthUiFoodDescriptionResult>> => {
+      await this.assertHealthUiExactDailyNote(request.context, assertCurrent);
+      assertCurrent();
+      const previousDraft = this.settings.pendingFoodLogDraft;
+      const initialDraft = await this.openFoodDescriber(
+        request.description,
+        dateContext,
+        undefined,
+        assertCurrent,
+        () => this.assertHealthUiExactDailyNote(request.context, assertCurrent),
+      );
+      assertCurrent();
+      if (initialDraft) {
+        assertCurrent();
+        const modal = new FoodSearchModal(this.app, this, initialDraft, dateContext, assertCurrent);
+        try {
+          modal.open();
+          assertCurrent();
+        } catch (error) {
+          try {
+            modal.close();
+          } catch {
+            // The lifecycle failure remains authoritative even if modal cleanup fails.
+          }
+          throw error;
+        }
+      } else {
+        const preparedDraft = this.settings.pendingFoodLogDraft;
+        if (!preparedDraft
+          || preparedDraft === previousDraft
+          || !preparedDraft.selectionItems.length
+          || !foodLogDraftMatchesDateContext(preparedDraft, dateContext)) {
+          throw new Error("TPS Health did not prepare a food tray.");
+        }
+      }
+      return Object.freeze({ status: "prepared" as const });
+    })();
+    let tracked: Promise<Readonly<TPSHealthUiFoodDescriptionResult>>;
+    tracked = operation.finally(() => {
+      if (this.healthUiDescribeInFlight.get(key) === tracked) this.healthUiDescribeInFlight.delete(key);
+    });
+    this.healthUiDescribeInFlight.set(key, tracked);
+    return tracked;
+  }
+
+  private ensureHealthUiLogBase(
+    kind: TPSHealthUiLogBaseKind,
+    lifecycleEpoch: number,
+    descriptor: Readonly<TPSHealthUiServiceDescriptor> | undefined,
+  ): Promise<string> {
+    this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+    const assertCurrent = () => this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+    const operation = (async () => {
+      assertCurrent();
+      const file = kind === "food"
+        ? await this.ensureFoodLogBase(assertCurrent)
+        : kind === "activity"
+          ? await this.ensureActivityLogBase(assertCurrent)
+          : (() => { throw new TypeError("Unsupported TPS Health log Base kind."); })();
+      assertCurrent();
+      return file.path;
+    })();
+    return operation;
   }
 
   async saveSettings() {
@@ -584,6 +881,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   onunload(): void {
     this.lifecycleEpoch += 1;
+    this.withdrawHealthUiService("unload");
     logger.flow("Lifecycle", "unload");
     const aiGatewayClient = this.aiGatewayClient;
     this.aiGatewayClient = undefined;
@@ -668,7 +966,12 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("GCM", "food-log-action:register-retry-cleared");
   }
 
-  private openFoodSearchModal(initialDraft: InlineFoodDraft | null, dateContext: FoodLogDateContext | null): void {
+  private openFoodSearchModal(
+    initialDraft: InlineFoodDraft | null,
+    dateContext: FoodLogDateContext | null,
+    assertCurrent?: () => void,
+  ): void {
+    assertCurrent?.();
     const now = Date.now();
     const elapsedMs = now - this.lastFoodLogOpenAt;
     if (elapsedMs < 500) {
@@ -684,7 +987,7 @@ export default class TPSHealthPlugin extends Plugin {
       hasInitialDraft: !!initialDraft,
       ...summarizeDateContext(dateContext),
     });
-    new FoodSearchModal(this.app, this, initialDraft, dateContext).open();
+    new FoodSearchModal(this.app, this, initialDraft, dateContext, assertCurrent).open();
   }
 
   async openFoodLogBase(): Promise<void> {
@@ -706,21 +1009,58 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  async ensureFoodLogBase(): Promise<TFile> {
+  async ensureFoodLogBase(assertCurrent?: () => void): Promise<TFile> {
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const checkCurrent = this.createLifecycleGuard(assertCurrent);
+    checkCurrent();
+    const existing = this.logBaseInFlight.get("food");
+    if (existing?.lifecycleEpoch === lifecycleEpoch) {
+      const file = await existing.operation;
+      checkCurrent();
+      return file;
+    }
+    let operation: Promise<TFile>;
+    operation = this.ensureFoodLogBaseCore(checkCurrent).finally(() => {
+      if (this.logBaseInFlight.get("food")?.operation === operation) this.logBaseInFlight.delete("food");
+    });
+    this.logBaseInFlight.set("food", { lifecycleEpoch, operation });
+    return operation;
+  }
+
+  private async ensureFoodLogBaseCore(assertCurrent: () => void): Promise<TFile> {
+    assertCurrent();
     let file = this.app.vault.getAbstractFileByPath(DEFAULT_FOOD_LOG_BASE_PATH);
     if (!file) {
       logger.flow("Base", "food-log:create", { path: DEFAULT_FOOD_LOG_BASE_PATH });
-      file = await this.app.vault.create(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent(this.settings));
+      assertCurrent();
+      try {
+        file = await this.app.vault.create(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent(this.settings));
+      } catch (error) {
+        assertCurrent();
+        const collided = this.app.vault.getAbstractFileByPath(DEFAULT_FOOD_LOG_BASE_PATH);
+        if (!(collided instanceof TFile)) throw error;
+        file = collided;
+        logger.flow("Base", "food-log:create-collision-reused", { path: file.path });
+      }
+      assertCurrent();
     }
     if (!(file instanceof TFile)) {
       logger.flowWarn("Base", "food-log:path-not-file", { path: DEFAULT_FOOD_LOG_BASE_PATH });
       throw new Error("Food Log base path is not a file.");
     }
-    const repaired = repairFoodLogBaseContent(await this.app.vault.cachedRead(file), this.settings);
+    const content = await this.app.vault.cachedRead(file);
+    assertCurrent();
+    const repaired = repairFoodLogBaseContent(content, this.settings);
     if (repaired) {
       logger.flow("Base", "food-log:repair", { path: file.path });
-      await this.app.vault.modify(file, repaired);
+      assertCurrent();
+      await this.app.vault.process(file, (current) => {
+        assertCurrent();
+        return repairFoodLogBaseContent(current, this.settings) || current;
+      });
+      assertCurrent();
     }
+    assertCurrent();
     return file;
   }
 
@@ -747,21 +1087,58 @@ export default class TPSHealthPlugin extends Plugin {
     return this.openActivityLogBase();
   }
 
-  async ensureActivityLogBase(): Promise<TFile> {
+  async ensureActivityLogBase(assertCurrent?: () => void): Promise<TFile> {
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const checkCurrent = this.createLifecycleGuard(assertCurrent);
+    checkCurrent();
+    const existing = this.logBaseInFlight.get("activity");
+    if (existing?.lifecycleEpoch === lifecycleEpoch) {
+      const file = await existing.operation;
+      checkCurrent();
+      return file;
+    }
+    let operation: Promise<TFile>;
+    operation = this.ensureActivityLogBaseCore(checkCurrent).finally(() => {
+      if (this.logBaseInFlight.get("activity")?.operation === operation) this.logBaseInFlight.delete("activity");
+    });
+    this.logBaseInFlight.set("activity", { lifecycleEpoch, operation });
+    return operation;
+  }
+
+  private async ensureActivityLogBaseCore(assertCurrent: () => void): Promise<TFile> {
+    assertCurrent();
     let file = this.app.vault.getAbstractFileByPath(DEFAULT_ACTIVITY_LOG_BASE_PATH);
     if (!file) {
       logger.flow("Base", "activity-log:create", { path: DEFAULT_ACTIVITY_LOG_BASE_PATH, legacyPath: LEGACY_WORKOUT_LOG_BASE_PATH });
-      file = await this.app.vault.create(DEFAULT_ACTIVITY_LOG_BASE_PATH, defaultActivityLogBaseContent());
+      assertCurrent();
+      try {
+        file = await this.app.vault.create(DEFAULT_ACTIVITY_LOG_BASE_PATH, defaultActivityLogBaseContent());
+      } catch (error) {
+        assertCurrent();
+        const collided = this.app.vault.getAbstractFileByPath(DEFAULT_ACTIVITY_LOG_BASE_PATH);
+        if (!(collided instanceof TFile)) throw error;
+        file = collided;
+        logger.flow("Base", "activity-log:create-collision-reused", { path: file.path });
+      }
+      assertCurrent();
     }
     if (!(file instanceof TFile)) {
       logger.flowWarn("Base", "activity-log:path-not-file", { path: DEFAULT_ACTIVITY_LOG_BASE_PATH });
       throw new Error("Activity Log base path is not a file.");
     }
-    const repaired = repairActivityLogBaseContent(await this.app.vault.cachedRead(file));
+    const content = await this.app.vault.cachedRead(file);
+    assertCurrent();
+    const repaired = repairActivityLogBaseContent(content);
     if (repaired) {
       logger.flow("Base", "activity-log:repair", { path: file.path });
-      await this.app.vault.modify(file, repaired);
+      assertCurrent();
+      await this.app.vault.process(file, (current) => {
+        assertCurrent();
+        return repairActivityLogBaseContent(current) || current;
+      });
+      assertCurrent();
     }
+    assertCurrent();
     return file;
   }
 
@@ -769,34 +1146,105 @@ export default class TPSHealthPlugin extends Plugin {
     return this.ensureActivityLogBase();
   }
 
-  openFoodLogger(dateContext: FoodLogDateContext | null = null): void {
+  openFoodLogger(dateContext: FoodLogDateContext | null = null, assertCurrent?: () => void): void {
+    assertCurrent?.();
     logger.flow("FoodDateContext", "open-food-logger:provided", {
       hasDateContext: !!dateContext,
       ...summarizeDateContext(dateContext),
     });
-    this.openFoodSearchModal(null, dateContext);
+    this.openFoodSearchModal(null, dateContext, assertCurrent);
   }
 
-  openActivityLogger(dateContext: FoodLogDateContext | null = null): void {
+  openActivityLogger(dateContext: FoodLogDateContext | null = null, assertCurrent?: () => void): void {
+    assertCurrent?.();
     logger.flow("ActivityLog", "open", { hasDateContext: !!dateContext, ...summarizeDateContext(dateContext) });
-    new ActivityLogModal(this.app, this, dateContext).open();
+    new ActivityLogModal(this.app, this, dateContext, assertCurrent).open();
   }
 
-  async openFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {
+  async openFoodDescriber(
+    description: string,
+    dateContext: FoodLogDateContext | null = null,
+    onProgress?: (message: string) => void,
+    assertCurrent?: () => void,
+    assertMutationAllowed?: () => void | Promise<void>,
+  ): Promise<InlineFoodDraft | null> {
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const checkCurrent = this.createLifecycleGuard(assertCurrent);
+    checkCurrent();
+    if (this.describeMutationInFlight?.lifecycleEpoch === lifecycleEpoch) {
+      throw new Error("TPS Health is already preparing another food description.");
+    }
+    let operation: Promise<InlineFoodDraft | null>;
+    operation = this.runFoodDescriberMutation(
+      description,
+      dateContext,
+      onProgress,
+      checkCurrent,
+      assertMutationAllowed,
+    ).finally(() => {
+      if (this.describeMutationInFlight?.operation === operation) this.describeMutationInFlight = null;
+    });
+    this.describeMutationInFlight = { lifecycleEpoch, operation };
+    return operation;
+  }
+
+  private async runFoodDescriberMutation(
+    description: string,
+    dateContext: FoodLogDateContext | null,
+    onProgress: ((message: string) => void) | undefined,
+    assertCurrent: () => void,
+    assertMutationAllowed?: () => void | Promise<void>,
+  ): Promise<InlineFoodDraft | null> {
+    assertCurrent();
     if (!this.getAiGatewayApi()) {
       logger.flow("FoodDescribe", "provider:local", { reason: "gateway-unavailable" });
-      return this.legacyOpenFoodDescriber(description, dateContext, onProgress);
+      return this.legacyOpenFoodDescriber(
+        description,
+        dateContext,
+        onProgress,
+        assertCurrent,
+        assertMutationAllowed,
+      );
     }
+    const mutationState = { started: false };
     try {
-      return await this.openFoodDescriberWithAi(description, dateContext, onProgress);
+      const result = await this.openFoodDescriberWithAi(
+        description,
+        dateContext,
+        onProgress,
+        assertCurrent,
+        mutationState,
+        assertMutationAllowed,
+      );
+      assertCurrent();
+      return result;
     } catch (error) {
+      assertCurrent();
+      if (mutationState.started) {
+        logger.flowWarn("FoodDescribe", "provider:ai-failed-after-mutation", { reason: logger.errorSummary(error) });
+        throw error;
+      }
       logger.flowWarn("FoodDescribe", "provider:local-fallback", { reason: logger.errorSummary(error) });
       new Notice("AI Describe was unavailable. Using local food matching instead.");
-      return this.legacyOpenFoodDescriber(description, dateContext, onProgress);
+      return this.legacyOpenFoodDescriber(
+        description,
+        dateContext,
+        onProgress,
+        assertCurrent,
+        assertMutationAllowed,
+      );
     }
   }
 
-  private async openFoodDescriberWithAi(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<null> {
+  private async openFoodDescriberWithAi(
+    description: string,
+    dateContext: FoodLogDateContext | null = null,
+    onProgress?: (message: string) => void,
+    assertCurrent?: () => void,
+    mutationState: { started: boolean } = { started: false },
+    assertMutationAllowed?: () => void | Promise<void>,
+  ): Promise<null> {
+    assertCurrent?.();
     onProgress?.("Understanding your meal…");
     const plan = await this.describeFoodAi<DescribeFoodPlan>({
       taskId: "health.describe-food.extract",
@@ -805,6 +1253,7 @@ export default class TPSHealthPlugin extends Plugin {
       input: description,
       schema: DESCRIBE_FOOD_PLAN_SCHEMA,
     });
+    assertCurrent?.();
     if (!isUsableDescribeFoodPlan(plan)) throw new Error("Describe returned an unusable food plan.");
     let reviewedPlan = plan;
     let reviewOutcome: DescribeReviewOutcome = "unavailable";
@@ -817,6 +1266,7 @@ export default class TPSHealthPlugin extends Plugin {
         input: JSON.stringify({ originalDescription: description, draftPlan: plan }),
         schema: DESCRIBE_FOOD_PLAN_SCHEMA,
       });
+      assertCurrent?.();
       if (!isUsableDescribeFoodPlan(review)) {
         logger.flowWarn("FoodDescribe", "review:invalid-using-draft", { foods: plan.foods.length });
       } else if (describeFoodPlanSignature(review) === describeFoodPlanSignature(plan)) {
@@ -828,6 +1278,7 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flow("FoodDescribe", "review:amended", { before: plan.foods.length, after: review.foods.length });
       }
     } catch (error) {
+      assertCurrent?.();
       logger.flowWarn("FoodDescribe", "review:failed-using-draft", { reason: logger.errorSummary(error), foods: plan.foods.length });
     }
     const plannedFoods = reviewedPlan.foods;
@@ -841,6 +1292,7 @@ export default class TPSHealthPlugin extends Plugin {
       const searches = await Promise.all(food.queries.map((query) => this.searchFoods(query)));
       return { food, candidates: dedupeFoods(searches.flat()).slice(0, 18) };
     }));
+    assertCurrent?.();
     const selectedByGroup = new Map<number, BatchFoodSelection>();
     candidateGroups.forEach((group, groupIndex) => {
       for (let candidateIndex = 0; candidateIndex < group.candidates.length; candidateIndex += 1) {
@@ -887,13 +1339,28 @@ export default class TPSHealthPlugin extends Plugin {
     let selectionItems = found;
     if (found.length > 1) {
       onProgress?.("Preparing the meal for your tray…");
+      // Ingredient resolution may create missing food notes, so fallback is unsafe
+      // from this point even before the combined meal note is created.
+      mutationState.started = true;
       const ingredientLines: string[] = [];
-      for (const entry of found) ingredientLines.push(await recipeIngredientLineFromBatchSelection(this, entry));
+      for (const entry of found) {
+        await assertMutationAllowed?.();
+        assertCurrent?.();
+        ingredientLines.push(await recipeIngredientLineFromBatchSelection(this, entry));
+        assertCurrent?.();
+      }
+      await assertMutationAllowed?.();
+      assertCurrent?.();
       const meal = await this.createFoodFromInput({ type: "meal", name: reviewedPlan.mealName.trim() || plannedFoods.map((food) => food.label).slice(0, 3).join(" + "), servingAmount: 1, servingUnit: "meal", recipeServings: 1, ingredients: ingredientLines.join("\n") });
+      assertCurrent?.();
       selectionItems = [{ item: meal, quantity: 1, unit: "meal" }];
       logger.flow("FoodDescribe", "meal:created", { ingredients: found.length, sourcePath: meal.sourcePath || "", reviewOutcome });
     }
-    await this.savePendingFoodLogDraft({ id: id("describe-food"), updatedAt: new Date().toISOString(), activeTab: "mine", searchInput: "", consumedDateInput: initialFoodLogConsumedDateInput(dateContext), dateContext: dateContext ? { ...dateContext } : null, selectionItems });
+    mutationState.started = true;
+    await assertMutationAllowed?.();
+    assertCurrent?.();
+    await this.savePendingFoodLogDraft({ id: id("describe-food"), updatedAt: new Date().toISOString(), activeTab: "mine", searchInput: "", consumedDateInput: initialFoodLogConsumedDateInput(dateContext), dateContext: dateContext ? { ...dateContext } : null, selectionItems }, assertCurrent);
+    assertCurrent?.();
     return null;
   }
 
@@ -914,7 +1381,14 @@ export default class TPSHealthPlugin extends Plugin {
     return this.aiGatewayClient?.getApi();
   }
 
-  private async legacyOpenFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {
+  private async legacyOpenFoodDescriber(
+    description: string,
+    dateContext: FoodLogDateContext | null = null,
+    onProgress?: (message: string) => void,
+    assertCurrent?: () => void,
+    assertMutationAllowed?: () => void | Promise<void>,
+  ): Promise<InlineFoodDraft | null> {
+    assertCurrent?.();
     const parts = parseFoodDescription(description);
     if (!parts.length) {
       throw new Error("Describe what you ate first.");
@@ -925,6 +1399,7 @@ export default class TPSHealthPlugin extends Plugin {
       const results = await this.searchFoods(part.query);
       return { part, item: results[0] || null };
     }));
+    assertCurrent?.();
     const found = matches.filter((match): match is typeof match & { item: FoodItem } => !!match.item);
     logger.flow("FoodDescribe", "match:done", {
       parts: parts.length,
@@ -933,6 +1408,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...summarizeDateContext(dateContext),
     });
     if (!found.length) {
+      assertCurrent?.();
       new Notice("No confident food matches yet. Review the description in search.");
       return {
         query: parts[0].query,
@@ -942,6 +1418,8 @@ export default class TPSHealthPlugin extends Plugin {
         overrides: {},
       };
     }
+    await assertMutationAllowed?.();
+    assertCurrent?.();
     await this.savePendingFoodLogDraft({
       id: id("describe-food"),
       updatedAt: new Date().toISOString(),
@@ -954,17 +1432,19 @@ export default class TPSHealthPlugin extends Plugin {
         quantity: part.quantity,
         unit: part.unit || preferredFoodLogUnit(item),
       })),
-    });
+    }, assertCurrent);
+    assertCurrent?.();
     if (found.length < parts.length) new Notice(`Matched ${found.length} of ${parts.length} foods. Review and add the rest.`);
     return null;
   }
 
-  openWorkoutStarter(dateContext: FoodLogDateContext | null = null): void {
+  openWorkoutStarter(dateContext: FoodLogDateContext | null = null, assertCurrent?: () => void): void {
+    assertCurrent?.();
     logger.flow("WorkoutModal", "start:provided-context", {
       hasDateContext: !!dateContext,
       ...summarizeDateContext(dateContext),
     });
-    new StartWorkoutModal(this.app, this, dateContext).open();
+    new StartWorkoutModal(this.app, this, dateContext, assertCurrent).open();
   }
 
   getPendingFoodLogDraft(dateContext: FoodLogDateContext | null): PendingFoodLogDraft | null {
@@ -990,9 +1470,12 @@ export default class TPSHealthPlugin extends Plugin {
     return draft;
   }
 
-  async savePendingFoodLogDraft(draft: PendingFoodLogDraft | null): Promise<void> {
+  async savePendingFoodLogDraft(draft: PendingFoodLogDraft | null, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     this.settings.pendingFoodLogDraft = draft;
+    assertCurrent?.();
     await this.saveSettings();
+    assertCurrent?.();
     logger.flow("FoodDraft", "saved", {
       selected: draft?.selectionItems?.length || 0,
       activeTab: draft?.activeTab || "",
@@ -1196,7 +1679,12 @@ export default class TPSHealthPlugin extends Plugin {
       : durationMinutes != null
         ? new Date(Date.parse(completedDate) - durationMinutes * 60_000).toISOString()
         : completedDate;
-    const dailyFile = await this.getOrCreateDailyNoteForDate(input.dailyNoteDate || completedDate);
+    const requestedDailyNotePath = String(input.dailyNotePath || "").trim();
+    const explicitDailyNotePath = matchingExplicitDailyNotePath(requestedDailyNotePath, input.dailyNoteDate, completedDate);
+    const contextPathReleased = !!requestedDailyNotePath && !explicitDailyNotePath;
+    const explicitDailyFile = this.resolveExplicitDailyNoteFile(explicitDailyNotePath, "activity-log");
+    const dailyNoteDate = contextPathReleased ? completedDate : input.dailyNoteDate || completedDate;
+    const dailyFile = explicitDailyFile || await this.getOrCreateDailyNoteForDate(dailyNoteDate);
     const entry: ActivityLogEntry = {
       id: id("activity"),
       activity,
@@ -1219,6 +1707,8 @@ export default class TPSHealthPlugin extends Plugin {
       activityType: entry.activityType,
       source: entry.source,
       dailyNotePath: entry.dailyNotePath,
+      explicitDailyNotePath: !!explicitDailyFile,
+      contextPathReleased,
       hasDuration: entry.durationMinutes != null,
       hasDistance: entry.distance != null,
       hasSteps: entry.steps != null,
@@ -1237,7 +1727,11 @@ export default class TPSHealthPlugin extends Plugin {
 
   async startWorkout(input: StartWorkoutInput = {}): Promise<string> {
     const startedAt = input.startedAt || isoNow();
-    const dailyNoteDate = input.dailyNoteDate || startedAt;
+    const requestedDailyNotePath = String(input.dailyNotePath || "").trim();
+    const explicitDailyNotePath = matchingExplicitDailyNotePath(requestedDailyNotePath, input.dailyNoteDate, startedAt);
+    const contextPathReleased = !!requestedDailyNotePath && !explicitDailyNotePath;
+    const explicitDailyFile = this.resolveExplicitDailyNoteFile(explicitDailyNotePath, "workout-start");
+    const dailyNoteDate = contextPathReleased ? startedAt : input.dailyNoteDate || startedAt;
     const plan = await this.resolveWorkoutPlanForStart(input);
     const title = input.title || `${plan?.name || "Workout"} ${window.moment(startedAt).format("YYYY-MM-DD HH.mm")}`;
     const cooldownDays = input.cooldownDays ?? plan?.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
@@ -1248,6 +1742,9 @@ export default class TPSHealthPlugin extends Plugin {
       logTarget,
       planPath: plan?.sourcePath || "",
       dailyNoteDate,
+      dailyNotePath: explicitDailyFile?.path || "",
+      explicitDailyNotePath: !!explicitDailyFile,
+      contextPathReleased,
       cooldownDays,
     });
     let path = "";
@@ -1278,13 +1775,17 @@ export default class TPSHealthPlugin extends Plugin {
         plan,
         cooldownDays,
         status: "active",
-      }), dailyNoteDate);
+      }), dailyNoteDate, explicitDailyFile || undefined);
       dailyNotePath = dailyFile.path;
       if (logTarget === "daily-note" && plan?.sourcePath) {
         await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
       }
     } else if (this.settings.appendWorkoutSummaryToDailyNote && path) {
-      await this.insertIntoDailyNote(workoutSummaryLine(path, startedAt), undefined, await this.getOrCreateDailyNoteForDate(dailyNoteDate));
+      await this.insertIntoDailyNote(
+        workoutSummaryLine(path, startedAt),
+        undefined,
+        explicitDailyFile || await this.getOrCreateDailyNoteForDate(dailyNoteDate),
+      );
     }
     this.settings.activeWorkoutPath = path;
     this.settings.activeWorkoutId = workoutId;
@@ -2200,10 +2701,14 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
+    const consumedAt = completedDate || isoNow();
+    const requestedDailyNotePath = String(options.dailyNotePath || "").trim();
+    const explicitDailyNotePath = matchingExplicitDailyNotePath(requestedDailyNotePath, options.dailyNoteDate, consumedAt);
+    const contextPathReleased = !!requestedDailyNotePath && !explicitDailyNotePath;
+    const explicitDailyFile = this.resolveExplicitDailyNoteFile(explicitDailyNotePath, "food-log");
     const loggedItem = persistFoodNote ? await this.findOrCreateFoodNote(item) : normalizeFoodMetricServing(item);
     const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
-    const consumedAt = completedDate || isoNow();
-    const dailyFile = await this.getOrCreateDailyNoteForDate(consumedAt);
+    const dailyFile = explicitDailyFile || await this.getOrCreateDailyNoteForDate(consumedAt);
     const entry: FoodLogEntry = {
       id: id("food"),
       createdDate: isoNow(),
@@ -2225,6 +2730,8 @@ export default class TPSHealthPlugin extends Plugin {
       sourcePath: loggedItem.sourcePath || "",
       target,
       dailyNotePath: dailyFile.path,
+      explicitDailyNotePath: !!explicitDailyFile,
+      contextPathReleased,
       section: section || this.settings.defaultFoodLogSection || "",
       requestedQuantity: quantity,
       requestedUnit: unit,
@@ -2483,13 +2990,26 @@ export default class TPSHealthPlugin extends Plugin {
     return isFoodLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file));
   }
 
-  async openFoodEditor(file: TFile): Promise<void> {
+  async openFoodEditor(file: TFile, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
     const food = this.foodFromFrontmatter(file, fm);
     if (isRecipeLikeFoodType(type)) food.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file));
+    assertCurrent?.();
     logger.flow("Food", "editor:open", { path: file.path, type, name: food.name });
-    new CustomFoodModal(this.app, this, type, food.name, false, food, null, file.path).open();
+    const modal = new CustomFoodModal(this.app, this, type, food.name, false, food, null, file.path, undefined, assertCurrent);
+    try {
+      modal.open();
+      assertCurrent?.();
+    } catch (error) {
+      try {
+        modal.close();
+      } catch {
+        // The lifecycle failure remains authoritative even if modal cleanup fails.
+      }
+      throw error;
+    }
   }
 
   private async openPath(path?: string): Promise<void> {
@@ -3679,9 +4199,13 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string): Promise<TFile> {
-    logger.flow("NoteWrite", "workout-session:daily-note", { dateValue: dateValue || "" });
-    return this.insertIntoDailyNote(line, undefined, await this.getOrCreateDailyNoteForDate(dateValue));
+  private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string, targetFile?: TFile): Promise<TFile> {
+    logger.flow("NoteWrite", "workout-session:daily-note", {
+      dateValue: dateValue || "",
+      dailyNotePath: targetFile?.path || "",
+      explicitDailyNotePath: !!targetFile,
+    });
+    return this.insertIntoDailyNote(line, undefined, targetFile || await this.getOrCreateDailyNoteForDate(dateValue));
   }
 
   private async appendNestedToDailyWorkout(dailyNotePath: string, workoutId: string, line: string): Promise<void> {
@@ -4321,6 +4845,37 @@ export default class TPSHealthPlugin extends Plugin {
     };
   }
 
+  private resolveExplicitDailyNoteFile(path: unknown, operation: "food-log" | "activity-log" | "workout-start"): TFile | null {
+    const requestedPath = String(path || "").trim();
+    if (!requestedPath) return null;
+    const slashPath = requestedPath.replace(/\\/g, "/");
+    const unsafePath = slashPath.startsWith("/")
+      || /^[A-Za-z]:\//.test(slashPath)
+      || slashPath.split("/").some((segment) => segment === "." || segment === "..");
+    let normalizedPath = "";
+    try {
+      normalizedPath = normalizePath(requestedPath);
+    } catch {
+      normalizedPath = "";
+    }
+    const file = !unsafePath && normalizedPath
+      ? this.app.vault.getAbstractFileByPath(normalizedPath)
+      : null;
+    const extension = file instanceof TFile
+      ? String(file.extension || file.path.split(".").pop() || "").toLowerCase()
+      : "";
+    if (!(file instanceof TFile) || extension !== "md") {
+      logger.flowWarn("DailyNote", "explicit-path:invalid", {
+        operation,
+        dailyNotePath: normalizedPath || requestedPath,
+        reason: unsafePath ? "unsafe-path" : !file ? "missing" : !(file instanceof TFile) ? "not-file" : "not-markdown",
+      });
+      throw new Error("The selected Daily Note is unavailable. Refresh the view and try again.");
+    }
+    logger.flow("DailyNote", "explicit-path:resolved", { operation, dailyNotePath: file.path });
+    return file;
+  }
+
   private async getDailyNoteDateContext(file: TFile | null | undefined): Promise<FoodLogDateContext | null> {
     if (!(file instanceof TFile)) return null;
     const { format, folder } = await this.getDailyNoteSettings();
@@ -4336,6 +4891,7 @@ export default class TPSHealthPlugin extends Plugin {
       dateIso: parsed.format("YYYY-MM-DD"),
       label: parsed.format(format),
       isToday: parsed.isSame(today, "day"),
+      dailyNotePath: file.path,
     };
   }
 
@@ -5394,8 +5950,8 @@ export default class TPSHealthPlugin extends Plugin {
     return { dateIso: normalizedDate, entryCount: entries.length, ...totals };
   }
 
-  private createApi(): TPSHealthApi {
-    return {
+  private createApi(lifecycleEpoch: number): TPSHealthApi {
+    const rawApi: TPSHealthApi = {
       version: 1,
       getSchema: () => this.getApiSchema(),
       searchFoods: (query) => this.traceApiCall("searchFoods", { query }, () => this.searchFoods(query)),
@@ -5433,6 +5989,37 @@ export default class TPSHealthPlugin extends Plugin {
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
       openFoodLogEntryMenuFromLine: (event, filePath, lineNumber, line) => this.openFoodLogEntryMenuFromLine(event, filePath, lineNumber, line),
     };
+    const methodCache = new Map<PropertyKey, unknown>();
+    return new Proxy(rawApi, {
+      get: (target, property, receiver) => {
+        this.assertLegacyApiCurrent(lifecycleEpoch);
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        const cached = methodCache.get(property);
+        if (cached) return cached;
+        const fenced = (...args: unknown[]) => {
+          this.assertLegacyApiCurrent(lifecycleEpoch);
+          const result = Reflect.apply(value, target, args);
+          if (result && (typeof result === "object" || typeof result === "function")
+            && typeof (result as { then?: unknown }).then === "function") {
+            return Promise.resolve(result).then(
+              (resolved) => {
+                this.assertLegacyApiCurrent(lifecycleEpoch);
+                return resolved;
+              },
+              (error) => {
+                this.assertLegacyApiCurrent(lifecycleEpoch);
+                throw error;
+              },
+            );
+          }
+          this.assertLegacyApiCurrent(lifecycleEpoch);
+          return result;
+        };
+        methodCache.set(property, fenced);
+        return fenced;
+      },
+    }) as TPSHealthApi;
   }
 
   private async traceApiCall<T>(name: string, input: unknown, action: () => Promise<T>): Promise<T> {
@@ -5544,64 +6131,130 @@ export default class TPSHealthPlugin extends Plugin {
   async openFoodLogEntryMenu(event: MouseEvent, entry: FoodLogBaseEntry): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
-    const selectedEntries = await this.getSelectedFoodLogEntries(entry);
+    await this.showFoodLogEntryMenuAtPosition({ x: event.clientX, y: event.clientY }, entry);
+  }
+
+  private async showFoodLogEntryMenuAtPosition(
+    position: { x: number; y: number },
+    entry: FoodLogBaseEntry,
+    assertCurrent?: () => void,
+    allowSelection = true,
+  ): Promise<void> {
+    assertCurrent?.();
+    const selectedEntries = allowSelection ? await this.getSelectedFoodLogEntries(entry) : [entry];
+    assertCurrent?.();
     logger.flow("FoodLogEntry", "menu:open", { path: entry.file.path, line: entry.lineNumber, selected: selectedEntries.length });
     const menu = new Menu();
+    const guardMenuAction = (action: () => void | Promise<void>) => () => {
+      const reportFailure = (error: unknown) => {
+        logger.flowWarn("HealthUi", "menu-action:failed", { error: logger.errorSummary(error) });
+      };
+      if (!assertCurrent) {
+        try {
+          const result = action();
+          if (result instanceof Promise) void result.catch(reportFailure);
+        } catch (error) {
+          reportFailure(error);
+        }
+        return;
+      }
+      try {
+        assertCurrent();
+        const result = action();
+        if (result instanceof Promise) void result.catch(reportFailure);
+      } catch (error) {
+        reportFailure(error);
+      }
+    };
     if (selectedEntries.length > 1) {
       menu.addItem((item) => item
         .setTitle(`Create recipe from ${selectedEntries.length} selected logs`)
         .setIcon("chef-hat")
-        .onClick(() => new FoodLogRecipeModal(this.app, this, selectedEntries).open()));
+        .onClick(guardMenuAction(() => new FoodLogRecipeModal(this.app, this, selectedEntries).open())));
     }
     menu.addItem((item) => item
       .setTitle("Adjust serving consumed")
       .setIcon("utensils")
-      .onClick(() => this.openAdjustFoodLogServing(entry)));
+      .onClick(guardMenuAction(() => this.openAdjustFoodLogServing(entry, undefined, assertCurrent))));
     menu.addItem((item) => item
       .setTitle("Change consumed date/time")
       .setIcon("calendar-clock")
-      .onClick(() => this.openChangeFoodLogConsumedDate(entry)));
+      .onClick(guardMenuAction(() => this.openChangeFoodLogConsumedDate(entry, assertCurrent))));
     menu.addItem((item) => item
       .setTitle("Edit food macros/title")
       .setIcon("pencil")
-      .onClick(() => this.openEditFoodNoteModal(entry)));
+      .onClick(guardMenuAction(() => this.openEditFoodNoteModal(entry, assertCurrent))));
     menu.addItem((item) => item
       .setTitle("Open food note")
       .setIcon("file-text")
-      .onClick(() => void this.openFoodLogFoodNote(entry)));
+      .onClick(guardMenuAction(() => this.openFoodLogFoodNote(entry, assertCurrent))));
     menu.addItem((item) => item
       .setTitle("Open log line")
       .setIcon("list")
-      .onClick(() => void this.openFoodLogSourceLine(entry)));
+      .onClick(guardMenuAction(() => this.openFoodLogSourceLine(entry, assertCurrent))));
     menu.addItem((item) => item
       .setTitle(selectedEntries.length > 1 ? `Delete ${selectedEntries.length} selected logs` : "Delete food log entry")
       .setIcon("trash-2")
-      .onClick(() => void this.deleteFoodLogEntries(selectedEntries)));
-    menu.showAtMouseEvent(event);
+      .onClick(guardMenuAction(() => this.deleteFoodLogEntries(selectedEntries, undefined, assertCurrent))));
+    assertCurrent?.();
+    menu.showAtPosition(position);
+    assertCurrent?.();
   }
 
   async openFoodLogEntryMenuFromLine(event: MouseEvent, filePath: string, lineNumber: number, line: string): Promise<void> {
+    const resolved = await this.resolveFoodLogEntryFromSnapshot(filePath, lineNumber, line);
+    if (resolved.status !== "matched") {
+      logger.flowWarn("FoodLogEntry", `menu-from-line:${resolved.status}`, { path: filePath, line: lineNumber });
+      return;
+    }
+    logger.flow("FoodLogEntry", "menu-from-line:matched", { path: filePath, line: resolved.entry.lineNumber });
+    await this.openFoodLogEntryMenu(event, resolved.entry);
+  }
+
+  private async openHealthUiFoodLogEntryMenu(
+    request: TPSHealthUiFoodLogEntryMenuRequest,
+    lifecycleEpoch: number,
+    descriptor: Readonly<TPSHealthUiServiceDescriptor> | undefined,
+  ): Promise<Readonly<TPSHealthUiFoodLogEntryMenuResult>> {
+    const assertCurrent = () => this.assertHealthUiServiceCurrent(lifecycleEpoch, descriptor);
+    assertCurrent();
+    const resolved = await this.resolveFoodLogEntryFromSnapshot(
+      request.filePath,
+      request.lineNumber,
+      request.renderedLine,
+      assertCurrent,
+    );
+    assertCurrent();
+    if (resolved.status !== "matched") return Object.freeze({ status: resolved.status });
+    await this.showFoodLogEntryMenuAtPosition(
+      { x: request.clientX, y: request.clientY },
+      resolved.entry,
+      assertCurrent,
+      false,
+    );
+    assertCurrent();
+    return Object.freeze({ status: "opened" });
+  }
+
+  private async resolveFoodLogEntryFromSnapshot(
+    filePath: string,
+    lineNumber: number,
+    rawLine: string,
+    assertCurrent?: () => void,
+  ): Promise<FoodLogEntryFileResolution> {
+    assertCurrent?.();
     const file = this.app.vault.getAbstractFileByPath(filePath);
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("FoodLogEntry", "menu-from-line:missing-file", { path: filePath, line: lineNumber });
-      return;
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
+      return { status: "missing-file" };
     }
-    if (lineNumber >= 0) {
-      const lines = (await this.app.vault.cachedRead(file)).split("\n");
-      const currentLine = lines[lineNumber] || line;
-      if (isFoodLogLine(currentLine)) {
-        void this.openFoodLogEntryMenu(event, createFoodLogBaseEntry(this, file, lineNumber, currentLine));
-        return;
-      }
-      logger.flowWarn("FoodLogEntry", "menu-from-line:stale-line", { path: file.path, line: lineNumber, lineCount: lines.length });
-    }
-    const entry = await this.findFoodLogEntryByVisibleText(file, foodLogVisibleSummary(line) || line);
-    if (entry) {
-      logger.flow("FoodLogEntry", "menu-from-line:fallback-match", { path: file.path, line: entry.lineNumber });
-      void this.openFoodLogEntryMenu(event, entry);
-      return;
-    }
-    logger.flowWarn("FoodLogEntry", "menu-from-line:no-match", { path: file.path, line: lineNumber });
+    const content = await this.app.vault.cachedRead(file);
+    assertCurrent?.();
+    const resolution = resolveFoodLogEntrySnapshot(content.split("\n"), lineNumber, rawLine);
+    if (resolution.status !== "matched") return resolution;
+    return {
+      status: "matched",
+      entry: createFoodLogBaseEntry(this, file, resolution.lineNumber, resolution.line),
+    };
   }
 
   private async getSelectedFoodLogEntries(fallback: FoodLogBaseEntry): Promise<FoodLogBaseEntry[]> {
@@ -5640,7 +6293,8 @@ export default class TPSHealthPlugin extends Plugin {
     return selected;
   }
 
-  openAdjustFoodLogServing(entry: FoodLogBaseEntry, afterSave?: () => void): void {
+  openAdjustFoodLogServing(entry: FoodLogBaseEntry, afterSave?: () => void, assertCurrent?: () => void): void {
+    assertCurrent?.();
     const food = this.foodItemForFoodLogEntry(entry);
     if (!food) {
       logger.flowWarn("FoodLogEntry", "adjust:missing-food", { path: entry.file.path, line: entry.lineNumber, name: entry.name, foodPath: entry.foodPath || "" });
@@ -5648,19 +6302,53 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     new FoodLogAdjustModal(this.app, this, entry, food, async (updatedLine) => {
-      await this.replaceFoodLogEntryLine(entry, updatedLine);
-      afterSave?.();
-    }).open();
+      assertCurrent?.();
+      await this.replaceFoodLogEntryLine(entry, updatedLine, "Updated food serving", assertCurrent);
+      if (afterSave) {
+        assertCurrent?.();
+        afterSave();
+      }
+    }, assertCurrent).open();
   }
 
-  openChangeFoodLogConsumedDate(entry: FoodLogBaseEntry): void {
-    new FoodLogConsumedDateModal(this.app, this, entry).open();
+  openChangeFoodLogConsumedDate(entry: FoodLogBaseEntry, assertCurrent?: () => void): void {
+    assertCurrent?.();
+    new FoodLogConsumedDateModal(this.app, this, entry, assertCurrent).open();
   }
 
-  async updateFoodLogEntryConsumedDate(entry: FoodLogBaseEntry, consumedDateInput: string): Promise<void> {
+  private async insertFoodLogMoveTarget(
+    file: TFile,
+    line: string,
+    section: string | undefined,
+    assertCurrent?: () => void,
+  ): Promise<"inserted" | "existing"> {
+    const foodId = readStringField(line, "foodId")?.trim();
+    if (!foodId) throw new Error("This legacy food entry has no stable food ID and cannot be moved safely.");
+    let result: "inserted" | "existing" = "inserted";
+    await this.app.vault.process(file, (content) => {
+      assertCurrent?.();
+      const matchingLines = content
+        .split("\n")
+        .filter((candidate) => readStringField(candidate, "foodId")?.trim() === foodId);
+      if (matchingLines.length > 0) {
+        if (matchingLines.length === 1 && matchingLines[0] === line) {
+          result = "existing";
+          return content;
+        }
+        throw new Error("The destination already contains a different food entry with the same ID.");
+      }
+      return insertDailyNoteLineContent(content, line, section);
+    });
+    return result;
+  }
+
+  async updateFoodLogEntryConsumedDate(entry: FoodLogBaseEntry, consumedDateInput: string, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     const completedDate = resolveBatchFoodCompletedDate(consumedDateInput, null) || isoNow();
     const targetDailyFile = await this.getOrCreateDailyNoteForDate(completedDate);
+    assertCurrent?.();
     const content = await this.app.vault.read(entry.file);
+    assertCurrent?.();
     const lines = content.split("\n");
     const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
     if (currentIndex < 0) {
@@ -5690,23 +6378,64 @@ export default class TPSHealthPlugin extends Plugin {
     if (!shouldMoveDailyLine) {
       entry.line = currentLine;
       entry.lineNumber = currentIndex;
-      await this.replaceFoodLogEntryLine(entry, updatedLine, "Updated consumed date");
+      await this.replaceFoodLogEntryLine(entry, updatedLine, "Updated consumed date", assertCurrent);
       logger.flow("FoodLogEntry", "date-change:done", { path: entry.file.path, line: currentIndex, moved: false, targetDailyNotePath: targetDailyFile.path });
       return;
     }
 
-    lines.splice(currentIndex, 1);
-    await this.app.vault.modify(entry.file, lines.join("\n"));
-    await this.insertIntoDailyNote(updatedLine, this.settings.defaultFoodLogSection, targetDailyFile);
+    const foodId = readStringField(currentLine, "foodId")?.trim();
+    if (!foodId) {
+      logger.flowWarn("FoodLogEntry", "date-change:missing-food-id", { path: entry.file.path, line: currentIndex, name: entry.name });
+      throw new Error("This legacy food entry has no stable food ID and cannot be moved safely.");
+    }
+    const targetWrite = await this.insertFoodLogMoveTarget(
+      targetDailyFile,
+      updatedLine,
+      this.settings.defaultFoodLogSection,
+      assertCurrent,
+    );
+    try {
+      assertCurrent?.();
+      await this.app.vault.process(entry.file, (latestContent) => {
+        assertCurrent?.();
+        const latestLines = latestContent.split("\n");
+        const resolution = resolveFoodLogEntrySnapshot(latestLines, currentIndex, currentLine);
+        if (resolution.status !== "matched" || resolution.line !== currentLine) {
+          throw new Error("The original food entry changed before it could be removed.");
+        }
+        latestLines.splice(resolution.lineNumber, 1);
+        return latestLines.join("\n");
+      });
+    } catch (error) {
+      logger.flowError("FoodLogEntry", "date-change:partial", error, {
+        path: entry.file.path,
+        line: currentIndex,
+        name: entry.name,
+        targetDailyNotePath: targetDailyFile.path,
+        targetWrite,
+        foodId,
+      });
+      throw new Error(`The updated entry is saved in ${targetDailyFile.path}, but the original could not be removed. Refresh and retry to finish the move safely.`);
+    }
+    assertCurrent?.();
+    let rollupFailed = false;
     if (this.settings.automaticDailyRollups) {
       const rollupPaths = new Set([oldPath, targetPath]);
       for (const path of rollupPaths) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (file instanceof TFile) await this.updateDailyRollupForFile(file);
+        if (!(file instanceof TFile)) continue;
+        try {
+          await this.updateDailyRollupForFile(file);
+          assertCurrent?.();
+        } catch (error) {
+          assertCurrent?.();
+          rollupFailed = true;
+          logger.flowError("FoodLogEntry", "date-change:rollup-failed", error, { path, foodId, targetDailyNotePath: targetDailyFile.path });
+        }
       }
     }
-    new Notice("Updated consumed date");
-    logger.flow("FoodLogEntry", "date-change:done", { path: entry.file.path, line: currentIndex, moved: true, targetDailyNotePath: targetDailyFile.path });
+    new Notice(rollupFailed ? "Updated consumed date, but one or more daily rollups need a refresh." : "Updated consumed date");
+    logger.flow("FoodLogEntry", "date-change:done", { path: entry.file.path, line: currentIndex, moved: true, targetDailyNotePath: targetDailyFile.path, targetWrite, rollupFailed });
   }
 
   foodItemForFoodLogEntry(entry: FoodLogBaseEntry): FoodItem | null {
@@ -5715,7 +6444,8 @@ export default class TPSHealthPlugin extends Plugin {
     return file instanceof TFile ? foodFromFileCache(this, file) : null;
   }
 
-  private openEditFoodNoteModal(entry: FoodLogBaseEntry): void {
+  private async openEditFoodNoteModal(entry: FoodLogBaseEntry, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     const food = this.foodItemForFoodLogEntry(entry);
     if (!food) {
       logger.flowWarn("FoodLogEntry", "edit-food:missing-food", { path: entry.file.path, line: entry.lineNumber, name: entry.name, foodPath: entry.foodPath || "" });
@@ -5726,15 +6456,28 @@ export default class TPSHealthPlugin extends Plugin {
       const file = this.app.vault.getAbstractFileByPath(food.sourcePath);
       if (file instanceof TFile) {
         logger.flow("FoodLogEntry", "edit-food:source-open", { path: entry.file.path, line: entry.lineNumber, foodPath: file.path, name: food.name });
-        void this.openFoodEditor(file);
+        await this.openFoodEditor(file, assertCurrent);
+        assertCurrent?.();
         return;
       }
     }
     logger.flow("FoodLogEntry", "edit-food:modal-open", { path: entry.file.path, line: entry.lineNumber, name: food.name, foodPath: food.sourcePath || "" });
-    new CustomFoodModal(this.app, this, "food", food.name, false, food, null, food.sourcePath).open();
+    const modal = new CustomFoodModal(this.app, this, "food", food.name, false, food, null, food.sourcePath, undefined, assertCurrent);
+    try {
+      modal.open();
+      assertCurrent?.();
+    } catch (error) {
+      try {
+        modal.close();
+      } catch {
+        // The lifecycle failure remains authoritative even if modal cleanup fails.
+      }
+      throw error;
+    }
   }
 
-  async openFoodLogFoodNote(entry: FoodLogBaseEntry): Promise<void> {
+  async openFoodLogFoodNote(entry: FoodLogBaseEntry, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     if (!entry.foodPath) {
       logger.flowWarn("FoodLogEntry", "food-note-open:missing-link", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
       new Notice("This food log does not link to a food note.");
@@ -5742,7 +6485,9 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const file = this.app.vault.getAbstractFileByPath(entry.foodPath);
     if (file instanceof TFile) {
+      assertCurrent?.();
       await this.openFoodNoteLeaf(file);
+      assertCurrent?.();
     } else {
       logger.flowWarn("FoodLogEntry", "food-note-open:missing-file", { foodPath: entry.foodPath, sourcePath: entry.file.path, line: entry.lineNumber, name: entry.name });
       new Notice("Food note was not found.");
@@ -5767,20 +6512,34 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  async replaceFoodLogEntryLine(entry: FoodLogBaseEntry, updatedLine: string, noticeMessage = "Updated food serving"): Promise<void> {
-    const content = await this.app.vault.read(entry.file);
-    const lines = content.split("\n");
-    const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
-    if (currentIndex < 0) {
-      logger.flowWarn("FoodLogEntry", "line:replace-missing", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
-      throw new Error("Food log line moved or changed before it could be updated.");
-    }
+  async replaceFoodLogEntryLine(
+    entry: FoodLogBaseEntry,
+    updatedLine: string,
+    noticeMessage = "Updated food serving",
+    assertCurrent?: () => void,
+  ): Promise<void> {
+    assertCurrent?.();
+    let currentIndex = -1;
+    let currentLine = "";
+    let oldDailyNotePath = entry.file.path;
+    await this.app.vault.process(entry.file, (content) => {
+      assertCurrent?.();
+      const lines = content.split("\n");
+      const resolution = resolveFoodLogEntrySnapshot(lines, entry.lineNumber, entry.line);
+      if (resolution.status !== "matched" || resolution.line !== entry.line) {
+        logger.flowWarn("FoodLogEntry", "line:replace-missing", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
+        throw new Error("Food log line moved or changed before it could be updated.");
+      }
+      currentIndex = resolution.lineNumber;
+      currentLine = resolution.line;
+      oldDailyNotePath = readStringField(currentLine, "dailyNotePath") || entry.file.path;
+      lines[currentIndex] = updatedLine;
+      logger.flow("FoodLogEntry", "line:replace", { path: entry.file.path, line: currentIndex, name: entry.name });
+      return lines.join("\n");
+    });
+    assertCurrent?.();
     entry.lineNumber = currentIndex;
-    entry.line = lines[currentIndex];
-    const oldDailyNotePath = readStringField(entry.line, "dailyNotePath") || entry.file.path;
-    lines[entry.lineNumber] = updatedLine;
-    logger.flow("FoodLogEntry", "line:replace", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
-    await this.app.vault.modify(entry.file, lines.join("\n"));
+    entry.line = currentLine;
     const dailyNotePath = readStringField(updatedLine, "dailyNotePath") || entry.file.path;
     const rollupPaths = new Set([normalizePath(oldDailyNotePath), normalizePath(dailyNotePath)]);
     let rollupUpdated = false;
@@ -5789,6 +6548,7 @@ export default class TPSHealthPlugin extends Plugin {
         const dailyFile = this.app.vault.getAbstractFileByPath(path);
         if (dailyFile instanceof TFile) {
           await this.updateDailyRollupForFile(dailyFile);
+          assertCurrent?.();
           rollupUpdated = true;
         }
       }
@@ -5859,7 +6619,8 @@ export default class TPSHealthPlugin extends Plugin {
     await this.updateFoodNote(file, food, type);
   }
 
-  async deleteFoodLogEntries(entries: FoodLogBaseEntry[], afterDelete?: () => void): Promise<void> {
+  async deleteFoodLogEntries(entries: FoodLogBaseEntry[], afterDelete?: () => void, assertCurrent?: () => void): Promise<void> {
+    assertCurrent?.();
     const uniqueEntries = Array.from(new Map(entries.map((entry) => [entry.id, entry])).values());
     if (!uniqueEntries.length) {
       logger.flowWarn("FoodLogEntry", "delete:empty");
@@ -5885,56 +6646,87 @@ export default class TPSHealthPlugin extends Plugin {
     const dailyNotePaths = new Set<string>();
     let deletedCount = 0;
     for (const { file, entries: fileEntries } of entriesByFile.values()) {
-      const content = await this.app.vault.read(file);
-      const lines = content.split("\n");
+      assertCurrent?.();
       const sortedEntries = [...fileEntries].sort((a, b) => b.lineNumber - a.lineNumber);
-      for (const entry of sortedEntries) {
-        const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
-        if (currentIndex < 0) {
-          logger.flowWarn("FoodLogEntry", "delete:line-missing", { path: file.path, line: entry.lineNumber, name: entry.name });
-          throw new Error("Food log line moved or changed before it could be deleted.");
+      await this.app.vault.process(file, (content) => {
+        assertCurrent?.();
+        const lines = content.split("\n");
+        for (const entry of sortedEntries) {
+          const resolution = resolveFoodLogEntrySnapshot(lines, entry.lineNumber, entry.line);
+          if (resolution.status !== "matched" || resolution.line !== entry.line) {
+            logger.flowWarn("FoodLogEntry", "delete:line-missing", { path: file.path, line: entry.lineNumber, name: entry.name });
+            throw new Error("Food log line moved or changed before it could be deleted.");
+          }
+          const line = resolution.line;
+          dailyNotePaths.add(readStringField(line, "dailyNotePath") || file.path);
+          lines.splice(resolution.lineNumber, 1);
+          deletedCount += 1;
         }
-        const line = lines[currentIndex];
-        dailyNotePaths.add(readStringField(line, "dailyNotePath") || file.path);
-        lines.splice(currentIndex, 1);
-        deletedCount += 1;
-      }
-      await this.app.vault.modify(file, lines.join("\n"));
+        return lines.join("\n");
+      });
+      assertCurrent?.();
     }
 
     if (this.settings.automaticDailyRollups) {
       for (const path of dailyNotePaths) {
         const dailyFile = this.app.vault.getAbstractFileByPath(path);
-        if (dailyFile instanceof TFile) await this.updateDailyRollupForFile(dailyFile);
+        if (dailyFile instanceof TFile) {
+          await this.updateDailyRollupForFile(dailyFile);
+          assertCurrent?.();
+        }
       }
     }
+    assertCurrent?.();
     new Notice(deletedCount === 1 ? "Deleted food log entry" : `Deleted ${deletedCount} food log entries`);
     logger.flow("FoodLogEntry", "delete:done", { deleted: deletedCount, files: entriesByFile.size, rollupTargets: dailyNotePaths.size });
     afterDelete?.();
   }
 
   private findFoodLogEntryLineIndex(lines: string[], entry: FoodLogBaseEntry): number {
-    if (lines[entry.lineNumber] === entry.line) return entry.lineNumber;
-    const id = readStringField(entry.line, "foodId");
-    if (id) {
-      const idIndex = lines.findIndex((line) => isFoodLogLine(line) && readStringField(line, "foodId") === id);
-      if (idIndex >= 0) return idIndex;
-    }
-    return lines.findIndex((line) => line === entry.line);
+    const resolution = resolveFoodLogEntrySnapshot(lines, entry.lineNumber, entry.line);
+    return resolution.status === "matched" ? resolution.lineNumber : -1;
   }
 
-  async openFoodLogSourceLine(entry: FoodLogBaseEntry): Promise<void> {
+  async openFoodLogSourceLine(entry: FoodLogBaseEntry, assertCurrent?: () => void): Promise<void> {
     logger.flow("FoodLogEntry", "source-line:open-start", { path: entry.file.path, line: entry.lineNumber });
     try {
+      assertCurrent?.();
+      const resolved = await this.resolveFoodLogEntryFromSnapshot(
+        entry.file.path,
+        entry.lineNumber,
+        entry.line,
+        assertCurrent,
+      );
+      assertCurrent?.();
+      if (resolved.status !== "matched") {
+        logger.flowWarn("FoodLogEntry", "source-line:stale", { path: entry.file.path, line: entry.lineNumber, status: resolved.status });
+        new Notice("That food-log row changed. Refresh and try again.");
+        return;
+      }
+      const currentEntry = resolved.entry;
       const leaf = this.app.workspace.getLeaf(false);
-      await leaf.openFile(entry.file);
+      await leaf.openFile(currentEntry.file);
+      assertCurrent?.();
+      const reopened = await this.resolveFoodLogEntryFromSnapshot(
+        currentEntry.file.path,
+        currentEntry.lineNumber,
+        currentEntry.line,
+        assertCurrent,
+      );
+      assertCurrent?.();
+      if (reopened.status !== "matched") {
+        logger.flowWarn("FoodLogEntry", "source-line:stale-after-open", { path: currentEntry.file.path, line: currentEntry.lineNumber, status: reopened.status });
+        new Notice("That food-log row changed. Refresh and try again.");
+        return;
+      }
+      const reopenedEntry = reopened.entry;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (view?.file === entry.file) {
-        view.editor.setCursor({ line: entry.lineNumber, ch: 0 });
-        view.editor.scrollIntoView({ from: { line: entry.lineNumber, ch: 0 }, to: { line: entry.lineNumber, ch: 0 } }, true);
-        logger.flow("FoodLogEntry", "source-line:open-done", { path: entry.file.path, line: entry.lineNumber });
+      if (view?.file === reopenedEntry.file) {
+        view.editor.setCursor({ line: reopenedEntry.lineNumber, ch: 0 });
+        view.editor.scrollIntoView({ from: { line: reopenedEntry.lineNumber, ch: 0 }, to: { line: reopenedEntry.lineNumber, ch: 0 } }, true);
+        logger.flow("FoodLogEntry", "source-line:open-done", { path: reopenedEntry.file.path, line: reopenedEntry.lineNumber });
       } else {
-        logger.flowWarn("FoodLogEntry", "source-line:no-active-view", { path: entry.file.path, line: entry.lineNumber });
+        logger.flowWarn("FoodLogEntry", "source-line:no-active-view", { path: reopenedEntry.file.path, line: reopenedEntry.lineNumber });
       }
     } catch (error) {
       logger.flowError("FoodLogEntry", "source-line:open-failed", error, { path: entry.file.path, line: entry.lineNumber });
@@ -6024,11 +6816,13 @@ class FoodLogConsumedDateModal extends Modal {
     app: App,
     private plugin: TPSHealthPlugin,
     private entry: FoodLogBaseEntry,
+    private assertCurrent?: () => void,
   ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("FoodLogBase", "date-change:open", { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber });
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
@@ -6056,12 +6850,16 @@ class FoodLogConsumedDateModal extends Modal {
         .setCta()
         .onClick(async () => {
           try {
+            this.assertCurrent?.();
             logger.flow("FoodLogBase", "date-change:submit", { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber, inputDate: foodLogDateInputDate(consumedDateInput) });
-            await this.plugin.updateFoodLogEntryConsumedDate(this.entry, consumedDateInput);
+            await this.plugin.updateFoodLogEntryConsumedDate(this.entry, consumedDateInput, this.assertCurrent);
             this.close();
+            this.assertCurrent?.();
           } catch (error) {
             logger.flowError("FoodLogBase", "date-change:failed", error, { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber });
-            throw error;
+            new Notice(error instanceof Error
+              ? error.message
+              : "Could not update the consumed date. Refresh the log and try again.");
           }
         }));
   }
@@ -6079,11 +6877,13 @@ class FoodLogAdjustModal extends Modal {
     private entry: FoodLogBaseEntry,
     private item: FoodItem,
     private onSave: (updatedLine: string) => Promise<void>,
+    private assertCurrent?: () => void,
   ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("FoodLogBase", "adjust:open", { name: this.item.name, sourcePath: this.item.sourcePath || "" });
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
@@ -6120,18 +6920,20 @@ class FoodLogAdjustModal extends Modal {
       .addButton((button) => button
         .setButtonText("Open food note")
         .onClick(async () => {
-          const file = this.item.sourcePath ? this.plugin.app.vault.getAbstractFileByPath(this.item.sourcePath) : null;
-          if (file instanceof TFile) {
-            logger.flow("FoodLogBase", "adjust:food-note-open", { path: file.path });
-            try {
+          try {
+            this.assertCurrent?.();
+            const file = this.item.sourcePath ? this.plugin.app.vault.getAbstractFileByPath(this.item.sourcePath) : null;
+            if (file instanceof TFile) {
+              logger.flow("FoodLogBase", "adjust:food-note-open", { path: file.path });
               await this.plugin.app.workspace.getLeaf(false).openFile(file);
+              this.assertCurrent?.();
               logger.flow("FoodLogBase", "adjust:food-note-open-done", { path: file.path });
-            } catch (error) {
-              logger.flowError("FoodLogBase", "adjust:food-note-open-failed", error, { path: file.path });
-              throw error;
+            } else {
+              logger.flowWarn("FoodLogBase", "adjust:food-note-missing", { sourcePath: this.item.sourcePath || "", name: this.item.name });
             }
-          } else {
-            logger.flowWarn("FoodLogBase", "adjust:food-note-missing", { sourcePath: this.item.sourcePath || "", name: this.item.name });
+          } catch (error) {
+            logger.flowError("FoodLogBase", "adjust:food-note-open-failed", error, { sourcePath: this.item.sourcePath || "", name: this.item.name });
+            new Notice("Could not open the linked food note.");
           }
         }))
       .addButton((button) => button
@@ -6160,12 +6962,13 @@ class FoodLogAdjustModal extends Modal {
             dailyNotePath: readStringField(this.entry.line, "dailyNotePath"),
           };
           try {
+            this.assertCurrent?.();
             await this.onSave(foodEntryLine(updated));
             logger.flow("FoodLogBase", "adjust:done", { name: this.item.name, quantity, unit, servings: resolved.servings });
             this.close();
           } catch (error) {
             logger.flowError("FoodLogBase", "adjust:failed", error, { name: this.item.name, sourcePath: this.item.sourcePath || "" });
-            throw error;
+            new Notice("Could not update the food serving. Refresh the log and try again.");
           }
         }));
   }
@@ -6251,12 +7054,19 @@ class FoodLogRecipeModal extends Modal {
 class BatchFoodRecipeModal extends Modal {
   private recipeName: string;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private entries: BatchFoodSelection[], private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private entries: BatchFoodSelection[],
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
     this.recipeName = entries.map((entry) => entry.item.name).slice(0, 3).join(" + ");
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("FoodModal", "meal:create-open", { selected: this.entries.length, ...summarizeDateContext(this.dateContext) });
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
@@ -6284,7 +7094,9 @@ class BatchFoodRecipeModal extends Modal {
     new Setting(this.contentEl).addButton((button) => button
       .setButtonText("Create meal")
       .setCta()
-      .onClick(() => void this.createRecipe()));
+      .onClick(() => void this.createRecipe().catch((error) => {
+        logger.flowWarn("FoodModal", "meal:create-stale", { error: logger.errorSummary(error) });
+      })));
   }
 
   onClose(): void {
@@ -6301,6 +7113,7 @@ class BatchFoodRecipeModal extends Modal {
   }
 
   private async createRecipe(): Promise<void> {
+    this.assertCurrent?.();
     const name = this.recipeName.trim() || this.entries.map((entry) => entry.item.name).slice(0, 3).join(" + ");
     logger.flow("FoodModal", "meal:create-submit", { selected: this.entries.length, name });
     if (!this.entries.length) {
@@ -6325,7 +7138,7 @@ class BatchFoodRecipeModal extends Modal {
       new Notice(`Created meal ${saved.name}.`);
       this.close();
       logger.flow("FoodModal", "meal:log-modal-open", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
-      new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
+      new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext, this.assertCurrent).open();
     } catch (error) {
       logger.flowError("FoodModal", "meal:create-failed", error, { selected: this.entries.length, name, ...summarizeDateContext(this.dateContext) });
       throw error;
@@ -6351,25 +7164,32 @@ class FoodSearchModal extends Modal {
   private describeRequestActive = false;
   private describeDismissed = false;
 
-  constructor(app: App, plugin: TPSHealthPlugin, private initialDraft: InlineFoodDraft | null = null, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    plugin: TPSHealthPlugin,
+    private initialDraft: InlineFoodDraft | null = null,
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
     this.plugin = plugin;
     const pendingDraft = initialDraft ? null : plugin.getPendingFoodLogDraft(dateContext);
     if (pendingDraft) {
+      if (!this.dateContext && pendingDraft.dateContext) this.dateContext = { ...pendingDraft.dateContext };
       this.selectionItems = pendingDraft.selectionItems.map((entry) => ({ ...entry, item: { ...entry.item } }));
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
     }
     this.activeFoodLogTab = initialDraft?.query ? "search" : pendingDraft?.activeTab || "mine";
-    this.consumedDateInput = restoredFoodLogDraftConsumedDateInput(dateContext, pendingDraft);
+    this.consumedDateInput = restoredFoodLogDraftConsumedDateInput(this.dateContext, pendingDraft);
     if (pendingDraft?.consumedDateInput) {
       const savedConsumedDateInput = pendingDraft.consumedDateInput.trim();
       logger.flow("FoodDraft", "restore:consumed-time", {
         restored: this.consumedDateInput === savedConsumedDateInput,
         savedDate: foodLogDateInputDate(savedConsumedDateInput),
-        defaultDate: foodLogDateInputDate(initialFoodLogConsumedDateInput(dateContext)),
+        defaultDate: foodLogDateInputDate(initialFoodLogConsumedDateInput(this.dateContext)),
         selected: pendingDraft.selectionItems.length,
-        ...summarizeDateContext(dateContext),
+        ...summarizeDateContext(this.dateContext),
       });
     }
   }
@@ -6377,6 +7197,7 @@ class FoodSearchModal extends Modal {
   private plugin: TPSHealthPlugin;
 
   onOpen(): void {
+    this.assertCurrent?.();
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-search-frame");
     this.contentEl.addClass("tps-health-modal");
@@ -6395,7 +7216,7 @@ class FoodSearchModal extends Modal {
       const token = ++this.searchToken;
       this.activeFoodLogTab = mode;
       logger.flow("FoodModal", "tab:set", { mode, selected: this.selectionItems.length });
-      this.persistDraft();
+      this.persistDraftInBackground();
       for (const [candidate, button] of tabButtons) {
         const active = candidate === mode;
         button.toggleClass("is-active", active);
@@ -6429,6 +7250,7 @@ class FoodSearchModal extends Modal {
     const describeInput = panelByMode.describe.createEl("textarea", { cls: "tps-health-describe-input", attr: { placeholder: "Two eggs, toast with a tablespoon of butter, and a medium latte…", rows: "5", enterkeyhint: "done" } });
     const describeAction = panelByMode.describe.createEl("button", { text: "Build tray", cls: "mod-cta tps-health-describe-action", attr: { type: "button" } });
     const submitDescription = async () => {
+      this.assertCurrent?.();
       if (this.describeRequestActive) return;
       const description = describeInput.value.trim();
       if (!description) { new Notice("Describe what you ate first."); return; }
@@ -6444,19 +7266,23 @@ class FoodSearchModal extends Modal {
       try {
         const initialDraft = await this.plugin.openFoodDescriber(description, this.dateContext, (message) => {
           if (!this.describeDismissed) this.statusEl.setText(message);
-        });
+        }, this.assertCurrent);
+        this.assertCurrent?.();
         logger.flow("FoodDescribe", "job:ready", { dismissed: this.describeDismissed, ...summarizeDateContext(this.dateContext) });
         this.describeRequestActive = false;
         if (this.describeDismissed) {
           const ready = document.createDocumentFragment();
           ready.append("Your food tray is ready. ");
           const openTray = ready.createEl("button", { text: "Open tray", cls: "mod-cta" });
-          openTray.addEventListener("click", () => new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext).open());
+          openTray.addEventListener("click", () => {
+            this.assertCurrent?.();
+            new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext, this.assertCurrent).open();
+          });
           new Notice(ready, 12000);
           return;
         }
         this.close();
-        new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext).open();
+        new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext, this.assertCurrent).open();
       } catch (error) {
         logger.flowError("FoodDescribe", "job:failed", error, summarizeDateContext(this.dateContext));
         this.describeRequestActive = false;
@@ -6472,11 +7298,14 @@ class FoodSearchModal extends Modal {
         this.statusEl.setText(`${message} Your description is still here.`);
       }
     };
-    describeAction.addEventListener("click", () => void submitDescription());
+    const submitDescriptionFromUi = () => void submitDescription().catch((error) => {
+      logger.flowWarn("FoodDescribe", "job:stale", { error: logger.errorSummary(error) });
+    });
+    describeAction.addEventListener("click", submitDescriptionFromUi);
     describeInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.isComposing || !(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
-      void submitDescription();
+      submitDescriptionFromUi();
     });
     new Setting(panelByMode.search)
       .setName("Search food")
@@ -6494,7 +7323,7 @@ class FoodSearchModal extends Modal {
         text.inputEl.addEventListener("input", () => {
           this.searchInput = text.inputEl.value;
           this.scrollSearchIntoView();
-          this.persistDraft();
+          this.persistDraftInBackground();
           this.queueSearch(text.inputEl.value);
         });
         text.inputEl.addEventListener("focus", () => this.scrollSearchIntoView());
@@ -6523,7 +7352,9 @@ class FoodSearchModal extends Modal {
     this.actionsEl = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
     this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" });
     this.renderSelection();
-    void this.refreshSelectionItemsFromSources();
+    void this.refreshSelectionItemsFromSources().catch((error) => {
+      logger.flowWarn("FoodModal", "selection:refresh-failed", { error: logger.errorSummary(error) });
+    });
     setActiveTab(this.activeFoodLogTab);
     if (this.restoredPendingDraft) this.statusEl.setText(`Restored ${this.selectionItems.length} unlogged food${this.selectionItems.length === 1 ? "" : "s"}.`);
   }
@@ -6548,6 +7379,7 @@ class FoodSearchModal extends Modal {
   }
 
   private openBarcodeScanner(): void {
+    this.assertCurrent?.();
     if (this.barcodeScannerModal) {
       logger.flowWarn("FoodModal", "barcode-scanner:suppressed-active", summarizeDateContext(this.dateContext));
       return;
@@ -6562,7 +7394,7 @@ class FoodSearchModal extends Modal {
       onClose: () => {
         if (this.barcodeScannerModal === scanner) this.barcodeScannerModal = null;
       },
-    });
+    }, this.assertCurrent);
     this.barcodeScannerModal = scanner;
     scanner.open();
   }
@@ -6573,11 +7405,14 @@ class FoodSearchModal extends Modal {
     logger.flow("FoodModal", "search:queued", { query, token });
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = null;
-      if (token === this.searchToken) this.runSearch(query, token);
+      if (token === this.searchToken) void this.runSearch(query, token).catch((error) => {
+        logger.flowWarn("FoodModal", "search:failed", { error: logger.errorSummary(error) });
+      });
     }, FOOD_SEARCH_DEBOUNCE_MS);
   }
 
   private async runSearch(query: string, token: number): Promise<void> {
+    this.assertCurrent?.();
     const trimmed = query.trim();
     this.resultsEl.empty();
     this.actionsEl.empty();
@@ -6588,6 +7423,7 @@ class FoodSearchModal extends Modal {
     this.statusEl.setText("Searching food databases...");
     const start = performance.now();
     const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken && this.activeFoodLogTab === "search");
+    this.assertCurrent?.();
     if (token !== this.searchToken || this.activeFoodLogTab !== "search") {
       logger.flow("FoodModal", "search:stale", { query: trimmed, token, activeTab: this.activeFoodLogTab });
       return;
@@ -6607,6 +7443,7 @@ class FoodSearchModal extends Modal {
   }
 
   private async handleBarcodeAdd(input: string): Promise<void> {
+    this.assertCurrent?.();
     const barcode = barcodeFromInput(input);
     if (!barcode) {
       new Notice("Enter a valid UPC or EAN barcode.");
@@ -6615,6 +7452,7 @@ class FoodSearchModal extends Modal {
     logger.flow("FoodModal", "barcode:add-start", { barcode: maskBarcode(barcode) });
     this.statusEl.setText(`Looking up barcode ${barcode}...`);
     const item = await this.plugin.lookupFoodByBarcode(barcode);
+    this.assertCurrent?.();
     if (!item) {
       logger.flowWarn("FoodModal", "barcode:add-miss", { barcode: maskBarcode(barcode) });
       new Notice("No barcode match found. Create a local food note manually.");
@@ -6626,7 +7464,7 @@ class FoodSearchModal extends Modal {
         servingAmount: 1,
         servingUnit: "serving",
         nutrition: {},
-      }, "No database match found for this barcode. Review and create a local food note.", this.dateContext).open();
+      }, "No database match found for this barcode. Review and create a local food note.", this.dateContext, this.assertCurrent).open();
       return;
     }
     await this.addSelection(item, null, { enrich: false });
@@ -6635,10 +7473,12 @@ class FoodSearchModal extends Modal {
   }
 
   private async renderQuickPicks(token = this.searchToken): Promise<void> {
+    this.assertCurrent?.();
     this.resultsEl.empty();
     this.statusEl.setText("Pick recent foods or search.");
     const loggedStats = await this.plugin.getLoggedFoodStats("");
     const localFoods = await this.plugin.searchFoods("", loggedStats);
+    this.assertCurrent?.();
     if (token !== this.searchToken || this.activeFoodLogTab !== "mine") {
       logger.flow("FoodModal", "quick-picks:stale", { token, activeTab: this.activeFoodLogTab });
       return;
@@ -6682,23 +7522,31 @@ class FoodSearchModal extends Modal {
       .addButton((button) => button
         .setButtonText("Choose amount")
         .onClick(async (event) => {
+          this.assertCurrent?.();
           event.preventDefault();
           event.stopPropagation();
           this.close();
-          new FoodLogModal(this.app, this.plugin, await this.plugin.enrichFoodSearchItem(item), this.initialDraft, this.dateContext).open();
+          const enriched = await this.plugin.enrichFoodSearchItem(item);
+          this.assertCurrent?.();
+          new FoodLogModal(this.app, this.plugin, enriched, this.initialDraft, this.dateContext, this.assertCurrent).open();
         }));
     if (!item.sourcePath) actions.addButton((button) => button
         .setButtonText("Create from this")
         .onClick(async (event) => {
+          this.assertCurrent?.();
           event.preventDefault();
           event.stopPropagation();
           this.close();
-          new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
+          const enriched = await this.plugin.enrichFoodSearchItem(item);
+          this.assertCurrent?.();
+          new CustomFoodModal(this.app, this.plugin, "food", item.name, true, enriched, this.dateContext, undefined, undefined, this.assertCurrent).open();
         }));
   }
 
   private async addSelection(item: FoodItem, draft: InlineFoodDraft | null = null, options: { enrich?: boolean } = {}): Promise<void> {
+    this.assertCurrent?.();
     const enriched = options.enrich === false ? item : await this.plugin.enrichFoodSearchItem(item);
+    this.assertCurrent?.();
     const selectedItem = draft && hasInlineNutritionOverrides(draft.overrides)
       ? { ...enriched, nutrition: withNutritionOverrides(enriched.nutrition || {}, draft.overrides) }
       : enriched;
@@ -6720,7 +7568,8 @@ class FoodSearchModal extends Modal {
     });
     this.renderSelection();
     this.resetSearchForNextFood(enriched.name);
-    this.persistDraft();
+    await this.persistDraft();
+    this.assertCurrent?.();
     new Notice(`Added ${enriched.name}`);
   }
 
@@ -6741,9 +7590,13 @@ class FoodSearchModal extends Modal {
     renderMacroPills(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
     const logButton = headerActions.createEl("button", { text: "Log selected", cls: "mod-cta" });
-    logButton.addEventListener("click", () => this.logSelected());
+    logButton.addEventListener("click", () => void this.logSelected().catch((error) => {
+      logger.flowWarn("FoodModal", "selection:log-failed", { error: logger.errorSummary(error) });
+      new Notice("TPS Health changed while the food tray was open. Reopen it and try again.");
+    }));
     const clearButton = headerActions.createEl("button", { text: "Clear", cls: "mod-muted" });
     clearButton.addEventListener("click", () => {
+      this.assertCurrent?.();
       this.selectionItems = [];
       void this.plugin.clearPendingFoodLogDraft();
       this.renderSelection();
@@ -6759,8 +7612,9 @@ class FoodSearchModal extends Modal {
       const controls = row.createDiv({ cls: "tps-health-selection-controls" });
       const step = foodLogQuantityStep(entry.unit);
       const adjustQuantity = (delta: number) => {
+        this.assertCurrent?.();
         entry.quantity = Math.max(step, roundFoodLogQuantity(entry.quantity + delta));
-        this.persistDraft();
+        this.persistDraftInBackground();
         this.renderSelection();
       };
       const decrement = controls.createEl("button", {
@@ -6774,8 +7628,9 @@ class FoodSearchModal extends Modal {
         attr: { type: "number", min: String(step), step: String(step), value: String(entry.quantity), "aria-label": `Amount for ${entry.item.name}` },
       });
       quantityInput.addEventListener("change", () => {
+        this.assertCurrent?.();
         entry.quantity = Math.max(step, numberOrUndefined(quantityInput.value) || step);
-        this.persistDraft();
+        this.persistDraftInBackground();
         this.renderSelection();
       });
       const increment = controls.createEl("button", {
@@ -6790,9 +7645,10 @@ class FoodSearchModal extends Modal {
       }
       unitSelect.value = entry.unit;
       unitSelect.addEventListener("change", () => {
+        this.assertCurrent?.();
         entry.unit = unitSelect.value;
         entry.quantity = Math.max(foodLogQuantityStep(entry.unit), entry.quantity);
-        this.persistDraft();
+        this.persistDraftInBackground();
         this.renderSelection();
       });
       const edit = controls.createEl("button", { text: "Edit", cls: "mod-muted" });
@@ -6801,8 +7657,9 @@ class FoodSearchModal extends Modal {
       });
       const remove = controls.createEl("button", { text: "Remove", cls: "mod-muted" });
       remove.addEventListener("click", () => {
+        this.assertCurrent?.();
         this.selectionItems = this.selectionItems.filter((candidate) => candidate !== entry);
-        this.persistDraft();
+        this.persistDraftInBackground();
         this.renderSelection();
       });
     }
@@ -6814,14 +7671,17 @@ class FoodSearchModal extends Modal {
         configureFoodLogDateTimeInput(text.inputEl);
         text.setValue(this.consumedDateInput);
         text.inputEl.addEventListener("input", () => {
+          this.assertCurrent?.();
           this.consumedDateInput = text.inputEl.value;
-          this.persistDraft();
+          this.persistDraftInBackground();
         });
       });
 
     const buttons = this.selectionEl.createDiv({ cls: "tps-health-selection-actions" });
     const recipeButton = buttons.createEl("button", { text: "Create recipe" });
-    recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
+    recipeButton.addEventListener("click", () => void this.createRecipeFromSelection().catch((error) => {
+      logger.flowWarn("FoodModal", "selection:create-recipe-failed", { error: logger.errorSummary(error) });
+    }));
   }
 
   private resetSearchForNextFood(addedName: string): void {
@@ -6858,11 +7718,13 @@ class FoodSearchModal extends Modal {
   }
 
   private async logSelected(): Promise<void> {
+    this.assertCurrent?.();
     if (!this.selectionItems.length) {
       logger.flowWarn("FoodModal", "selection:log-empty", summarizeDateContext(this.dateContext));
       return;
     }
     const completedDate = resolveBatchFoodCompletedDate(this.consumedDateInput, this.dateContext);
+    const dailyNotePath = contextualDailyNotePathForDate(this.dateContext, completedDate);
     logger.flow("FoodModal", "selection:log-start", {
       selected: this.selectionItems.length,
       completedDate,
@@ -6872,6 +7734,8 @@ class FoodSearchModal extends Modal {
       await this.plugin.logFood(entry.item, entry.quantity, entry.unit, undefined, completedDate, true, this.dateContext?.foodLogTarget, {
         focusAfterLog: this.dateContext?.focusAfterLog,
         amountGrams: describedSelectionAmountGrams(entry),
+        dailyNoteDate: dailyNotePath ? this.dateContext?.dateIso : undefined,
+        dailyNotePath: dailyNotePath || undefined,
       });
     }
     await this.plugin.clearPendingFoodLogDraft();
@@ -6881,16 +7745,19 @@ class FoodSearchModal extends Modal {
   }
 
   private async createRecipeFromSelection(): Promise<void> {
+    this.assertCurrent?.();
     if (!this.selectionItems.length) {
       logger.flowWarn("FoodModal", "selection:create-recipe-empty", summarizeDateContext(this.dateContext));
       return;
     }
     logger.flow("FoodModal", "selection:create-recipe", { selected: this.selectionItems.length });
-    new BatchFoodRecipeModal(this.app, this.plugin, [...this.selectionItems], this.dateContext).open();
+    new BatchFoodRecipeModal(this.app, this.plugin, [...this.selectionItems], this.dateContext, this.assertCurrent).open();
   }
 
   private async openSelectionFoodEditor(entry: BatchFoodSelection): Promise<void> {
+    this.assertCurrent?.();
     const freshItem = await this.refreshFoodItemFromSource(entry.item) || entry.item;
+    this.assertCurrent?.();
     const type = this.foodNoteTypeForItem(freshItem);
     logger.flow("FoodModal", "selection:edit-open", {
       name: freshItem.name,
@@ -6899,6 +7766,7 @@ class FoodSearchModal extends Modal {
       selected: this.selectionItems.length,
     });
     new CustomFoodModal(this.app, this.plugin, type, freshItem.name, false, freshItem, this.dateContext, freshItem.sourcePath, async (saved) => {
+      this.assertCurrent?.();
       const current = this.selectionItems.find((candidate) => candidate === entry || foodSelectionKey(candidate.item) === foodSelectionKey(entry.item));
       if (!current) {
         logger.flowWarn("FoodModal", "selection:edit-missing-entry", { name: saved.name, sourcePath: saved.sourcePath || "", selected: this.selectionItems.length });
@@ -6912,13 +7780,15 @@ class FoodSearchModal extends Modal {
       this.renderSelection();
       logger.flow("FoodModal", "selection:edit-saved", { name: saved.name, sourcePath: saved.sourcePath || "", selected: this.selectionItems.length });
       new Notice(`Updated queued ${saved.name}.`);
-    }).open();
+    }, this.assertCurrent).open();
   }
 
   private async refreshSelectionItemsFromSources(): Promise<void> {
+    this.assertCurrent?.();
     let changed = false;
     for (const entry of this.selectionItems) {
       const refreshed = await this.refreshFoodItemFromSource(entry.item);
+      this.assertCurrent?.();
       if (!refreshed) continue;
       if (foodQueueItemSignature(refreshed) === foodQueueItemSignature(entry.item)) continue;
       entry.item = refreshed;
@@ -6954,6 +7824,7 @@ class FoodSearchModal extends Modal {
   }
 
   private async persistDraft(): Promise<void> {
+    this.assertCurrent?.();
     if (!this.selectionItems.length) {
       await this.plugin.clearPendingFoodLogDraft();
       return;
@@ -6980,6 +7851,12 @@ class FoodSearchModal extends Modal {
     });
   }
 
+  private persistDraftInBackground(): void {
+    void this.persistDraft().catch((error) => {
+      logger.flowWarn("FoodModal", "draft:persist-failed", { error: logger.errorSummary(error) });
+    });
+  }
+
   private renderCreateAction(query: string): void {
     new Setting(this.actionsEl)
       .setName(`Create "${query}"`)
@@ -6988,8 +7865,9 @@ class FoodSearchModal extends Modal {
         .setButtonText("Create food")
         .setCta()
         .onClick(() => {
+          this.assertCurrent?.();
           this.close();
-          new CustomFoodModal(this.app, this.plugin, "food", query, true, undefined, this.dateContext).open();
+          new CustomFoodModal(this.app, this.plugin, "food", query, true, undefined, this.dateContext, undefined, undefined, this.assertCurrent).open();
         }));
   }
 }
@@ -7112,6 +7990,35 @@ function foodLogNowDate(): Date {
 
 function foodLogDateInputDate(input: string): string {
   return String(input || "").trim().match(/^(\d{4}-\d{2}-\d{2})(?:[T\s]|$)/)?.[1] || "";
+}
+
+function normalizedOptionalVaultPath(value: unknown): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  try {
+    return normalizePath(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+function dailyNoteDateIso(value: unknown): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  const parsed = window.moment(trimmed);
+  return parsed?.isValid?.() ? parsed.format("YYYY-MM-DD") : "";
+}
+
+function matchingExplicitDailyNotePath(path: unknown, selectedDate: unknown, submittedDate: unknown): string {
+  const requestedPath = String(path || "").trim();
+  if (!requestedPath) return "";
+  const selectedDateIso = dailyNoteDateIso(selectedDate);
+  if (!selectedDateIso) return requestedPath;
+  return dailyNoteDateIso(submittedDate) === selectedDateIso ? requestedPath : "";
+}
+
+function contextualDailyNotePathForDate(dateContext: FoodLogDateContext | null | undefined, submittedDate: unknown): string {
+  return matchingExplicitDailyNotePath(dateContext?.dailyNotePath, dateContext?.dateIso, submittedDate);
 }
 
 function foodLogDateTimeLocalForDate(dateIso: string): string {
@@ -8948,11 +9855,13 @@ class BarcodeScannerModal extends Modal {
     private dateContext: FoodLogDateContext | null = null,
     private onItem?: (item: FoodItem) => Promise<void> | void,
     private options: BarcodeScannerOptions = {},
+    private assertCurrent?: () => void,
   ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("Barcode", "scanner:open", {
       autoStart: !!this.options.autoStart,
       hasDateContext: !!this.dateContext,
@@ -9041,6 +9950,13 @@ class BarcodeScannerModal extends Modal {
   }
 
   private openAppleShortcut(statusEl: HTMLElement): void {
+    try {
+      this.assertCurrent?.();
+    } catch (error) {
+      logger.flowWarn("Barcode", "shortcut:stale", { error: logger.errorSummary(error) });
+      new Notice("TPS Health reloaded. Reopen the food logger and try again.");
+      return;
+    }
     void this.startShortcutInboxWatcher(statusEl);
     statusEl.setText(`Opening Apple Shortcut. TPS Health is watching ${SHORTCUT_BARCODE_INBOX_PATH} for the scanned barcode.`);
     const url = appleShortcutBarcodeUrl();
@@ -9089,6 +10005,13 @@ class BarcodeScannerModal extends Modal {
 
   private async processShortcutInbox(statusEl: HTMLElement): Promise<void> {
     if (this.stopped || this.lookupInProgress) return;
+    try {
+      this.assertCurrent?.();
+    } catch (error) {
+      logger.flowWarn("Barcode", "shortcut-inbox:stale", { error: logger.errorSummary(error) });
+      this.stopShortcutInboxWatcher();
+      return;
+    }
     const file = this.shortcutInboxFile();
     if (!file || file.stat.mtime <= this.shortcutInboxBaselineMtime || file.stat.mtime === this.shortcutInboxLastProcessedMtime) return;
     let content = "";
@@ -9096,6 +10019,13 @@ class BarcodeScannerModal extends Modal {
       content = await this.app.vault.cachedRead(file);
     } catch (error) {
       logger.flowWarn("Barcode", "shortcut-inbox:read-failed", { error: logger.errorSummary(error) });
+      return;
+    }
+    try {
+      this.assertCurrent?.();
+    } catch (error) {
+      logger.flowWarn("Barcode", "shortcut-inbox:stale-after-read", { error: logger.errorSummary(error) });
+      this.stopShortcutInboxWatcher();
       return;
     }
     const barcode = shortcutBarcodeFromContent(content);
@@ -9113,6 +10043,7 @@ class BarcodeScannerModal extends Modal {
     this.shortcutInboxLastProcessedBarcode = barcode;
     statusEl.setText(`Apple Shortcut barcode received: ${barcode}`);
     try {
+      this.assertCurrent?.();
       await this.app.vault.modify(file, `Processed by TPS Health at ${isoNow()}\n`);
     } catch (error) {
       logger.flowWarn("Barcode", "shortcut-inbox:clear-failed", { error: logger.errorSummary(error) });
@@ -9485,7 +10416,9 @@ class BarcodeScannerModal extends Modal {
     this.stopScanning();
     statusEl?.setText(`Looking up barcode ${barcode}...`);
     try {
+      this.assertCurrent?.();
       const item = await this.plugin.lookupFoodByBarcode(barcode);
+      this.assertCurrent?.();
       const reviewItem: FoodItem = item || {
         id: barcode,
         name: `Barcode ${barcode}`,
@@ -9501,7 +10434,7 @@ class BarcodeScannerModal extends Modal {
       if (item && this.onItem) {
         await this.onItem(item);
       } else {
-        new BarcodeFoodReviewModal(this.app, this.plugin, reviewItem, item ? undefined : "No database match found for this barcode. Review and create a local food note.", this.dateContext).open();
+        new BarcodeFoodReviewModal(this.app, this.plugin, reviewItem, item ? undefined : "No database match found for this barcode. Review and create a local food note.", this.dateContext, this.assertCurrent).open();
       }
       logger.flow("Barcode", "scanner-lookup:done", {
         barcode: maskBarcode(barcode),
@@ -9560,11 +10493,19 @@ class BarcodeScannerModal extends Modal {
 }
 
 class BarcodeFoodReviewModal extends Modal {
-  constructor(app: App, private plugin: TPSHealthPlugin, private item: FoodItem, private warning?: string, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private item: FoodItem,
+    private warning?: string,
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("FoodLogModal", "barcode-review:open", {
       ...summarizeFoodItem(this.item),
       warning: Boolean(this.warning),
@@ -9640,6 +10581,7 @@ class BarcodeFoodReviewModal extends Modal {
           }
           logger.flow("FoodLogModal", "barcode-review:submit", { name, source: this.item.source, barcode: maskBarcode(this.item.barcode || "") });
           try {
+            this.assertCurrent?.();
             const saved = await this.plugin.findOrCreateFoodNote({
               ...this.item,
               name,
@@ -9650,10 +10592,10 @@ class BarcodeFoodReviewModal extends Modal {
             });
             logger.flow("FoodLogModal", "barcode-review:done", { name: saved.name, sourcePath: saved.sourcePath || "", barcode: maskBarcode(saved.barcode || this.item.barcode || "") });
             this.close();
-            new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
+            new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext, this.assertCurrent).open();
           } catch (error) {
             logger.flowError("FoodLogModal", "barcode-review:failed", error, { name, barcode: maskBarcode(this.item.barcode || "") });
-            throw error;
+            new Notice("Could not create that food. Reopen the food logger and try again.");
           }
         }));
   }
@@ -9661,11 +10603,19 @@ class BarcodeFoodReviewModal extends Modal {
 
 class FoodLogModal extends Modal {
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private item: FoodItem, private initialDraft: InlineFoodDraft | null = null, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private item: FoodItem,
+    private initialDraft: InlineFoodDraft | null = null,
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
     this.contentEl.addClass("tps-health-modal");
@@ -9742,6 +10692,7 @@ class FoodLogModal extends Modal {
         .onChange((value) => section = value.trim()));
     new Setting(this.contentEl).addButton((button) => button.setButtonText("Log").setCta().onClick(async () => {
       const completedDate = resolveBatchFoodCompletedDate(consumedDateInput, this.dateContext);
+      const dailyNotePath = contextualDailyNotePathForDate(this.dateContext, completedDate);
       logger.flow("FoodLogModal", "submit", {
         ...summarizeFoodItem(this.item),
         quantity,
@@ -9751,8 +10702,11 @@ class FoodLogModal extends Modal {
         ...summarizeDateContext(this.dateContext),
       });
       try {
+        this.assertCurrent?.();
         await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, true, this.dateContext?.foodLogTarget, {
           focusAfterLog: this.dateContext?.focusAfterLog,
+          dailyNoteDate: dailyNotePath ? this.dateContext?.dateIso : undefined,
+          dailyNotePath: dailyNotePath || undefined,
         });
         logger.flow("FoodLogModal", "done", {
           ...summarizeFoodItem(this.item),
@@ -9770,7 +10724,7 @@ class FoodLogModal extends Modal {
           completedDate,
           ...summarizeDateContext(this.dateContext),
         });
-        throw error;
+        new Notice("Could not log that food. Reopen the food logger and try again.");
       }
     }));
   }
@@ -9781,11 +10735,17 @@ class FoodLogModal extends Modal {
 }
 
 class ActivityLogModal extends Modal {
-  constructor(app: App, private plugin: TPSHealthPlugin, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     this.modalEl.addClass("tps-keyboard-aware-modal");
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal", "tps-health-activity-log-frame");
@@ -9826,9 +10786,27 @@ class ActivityLogModal extends Modal {
         return;
       }
       const completedDate = resolveBatchFoodCompletedDate(completedDateInput, this.dateContext);
+      const dailyNotePath = contextualDailyNotePathForDate(this.dateContext, completedDate);
+      const dailyNoteDate = dailyNotePath || !this.dateContext?.dailyNotePath
+        ? this.dateContext?.dateIso
+        : undefined;
       logger.flow("ActivityLogModal", "submit", { activity, activityType, completedDate: completedDate || "", hasDuration: !!durationMinutes, hasDistance: !!distance, hasSteps: !!steps, hasCalories: !!caloriesBurned, ...summarizeDateContext(this.dateContext) });
       try {
-        await this.plugin.logActivity({ activity, activityType, durationMinutes: numberOrUndefined(durationMinutes), distance: numberOrUndefined(distance), distanceUnit: distance ? distanceUnit : undefined, steps: numberOrUndefined(steps), caloriesBurned: numberOrUndefined(caloriesBurned), completedDate, dailyNoteDate: this.dateContext?.dateIso, source: "manual", note: note || undefined });
+        this.assertCurrent?.();
+        await this.plugin.logActivity({
+          activity,
+          activityType,
+          durationMinutes: numberOrUndefined(durationMinutes),
+          distance: numberOrUndefined(distance),
+          distanceUnit: distance ? distanceUnit : undefined,
+          steps: numberOrUndefined(steps),
+          caloriesBurned: numberOrUndefined(caloriesBurned),
+          completedDate,
+          dailyNoteDate,
+          dailyNotePath: dailyNotePath || undefined,
+          source: "manual",
+          note: note || undefined,
+        });
         logger.flow("ActivityLogModal", "done", { activity, activityType, completedDate: completedDate || "" });
         this.close();
       } catch (error) {
@@ -9846,12 +10824,18 @@ class ActivityLogModal extends Modal {
 class StartWorkoutModal extends Modal {
   private selectedWorkoutDate?: string;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private dateContext: FoodLogDateContext | null = null,
+    private assertCurrent?: () => void,
+  ) {
     super(app);
     this.selectedWorkoutDate = dateContext?.dateIso || "";
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("WorkoutModal", "start:open", summarizeDateContext(this.dateContext));
     this.modalEl.addClass("tps-keyboard-aware-modal");
     this.contentEl.empty();
@@ -9922,8 +10906,10 @@ class StartWorkoutModal extends Modal {
     planSetting.settingEl.addClass("tps-health-workout-plan-setting");
 
     const resolveSelectedPlanPath = async (): Promise<string | undefined> => {
+      this.assertCurrent?.();
       if (!plan) return undefined;
       const matches = await this.plugin.searchWorkoutPlans(plan);
+      this.assertCurrent?.();
       const selected = matches.find((item) => normalizeLookup(item.name) === normalizeLookup(plan));
       if (selected?.sourcePath) return selected.sourcePath;
       logger.flowWarn("WorkoutModal", "start:plan-not-selected", { plan, matches: matches.length });
@@ -9970,14 +10956,18 @@ class StartWorkoutModal extends Modal {
       .addButton((button) => button
         .setButtonText("Start empty")
         .onClick(async () => {
-          logger.flow("WorkoutModal", "start-blank:submit", { title, cooldownDays, logTarget, workoutDate, openFile });
+          const startedAt = workoutDate ? timestampForDate(workoutDate) : undefined;
+          const dailyNotePath = contextualDailyNotePathForDate(this.dateContext, startedAt || isoNow());
+          logger.flow("WorkoutModal", "start-blank:submit", { title, cooldownDays, logTarget, workoutDate, dailyNotePath, openFile });
           try {
+            this.assertCurrent?.();
             const path = await this.plugin.startWorkout({
               title: title || undefined,
               cooldownDays,
               logTarget,
-              startedAt: workoutDate ? timestampForDate(workoutDate) : undefined,
-              dailyNoteDate: workoutDate || undefined,
+              startedAt,
+              dailyNoteDate: dailyNotePath ? this.dateContext?.dateIso : workoutDate || undefined,
+              dailyNotePath: dailyNotePath || undefined,
               openFile,
             });
             logger.flow("WorkoutModal", "start-blank:done", {
@@ -9987,10 +10977,10 @@ class StartWorkoutModal extends Modal {
               openedExercisePicker: !!path,
             });
             this.close();
-            if (path) new WorkoutExercisePickerModal(this.app, this.plugin, path).open();
+            if (path) new WorkoutExercisePickerModal(this.app, this.plugin, path, this.assertCurrent).open();
           } catch (error) {
             logger.flowError("WorkoutModal", "start-blank:failed", error, { title, cooldownDays, logTarget, workoutDate, openFile });
-            throw error;
+            new Notice("Could not start that workout. Reopen the workout starter and try again.");
           }
         }))
       .addButton((button) => {
@@ -9999,24 +10989,28 @@ class StartWorkoutModal extends Modal {
         button.setButtonText("Start with plan")
           .setCta()
           .onClick(async () => {
-          const planPath = await resolveSelectedPlanPath();
-          if (plan && !planPath) return;
-          logger.flow("WorkoutModal", "start:submit", { title, plan, cooldownDays, logTarget, workoutDate, openFile });
           try {
+            this.assertCurrent?.();
+            const planPath = await resolveSelectedPlanPath();
+            if (plan && !planPath) return;
+            const startedAt = workoutDate ? timestampForDate(workoutDate) : undefined;
+            const dailyNotePath = contextualDailyNotePathForDate(this.dateContext, startedAt || isoNow());
+            logger.flow("WorkoutModal", "start:submit", { title, plan, cooldownDays, logTarget, workoutDate, dailyNotePath, openFile });
             const path = await this.plugin.startWorkout({
               title: title || undefined,
               planPath,
               cooldownDays,
               logTarget,
-              startedAt: workoutDate ? timestampForDate(workoutDate) : undefined,
-              dailyNoteDate: workoutDate || undefined,
+              startedAt,
+              dailyNoteDate: dailyNotePath ? this.dateContext?.dateIso : workoutDate || undefined,
+              dailyNotePath: dailyNotePath || undefined,
               openFile,
             });
             logger.flow("WorkoutModal", "start:done", { title, plan, path: path || "", logTarget, workoutDate });
             this.close();
           } catch (error) {
             logger.flowError("WorkoutModal", "start:failed", error, { title, plan, cooldownDays, logTarget, workoutDate, openFile });
-            throw error;
+            new Notice("Could not start that workout. Reopen the workout starter and try again.");
           }
         });
       });
@@ -10254,11 +11248,12 @@ class SetModal extends Modal {
 class WorkoutExercisePickerModal extends Modal {
   private token = 0;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string) {
+  constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string, private assertCurrent?: () => void) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-workout-picker-modal");
     this.contentEl.addClass("tps-health-modal");
@@ -10278,6 +11273,7 @@ class WorkoutExercisePickerModal extends Modal {
       status.setText("Adding…");
       let exercise = String(name || "").trim();
       try {
+        this.assertCurrent?.();
         if (!exercise) throw new Error("Exercise name was empty.");
         logger.flow("WorkoutExercisePicker", "choose:start", { path: this.filePath, exercise });
         if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
@@ -10306,9 +11302,11 @@ class WorkoutExercisePickerModal extends Modal {
       }
     };
     const render = async () => {
+      this.assertCurrent?.();
       const query = input.value.trim();
       const token = ++this.token;
       const matches = await this.plugin.searchExercises(query);
+      this.assertCurrent?.();
       if (token !== this.token) return;
       results.empty();
       const names = matches.map((item) => item.name.trim()).filter(Boolean).slice(0, 14);
@@ -10328,14 +11326,17 @@ class WorkoutExercisePickerModal extends Modal {
         button.addEventListener("click", select);
       }
     };
-    input.addEventListener("input", () => void render());
+    const renderFromUi = () => void render().catch((error) => {
+      logger.flowWarn("WorkoutExercisePicker", "render:stale", { path: this.filePath, error: logger.errorSummary(error) });
+    });
+    input.addEventListener("input", renderFromUi);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && input.value.trim()) {
         event.preventDefault();
         void choose(input.value);
       }
     });
-    void render();
+    renderFromUi();
     window.setTimeout(() => input.focus(), 0);
   }
 
@@ -10668,11 +11669,13 @@ class CustomFoodModal extends Modal {
     private dateContext: FoodLogDateContext | null = null,
     private editPath?: string,
     private onSaved?: (saved: FoodItem) => void | Promise<void>,
+    private assertCurrent?: () => void,
   ) {
     super(app);
   }
 
   onOpen(): void {
+    this.assertCurrent?.();
     logger.flow("CustomFoodModal", "open", {
       type: this.type,
       editPath: this.editPath || "",
@@ -10718,6 +11721,7 @@ class CustomFoodModal extends Modal {
       return totals;
     };
     const persistDraftIngredients = async (): Promise<RecipeIngredientLine[]> => {
+      this.assertCurrent?.();
       const persisted: RecipeIngredientLine[] = [];
       let draftCount = 0;
       for (const ingredient of recipeIngredients) {
@@ -10731,7 +11735,9 @@ class CustomFoodModal extends Modal {
           continue;
         }
         draftCount += 1;
+        this.assertCurrent?.();
         const savedFood = await this.plugin.findOrCreateFoodNote(ingredient.food);
+        this.assertCurrent?.();
         if (!savedFood.sourcePath) throw new Error("Selected ingredient could not be saved as a food note.");
         if (!isFoodLogUnitSupported(savedFood, ingredient.unit)) {
           throw new Error(`"${ingredient.unit}" is not available for ${savedFood.name}.`);
@@ -10883,12 +11889,14 @@ class CustomFoodModal extends Modal {
         attr: { type: "button", "aria-label": `Add ${typeLabel} ingredient` },
       });
       addButton.addEventListener("click", () => {
+        this.assertCurrent?.();
         logger.flow("CustomFoodModal", "ingredient-picker:open", {
           type: this.type,
           editPath: this.editPath || "",
           ingredientCount: recipeIngredients.length,
         });
         new RecipeIngredientModal(this.app, this.plugin, null, async (selection) => {
+          this.assertCurrent?.();
           recipeIngredients.push({
             quantity: selection.quantity,
             unit: selection.unit,
@@ -10930,11 +11938,14 @@ class CustomFoodModal extends Modal {
         hasOnSaved: !!this.onSaved,
       });
       try {
+        this.assertCurrent?.();
         const linkScope = this.editPath ? await chooseFoodEditLinkScope(this.app, typeLabel) : "update-linked";
+        this.assertCurrent?.();
         logger.flow("CustomFoodModal", "submit:link-scope", { type: this.type, editPath: this.editPath || "", choice: linkScope });
         if (linkScope === "cancel") return;
         const createNewVersion = linkScope === "new-version";
         const savedIngredients = isRecipeLikeFoodType(this.type) ? await persistDraftIngredients() : [];
+        this.assertCurrent?.();
         const ingredientsForSave = isRecipeLikeFoodType(this.type)
           ? savedIngredients.map(recipeIngredientMarkdown).join("\n")
           : this.baseFood?.ingredients;
@@ -10966,8 +11977,10 @@ class CustomFoodModal extends Modal {
         });
         this.close();
         if (this.onSaved) {
+          this.assertCurrent?.();
           logger.flow("CustomFoodModal", "callback:start", { type: this.type, name: saved.name, sourcePath: saved.sourcePath || "" });
           await this.onSaved(saved);
+          this.assertCurrent?.();
           logger.flow("CustomFoodModal", "callback:done", { type: this.type, name: saved.name, sourcePath: saved.sourcePath || "" });
         }
         if (this.editPath) {
@@ -10976,8 +11989,9 @@ class CustomFoodModal extends Modal {
           return;
         }
         if (this.logAfterCreate) {
+          this.assertCurrent?.();
           logger.flow("CustomFoodModal", "log-modal:open", { type: this.type, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
-          new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
+          new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext, this.assertCurrent).open();
         }
       } catch (error) {
         logger.flowError("CustomFoodModal", "submit:failed", error, {
@@ -10987,7 +12001,7 @@ class CustomFoodModal extends Modal {
           logAfterCreate: this.logAfterCreate,
           hasOnSaved: !!this.onSaved,
         });
-        throw error;
+        new Notice(`Could not save ${typeLabel}. Review the form and try again.`);
       }
     }));
   }
@@ -13494,6 +14508,9 @@ function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext:
   const draftContext = draft.dateContext;
   if (!draftContext?.dateIso || !dateContext?.dateIso) return true;
   if (draftContext.dateIso !== dateContext.dateIso) return false;
+  const draftPath = normalizedOptionalVaultPath(draftContext.dailyNotePath);
+  const contextPath = normalizedOptionalVaultPath(dateContext.dailyNotePath);
+  if ((draftPath || contextPath) && draftPath !== contextPath) return false;
   const draftTarget = draftContext.foodLogTarget || "";
   const target = dateContext.foodLogTarget || "";
   return !draftTarget || !target || draftTarget === target;
@@ -13569,8 +14586,7 @@ function parseSimpleFrontmatterScalar(value: string): unknown {
 }
 
 function isFoodLogLine(line: string): boolean {
-  return line.includes("tps-health:food") ||
-    (/\[food::\s*[^\]]+\]/i.test(line) && /\[(qty|servings)::\s*-?\d/i.test(line));
+  return isFoodLogSnapshotLine(line);
 }
 
 function compactFoodLogLineFields(line: string): string {
@@ -13833,6 +14849,23 @@ function frontmatterEndIndex(content: string): number {
   if (end < 0) return 0;
   const lineEnd = content.indexOf("\n", end + 4);
   return lineEnd < 0 ? content.length : lineEnd + 1;
+}
+
+function insertDailyNoteLineContent(content: string, line: string, section?: string): string {
+  const heading = section?.trim();
+  if (heading) {
+    const marker = `## ${heading}`;
+    if (!content.includes(marker)) return `${content.trimEnd()}\n\n${marker}\n\n${line}\n`;
+    const index = content.indexOf(marker) + marker.length;
+    const before = content.slice(0, index);
+    const after = content.slice(index);
+    return `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`;
+  }
+  const insertAt = frontmatterEndIndex(content);
+  const before = content.slice(0, insertAt);
+  const after = content.slice(insertAt).replace(/^\n*/, "");
+  const prefix = before ? `${before.replace(/\n*$/, "\n")}\n` : "";
+  return `${prefix}${line}\n${after ? `\n${after}` : ""}`;
 }
 
 function sleep(ms: number): Promise<void> {

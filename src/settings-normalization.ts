@@ -179,6 +179,7 @@ function normalizePendingFoodLogDraft(value: unknown): TPSHealthSettings["pendin
       dateIso,
       label: typeof context?.label === "string" ? context.label : dateIso,
       isToday: context?.isToday === true,
+      dailyNotePath: typeof context?.dailyNotePath === "string" ? context.dailyNotePath.trim() || undefined : undefined,
       foodLogTarget: context?.foodLogTarget === "daily-note" || context?.foodLogTarget === "single-file" ? context.foodLogTarget : undefined,
       focusAfterLog: typeof context?.focusAfterLog === "boolean" ? context.focusAfterLog : undefined,
     } : null,
