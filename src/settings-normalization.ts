@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
+import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, PendingGcmTimerCleanup, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 
 export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
 
@@ -51,6 +51,7 @@ export function normalizeTPSHealthSettings(stored: Partial<TPSHealthSettings> | 
   settings.activeWorkoutPlanPath = optionalStringSetting(settings.activeWorkoutPlanPath);
   settings.activeWorkoutTitle = optionalStringSetting(settings.activeWorkoutTitle);
   settings.activeWorkoutStartedAt = optionalStringSetting(settings.activeWorkoutStartedAt);
+  settings.activeWorkoutGcmTimerId = timerSessionIdSetting(settings.activeWorkoutGcmTimerId);
   settings.lastSetEndedAt = optionalStringSetting(settings.lastSetEndedAt);
 
   if (!WORKOUT_LOG_TARGETS.includes(settings.workoutLogTarget)) settings.workoutLogTarget = DEFAULT_SETTINGS.workoutLogTarget;
@@ -69,11 +70,18 @@ export function normalizeTPSHealthSettings(stored: Partial<TPSHealthSettings> | 
   settings.activeWorkoutCooldownDays = nonNegativeInteger(settings.activeWorkoutCooldownDays, DEFAULT_SETTINGS.activeWorkoutCooldownDays);
   settings.activeWorkoutSetCount = nonNegativeInteger(settings.activeWorkoutSetCount, 0);
   settings.pendingFoodLogDraft = normalizePendingFoodLogDraft(settings.pendingFoodLogDraft);
+  settings.pendingGcmTimerCleanup = normalizePendingGcmTimerCleanup(settings.pendingGcmTimerCleanup);
 
   settings.appendWorkoutSummaryToDailyNote = booleanSetting(settings.appendWorkoutSummaryToDailyNote, DEFAULT_SETTINGS.appendWorkoutSummaryToDailyNote);
   settings.showFoodLogButtonInGcm = booleanSetting(settings.showFoodLogButtonInGcm, DEFAULT_SETTINGS.showFoodLogButtonInGcm);
   settings.automaticDailyRollups = booleanSetting(settings.automaticDailyRollups, DEFAULT_SETTINGS.automaticDailyRollups);
   settings.includeBrandedFoodSearch = booleanSetting(settings.includeBrandedFoodSearch, DEFAULT_SETTINGS.includeBrandedFoodSearch);
+  const hasActiveWorkout = Boolean(
+    settings.activeWorkoutId
+    && (settings.activeWorkoutPath || settings.activeWorkoutDailyNotePath),
+  );
+  settings.activeWorkoutGcmTimerSkipped = booleanSetting(settings.activeWorkoutGcmTimerSkipped, false)
+    || (hasActiveWorkout && !settings.activeWorkoutGcmTimerId);
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
 
   settings.healthGoals = normalizeHealthGoals(settings.healthGoals, settings);
@@ -200,6 +208,31 @@ function stringSetting(value: unknown, fallback: string): string {
 
 function optionalStringSetting(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function timerSessionIdSetting(value: unknown): string {
+  const sessionId = optionalStringSetting(value);
+  return sessionId.length <= 256 && /^[a-z0-9](?:[a-z0-9._:-]*[a-z0-9])?$/i.test(sessionId)
+    ? sessionId
+    : "";
+}
+
+function normalizePendingGcmTimerCleanup(value: unknown): PendingGcmTimerCleanup | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as SettingsRecord;
+  const path = optionalStringSetting(record.path);
+  const sessionId = timerSessionIdSetting(record.sessionId);
+  const endedAt = optionalStringSetting(record.endedAt);
+  const parsedEnd = new Date(endedAt);
+  const canonicalEnd = Number.isFinite(parsedEnd.getTime()) && parsedEnd.toISOString() === endedAt;
+  const safePath = path.length <= 4096
+    && path.toLowerCase().endsWith(".md")
+    && !path.startsWith("/")
+    && !path.endsWith("/")
+    && !path.includes("\\")
+    && !path.includes("//")
+    && path.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+  return safePath && sessionId && canonicalEnd ? { path, sessionId, endedAt } : null;
 }
 
 function booleanSetting(value: unknown, fallback: boolean): boolean {

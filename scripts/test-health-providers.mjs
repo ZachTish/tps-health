@@ -284,6 +284,17 @@ function installDeterministicBrowserGlobals() {
   globalThis.document = { querySelectorAll: () => [] };
 }
 
+function workoutTimerOwnership(plugin, overrides = {}) {
+  return {
+    workoutId: plugin.settings.activeWorkoutId || "workout-test-owner",
+    title: plugin.settings.activeWorkoutTitle || "Workout",
+    startedAt: plugin.settings.activeWorkoutStartedAt || "2026-07-09T22:00:00.000Z",
+    sessionId: plugin.settings.activeWorkoutGcmTimerId || "",
+    skipped: plugin.settings.activeWorkoutGcmTimerSkipped === true,
+    ...overrides,
+  };
+}
+
 test("food logger queues searched foods without leaving the search flow", () => {
   assert.match(mainSource, /activeFoodLogTab: "barcode" \| "search" \| "mine"/);
   assert.doesNotMatch(mainSource, /Quick add/);
@@ -1563,6 +1574,13 @@ test("settings normalization removes stale fields while preserving live vault co
     includeBrandedFoodSearch: true,
     defaultWorkoutCooldownDays: 3,
     activeWorkoutSetCount: "bad",
+    activeWorkoutGcmTimerId: " gcm-workout-normalization ",
+    activeWorkoutGcmTimerSkipped: "not-a-boolean",
+    pendingGcmTimerCleanup: {
+      path: " Health/Workouts/Normalization.md ",
+      sessionId: " gcm-workout-normalization ",
+      endedAt: "2026-07-20T12:34:56.000Z",
+    },
     workoutSetStorage: "invalid",
     pendingFoodLogDraft: {
       id: "draft-1",
@@ -1598,6 +1616,13 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.includeBrandedFoodSearch, true);
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
+  assert.equal(normalized.activeWorkoutGcmTimerId, "gcm-workout-normalization");
+  assert.equal(normalized.activeWorkoutGcmTimerSkipped, false);
+  assert.deepEqual(normalized.pendingGcmTimerCleanup, {
+    path: "Health/Workouts/Normalization.md",
+    sessionId: "gcm-workout-normalization",
+    endedAt: "2026-07-20T12:34:56.000Z",
+  });
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
   assert.equal(normalized.pendingFoodLogDraft?.activeTab, "search");
   assert.equal(normalized.pendingFoodLogDraft?.searchInput, "eggs");
@@ -1642,6 +1667,27 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(migratedWorkout.activeWorkoutTarget, "daily-note");
   assert.equal(Object.hasOwn(migratedWorkout, "workoutSessionBodyMode"), false);
   assert.equal(Object.hasOwn(migratedWorkout, "workoutExerciseLayout"), false);
+  assert.equal(normalizeTPSHealthSettings({
+    activeWorkoutGcmTimerId: "../invalid",
+    pendingGcmTimerCleanup: {
+      path: "../outside.md",
+      sessionId: "gcm-invalid-path",
+      endedAt: "2026-07-20T12:34:56.000Z",
+    },
+  }).activeWorkoutGcmTimerId, "");
+  assert.equal(normalizeTPSHealthSettings({
+    activeWorkoutId: "workout-pre-upgrade",
+    activeWorkoutPath: "Health/Workouts/Pre Upgrade.md",
+    activeWorkoutGcmTimerId: "",
+    activeWorkoutGcmTimerSkipped: false,
+  }).activeWorkoutGcmTimerSkipped, true, "a pre-upgrade workout without exact ownership is explicitly unowned");
+  assert.equal(normalizeTPSHealthSettings({
+    pendingGcmTimerCleanup: {
+      path: "Health/Workouts/Normalization.md",
+      sessionId: "gcm-workout-normalization",
+      endedAt: "2026-07-20T07:34:56-05:00",
+    },
+  }).pendingGcmTimerCleanup, null);
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
   assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-shape"/);
@@ -1650,6 +1696,7 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-json", \{ error: logger\.errorSummary\(error\) \}\)/);
   assert.match(mainSource, /goal: goal\.kind === "counter" \? undefined : goal\.max \?\? goal\.min/);
   assert.match(mainSource, /private lastSavedSettingsSnapshot: TPSHealthSettings \| null = null/);
+  assert.match(mainSource, /settings: TPSHealthSettings = cloneSettingsSnapshot\(DEFAULT_SETTINGS\)/);
   assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(this\.settings\)/);
   assert.match(mainSource, /const changedKeys = changedSettingsKeys\(this\.lastSavedSettingsSnapshot, snapshot\)/);
   assert.match(mainSource, /changedKeys,\s+changedCount: changedKeys\.length,\s+enableLogging: snapshot\.enableLogging/);
@@ -1731,9 +1778,7 @@ test("legacy USDA single-reference settings persist canonically before the stale
     "register",
     "registerWorkoutTaskCompletionTracking",
     "refreshGcmFoodLogButtonRegistration",
-    "registerGcmFoodLogButtonTapFallback",
     "registerInlineFoodLogMenuHandler",
-    "scheduleGcmMenuRefresh",
     "scheduleWorkoutActionBars",
   ]) plugin[method] = () => {};
   plugin.loadData = async () => ({ usdaApiKeySecret: "legacy-reference" });
@@ -1783,9 +1828,7 @@ test("failed USDA SecretStorage migration keeps Health online without purging th
     "register",
     "registerWorkoutTaskCompletionTracking",
     "refreshGcmFoodLogButtonRegistration",
-    "registerGcmFoodLogButtonTapFallback",
     "registerInlineFoodLogMenuHandler",
-    "scheduleGcmMenuRefresh",
     "scheduleWorkoutActionBars",
   ]) plugin[method] = () => {};
   plugin.loadData = async () => ({ usdaApiKey: "legacy-private-key" });
@@ -1873,7 +1916,8 @@ test("blank daily log sections stay a no-heading frontmatter insertion contract"
   assert.match(typesSource, /defaultFoodLogSection: ""/);
   assert.doesNotMatch(typesSource, /workoutLogHeading/);
   assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);[\s\S]+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
-  assert.match(mainSource, /workoutSummaryLine\(path, startedAt\),\s+undefined,\s+explicitDailyFile \|\| await this\.getOrCreateDailyNoteForDate\(dailyNoteDate\)/);
+  assert.match(mainSource, /const summaryDailyFile = explicitDailyFile \|\| await this\.awaitWorkoutLifecycle\(/);
+  assert.match(mainSource, /this\.insertIntoDailyNote\(workoutSummaryLine\(path, startedAt\), undefined, summaryDailyFile\)/);
   assert.match(mainSource, /return this\.insertIntoDailyNote\(line, undefined, targetFile \|\| await this\.getOrCreateDailyNoteForDate\(dateValue\)\)/);
   assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);[\s\S]+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
   assert.match(settingsSource, /\.setName\("Default food log section"\)\s+\.setDesc\("Optional\. Blank inserts food logs immediately after daily-note frontmatter\."\)[\s\S]+\.setPlaceholder\("Food Log"\)[\s\S]+defaultFoodLogSection = value\.trim\(\);/);
@@ -1925,14 +1969,19 @@ test("whole-note workouts use workout-specific date fields and plain set logs", 
   assert.match(mainSource, /logger\.flowError\("WorkoutModal", "start:failed"/);
   assert.match(mainSource, /logger\.flow\("Workout", "start:note-created"/);
   assert.match(mainSource, /logger\.flow\("Workout", "start:state-saved"/);
-  assert.match(mainSource, /await this\.openWorkoutFile\(file\)/);
-  assert.match(mainSource, /await this\.startGcmWorkoutTimer/);
-  assert.match(mainSource, /await this\.stopGcmWorkoutTimer/);
+  assert.match(mainSource, /this\.openWorkoutFile\(file\)/);
+  assert.match(mainSource, /this\.startGcmWorkoutTimer/);
+  assert.match(mainSource, /this\.stopGcmWorkoutTimer/);
   assert.match(mainSource, /logger\.flow\("Workout", "finish:frontmatter-done"/);
-  assert.match(mainSource, /timeTracking\.startTimer/);
-  assert.match(mainSource, /timeTracking\.stopActiveTimerForFile/);
-  assert.match(mainSource, /const timerEnd: Date \| string = Number\.isFinite\(parsedEnd\.getTime\(\)\) \? parsedEnd : endedAt/);
-  assert.match(mainSource, /timeTracking\.stopActiveTimerForFile\(file, timerEnd\)/);
+  assert.match(mainSource, /api\.startNoteTimer\(\{\s+path: file\.path,\s+title,\s+sessionId,\s+startedAt,/);
+  assert.match(mainSource, /pendingGcmTimerCleanup = \{\s+path: stopRequest\.path,\s+sessionId,\s+endedAt: stopRequest\.endedAt,/);
+  assert.match(mainSource, /api\.stopNoteTimerForFile\(attemptedCleanup\)/);
+  assert.match(mainSource, /activeWorkoutGcmTimerSkipped = timerOwnership\.skipped/);
+  assert.match(mainSource, /timer:stop-skipped-unowned/);
+  assert.match(mainSource, /result\.status === "already-running"/);
+  assert.match(mainSource, /result\.status !== "stopped" && result\.status !== "not-running"/);
+  assert.doesNotMatch(mainSource, /private getGcmApi\(\)/);
+  assert.doesNotMatch(mainSource, /timeTracking\.stopActiveTimer\(/);
 });
 
 test("active workout commands expose set logging and layout saving", async () => {
@@ -1945,7 +1994,9 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /id: "finish-workout-and-save-layout"/);
   assert.match(mainSource, /interface WorkoutOpenResult/);
   assert.match(mainSource, /let openResult: WorkoutOpenResult = \{/);
-  assert.match(mainSource, /await this\.startGcmWorkoutTimer\(file instanceof TFile \? file : dailyNotePath\);\s+if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && file instanceof TFile\) openResult = await this\.openWorkoutFile\(file\);/);
+  assert.match(mainSource, /this\.startGcmWorkoutTimer\(file instanceof TFile \? file : dailyNotePath, timerOwnership\)/);
+  assert.match(mainSource, /this\.cacheWorkoutFile\(file\)/);
+  assert.match(mainSource, /this\.openWorkoutFile\(file\)/);
   assert.match(mainSource, /openRequested: openResult\.requested/);
   assert.match(mainSource, /openRoute: openResult\.route/);
   assert.match(mainSource, /openReason: openResult\.reason \|\| ""/);
@@ -1954,20 +2005,23 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /await this\.showWorkoutReadingMode\(file\)/);
   assert.match(mainSource, /mode: "preview", source: false/);
   assert.match(mainSource, /logger\.flow\("WorkoutOpen", "start", \{ path: file\.path \}\)/);
-  assert.match(mainSource, /typeof gcmApi\?\.openFileInLeaf === "function"/);
-  assert.match(mainSource, /gcmApi\.openFileInLeaf\(\s*file,\s*false,\s*\(\) => this\.app\.workspace\.getLeaf\(false\),\s*\{ revealLeaf: true \}/);
+  assert.match(mainSource, /const api = this\.gcmIntegrationApi/);
+  assert.match(mainSource, /api\.openFile\(\{\s+path: file\.path,\s+leafPolicy: "reuse-current-unless-pinned",\s+reveal: true,/);
+  assert.match(mainSource, /this\.assertGcmIntegrationApiCurrent\(lifecycleEpoch, api\)/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:declined", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowError\("WorkoutOpen", "obsidian:failed", error, \{ path: file\.path \}\)/);
-  assert.match(mainSource, /private async startGcmWorkoutTimer\(target: TFile \| string \| null\): Promise<void>/);
-  assert.match(mainSource, /await timeTracking\.startTimer\(\{\s*file,\s*type: "note",\s*title: this\.settings\.activeWorkoutTitle \|\| file\.basename,\s*\}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-unavailable", \{ hasTimeTracking: !!timeTracking \}\)/);
+  assert.match(mainSource, /private async startGcmWorkoutTimer\(\s+target: TFile \| string \| null,\s+ownership: Readonly<GcmWorkoutTimerOwnership>,\s+\): Promise<void>/);
+  assert.match(mainSource, /api\.startNoteTimer\(\{\s+path: file\.path,\s+title,\s+sessionId,\s+startedAt,/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-unavailable", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:start-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-done", \{ path: file\.path, title: this\.settings\.activeWorkoutTitle \|\| file\.basename \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-unavailable"\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-done", \{ path: file\.path, title \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-done", \{ path: file\.path, route: "file", endedAt \}\)/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-active-mismatch"/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-method-missing", \{ path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flow\("GCM", "timer:cleanup-settled"/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-pending"/);
+  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-skipped-unowned", \{ reason: "missing-session-id" \}\)/);
+  assert.doesNotMatch(mainSource, /stopActiveTimer\(/);
+  assert.doesNotMatch(mainSource, /getActiveTimer\(/);
+  assert.doesNotMatch(mainSource, /plugins\?\.plugins\?\.\["tps-global-context-menu"\]/);
   assert.doesNotMatch(mainSource, /setPinned\?\.\(true\)/);
   assert.match(mainSource, /new SetModal\(this\.app, this\)\.open\(\)/);
   assert.match(mainSource, /callback: \(\) => this\.traceCommand\("log-workout-set", async \(\) => \{\s+new SetModal\(this\.app, this\)\.open\(\);/);
@@ -2007,7 +2061,8 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flow\("WorkoutPlan", "find-or-create:create"/);
   assert.match(mainSource, /new WorkoutLayoutModal\(this\.app, this, false\)\.open\(\)/);
   assert.match(mainSource, /new WorkoutLayoutModal\(this\.app, this, true\)\.open\(\)/);
-  assert.match(mainSource, /async finishWorkoutAndSaveTemplate\(input: \{ title\?: string; cooldownDays\?: number; defaultRestSeconds\?: number \} = \{\}\): Promise<string \| undefined> \{/);
+  assert.match(mainSource, /finishWorkoutAndSaveTemplate\(\s+input: \{ title\?: string; cooldownDays\?: number; defaultRestSeconds\?: number \} = \{\},\s+\): Promise<string \| undefined> \{/);
+  assert.match(mainSource, /this\.runWorkoutLifecycleTransition\(\(assertCurrent\) => \(\s+this\.performFinishWorkoutAndSaveTemplate\(input, assertCurrent\)/);
   assert.match(mainSource, /async saveActiveWorkoutTemplate\(input: \{ title\?: string; cooldownDays\?: number; defaultRestSeconds\?: number \} = \{\}\): Promise<string \| undefined> \{/);
   assert.match(mainSource, /class WorkoutLayoutModal extends Modal/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutPlan", "template-from-active:no-active", \{ finishAfterSave: true \}\)/);
@@ -3687,14 +3742,16 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /logger\.flow\("DailyNote", "settings:resolved", \{ \.\.\.resolved, formatSource, folderSource \}\)/);
   assert.match(mainSource, /reason: "folder-mismatch"/);
   assert.match(mainSource, /reason: "date-format-mismatch"/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "food-log-action:fallback-not-daily-note"/);
-  assert.match(mainSource, /logger\.flow\("GCM", "food-log-action:visibility"/);
-  assert.match(mainSource, /candidates: candidates\.length/);
-  assert.match(mainSource, /private registerGcmFoodLogButtonTapFallback\(\): void/);
-  assert.match(mainSource, /document\.addEventListener\("pointerdown", handler, \{ capture: true \}\)/);
-  assert.match(mainSource, /target\?\.closest<HTMLElement>\('\[data-tps-gcm-external-action-id="tps-health:food-log"\]'\)/);
-  assert.doesNotMatch(mainSource, /button\[aria-label="Log food"\]/);
-  assert.doesNotMatch(mainSource, /button\[title="Log food"\]/);
+  assert.match(mainSource, /new TPSGcmIntegrationClient\(this\.app, this\.manifest\.id\)/);
+  assert.match(mainSource, /api\.registerExternalAction\(\{/);
+  assert.match(mainSource, /display: "icon-only"/);
+  assert.match(mainSource, /isVisible: async \(\{ filePath \}\) =>/);
+  assert.match(mainSource, /onClick: async \(\{ filePath \}\) =>/);
+  assert.match(mainSource, /this\.openFoodSearchModal\(null, dateContext, assertCurrent\)/);
+  assert.doesNotMatch(mainSource, /registerGcmFoodLogButtonTapFallback/);
+  assert.doesNotMatch(mainSource, /data-tps-gcm-external-action-id/);
+  assert.doesNotMatch(mainSource, /updateGcmFoodLogButtonVisibility/);
+  assert.doesNotMatch(mainSource, /tps-health-gcm-hidden/);
   assert.match(mainSource, /function foodSearchQueryVariants\(query: string\): string\[\]/);
   assert.match(mainSource, /private async searchOpenFoodFactsRoute\(query: string, route: "search" \| "legacy"/);
   assert.match(mainSource, /open-food-facts:\$\{route\}:failed/);
@@ -4329,90 +4386,87 @@ test("workout cooldown date math writes the next eligible date", () => {
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 0), "2026-06-03");
 });
 
-test("GCM food-log registration owns one retry listener through success, disable, and unload", async () => {
+test("public GCM food action follows provider identity and the clicked file context", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
-  const listeners = new Set();
-  fake.app.workspace.on = (event, callback) => {
-    const ref = { event, callback };
-    listeners.add(ref);
-    return ref;
-  };
-  fake.app.workspace.offref = (ref) => {
-    assert.equal(listeners.delete(ref), true, "the owned retry listener must be released exactly once");
-  };
-
   const plugin = new TPSHealthPlugin(fake.app);
   plugin.manifest = { id: "tps-health" };
   plugin.settings = { ...plugin.settings, showFoodLogButtonInGcm: true };
-  plugin.scheduleGcmMenuRefresh = () => {};
   plugin.removeWorkoutActionBars = () => {};
-
-  plugin.refreshGcmFoodLogButtonRegistration();
-  plugin.refreshGcmFoodLogButtonRegistration();
-  plugin.refreshGcmFoodLogButtonRegistration();
-  assert.equal(listeners.size, 1, "repeated unavailable refreshes must reuse one retry listener");
-
-  const retryRef = [...listeners][0];
-  assert.equal(retryRef.event, "layout-change");
-  retryRef.callback();
-  retryRef.callback();
-  assert.equal(listeners.size, 1, "an unavailable retry callback must not multiply itself");
-
-  plugin.settings.showFoodLogButtonInGcm = false;
-  plugin.refreshGcmFoodLogButtonRegistration();
-  assert.equal(listeners.size, 0, "disabling the action must release an armed retry listener");
-  plugin.settings.showFoodLogButtonInGcm = true;
-  plugin.refreshGcmFoodLogButtonRegistration();
-  const successfulRetryRef = [...listeners][0];
-
-  let registrationAttempts = 0;
-  let registrations = 0;
-  let unregistrations = 0;
-  let registeredAction = null;
-  fake.app.plugins.plugins["tps-global-context-menu"] = {
-    api: {
-      externalActions: {
-        version: 1,
-        register(action) {
-          registrationAttempts += 1;
-          if (registrationAttempts === 1) throw new Error("GCM still initializing");
-          if (registrationAttempts === 2) return null;
-          registrations += 1;
-          registeredAction = action;
-          return () => { unregistrations += 1; };
-        },
-      },
-    },
+  const exactPath = "Daily/2026-07-04.md";
+  const otherPath = "Daily/2026-07-05.md";
+  fake.files.set(exactPath, "# July 4\n");
+  fake.files.set(otherPath, "# July 5\n");
+  fake.app.workspace.getActiveFile = () => new globalThis.__TPSHealthTestTFile(otherPath);
+  plugin.getDailyNoteDateContext = async (file) => ({
+    dateIso: file.path.includes("07-04") ? "2026-07-04" : "2026-07-05",
+    label: file.basename,
+    isToday: false,
+    dailyNotePath: file.path,
+  });
+  const opened = [];
+  plugin.openFoodSearchModal = (_draft, context, assertCurrent) => {
+    assertCurrent?.();
+    opened.push(context);
   };
+  Object.defineProperty(fake.app, "plugins", {
+    configurable: true,
+    get() { throw new Error("private plugin registry must not be read"); },
+  });
 
-  successfulRetryRef.callback();
-  assert.equal(registrationAttempts, 1);
-  assert.equal(listeners.size, 1, "a thrown registration must retain the same retry listener");
-  successfulRetryRef.callback();
-  assert.equal(registrationAttempts, 2);
-  assert.equal(listeners.size, 1, "an invalid disposer must retain the same retry listener");
-  successfulRetryRef.callback();
-  assert.equal(registrationAttempts, 3);
-  assert.equal(registrations, 1);
-  assert.equal(registeredAction.id, "food-log");
-  assert.equal(listeners.size, 0, "successful registration must release the retry listener");
+  const registrations = [];
+  const unregistrations = [];
+  const createApi = (identity, { throwOnDispose = false } = {}) => ({
+    apiVersion: 1,
+    sourceApi: identity,
+    registerExternalAction(action) {
+      registrations.push({ identity, action });
+      let disposed = false;
+      return () => {
+        if (disposed) return;
+        disposed = true;
+        if (throwOnDispose) throw new Error("synthetic provider disposer failure");
+        unregistrations.push(identity);
+      };
+    },
+  });
+  const firstIdentity = {};
+  plugin.gcmIntegrationApi = createApi(firstIdentity);
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.equal(registrations.length, 1);
+  const firstAction = registrations[0].action;
+  assert.equal(firstAction.id, "food-log");
+  assert.equal(firstAction.display, "icon-only");
+  assert.equal(await firstAction.isVisible({ filePath: exactPath, placement: "bottom" }), true);
+  await firstAction.onClick({ filePath: exactPath, placement: "bottom" });
+  assert.equal(opened.at(-1).dailyNotePath, exactPath, "the clicked file must win over the other active split");
+
+  const secondIdentity = {};
+  plugin.gcmIntegrationApi = createApi(secondIdentity, { throwOnDispose: true });
+  plugin.refreshGcmFoodLogButtonRegistration();
+  assert.deepEqual(unregistrations, [firstIdentity]);
+  assert.equal(registrations.length, 2);
+  await assert.rejects(
+    () => firstAction.onClick({ filePath: exactPath, placement: "bottom" }),
+    /unavailable/i,
+    "a retained action from the withdrawn provider must be lifecycle-fenced",
+  );
+  await registrations[1].action.onClick({ filePath: otherPath, placement: "top" });
+  assert.equal(opened.at(-1).dailyNotePath, otherPath);
+
+  const thirdIdentity = {};
+  plugin.gcmIntegrationApi = createApi(thirdIdentity);
+  assert.doesNotThrow(() => plugin.refreshGcmFoodLogButtonRegistration());
+  assert.equal(registrations.length, 3, "a throwing stale disposer must not prevent replacement registration");
+  assert.deepEqual(unregistrations, [firstIdentity]);
 
   plugin.settings.showFoodLogButtonInGcm = false;
   plugin.refreshGcmFoodLogButtonRegistration();
-  assert.equal(unregistrations, 1);
-  assert.equal(listeners.size, 0);
-
-  plugin.settings.showFoodLogButtonInGcm = true;
-  delete fake.app.plugins.plugins["tps-global-context-menu"];
-  plugin.refreshGcmFoodLogButtonRegistration();
-  assert.equal(listeners.size, 1);
-  plugin.onunload();
-  assert.equal(listeners.size, 0, "plugin unload must release an armed retry listener");
+  assert.deepEqual(unregistrations, [firstIdentity, thirdIdentity]);
 });
 
-test("workout finish hands GCM an absolute Date instead of a schedule-parsed ISO string", async () => {
+test("workout timer integration persists exact ownership and retries cleanup after provider recovery", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -4420,17 +4474,915 @@ test("workout finish hands GCM an absolute Date instead of a schedule-parsed ISO
   const path = "Health/Workouts/Timer Date QA.md";
   fake.files.set(path, "---\nkind: workout\n---\n");
   const file = fake.app.vault.getAbstractFileByPath(path);
-  let receivedEnd = null;
-  plugin.getGcmApi = () => ({
-    timeTracking: {
-      stopActiveTimerForFile: async (_file, end) => { receivedEnd = end; },
+  const requests = [];
+  const sourceApi = {};
+  let saves = 0;
+  plugin.saveSettings = async () => {
+    saves += 1;
+  };
+  const api = {
+    apiVersion: 1,
+    sourceApi,
+    startNoteTimer: async (request) => {
+      requests.push({ type: "start", request });
+      return { status: "started" };
     },
+    stopNoteTimerForFile: async (request) => {
+      requests.push({ type: "stop", request });
+      return { status: "stopped" };
+    },
+  };
+  plugin.gcmIntegrationApi = api;
+
+  plugin.settings.activeWorkoutTitle = "Timer Date QA";
+  plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-timer-date-qa";
+  plugin.settings.activeWorkoutStartedAt = "2026-07-09T22:00:00.000Z";
+  const ownership = workoutTimerOwnership(plugin);
+  await plugin.startGcmWorkoutTimer(file, ownership);
+  plugin.gcmIntegrationApi = undefined;
+  await plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:58:57.086Z", ownership);
+
+  assert.deepEqual(requests, [{
+    type: "start",
+    request: {
+      path,
+      title: "Timer Date QA",
+      sessionId: "gcm-workout-timer-date-qa",
+      startedAt: "2026-07-09T22:00:00.000Z",
+    },
+  }]);
+  assert.deepEqual(plugin.settings.pendingGcmTimerCleanup, {
+    path,
+    sessionId: "gcm-workout-timer-date-qa",
+    endedAt: "2026-07-09T22:58:57.086Z",
   });
 
-  await plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:58:57.086Z");
+  plugin.gcmIntegrationApi = api;
+  await plugin.reconcilePendingGcmTimerCleanup();
+  assert.deepEqual(requests[1], {
+    type: "stop",
+    request: {
+      path,
+      sessionId: "gcm-workout-timer-date-qa",
+      endedAt: "2026-07-09T22:58:57.086Z",
+    },
+  });
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+  assert.equal(saves, 2, "the pending intent and its confirmed settlement are both persisted");
+});
 
-  assert.ok(receivedEnd instanceof Date);
-  assert.equal(receivedEnd.toISOString(), "2026-07-09T22:58:57.086Z");
+test("confirmed timer cleanup remains pending when settlement persistence fails", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Persistence Retry QA.md";
+  const sessionId = "gcm-workout-persistence-retry";
+  let timerActive = true;
+  let stopCalls = 0;
+  const sourceApi = {};
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi,
+    stopNoteTimerForFile: async (request) => {
+      assert.equal(request.sessionId, sessionId);
+      stopCalls += 1;
+      if (!timerActive) return { status: "not-running" };
+      timerActive = false;
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutGcmTimerId = sessionId;
+  const ownership = workoutTimerOwnership(plugin);
+  let saveCalls = 0;
+  plugin.saveSettings = async () => {
+    saveCalls += 1;
+    if (saveCalls === 2) throw new Error("synthetic settlement save failure");
+  };
+
+  await plugin.stopGcmWorkoutTimer(path, "2026-07-09T22:58:57.086Z", ownership);
+  assert.deepEqual(plugin.settings.pendingGcmTimerCleanup, {
+    path,
+    sessionId,
+    endedAt: "2026-07-09T22:58:57.086Z",
+  });
+
+  await plugin.reconcilePendingGcmTimerCleanup();
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+  assert.equal(stopCalls, 2, "the exact idempotent cleanup is retried after a failed save");
+  assert.equal(saveCalls, 3);
+});
+
+test("timer cleanup rejects unsafe paths and invalid end instants before persistence or provider effects", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  let providerCalls = 0;
+  let saveCalls = 0;
+  const sourceApi = {};
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi,
+    stopNoteTimerForFile: async () => {
+      providerCalls += 1;
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-invalid-cleanup";
+  plugin.saveSettings = async () => {
+    saveCalls += 1;
+  };
+
+  plugin.settings.activeWorkoutGcmTimerSkipped = true;
+  await plugin.stopGcmWorkoutTimer(
+    "Health/Workouts/Skipped.md",
+    "2026-07-09T22:58:57.086Z",
+    workoutTimerOwnership(plugin),
+  );
+  plugin.settings.activeWorkoutGcmTimerSkipped = false;
+
+  await assert.rejects(
+    plugin.stopGcmWorkoutTimer(
+      "../outside.md",
+      "2026-07-09T22:58:57.086Z",
+      workoutTimerOwnership(plugin),
+    ),
+    /safe Markdown target/i,
+  );
+  await assert.rejects(
+    plugin.stopGcmWorkoutTimer(
+      "Health/Workouts/Valid.md",
+      "not-a-date",
+      workoutTimerOwnership(plugin),
+    ),
+    /valid end instant/i,
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(saveCalls, 0);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("timer cleanup waits for Health's in-flight start before accepting not-running", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Start Stop Race QA.md";
+  fake.files.set(path, "---\nkind: workout\n---\n");
+  const file = fake.app.vault.getAbstractFileByPath(path);
+  const sessionId = "gcm-workout-start-stop-race";
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  let timerActive = false;
+  let stopCalls = 0;
+  const sourceApi = {};
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi,
+    startNoteTimer: async () => {
+      await startGate;
+      timerActive = true;
+      return { status: "started" };
+    },
+    stopNoteTimerForFile: async () => {
+      stopCalls += 1;
+      if (!timerActive) return { status: "not-running" };
+      timerActive = false;
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutTitle = "Start Stop Race QA";
+  plugin.settings.activeWorkoutGcmTimerId = sessionId;
+  plugin.settings.activeWorkoutStartedAt = "2026-07-09T22:00:00.000Z";
+  plugin.saveSettings = async () => {};
+  const ownership = workoutTimerOwnership(plugin);
+
+  const start = plugin.startGcmWorkoutTimer(file, ownership);
+  await new Promise((resolve) => setImmediate(resolve));
+  const stop = plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:58:57.086Z", ownership);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopCalls, 0);
+  releaseStart();
+  await Promise.all([start, stop]);
+  assert.equal(stopCalls, 1);
+  assert.equal(timerActive, false);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("a replacement GCM provider retries exact cleanup without waiting for the retired provider", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const cleanup = {
+    path: "Health/Workouts/Provider Replacement QA.md",
+    sessionId: "gcm-workout-provider-replacement",
+    endedAt: "2026-07-09T22:58:57.086Z",
+  };
+  plugin.settings.pendingGcmTimerCleanup = cleanup;
+  plugin.saveSettings = async () => {};
+  let releaseOld;
+  const oldGate = new Promise((resolve) => {
+    releaseOld = resolve;
+  });
+  let oldCalls = 0;
+  let newCalls = 0;
+  const oldSource = {};
+  const newSource = {};
+  const oldApi = {
+    apiVersion: 1,
+    sourceApi: oldSource,
+    stopNoteTimerForFile: async () => {
+      oldCalls += 1;
+      await oldGate;
+      return { status: "stopped" };
+    },
+  };
+  const newApi = {
+    apiVersion: 1,
+    sourceApi: newSource,
+    stopNoteTimerForFile: async () => {
+      newCalls += 1;
+      return { status: "stopped" };
+    },
+  };
+
+  plugin.setGcmIntegrationApi(oldApi);
+  const oldOperation = plugin.reconcilePendingGcmTimerCleanup();
+  await new Promise((resolve) => setImmediate(resolve));
+  plugin.setGcmIntegrationApi(newApi);
+  assert.equal(await oldOperation, "pending");
+  await plugin.reconcilePendingGcmTimerCleanup();
+  assert.equal(oldCalls, 1);
+  assert.equal(newCalls, 1);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+
+  releaseOld();
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("a replacement GCM provider preserves late-start uncertainty until exact cleanup settles", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Provider Start Replacement QA.md";
+  fake.files.set(path, "---\nkind: workout\n---\n");
+  const file = fake.app.vault.getAbstractFileByPath(path);
+  let releaseOld;
+  let signalOldStarted;
+  const oldStarted = new Promise((resolve) => {
+    signalOldStarted = resolve;
+  });
+  const oldGate = new Promise((resolve) => {
+    releaseOld = resolve;
+  });
+  const oldApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    startNoteTimer: async () => {
+      signalOldStarted();
+      await oldGate;
+      timerActive = true;
+      return { status: "started" };
+    },
+  };
+  let timerActive = false;
+  let newStopCalls = 0;
+  const newApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async () => {
+      newStopCalls += 1;
+      if (!timerActive) return { status: "not-running" };
+      timerActive = false;
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutId = "workout-provider-start-replacement";
+  plugin.settings.activeWorkoutTitle = "Provider Start Replacement QA";
+  plugin.settings.activeWorkoutStartedAt = "2026-07-09T22:00:00.000Z";
+  plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-provider-start-replacement";
+  plugin.saveSettings = async () => {};
+  const ownership = workoutTimerOwnership(plugin);
+  plugin.setGcmIntegrationApi(oldApi);
+
+  const start = plugin.startGcmWorkoutTimer(file, ownership);
+  await oldStarted;
+  plugin.setGcmIntegrationApi(newApi);
+  await start;
+
+  assert.equal(plugin.gcmTimerStartPromises.size, 0);
+  assert.equal(plugin.gcmTimerStartEffectPromises.size, 1);
+  await plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:30:00.000Z", ownership);
+  assert.equal(newStopCalls, 0, "not-running is unsafe while the retired start effect is unresolved");
+  assert.equal(plugin.settings.pendingGcmTimerCleanup?.sessionId, ownership.sessionId);
+  const effectSettled = plugin.gcmTimerStartEffectPromises.get(ownership.sessionId);
+
+  releaseOld();
+  await effectSettled;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(newStopCalls, 1);
+  assert.equal(timerActive, false);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+  assert.equal(plugin.gcmTimerStartEffectPromises.size, 0);
+});
+
+test("sequential workout starts refuse to replace persisted active ownership", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+
+  const firstPath = await plugin.startWorkout({
+    title: "First Ownership QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T22:00:00.000Z",
+    openFile: false,
+  });
+  const firstOwnership = plugin.captureActiveWorkoutLifecycleSnapshot();
+
+  await assert.rejects(
+    plugin.startWorkout({
+      title: "Second Ownership QA",
+      logTarget: "session-note",
+      startedAt: "2026-07-09T23:00:00.000Z",
+      openFile: false,
+    }),
+    /active workout already exists/i,
+  );
+
+  assert.equal(plugin.settings.activeWorkoutPath, firstPath);
+  assert.equal(plugin.settings.activeWorkoutId, firstOwnership.workoutId);
+  assert.equal(plugin.settings.activeWorkoutGcmTimerId, firstOwnership.sessionId);
+  assert.equal(fake.files.has("Health/Workouts/Second Ownership QA.md"), false);
+});
+
+test("concurrent workout starts serialize before planning and preserve the first owner", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  let releaseFirstPlan;
+  let signalFirstPlan;
+  let planCalls = 0;
+  const firstPlanEntered = new Promise((resolve) => {
+    signalFirstPlan = resolve;
+  });
+  const firstPlanGate = new Promise((resolve) => {
+    releaseFirstPlan = resolve;
+  });
+  plugin.resolveWorkoutPlanForStart = async () => {
+    planCalls += 1;
+    if (planCalls === 1) {
+      signalFirstPlan();
+      await firstPlanGate;
+    }
+    return null;
+  };
+
+  const first = plugin.startWorkout({
+    title: "Concurrent First QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T22:00:00.000Z",
+    openFile: false,
+  });
+  await firstPlanEntered;
+  const secondRejected = assert.rejects(
+    plugin.startWorkout({
+      title: "Concurrent Second QA",
+      logTarget: "session-note",
+      startedAt: "2026-07-09T23:00:00.000Z",
+      openFile: false,
+    }),
+    /active workout already exists/i,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(planCalls, 1);
+
+  releaseFirstPlan();
+  const firstPath = await first;
+  await secondRejected;
+
+  assert.equal(planCalls, 1, "the rejected start must not enter plan resolution");
+  assert.equal(plugin.settings.activeWorkoutPath, firstPath);
+  assert.equal(fake.files.has("Health/Workouts/Concurrent Second QA.md"), false);
+});
+
+test("finish waits for an overlapping start and stops the exact session that start persisted", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  let releaseProviderStart;
+  let signalProviderStart;
+  const providerStartEntered = new Promise((resolve) => {
+    signalProviderStart = resolve;
+  });
+  const providerStartGate = new Promise((resolve) => {
+    releaseProviderStart = resolve;
+  });
+  const requests = [];
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    startNoteTimer: async (request) => {
+      requests.push({ type: "start", request });
+      signalProviderStart();
+      await providerStartGate;
+      return { status: "started" };
+    },
+    stopNoteTimerForFile: async (request) => {
+      requests.push({ type: "stop", request });
+      return { status: "stopped" };
+    },
+  };
+
+  const start = plugin.startWorkout({
+    title: "Start Finish Ownership QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T22:00:00.000Z",
+    openFile: false,
+  });
+  await providerStartEntered;
+  const finish = plugin.finishWorkout({ endedAt: "2026-07-09T22:30:00.000Z" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests.map(({ type }) => type), ["start"]);
+
+  releaseProviderStart();
+  const workoutPath = await start;
+  await finish;
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].type, "stop");
+  assert.equal(requests[1].request.path, workoutPath);
+  assert.equal(requests[1].request.sessionId, requests[0].request.sessionId);
+  assert.equal(plugin.getActiveWorkoutState(), null);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("unload releases a hung workout start without allowing retired post-start effects", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  let releaseProviderStart;
+  let signalProviderStart;
+  const providerStartEntered = new Promise((resolve) => {
+    signalProviderStart = resolve;
+  });
+  const providerStartGate = new Promise((resolve) => {
+    releaseProviderStart = resolve;
+  });
+  plugin.setGcmIntegrationApi({
+    apiVersion: 1,
+    sourceApi: {},
+    startNoteTimer: async () => {
+      signalProviderStart();
+      await providerStartGate;
+      return { status: "started" };
+    },
+  });
+  let cacheCalls = 0;
+  let openCalls = 0;
+  plugin.cacheWorkoutFile = async () => {
+    cacheCalls += 1;
+  };
+  plugin.openWorkoutFile = async () => {
+    openCalls += 1;
+    return { requested: true, opened: true, route: "gcm" };
+  };
+  plugin.removeWorkoutActionBars = () => {};
+
+  const start = plugin.startWorkout({
+    title: "Unload Start QA",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T22:00:00.000Z",
+    openFile: true,
+  });
+  await providerStartEntered;
+  plugin.onunload();
+
+  await assert.rejects(start, /TPS Health is unavailable/i);
+  assert.equal(cacheCalls, 0);
+  assert.equal(openCalls, 0);
+  assert.equal(globalThis.__TPSHealthTestNotices.includes("Started workout"), false);
+  releaseProviderStart();
+});
+
+test("unload releases a hung workout finish before any completion mutation", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Unload Finish QA.md";
+  const startedAt = "2026-07-09T22:00:00.000Z";
+  const original = [
+    "---",
+    'kind: "workout"',
+    'status: "active"',
+    `startedAt: "${startedAt}"`,
+    'workoutId: "workout-unload-finish"',
+    "---",
+    "",
+    "Unchanged body",
+  ].join("\n");
+  fake.files.set(path, original);
+  plugin.settings.activeWorkoutPath = path;
+  plugin.settings.activeWorkoutId = "workout-unload-finish";
+  plugin.settings.activeWorkoutTarget = "session-note";
+  plugin.settings.activeWorkoutTitle = "Unload Finish QA";
+  plugin.settings.activeWorkoutStartedAt = startedAt;
+  plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-unload-finish";
+  let releaseProviderStop;
+  let signalProviderStop;
+  const providerStopEntered = new Promise((resolve) => {
+    signalProviderStop = resolve;
+  });
+  const providerStopGate = new Promise((resolve) => {
+    releaseProviderStop = resolve;
+  });
+  plugin.setGcmIntegrationApi({
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async () => {
+      signalProviderStop();
+      await providerStopGate;
+      return { status: "stopped" };
+    },
+  });
+  plugin.removeWorkoutActionBars = () => {};
+
+  const finish = plugin.finishWorkout({ endedAt: "2026-07-09T22:30:00.000Z" });
+  await providerStopEntered;
+  plugin.onunload();
+
+  await assert.rejects(finish, /TPS Health is unavailable/i);
+  assert.equal(fake.files.get(path), original);
+  assert.equal(plugin.settings.activeWorkoutId, "workout-unload-finish");
+  assert.equal(plugin.settings.pendingGcmTimerCleanup?.sessionId, "gcm-workout-unload-finish");
+  assert.equal(globalThis.__TPSHealthTestNotices.includes("Finished workout"), false);
+  releaseProviderStop();
+});
+
+test("save-layout-and-finish owns one transition and cannot finish a later workout", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutPlansFolder = "Health/Workout Plans";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  const firstPath = await plugin.startWorkout({
+    title: "Composite Workout A",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T22:00:00.000Z",
+    openFile: false,
+  });
+  const firstWorkoutId = plugin.settings.activeWorkoutId;
+  let releaseTemplate;
+  let signalTemplate;
+  const templateEntered = new Promise((resolve) => {
+    signalTemplate = resolve;
+  });
+  const templateGate = new Promise((resolve) => {
+    releaseTemplate = resolve;
+  });
+  plugin.createWorkoutTemplateFromState = async () => {
+    signalTemplate();
+    await templateGate;
+    return "Health/Workout Plans/Composite A.md";
+  };
+
+  const composite = plugin.finishWorkoutAndSaveTemplate({ title: "Composite A" });
+  await templateEntered;
+  const competingFinish = plugin.finishWorkout({ endedAt: "2026-07-09T22:30:00.000Z" });
+  const secondStart = plugin.startWorkout({
+    title: "Composite Workout B",
+    logTarget: "session-note",
+    startedAt: "2026-07-09T23:00:00.000Z",
+    openFile: false,
+  });
+  releaseTemplate();
+
+  assert.equal(await composite, "Health/Workout Plans/Composite A.md");
+  await competingFinish;
+  const secondPath = await secondStart;
+
+  assert.equal(parseFrontmatter(fake.files.get(firstPath)).status, "complete");
+  assert.equal(parseFrontmatter(fake.files.get(firstPath)).workoutId, firstWorkoutId);
+  assert.equal(plugin.settings.activeWorkoutPath, secondPath);
+  assert.equal(plugin.settings.activeWorkoutTitle, "Composite Workout B");
+});
+
+test("finish rejects invalid, pre-start, and excessive-future instants without clearing timer ownership", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const invalidInstants = [
+    "not-a-date",
+    "2026-07-09T21:59:59.999Z",
+    new Date(Date.now() + (5 * 60 * 1000) + 1_000).toISOString(),
+  ];
+
+  for (const endedAt of invalidInstants) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings.activeWorkoutPath = "Health/Workouts/Missing Finish QA.md";
+    plugin.settings.activeWorkoutId = "workout-finish-validation";
+    plugin.settings.activeWorkoutStartedAt = "2026-07-09T22:00:00.000Z";
+    plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-finish-validation";
+    await assert.rejects(plugin.finishWorkout({ endedAt }), /valid end instant|after workout start|far in the future/i);
+    assert.equal(plugin.settings.activeWorkoutId, "workout-finish-validation");
+    assert.equal(plugin.settings.activeWorkoutGcmTimerId, "gcm-workout-finish-validation");
+    assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+  }
+});
+
+test("provider invalid-end keeps exact cleanup and active ownership retryable", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Invalid End Retry QA.md";
+  const sessionId = "gcm-workout-invalid-end-retry";
+  const sourceApi = {};
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi,
+    stopNoteTimerForFile: async () => ({ status: "invalid-end" }),
+  };
+  plugin.settings.activeWorkoutGcmTimerId = sessionId;
+  plugin.saveSettings = async () => {};
+
+  await assert.rejects(
+    plugin.stopGcmWorkoutTimer(
+      path,
+      "2026-07-09T22:58:57.086Z",
+      workoutTimerOwnership(plugin),
+    ),
+    /must follow the timer start/i,
+  );
+  assert.deepEqual(plugin.settings.pendingGcmTimerCleanup, {
+    path,
+    sessionId,
+    endedAt: "2026-07-09T22:58:57.086Z",
+  });
+  assert.equal(plugin.settings.activeWorkoutGcmTimerId, sessionId);
+});
+
+test("provider invalid-end is authoritative before any workout completion mutation", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Invalid End Atomic QA.md";
+  const startedAt = "2026-07-09T22:00:00.000Z";
+  const original = [
+    "---",
+    'kind: "workout"',
+    'status: "active"',
+    `startedAt: "${startedAt}"`,
+    'workoutId: "workout-invalid-end-atomic"',
+    "---",
+    "",
+    "Unchanged body",
+  ].join("\n");
+  fake.files.set(path, original);
+  plugin.settings.activeWorkoutPath = path;
+  plugin.settings.activeWorkoutId = "workout-invalid-end-atomic";
+  plugin.settings.activeWorkoutTarget = "session-note";
+  plugin.settings.activeWorkoutStartedAt = startedAt;
+  plugin.settings.activeWorkoutGcmTimerId = "gcm-workout-invalid-end-atomic";
+  plugin.saveSettings = async () => {};
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async () => ({ status: "invalid-end" }),
+  };
+  const writesBefore = fake.writes.length;
+
+  await assert.rejects(
+    plugin.finishWorkout({ endedAt: "2026-07-09T22:30:00.000Z" }),
+    /must follow the timer start/i,
+  );
+
+  assert.equal(fake.files.get(path), original);
+  assert.equal(fake.writes.length, writesBefore);
+  assert.equal(plugin.settings.activeWorkoutId, "workout-invalid-end-atomic");
+  assert.equal(plugin.settings.activeWorkoutGcmTimerId, "gcm-workout-invalid-end-atomic");
+});
+
+test("pre-upgrade workout cleanup without a session ID performs no unowned provider effect", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  let stopCalls = 0;
+  plugin.settings.activeWorkoutGcmTimerId = "";
+  plugin.settings.activeWorkoutGcmTimerSkipped = false;
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async () => {
+      stopCalls += 1;
+      return { status: "stopped" };
+    },
+  };
+
+  await plugin.stopGcmWorkoutTimer(
+    "Health/Workouts/Pre Upgrade.md",
+    "2026-07-09T22:30:00.000Z",
+    workoutTimerOwnership(plugin),
+  );
+
+  assert.equal(stopCalls, 0);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("queued settings persistence includes cleanup intent before the external stop begins", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Queued Persistence QA.md";
+  const sessionId = "gcm-workout-queued-persistence";
+  const endedAt = "2026-07-09T22:30:00.000Z";
+  const payloads = [];
+  const releases = [];
+  plugin.saveData = async (payload) => {
+    payloads.push(structuredClone(payload));
+    if (payloads.length <= 2) {
+      await new Promise((resolve) => releases.push(resolve));
+    }
+  };
+  let stopCalls = 0;
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async () => {
+      stopCalls += 1;
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutGcmTimerId = sessionId;
+  plugin.settings.activeWorkoutTitle = "Queued Persistence QA";
+  const ownership = workoutTimerOwnership(plugin);
+
+  const firstSave = plugin.saveSettings();
+  await new Promise((resolve) => setImmediate(resolve));
+  const cleanup = plugin.stopGcmWorkoutTimer(path, endedAt, ownership);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(payloads.length, 1);
+  assert.equal(stopCalls, 0);
+
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(payloads[1].pendingGcmTimerCleanup, { path, sessionId, endedAt });
+  assert.equal(stopCalls, 0, "the provider must wait for the cleanup snapshot itself");
+
+  releases.shift()();
+  await Promise.all([firstSave, cleanup]);
+  assert.equal(stopCalls, 1);
+  assert.equal(payloads.length, 3, "settlement is persisted in a later ordered snapshot");
+  assert.equal(payloads[2].pendingGcmTimerCleanup, null);
+});
+
+test("a corrected cleanup retries immediately on the same provider after an older operation settles", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Corrected Cleanup QA.md";
+  const sessionId = "gcm-workout-corrected-cleanup";
+  const oldEndedAt = "2026-07-09T22:10:00.000Z";
+  const newEndedAt = "2026-07-09T22:30:00.000Z";
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const requests = [];
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    stopNoteTimerForFile: async (request) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        await firstGate;
+        return { status: "invalid-end" };
+      }
+      return { status: "stopped" };
+    },
+  };
+  plugin.settings.activeWorkoutGcmTimerId = sessionId;
+  plugin.settings.pendingGcmTimerCleanup = { path, sessionId, endedAt: oldEndedAt };
+  plugin.saveSettings = async () => {};
+
+  const oldCleanup = plugin.reconcilePendingGcmTimerCleanup();
+  await new Promise((resolve) => setImmediate(resolve));
+  const correctedCleanup = plugin.stopGcmWorkoutTimer(
+    path,
+    newEndedAt,
+    workoutTimerOwnership(plugin),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+
+  releaseFirst();
+  assert.equal(await oldCleanup, "invalid-end");
+  await correctedCleanup;
+  assert.deepEqual(requests.map((request) => request.endedAt), [oldEndedAt, newEndedAt]);
+  assert.equal(plugin.settings.pendingGcmTimerCleanup, null);
+});
+
+test("backdated workout starts preserve the historical timer start through the public contract", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  const requests = [];
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    startNoteTimer: async (request) => {
+      requests.push(request);
+      return { status: "started" };
+    },
+  };
+  const startedAt = "2026-07-06T10:00:00.000Z";
+
+  await plugin.startWorkout({
+    title: "Historical Timer QA",
+    logTarget: "session-note",
+    startedAt,
+    openFile: false,
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].startedAt, startedAt);
+  assert.equal(requests[0].sessionId, plugin.settings.activeWorkoutGcmTimerId);
+  assert.equal(plugin.settings.activeWorkoutGcmTimerSkipped, false);
+});
+
+test("workout start rechecks cleanup ownership after note creation before deciding to skip timing", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.workoutsFolder = "Health/Workouts";
+  plugin.settings.workoutLogTarget = "session-note";
+  plugin.settings.appendWorkoutSummaryToDailyNote = false;
+  plugin.settings.pendingGcmTimerCleanup = {
+    path: "Health/Workouts/Old.md",
+    sessionId: "gcm-old",
+    endedAt: "2026-07-09T22:30:00.000Z",
+  };
+  let reconciliations = 0;
+  plugin.reconcilePendingGcmTimerCleanup = async () => {
+    reconciliations += 1;
+    if (reconciliations >= 2) plugin.settings.pendingGcmTimerCleanup = null;
+    return plugin.settings.pendingGcmTimerCleanup ? "pending" : "settled";
+  };
+  let startCalls = 0;
+  plugin.gcmIntegrationApi = {
+    apiVersion: 1,
+    sourceApi: {},
+    startNoteTimer: async () => {
+      startCalls += 1;
+      return { status: "started" };
+    },
+  };
+
+  await plugin.startWorkout({
+    title: "Recovered Ownership QA",
+    logTarget: "session-note",
+    openFile: false,
+  });
+
+  assert.equal(reconciliations, 2);
+  assert.equal(startCalls, 1);
+  assert.equal(plugin.settings.activeWorkoutGcmTimerSkipped, false);
+  assert.ok(plugin.settings.activeWorkoutGcmTimerId);
 });
 
 test("workout set line uses Dataview fields for reusable exercise and set groups", () => {

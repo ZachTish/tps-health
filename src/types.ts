@@ -26,6 +26,12 @@ export interface HealthGoal {
   color?: string;
 }
 
+export interface PendingGcmTimerCleanup {
+  path: string;
+  sessionId: string;
+  endedAt: string;
+}
+
 export interface TPSHealthSettings {
   dailyNoteFormat: string;
   dailyNoteFolder: string;
@@ -70,10 +76,13 @@ export interface TPSHealthSettings {
   activeWorkoutPlanPath: string;
   activeWorkoutTitle: string;
   activeWorkoutStartedAt: string;
+  activeWorkoutGcmTimerId: string;
+  activeWorkoutGcmTimerSkipped: boolean;
   activeWorkoutCooldownDays: number;
   lastSetEndedAt: string;
   activeWorkoutSetCount: number;
   pendingFoodLogDraft: PendingFoodLogDraft | null;
+  pendingGcmTimerCleanup: PendingGcmTimerCleanup | null;
   enableLogging: boolean;
 }
 
@@ -303,10 +312,13 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   activeWorkoutPlanPath: "",
   activeWorkoutTitle: "",
   activeWorkoutStartedAt: "",
+  activeWorkoutGcmTimerId: "",
+  activeWorkoutGcmTimerSkipped: false,
   activeWorkoutCooldownDays: 0,
   lastSetEndedAt: "",
   activeWorkoutSetCount: 0,
   pendingFoodLogDraft: null,
+  pendingGcmTimerCleanup: null,
   enableLogging: false,
 };
 

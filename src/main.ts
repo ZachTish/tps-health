@@ -13,6 +13,12 @@ import { createTPSHealthHomeActionProvider, toTPSHealthHomeDateContext } from ".
 import { TPSHealthSettingTab } from "./settings";
 import { TPSAiGatewayClient } from "./tps-ai-gateway-client";
 import type { TPSAiGatewayApiSnapshot } from "./tps-ai-gateway-contract";
+import { TPSGcmIntegrationClient } from "./tps-gcm-integration-client";
+import {
+  parseTPSGcmStopNoteTimerRequest,
+  TPS_GCM_TIMER_END_FUTURE_SKEW_MS,
+  type TPSGcmIntegrationApiSnapshot,
+} from "./tps-gcm-integration-contract";
 import {
   createTPSHealthUiServiceDescriptor,
   parseTPSHealthUiServiceRequest,
@@ -89,6 +95,29 @@ interface WorkoutOpenResult {
 }
 
 type DescribeReviewOutcome = "amended" | "unchanged" | "unavailable";
+type GcmTimerCleanupOutcome = "settled" | "pending" | "invalid-end";
+interface GcmTimerCleanupOperation {
+  readonly cleanupKey: string;
+  readonly promise: Promise<GcmTimerCleanupOutcome>;
+}
+interface GcmWorkoutTimerOwnership {
+  readonly workoutId: string;
+  readonly title: string;
+  readonly startedAt: string;
+  readonly sessionId: string;
+  readonly skipped: boolean;
+}
+interface ActiveWorkoutLifecycleSnapshot extends GcmWorkoutTimerOwnership {
+  readonly path: string;
+  readonly dailyNotePath: string;
+  readonly planPath: string;
+  readonly cooldownDays: number;
+  readonly setCount: number;
+}
+interface GcmProviderChangeObserver {
+  readonly promise: Promise<void>;
+  cancel(): void;
+}
 
 const DESCRIBE_PLANNED_FOOD_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -283,14 +312,12 @@ export function restoredFoodLogDraftConsumedDateInput(
 }
 
 export default class TPSHealthPlugin extends Plugin {
-  settings: TPSHealthSettings = DEFAULT_SETTINGS;
+  settings: TPSHealthSettings = cloneSettingsSnapshot(DEFAULT_SETTINGS);
   private settingsSavePromise: Promise<void> | null = null;
-  private settingsSavePending = false;
   private lastSavedSettingsSnapshot: TPSHealthSettings | null = null;
   private retainedLegacyUsdaApiKey = "";
   api!: TPSHealthApi;
   private unregisterGcmFoodLogButton: (() => void) | null = null;
-  private gcmFoodLogButtonRetryRef: EventRef | null = null;
   private lastFoodLogOpenAt = 0;
   private workoutFileSnapshots = new Map<string, string>();
   private processingWorkoutFiles = new Set<string>();
@@ -305,6 +332,13 @@ export default class TPSHealthPlugin extends Plugin {
   private usdaNotifiedCredentialErrors = new Set<string>();
   private usdaRequestQueue: Promise<void> = Promise.resolve();
   private aiGatewayClient?: TPSAiGatewayClient;
+  private gcmIntegrationClient?: TPSGcmIntegrationClient;
+  private gcmIntegrationApi?: Readonly<TPSGcmIntegrationApiSnapshot>;
+  private gcmTimerStartPromises = new Map<string, Promise<void>>();
+  private gcmTimerStartEffectPromises = new Map<string, Promise<void>>();
+  private pendingGcmTimerCleanupPromises = new Map<object, GcmTimerCleanupOperation>();
+  private gcmProviderChangeWaiters = new Set<() => void>();
+  private workoutLifecycleTail: Promise<void> = Promise.resolve();
   private lifecycleEpoch = 0;
   private healthUiDescriptor?: Readonly<TPSHealthUiServiceDescriptor>;
   private healthUiRequestRef: EventRef | null = null;
@@ -321,6 +355,11 @@ export default class TPSHealthPlugin extends Plugin {
   async onload() {
     const lifecycleEpoch = ++this.lifecycleEpoch;
     this.withdrawHealthUiService("reload");
+    this.disposeGcmFoodLogButtonRegistration("reload");
+    const previousGcmIntegrationClient = this.gcmIntegrationClient;
+    this.gcmIntegrationClient = undefined;
+    this.setGcmIntegrationApi(undefined);
+    previousGcmIntegrationClient?.dispose();
     const previousAiGatewayClient = this.aiGatewayClient;
     this.aiGatewayClient = undefined;
     previousAiGatewayClient?.dispose();
@@ -416,6 +455,38 @@ export default class TPSHealthPlugin extends Plugin {
       || this.aiGatewayClient !== aiGatewayClient) {
       aiGatewayClient.dispose();
       if (this.aiGatewayClient === aiGatewayClient) this.aiGatewayClient = undefined;
+      return;
+    }
+
+    const gcmIntegrationClient = new TPSGcmIntegrationClient(this.app, this.manifest.id);
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
+    this.gcmIntegrationClient = gcmIntegrationClient;
+    try {
+      gcmIntegrationClient.start(
+        (eventRef) => this.registerEvent(eventRef),
+        (api) => {
+          if (!this.isCurrentLifecycle(lifecycleEpoch)
+            || this.gcmIntegrationClient !== gcmIntegrationClient) return;
+          this.setGcmIntegrationApi(api);
+          logger.flow("GCM", "integration-availability:changed", {
+            available: !!api,
+            apiVersion: api?.apiVersion ?? null,
+          });
+          this.refreshGcmFoodLogButtonRegistration();
+          if (api) void this.reconcilePendingGcmTimerCleanup();
+        },
+      );
+    } catch (error) {
+      gcmIntegrationClient.dispose();
+      if (this.gcmIntegrationClient === gcmIntegrationClient) this.gcmIntegrationClient = undefined;
+      this.setGcmIntegrationApi(undefined);
+      throw error;
+    }
+    if (!this.isCurrentLifecycle(lifecycleEpoch)
+      || this.gcmIntegrationClient !== gcmIntegrationClient) {
+      gcmIntegrationClient.dispose();
+      if (this.gcmIntegrationClient === gcmIntegrationClient) this.gcmIntegrationClient = undefined;
+      this.setGcmIntegrationApi(undefined);
       return;
     }
 
@@ -532,19 +603,15 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.registerWorkoutTaskCompletionTracking();
     this.refreshGcmFoodLogButtonRegistration();
-    this.registerGcmFoodLogButtonTapFallback();
     this.registerInlineFoodLogMenuHandler();
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
-      this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
     }));
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
-      this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
       if (file instanceof TFile) void this.compactVisibleFoodLogFields(file);
     }));
     this.registerEvent(this.app.workspace.on("layout-change", () => {
-      this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
     }));
     const activeFile = this.app.workspace.getActiveFile();
@@ -564,6 +631,34 @@ export default class TPSHealthPlugin extends Plugin {
 
   private isCurrentLifecycle(lifecycleEpoch: number): boolean {
     return lifecycleEpoch === this.lifecycleEpoch;
+  }
+
+  private runWorkoutLifecycleTransition<Result>(
+    operation: (assertCurrent: () => void) => Promise<Result>,
+  ): Promise<Result> {
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const assertCurrent = () => {
+      if (!this.isCurrentLifecycle(lifecycleEpoch)) {
+        throw new Error("TPS Health is unavailable.");
+      }
+    };
+    const result = this.workoutLifecycleTail
+      .catch(() => undefined)
+      .then(async () => {
+        assertCurrent();
+        return operation(assertCurrent);
+      });
+    this.workoutLifecycleTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async awaitWorkoutLifecycle<Result>(
+    operation: Promise<Result>,
+    assertCurrent: () => void,
+  ): Promise<Result> {
+    const result = await operation;
+    assertCurrent();
+    return result;
   }
 
   private createLifecycleGuard(additional?: () => void): () => void {
@@ -816,19 +911,14 @@ export default class TPSHealthPlugin extends Plugin {
     return operation;
   }
 
-  async saveSettings() {
+  async saveSettings(): Promise<void> {
     this.settings = normalizeTPSHealthSettings(this.settings);
     logger.setLoggingEnabled(this.settings.enableLogging);
-    if (this.settingsSavePromise) {
-      this.settingsSavePending = true;
-      logger.flow("Settings", "save:queued");
-      await this.settingsSavePromise;
-      return;
-    }
-
-    do {
-      this.settingsSavePending = false;
-      const snapshot = JSON.parse(JSON.stringify(this.settings));
+    const snapshot = JSON.parse(JSON.stringify(this.settings));
+    const persistencePayload = settingsPersistencePayload(snapshot, this.retainedLegacyUsdaApiKey);
+    const prior = this.settingsSavePromise;
+    if (prior) logger.flow("Settings", "save:queued");
+    const operation = (prior ?? Promise.resolve()).catch(() => undefined).then(async () => {
       const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, snapshot);
       logger.flow("Settings", "save:start", {
         changedKeys,
@@ -839,13 +929,11 @@ export default class TPSHealthPlugin extends Plugin {
         activeWorkoutPath: snapshot.activeWorkoutPath || "",
         activeWorkoutSetCount: snapshot.activeWorkoutSetCount || 0,
       });
-      const persistencePayload = settingsPersistencePayload(snapshot, this.retainedLegacyUsdaApiKey);
       if (this.retainedLegacyUsdaApiKey) {
         logger.flowWarn("Settings", "save:retaining-legacy-usda-key", { reason: "migration-retry-required" });
       }
-      this.settingsSavePromise = this.saveData(persistencePayload);
       try {
-        await this.settingsSavePromise;
+        await this.saveData(persistencePayload);
         this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(snapshot);
         logger.flow("Settings", "save:done", {
           changedKeys,
@@ -863,10 +951,14 @@ export default class TPSHealthPlugin extends Plugin {
           activeWorkoutSetCount: snapshot.activeWorkoutSetCount || 0,
         });
         throw error;
-      } finally {
-        this.settingsSavePromise = null;
       }
-    } while (this.settingsSavePending);
+    });
+    this.settingsSavePromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.settingsSavePromise === operation) this.settingsSavePromise = null;
+    }
   }
 
   async updateBuiltInHealthGoalTarget(
@@ -883,87 +975,178 @@ export default class TPSHealthPlugin extends Plugin {
     this.lifecycleEpoch += 1;
     this.withdrawHealthUiService("unload");
     logger.flow("Lifecycle", "unload");
+    this.disposeGcmFoodLogButtonRegistration("unload");
+    const gcmIntegrationClient = this.gcmIntegrationClient;
+    this.gcmIntegrationClient = undefined;
+    this.setGcmIntegrationApi(undefined);
+    gcmIntegrationClient?.dispose();
     const aiGatewayClient = this.aiGatewayClient;
     this.aiGatewayClient = undefined;
     aiGatewayClient?.dispose();
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
     this.removeWorkoutActionBars();
-    this.unregisterGcmFoodLogButton?.();
-    this.unregisterGcmFoodLogButton = null;
-    this.clearGcmFoodLogButtonRetry();
     if ((this.app as any).tpsHealth === this.api) delete (this.app as any).tpsHealth;
   }
 
   refreshGcmFoodLogButtonRegistration(): void {
-    this.unregisterGcmFoodLogButton?.();
-    this.unregisterGcmFoodLogButton = null;
+    this.disposeGcmFoodLogButtonRegistration("refresh");
     if (!this.settings.showFoodLogButtonInGcm) {
-      this.clearGcmFoodLogButtonRetry();
       logger.flow("GCM", "food-log-action:disabled");
-      this.scheduleGcmMenuRefresh();
       return;
     }
 
-    const gcmApi = this.getGcmApi();
-    const externalActions = gcmApi?.externalActions;
-    const register = externalActions?.register;
-    if (externalActions?.version !== 1 || typeof register !== "function") {
-      logger.flowWarn("GCM", "food-log-action:register-unavailable", { apiVersion: externalActions?.version ?? null });
-      this.ensureGcmFoodLogButtonRetry();
+    const api = this.gcmIntegrationApi;
+    if (!api) {
+      logger.flow("GCM", "food-log-action:register-unavailable");
       return;
     }
 
-    let unregister: unknown;
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const assertCurrent = () => this.assertGcmIntegrationApiCurrent(lifecycleEpoch, api);
+    let unregister: (() => void) | undefined;
     try {
-      unregister = register({
+      unregister = api.registerExternalAction({
         id: "food-log",
         pluginId: this.manifest.id,
         order: 15,
         icon: "apple",
         label: "Log food",
+        display: "icon-only",
         title: "Log food",
-        isVisible: async ({ file }: { file: TFile }) => Boolean(await this.getDailyNoteDateContext(file)),
-        onClick: async ({ file }: { file: TFile }) => {
+        isVisible: async ({ filePath }) => {
+          assertCurrent();
+          const file = this.app.vault.getAbstractFileByPath(filePath);
+          if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") return false;
+          const visible = Boolean(await this.getDailyNoteDateContext(file));
+          assertCurrent();
+          return visible;
+        },
+        onClick: async ({ filePath }) => {
+          assertCurrent();
+          const file = this.app.vault.getAbstractFileByPath(filePath);
+          if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
+            throw new Error("The selected Daily Note is unavailable. Refresh the view and try again.");
+          }
           const dateContext = await this.getDailyNoteDateContext(file);
+          assertCurrent();
           if (!dateContext) {
             logger.flowWarn("GCM", "food-log-action:not-daily-note", await this.summarizeDailyNoteDateContext(file, dateContext));
             new Notice("Food logging is only available from daily notes.");
-            this.scheduleGcmMenuRefresh();
             return;
           }
           logger.flow("GCM", "food-log-action:click", { path: file.path, ...summarizeDateContext(dateContext) });
-          this.openFoodSearchModal(null, dateContext);
+          this.openFoodSearchModal(null, dateContext, assertCurrent);
         },
       });
+      assertCurrent();
     } catch (error) {
+      try {
+        unregister?.();
+      } catch {
+        // The registration failure remains authoritative.
+      }
       logger.flowWarn("GCM", "food-log-action:register-failed", { error: logger.errorSummary(error) });
-      this.ensureGcmFoodLogButtonRetry();
       return;
     }
-    if (typeof unregister !== "function") {
-      logger.flowWarn("GCM", "food-log-action:register-invalid-disposer");
-      this.ensureGcmFoodLogButtonRetry();
-      return;
-    }
-    this.unregisterGcmFoodLogButton = unregister as () => void;
-    this.clearGcmFoodLogButtonRetry();
+    this.unregisterGcmFoodLogButton = unregister;
     logger.flow("GCM", "food-log-action:registered");
-    this.scheduleGcmMenuRefresh();
   }
 
-  private ensureGcmFoodLogButtonRetry(): void {
-    if (this.gcmFoodLogButtonRetryRef) return;
-    this.gcmFoodLogButtonRetryRef = this.app.workspace.on("layout-change", () => {
-      if (!this.unregisterGcmFoodLogButton && this.settings.showFoodLogButtonInGcm) this.refreshGcmFoodLogButtonRegistration();
+  private disposeGcmFoodLogButtonRegistration(reason: "refresh" | "reload" | "unload"): void {
+    const unregister = this.unregisterGcmFoodLogButton;
+    this.unregisterGcmFoodLogButton = null;
+    if (!unregister) return;
+    try {
+      unregister();
+    } catch (error) {
+      logger.flowWarn("GCM", "food-log-action:unregister-failed", {
+        reason,
+        error: logger.errorSummary(error),
+      });
+    }
+  }
+
+  private assertGcmIntegrationApiCurrent(
+    lifecycleEpoch: number,
+    api: Readonly<TPSGcmIntegrationApiSnapshot>,
+  ): void {
+    if (!this.isCurrentLifecycle(lifecycleEpoch)
+      || this.gcmIntegrationApi?.sourceApi !== api.sourceApi) {
+      throw new Error("TPS GCM Integration API is unavailable.");
+    }
+  }
+
+  private setGcmIntegrationApi(api: Readonly<TPSGcmIntegrationApiSnapshot> | undefined): void {
+    const previousSourceApi = this.gcmIntegrationApi?.sourceApi;
+    this.gcmIntegrationApi = api;
+    if (previousSourceApi === api?.sourceApi) return;
+    const waiters = [...this.gcmProviderChangeWaiters];
+    this.gcmProviderChangeWaiters.clear();
+    for (const notify of waiters) {
+      try {
+        notify();
+      } catch {
+        // Provider replacement must release every waiter even if one observer misbehaves.
+      }
+    }
+  }
+
+  private observeGcmProviderChange(
+    api: Readonly<TPSGcmIntegrationApiSnapshot>,
+  ): GcmProviderChangeObserver {
+    if (this.gcmIntegrationApi?.sourceApi !== api.sourceApi) {
+      return { promise: Promise.resolve(), cancel() {} };
+    }
+    let active = true;
+    let resolveChange!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolveChange = resolve;
     });
-    logger.flow("GCM", "food-log-action:register-retry-armed");
+    const notify = () => {
+      if (!active) return;
+      active = false;
+      this.gcmProviderChangeWaiters.delete(notify);
+      resolveChange();
+    };
+    this.gcmProviderChangeWaiters.add(notify);
+    if (this.gcmIntegrationApi?.sourceApi !== api.sourceApi) notify();
+    return {
+      promise,
+      cancel: () => {
+        if (!active) return;
+        active = false;
+        this.gcmProviderChangeWaiters.delete(notify);
+      },
+    };
   }
 
-  private clearGcmFoodLogButtonRetry(): void {
-    if (!this.gcmFoodLogButtonRetryRef) return;
-    this.app.workspace.offref(this.gcmFoodLogButtonRetryRef);
-    this.gcmFoodLogButtonRetryRef = null;
-    logger.flow("GCM", "food-log-action:register-retry-cleared");
+  private async runGcmProviderOperation<Result>(
+    api: Readonly<TPSGcmIntegrationApiSnapshot>,
+    operation: () => Promise<Result>,
+  ): Promise<
+    | { readonly status: "completed"; readonly value: Result }
+    | { readonly status: "provider-changed" }
+  > {
+    return this.runGcmProviderPromise(api, Promise.resolve().then(operation));
+  }
+
+  private async runGcmProviderPromise<Result>(
+    api: Readonly<TPSGcmIntegrationApiSnapshot>,
+    providerPromise: Promise<Result>,
+  ): Promise<
+    | { readonly status: "completed"; readonly value: Result }
+    | { readonly status: "provider-changed" }
+  > {
+    const observer = this.observeGcmProviderChange(api);
+    const completed = providerPromise.then((value) => ({ status: "completed", value }) as const);
+    try {
+      return await Promise.race([
+        completed,
+        observer.promise.then(() => ({ status: "provider-changed" }) as const),
+      ]);
+    } finally {
+      observer.cancel();
+    }
   }
 
   private openFoodSearchModal(
@@ -1495,25 +1678,6 @@ export default class TPSHealthPlugin extends Plugin {
     return this.getDailyNoteDateContext(file);
   }
 
-  private registerGcmFoodLogButtonTapFallback(): void {
-    const handler = async (event: PointerEvent | MouseEvent) => {
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      const button = target?.closest<HTMLElement>('[data-tps-gcm-external-action-id="tps-health:food-log"]');
-      if (!button || button.hasClass("tps-health-gcm-hidden")) return;
-      const dateContext = await this.getActiveDailyNoteDateContext();
-      if (!dateContext) {
-        logger.flowWarn("GCM", "food-log-action:fallback-not-daily-note", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      logger.flow("GCM", "food-log-action:fallback-click", summarizeDateContext(dateContext));
-      this.openFoodSearchModal(null, dateContext);
-    };
-    document.addEventListener("pointerdown", handler, { capture: true });
-    this.register(() => document.removeEventListener("pointerdown", handler, { capture: true } as AddEventListenerOptions));
-  }
-
   private registerInlineFoodLogMenuHandler(): void {
     const handler = async (event: MouseEvent) => {
       const target = event.target instanceof HTMLElement ? event.target : null;
@@ -1725,14 +1889,28 @@ export default class TPSHealthPlugin extends Plugin {
     return entry;
   }
 
-  async startWorkout(input: StartWorkoutInput = {}): Promise<string> {
-    const startedAt = input.startedAt || isoNow();
+  startWorkout(input: StartWorkoutInput = {}): Promise<string> {
+    return this.runWorkoutLifecycleTransition((assertCurrent) => (
+      this.performStartWorkout(input, assertCurrent)
+    ));
+  }
+
+  private async performStartWorkout(input: StartWorkoutInput, assertCurrent: () => void): Promise<string> {
+    assertCurrent();
+    const activeWorkout = this.captureActiveWorkoutLifecycleSnapshot();
+    if (activeWorkout) {
+      logger.flowWarn("Workout", "start:active-workout-exists", activeWorkout);
+      new Notice("Finish the active workout before starting another one.");
+      throw new Error("An active workout already exists.");
+    }
+    await this.awaitWorkoutLifecycle(this.reconcilePendingGcmTimerCleanup(), assertCurrent);
+    const startedAt = canonicalWorkoutStartInstant(input.startedAt || isoNow());
     const requestedDailyNotePath = String(input.dailyNotePath || "").trim();
     const explicitDailyNotePath = matchingExplicitDailyNotePath(requestedDailyNotePath, input.dailyNoteDate, startedAt);
     const contextPathReleased = !!requestedDailyNotePath && !explicitDailyNotePath;
     const explicitDailyFile = this.resolveExplicitDailyNoteFile(explicitDailyNotePath, "workout-start");
     const dailyNoteDate = contextPathReleased ? startedAt : input.dailyNoteDate || startedAt;
-    const plan = await this.resolveWorkoutPlanForStart(input);
+    const plan = await this.awaitWorkoutLifecycle(this.resolveWorkoutPlanForStart(input), assertCurrent);
     const title = input.title || `${plan?.name || "Workout"} ${window.moment(startedAt).format("YYYY-MM-DD HH.mm")}`;
     const cooldownDays = input.cooldownDays ?? plan?.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
     const logTarget = normalizeWorkoutLogTarget(input.logTarget || this.settings.workoutLogTarget);
@@ -1750,43 +1928,62 @@ export default class TPSHealthPlugin extends Plugin {
     let path = "";
     let dailyNotePath = "";
     if (logTarget === "session-note" || logTarget === "both") {
-      path = await this.uniquePath(`${this.settings.workoutsFolder}/${title}.md`);
-      await this.ensureFolder(this.settings.workoutsFolder);
-      const template = await this.readWorkoutTemplate();
+      path = await this.awaitWorkoutLifecycle(
+        this.uniquePath(`${this.settings.workoutsFolder}/${title}.md`),
+        assertCurrent,
+      );
+      await this.awaitWorkoutLifecycle(this.ensureFolder(this.settings.workoutsFolder), assertCurrent);
+      const template = await this.awaitWorkoutLifecycle(this.readWorkoutTemplate(), assertCurrent);
       const body = template
         ? this.renderWorkoutSessionTemplate(template, { title, startedAt, plan, cooldownDays, workoutId })
         : this.defaultWorkoutTemplate(title, startedAt, plan, cooldownDays, workoutId);
-      await this.app.vault.create(path, body);
-      await this.ensureWorkoutSessionFrontmatter(path, title, startedAt, plan, cooldownDays, workoutId);
+      await this.awaitWorkoutLifecycle(this.app.vault.create(path, body), assertCurrent);
+      await this.awaitWorkoutLifecycle(
+        this.ensureWorkoutSessionFrontmatter(path, title, startedAt, plan, cooldownDays, workoutId),
+        assertCurrent,
+      );
       logger.flow("Workout", "start:note-created", {
         workoutId,
         path,
         planPath: plan?.sourcePath || "",
         template: Boolean(template),
       });
-      if (plan?.sourcePath) await this.applyWorkoutPlanToSession(path, plan.sourcePath);
+      if (plan?.sourcePath) {
+        await this.awaitWorkoutLifecycle(this.applyWorkoutPlanToSession(path, plan.sourcePath), assertCurrent);
+      }
     }
     if (logTarget === "daily-note" || logTarget === "both") {
-      const dailyFile = await this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
-        id: workoutId,
-        title,
-        startedAt,
-        path: path || undefined,
-        plan,
-        cooldownDays,
-        status: "active",
-      }), dailyNoteDate, explicitDailyFile || undefined);
+      const dailyFile = await this.awaitWorkoutLifecycle(
+        this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
+          id: workoutId,
+          title,
+          startedAt,
+          path: path || undefined,
+          plan,
+          cooldownDays,
+          status: "active",
+        }), dailyNoteDate, explicitDailyFile || undefined),
+        assertCurrent,
+      );
       dailyNotePath = dailyFile.path;
       if (logTarget === "daily-note" && plan?.sourcePath) {
-        await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
+        await this.awaitWorkoutLifecycle(
+          this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath),
+          assertCurrent,
+        );
       }
     } else if (this.settings.appendWorkoutSummaryToDailyNote && path) {
-      await this.insertIntoDailyNote(
-        workoutSummaryLine(path, startedAt),
-        undefined,
-        explicitDailyFile || await this.getOrCreateDailyNoteForDate(dailyNoteDate),
+      const summaryDailyFile = explicitDailyFile || await this.awaitWorkoutLifecycle(
+        this.getOrCreateDailyNoteForDate(dailyNoteDate),
+        assertCurrent,
+      );
+      await this.awaitWorkoutLifecycle(
+        this.insertIntoDailyNote(workoutSummaryLine(path, startedAt), undefined, summaryDailyFile),
+        assertCurrent,
       );
     }
+    await this.awaitWorkoutLifecycle(this.reconcilePendingGcmTimerCleanup(), assertCurrent);
+    const gcmTimerBlockedByPendingCleanup = this.settings.pendingGcmTimerCleanup !== null;
     this.settings.activeWorkoutPath = path;
     this.settings.activeWorkoutId = workoutId;
     this.settings.activeWorkoutTarget = logTarget;
@@ -1794,16 +1991,26 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.activeWorkoutPlanPath = plan?.sourcePath || "";
     this.settings.activeWorkoutTitle = title;
     this.settings.activeWorkoutStartedAt = startedAt;
+    const timerOwnership: GcmWorkoutTimerOwnership = Object.freeze({
+      workoutId,
+      title,
+      startedAt,
+      sessionId: gcmTimerBlockedByPendingCleanup ? "" : `gcm-${workoutId}`,
+      skipped: gcmTimerBlockedByPendingCleanup,
+    });
+    this.settings.activeWorkoutGcmTimerId = timerOwnership.sessionId;
+    this.settings.activeWorkoutGcmTimerSkipped = timerOwnership.skipped;
     this.settings.activeWorkoutCooldownDays = cooldownDays;
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
-    await this.saveSettings();
+    await this.awaitWorkoutLifecycle(this.saveSettings(), assertCurrent);
     logger.flow("Workout", "start:state-saved", {
       workoutId,
       path,
       dailyNotePath,
       logTarget,
       planPath: plan?.sourcePath || "",
+      gcmTimerOwned: !gcmTimerBlockedByPendingCleanup,
     });
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
     let openResult: WorkoutOpenResult = {
@@ -1812,9 +2019,20 @@ export default class TPSHealthPlugin extends Plugin {
       route: input.openFile === false ? "skipped" : "missing-file",
       reason: input.openFile === false ? "openFile=false" : path ? "created file was not found in vault" : "no workout note path was created",
     };
-    await this.startGcmWorkoutTimer(file instanceof TFile ? file : dailyNotePath);
-    if (file instanceof TFile) await this.cacheWorkoutFile(file);
-    if (input.openFile !== false && file instanceof TFile) openResult = await this.openWorkoutFile(file);
+    if (gcmTimerBlockedByPendingCleanup) {
+      logger.flowWarn("GCM", "timer:start-skipped-pending-cleanup", { workoutId });
+    } else {
+      await this.awaitWorkoutLifecycle(
+        this.startGcmWorkoutTimer(file instanceof TFile ? file : dailyNotePath, timerOwnership),
+        assertCurrent,
+      );
+    }
+    if (file instanceof TFile) {
+      await this.awaitWorkoutLifecycle(this.cacheWorkoutFile(file), assertCurrent);
+    }
+    if (input.openFile !== false && file instanceof TFile) {
+      openResult = await this.awaitWorkoutLifecycle(this.openWorkoutFile(file), assertCurrent);
+    }
     logger.flow("Workout", "start:done", {
       workoutId,
       path,
@@ -1829,28 +2047,57 @@ export default class TPSHealthPlugin extends Plugin {
     return path || dailyNotePath;
   }
 
-  async finishWorkout(input: FinishWorkoutInput = {}): Promise<void> {
-    const path = this.settings.activeWorkoutPath;
-    const dailyNotePath = this.settings.activeWorkoutDailyNotePath;
-    const workoutId = this.settings.activeWorkoutId;
-    if (!path && !dailyNotePath) {
+  finishWorkout(input: FinishWorkoutInput = {}): Promise<void> {
+    return this.runWorkoutLifecycleTransition((assertCurrent) => (
+      this.performFinishWorkout(input, assertCurrent)
+    ));
+  }
+
+  private async performFinishWorkout(
+    input: FinishWorkoutInput,
+    assertCurrent: () => void,
+    expectedOwnership?: Readonly<ActiveWorkoutLifecycleSnapshot>,
+  ): Promise<void> {
+    assertCurrent();
+    const ownership = expectedOwnership ?? this.captureActiveWorkoutLifecycleSnapshot();
+    if (!ownership) {
       logger.flowWarn("Workout", "finish:no-active-workout");
       new Notice("No active workout");
       return;
     }
+    this.assertActiveWorkoutOwnershipCurrent(ownership);
+    const {
+      path,
+      dailyNotePath,
+      workoutId,
+    } = ownership;
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    let endedAt = canonicalWorkoutEndInstant(
+      input.endedAt || isoNow(),
+      ownership.startedAt,
+    );
     if (path && !(file instanceof TFile)) {
       logger.flowWarn("Workout", "finish:missing-active-file", { path });
-      await this.clearActiveWorkoutState();
+      await this.awaitWorkoutLifecycle(
+        this.stopGcmWorkoutTimer(path, endedAt, ownership),
+        assertCurrent,
+      );
+      this.assertActiveWorkoutOwnershipCurrent(ownership);
+      if (!await this.awaitWorkoutLifecycle(
+        this.clearActiveWorkoutState(ownership, assertCurrent),
+        assertCurrent,
+      )) {
+        throw new Error("The active workout changed before stale state could be cleared.");
+      }
       new Notice("Active workout file was missing. Cleared the stale workout state.");
       return;
     }
-    const endedAt = input.endedAt || isoNow();
     const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
-    const startedAt = typeof fm.startedAt === "string" ? fm.startedAt : this.settings.activeWorkoutStartedAt;
+    const startedAt = typeof fm.startedAt === "string" ? fm.startedAt : ownership.startedAt;
+    endedAt = canonicalWorkoutEndInstant(endedAt, startedAt);
     const durationSeconds = workoutDurationSeconds(startedAt, endedAt);
     const durationMinutes = durationSeconds != null ? Math.max(1, Math.round(durationSeconds / 60)) : undefined;
-    const cooldownDays = input.cooldownDays ?? numberOrUndefined(fm.cooldownDays) ?? this.settings.activeWorkoutCooldownDays ?? this.settings.defaultWorkoutCooldownDays;
+    const cooldownDays = input.cooldownDays ?? numberOrUndefined(fm.cooldownDays) ?? ownership.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
     const nextEligibleDate = cooldownDays > 0 ? addDaysIsoDate(endedAt, cooldownDays) : undefined;
     logger.flow("Workout", "finish:resolved", {
       workoutId,
@@ -1862,30 +2109,41 @@ export default class TPSHealthPlugin extends Plugin {
       cooldownDays,
       nextEligibleDate: nextEligibleDate || "",
     });
+    await this.awaitWorkoutLifecycle(
+      this.stopGcmWorkoutTimer(file instanceof TFile ? file : path || dailyNotePath, endedAt, ownership),
+      assertCurrent,
+    );
+    this.assertActiveWorkoutOwnershipCurrent(ownership);
     if (file instanceof TFile) {
-      const normalizedSetCount = await this.normalizeWorkoutNoteSetTasks(file, fm, endedAt);
-      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-        frontmatter.kind = frontmatter.kind || "workout";
-        frontmatter.workoutId = frontmatter.workoutId || workoutId;
-        frontmatter.runKind = frontmatter.runKind || "run";
-        frontmatter.runType = frontmatter.runType || "workout";
-        frontmatter.workflowType = frontmatter.workflowType || "workout";
-        frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
-        frontmatter.status = "complete";
-        frontmatter.workoutDate = frontmatter.workoutDate || isoDateKey(startedAt || endedAt);
-        frontmatter.cssclasses = withCssClass(frontmatter.cssclasses, "tps-health-workout");
-        frontmatter.endedAt = endedAt;
-        frontmatter.completedDate = endedAt;
-        if (durationSeconds != null) frontmatter.durationSeconds = durationSeconds;
-        if (durationMinutes != null) frontmatter.timeEstimate = durationMinutes;
-        const setCount = Math.max(this.settings.activeWorkoutSetCount || 0, normalizedSetCount);
-        if (setCount > 0) frontmatter.setCount = setCount;
-        frontmatter.allDay = false;
-        frontmatter.cooldownDays = cooldownDays;
-        frontmatter.targetGapDays = cooldownDays;
-        if (nextEligibleDate) frontmatter.nextEligibleDate = nextEligibleDate;
-        else delete frontmatter.nextEligibleDate;
-      });
+      const normalizedSetCount = await this.awaitWorkoutLifecycle(
+        this.normalizeWorkoutNoteSetTasks(file, fm, endedAt),
+        assertCurrent,
+      );
+      await this.awaitWorkoutLifecycle(
+        this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+          frontmatter.kind = frontmatter.kind || "workout";
+          frontmatter.workoutId = frontmatter.workoutId || workoutId;
+          frontmatter.runKind = frontmatter.runKind || "run";
+          frontmatter.runType = frontmatter.runType || "workout";
+          frontmatter.workflowType = frontmatter.workflowType || "workout";
+          frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
+          frontmatter.status = "complete";
+          frontmatter.workoutDate = frontmatter.workoutDate || isoDateKey(startedAt || endedAt);
+          frontmatter.cssclasses = withCssClass(frontmatter.cssclasses, "tps-health-workout");
+          frontmatter.endedAt = endedAt;
+          frontmatter.completedDate = endedAt;
+          if (durationSeconds != null) frontmatter.durationSeconds = durationSeconds;
+          if (durationMinutes != null) frontmatter.timeEstimate = durationMinutes;
+          const setCount = Math.max(ownership.setCount || 0, normalizedSetCount);
+          if (setCount > 0) frontmatter.setCount = setCount;
+          frontmatter.allDay = false;
+          frontmatter.cooldownDays = cooldownDays;
+          frontmatter.targetGapDays = cooldownDays;
+          if (nextEligibleDate) frontmatter.nextEligibleDate = nextEligibleDate;
+          else delete frontmatter.nextEligibleDate;
+        }),
+        assertCurrent,
+      );
       logger.flow("Workout", "finish:frontmatter-done", {
         path: file.path,
         workoutId,
@@ -1893,11 +2151,25 @@ export default class TPSHealthPlugin extends Plugin {
         nextEligibleDate: nextEligibleDate || "",
       });
     }
-    if (dailyNotePath && workoutId) await this.completeDailyWorkoutLine(dailyNotePath, workoutId, endedAt, nextEligibleDate);
-    const planPath = typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : this.settings.activeWorkoutPlanPath;
-    if (planPath) await this.updateWorkoutPlanCompletion(planPath, endedAt, cooldownDays, path || dailyNotePath, nextEligibleDate);
-    await this.stopGcmWorkoutTimer(file instanceof TFile ? file : path || dailyNotePath, endedAt);
-    await this.clearActiveWorkoutState();
+    if (dailyNotePath && workoutId) {
+      await this.awaitWorkoutLifecycle(
+        this.completeDailyWorkoutLine(dailyNotePath, workoutId, endedAt, nextEligibleDate),
+        assertCurrent,
+      );
+    }
+    const planPath = typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : ownership.planPath;
+    if (planPath) {
+      await this.awaitWorkoutLifecycle(
+        this.updateWorkoutPlanCompletion(planPath, endedAt, cooldownDays, path || dailyNotePath, nextEligibleDate),
+        assertCurrent,
+      );
+    }
+    if (!await this.awaitWorkoutLifecycle(
+      this.clearActiveWorkoutState(ownership, assertCurrent),
+      assertCurrent,
+    )) {
+      throw new Error("The active workout changed before completion state could be cleared.");
+    }
     logger.flow("Workout", "finish:done", {
       workoutId,
       path,
@@ -1907,7 +2179,18 @@ export default class TPSHealthPlugin extends Plugin {
     new Notice("Finished workout");
   }
 
-  private async clearActiveWorkoutState(): Promise<void> {
+  private async clearActiveWorkoutState(
+    expected?: ActiveWorkoutLifecycleSnapshot,
+    assertCurrent?: () => void,
+  ): Promise<boolean> {
+    assertCurrent?.();
+    if (expected && !this.activeWorkoutOwnershipMatches(expected)) {
+      logger.flowWarn("Workout", "active-state:clear-refused-stale-owner", {
+        expectedWorkoutId: expected.workoutId,
+        currentWorkoutId: this.settings.activeWorkoutId,
+      });
+      return false;
+    }
     const active = this.getActiveWorkoutState();
     this.settings.activeWorkoutPath = "";
     this.settings.activeWorkoutId = "";
@@ -1916,26 +2199,48 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.activeWorkoutPlanPath = "";
     this.settings.activeWorkoutTitle = "";
     this.settings.activeWorkoutStartedAt = "";
+    this.settings.activeWorkoutGcmTimerId = "";
+    this.settings.activeWorkoutGcmTimerSkipped = false;
     this.settings.activeWorkoutCooldownDays = 0;
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
     await this.saveSettings();
+    assertCurrent?.();
     logger.flow("Workout", "active-state:cleared", active || {});
+    return true;
   }
 
-  async finishWorkoutAndSaveTemplate(input: { title?: string; cooldownDays?: number; defaultRestSeconds?: number } = {}): Promise<string | undefined> {
+  finishWorkoutAndSaveTemplate(
+    input: { title?: string; cooldownDays?: number; defaultRestSeconds?: number } = {},
+  ): Promise<string | undefined> {
+    return this.runWorkoutLifecycleTransition((assertCurrent) => (
+      this.performFinishWorkoutAndSaveTemplate(input, assertCurrent)
+    ));
+  }
+
+  private async performFinishWorkoutAndSaveTemplate(
+    input: { title?: string; cooldownDays?: number; defaultRestSeconds?: number },
+    assertCurrent: () => void,
+  ): Promise<string | undefined> {
+    assertCurrent();
     const active = this.getActiveWorkoutState();
-    if (!active) {
+    const ownership = this.captureActiveWorkoutLifecycleSnapshot();
+    if (!active || !ownership) {
       logger.flowWarn("WorkoutPlan", "template-from-active:no-active", { finishAfterSave: true });
       new Notice("No active workout");
       return undefined;
     }
-    const path = await this.createWorkoutTemplateFromState(active, {
-      name: input.title || active.title || "Workout Template",
-      cooldownDays: input.cooldownDays ?? this.settings.defaultWorkoutCooldownDays,
-      defaultRestSeconds: input.defaultRestSeconds ?? this.settings.defaultRestSeconds,
-    });
-    await this.finishWorkout();
+    const path = await this.awaitWorkoutLifecycle(
+      this.createWorkoutTemplateFromState(active, {
+        name: input.title || active.title || "Workout Template",
+        cooldownDays: input.cooldownDays ?? this.settings.defaultWorkoutCooldownDays,
+        defaultRestSeconds: input.defaultRestSeconds ?? this.settings.defaultRestSeconds,
+      }, assertCurrent),
+      assertCurrent,
+    );
+    this.assertActiveWorkoutOwnershipCurrent(ownership);
+    await this.performFinishWorkout({}, assertCurrent, ownership);
+    assertCurrent();
     new Notice("Saved workout layout and finished workout");
     return path;
   }
@@ -3034,24 +3339,30 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async openWorkoutFile(file: TFile): Promise<WorkoutOpenResult> {
     logger.flow("WorkoutOpen", "start", { path: file.path });
-    const gcmApi = this.getGcmApi();
-    if (typeof gcmApi?.openFileInLeaf === "function") {
+    const api = this.gcmIntegrationApi;
+    if (api) {
       try {
         logger.flow("WorkoutOpen", "gcm:try", { path: file.path });
-        const opened = await gcmApi.openFileInLeaf(
-          file,
-          false,
-          () => this.app.workspace.getLeaf(false),
-          { revealLeaf: true },
-        );
-        if (opened) {
+        const lifecycleEpoch = this.lifecycleEpoch;
+        const result = await api.openFile({
+          path: file.path,
+          leafPolicy: "reuse-current-unless-pinned",
+          reveal: true,
+        });
+        this.assertGcmIntegrationApiCurrent(lifecycleEpoch, api);
+        if (result.status === "opened") {
           await this.showWorkoutReadingMode(file);
           logger.flow("WorkoutOpen", "gcm:done", { path: file.path });
           return { requested: true, opened: true, route: "gcm" };
         }
+        if (result.status === "missing-file") {
+          logger.flowWarn("WorkoutOpen", "gcm:missing-file", { path: file.path });
+          return { requested: true, opened: false, route: "missing-file", reason: "gcm-missing-file" };
+        }
         logger.flowWarn("WorkoutOpen", "gcm:declined", { path: file.path });
       } catch (error) {
         logger.flowWarn("WorkoutOpen", "gcm:failed", { path: file.path, error: logger.errorSummary(error) });
+        return { requested: true, opened: false, route: "failed", reason: "gcm-integration-failed" };
       }
     } else {
       logger.flow("WorkoutOpen", "gcm:unavailable", { path: file.path });
@@ -4901,83 +5212,241 @@ export default class TPSHealthPlugin extends Plugin {
     return normalizePath(folder ? `${folder}/${fileName}` : fileName);
   }
 
-  private getGcmApi(): any {
-    const plugins = (this.app as any).plugins;
-    return plugins?.plugins?.["tps-global-context-menu"]?.api
-      || plugins?.getPlugin?.("tps-global-context-menu")?.api;
-  }
-
-  private async startGcmWorkoutTimer(target: TFile | string | null): Promise<void> {
-    const timeTracking = this.getGcmApi()?.timeTracking;
-    if (typeof timeTracking?.startTimer !== "function") {
-      logger.flow("GCM", "timer:start-unavailable", { hasTimeTracking: !!timeTracking });
-      return;
-    }
+  private async startGcmWorkoutTimer(
+    target: TFile | string | null,
+    ownership: Readonly<GcmWorkoutTimerOwnership>,
+  ): Promise<void> {
     const file = target instanceof TFile
       ? target
       : typeof target === "string" && target
         ? this.app.vault.getAbstractFileByPath(target)
         : null;
-    if (!(file instanceof TFile)) {
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
       logger.flowWarn("GCM", "timer:start-missing-target", { target: typeof target === "string" ? target : "" });
       return;
     }
-    try {
-      await timeTracking.startTimer({
-        file,
-        type: "note",
-        title: this.settings.activeWorkoutTitle || file.basename,
+    const api = this.gcmIntegrationApi;
+    if (!api) {
+      logger.flow("GCM", "timer:start-unavailable", { path: file.path });
+      return;
+    }
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const title = ownership.title || file.basename;
+    const sessionId = ownership.sessionId;
+    const startedAt = canonicalWorkoutStartInstant(ownership.startedAt);
+    if (!sessionId) {
+      logger.flowWarn("GCM", "timer:start-missing-session-id", { path: file.path });
+      return;
+    }
+    const existing = this.gcmTimerStartPromises.get(sessionId);
+    if (existing) return existing;
+    if (this.gcmTimerStartEffectPromises.has(sessionId)) {
+      logger.flowWarn("GCM", "timer:start-effect-still-uncertain", {
+        path: file.path,
+        workoutId: ownership.workoutId,
+        sessionId,
       });
-      logger.flow("GCM", "timer:start-done", { path: file.path, title: this.settings.activeWorkoutTitle || file.basename });
-    } catch (error) {
-      logger.flowWarn("GCM", "timer:start-failed", { path: file.path, error: logger.errorSummary(error) });
-    }
-  }
-
-  private async stopGcmWorkoutTimer(target: TFile | string | null, endedAt: string): Promise<void> {
-    const timeTracking = this.getGcmApi()?.timeTracking;
-    if (!timeTracking) {
-      logger.flow("GCM", "timer:stop-unavailable");
       return;
     }
-    const file = target instanceof TFile
-      ? target
-      : typeof target === "string" && target
-        ? this.app.vault.getAbstractFileByPath(target)
-        : null;
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("GCM", "timer:stop-missing-target", { target: typeof target === "string" ? target : "" });
-      return;
-    }
-    const parsedEnd = new Date(endedAt);
-    const timerEnd: Date | string = Number.isFinite(parsedEnd.getTime()) ? parsedEnd : endedAt;
-    try {
-      if (typeof timeTracking.stopActiveTimerForFile === "function") {
-        await timeTracking.stopActiveTimerForFile(file, timerEnd);
-        logger.flow("GCM", "timer:stop-done", { path: file.path, route: "file", endedAt });
-      } else if (typeof timeTracking.stopActiveTimer === "function") {
-        const active = typeof timeTracking.getActiveTimer === "function" ? await timeTracking.getActiveTimer() : null;
-        if (!active || active.targetPath === file.path || active.sourcePath === file.path) {
-          await timeTracking.stopActiveTimer(timerEnd);
-          logger.flow("GCM", "timer:stop-done", { path: file.path, route: "active", endedAt, matchedActive: !!active });
-        } else {
-          logger.flowWarn("GCM", "timer:stop-active-mismatch", {
-            path: file.path,
-            activeTargetPath: active.targetPath || "",
-            activeSourcePath: active.sourcePath || "",
-          });
-        }
-      } else {
-        logger.flowWarn("GCM", "timer:stop-method-missing", { path: file.path });
+    const providerPromise = Promise.resolve().then(() => api.startNoteTimer({
+      path: file.path,
+      title,
+      sessionId,
+      startedAt,
+    }));
+    const effectSettled = providerPromise.then(() => undefined, () => undefined);
+    this.gcmTimerStartEffectPromises.set(sessionId, effectSettled);
+    void effectSettled.then(() => {
+      if (this.gcmTimerStartEffectPromises.get(sessionId) !== effectSettled) return;
+      this.gcmTimerStartEffectPromises.delete(sessionId);
+      if (this.settings.pendingGcmTimerCleanup?.sessionId === sessionId && this.gcmIntegrationApi) {
+        void this.reconcilePendingGcmTimerCleanup();
       }
-    } catch (error) {
-      logger.flowWarn("GCM", "timer:stop-failed", { path: file.path, error: logger.errorSummary(error) });
+    });
+    const operation = (async () => {
+      try {
+        const providerOutcome = await this.runGcmProviderPromise(api, providerPromise);
+        if (providerOutcome.status === "provider-changed") {
+          logger.flowWarn("GCM", "timer:start-provider-changed", {
+            path: file.path,
+            workoutId: ownership.workoutId,
+            sessionId,
+          });
+          return;
+        }
+        const result = providerOutcome.value;
+        this.assertGcmIntegrationApiCurrent(lifecycleEpoch, api);
+        if (result.status === "started") {
+          logger.flow("GCM", "timer:start-done", { path: file.path, title });
+        } else if (result.status === "already-running") {
+          logger.flow("GCM", "timer:start-already-running", { path: file.path, title });
+        } else {
+          logger.flowWarn("GCM", "timer:start-not-started", { path: file.path, title, status: result.status });
+        }
+      } catch (error) {
+        logger.flowWarn("GCM", "timer:start-failed", { path: file.path, error: logger.errorSummary(error) });
+      }
+    })();
+    this.gcmTimerStartPromises.set(sessionId, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.gcmTimerStartPromises.get(sessionId) === operation) {
+        this.gcmTimerStartPromises.delete(sessionId);
+      }
     }
   }
 
-  private scheduleGcmMenuRefresh(): void {
-    this.getGcmApi()?.overlays?.scheduleMenus?.("tps-health-food-log-button");
-    window.setTimeout(() => this.updateGcmFoodLogButtonVisibility(), 50);
+  private async stopGcmWorkoutTimer(
+    target: TFile | string | null,
+    endedAt: string,
+    ownership: Readonly<GcmWorkoutTimerOwnership>,
+  ): Promise<void> {
+    if (ownership.skipped) {
+      logger.flow("GCM", "timer:stop-skipped-unowned");
+      return;
+    }
+    const path = normalizePath(target instanceof TFile ? target.path : String(target || "")).replace(/^\/+/, "");
+    const parsedEnd = new Date(endedAt);
+    if (!Number.isFinite(parsedEnd.getTime())) {
+      logger.flowWarn("GCM", "timer:stop-invalid-end", { path, endedAt });
+      throw new TypeError("Workout timer cleanup requires a valid end instant.");
+    }
+    const canonicalEnd = parsedEnd.toISOString();
+    const sessionId = ownership.sessionId;
+    if (!sessionId) {
+      logger.flowWarn("GCM", "timer:stop-skipped-unowned", { reason: "missing-session-id" });
+      return;
+    }
+    const stopRequest = parseTPSGcmStopNoteTimerRequest({
+      path,
+      endedAt: canonicalEnd,
+      sessionId,
+    });
+    if (!stopRequest) {
+      logger.flowWarn("GCM", "timer:stop-missing-target", { target: typeof target === "string" ? target : "" });
+      throw new TypeError("Workout timer cleanup requires a safe Markdown target.");
+    }
+    this.settings.pendingGcmTimerCleanup = {
+      path: stopRequest.path,
+      sessionId,
+      endedAt: stopRequest.endedAt,
+    };
+    await this.saveSettings();
+    const cleanupOutcome = await this.reconcilePendingGcmTimerCleanup();
+    if (cleanupOutcome === "invalid-end") {
+      throw new RangeError("Workout timer end must follow the timer start and cannot be far in the future.");
+    }
+    if (this.settings.pendingGcmTimerCleanup?.sessionId === sessionId) {
+      logger.flowWarn("GCM", "timer:stop-pending", { path, sessionId, endedAt });
+    }
+  }
+
+  private async reconcilePendingGcmTimerCleanup(): Promise<GcmTimerCleanupOutcome> {
+    let cleanup = this.settings.pendingGcmTimerCleanup;
+    if (!cleanup) return "settled";
+    const pendingStart = this.gcmTimerStartPromises.get(cleanup.sessionId);
+    if (pendingStart) await pendingStart;
+    if (this.gcmTimerStartEffectPromises.has(cleanup.sessionId)) {
+      logger.flow("GCM", "timer:cleanup-waiting-for-start-effect", {
+        path: cleanup.path,
+        sessionId: cleanup.sessionId,
+      });
+      return "pending";
+    }
+    const currentCleanup = this.settings.pendingGcmTimerCleanup;
+    if (!currentCleanup
+      || currentCleanup.path !== cleanup.path
+      || currentCleanup.sessionId !== cleanup.sessionId
+      || currentCleanup.endedAt !== cleanup.endedAt) {
+      return currentCleanup ? "pending" : "settled";
+    }
+    cleanup = currentCleanup;
+    const attemptedCleanup = cleanup;
+    const api = this.gcmIntegrationApi;
+    if (!api) return "pending";
+    const cleanupKey = gcmTimerCleanupKey(attemptedCleanup);
+    const existing = this.pendingGcmTimerCleanupPromises.get(api.sourceApi);
+    if (existing) {
+      const outcome = await existing.promise;
+      const latest = this.settings.pendingGcmTimerCleanup;
+      if (latest && gcmTimerCleanupKey(latest) !== existing.cleanupKey) {
+        return this.reconcilePendingGcmTimerCleanup();
+      }
+      return latest ? outcome : "settled";
+    }
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const operation = (async (): Promise<GcmTimerCleanupOutcome> => {
+      try {
+        const providerOutcome = await this.runGcmProviderOperation(
+          api,
+          () => api.stopNoteTimerForFile(attemptedCleanup),
+        );
+        if (providerOutcome.status === "provider-changed") {
+          logger.flow("GCM", "timer:cleanup-provider-changed", {
+            path: attemptedCleanup.path,
+            sessionId: attemptedCleanup.sessionId,
+          });
+          return "pending";
+        }
+        const result = providerOutcome.value;
+        this.assertGcmIntegrationApiCurrent(lifecycleEpoch, api);
+        if (result.status === "invalid-end") {
+          logger.flowWarn("GCM", "timer:cleanup-invalid-end", {
+            path: attemptedCleanup.path,
+            sessionId: attemptedCleanup.sessionId,
+            endedAt: attemptedCleanup.endedAt,
+          });
+          return "invalid-end";
+        }
+        if (result.status !== "stopped" && result.status !== "not-running") {
+          logger.flowWarn("GCM", "timer:cleanup-not-settled", {
+            path: attemptedCleanup.path,
+            sessionId: attemptedCleanup.sessionId,
+            endedAt: attemptedCleanup.endedAt,
+            status: result.status,
+          });
+          return "pending";
+        }
+        const current = this.settings.pendingGcmTimerCleanup;
+        if (!current
+          || current.path !== attemptedCleanup.path
+          || current.sessionId !== attemptedCleanup.sessionId
+          || current.endedAt !== attemptedCleanup.endedAt) return current ? "pending" : "settled";
+        this.settings.pendingGcmTimerCleanup = null;
+        try {
+          await this.saveSettings();
+        } catch (error) {
+          if (this.settings.pendingGcmTimerCleanup === null) {
+            this.settings.pendingGcmTimerCleanup = attemptedCleanup;
+          }
+          throw error;
+        }
+        logger.flow("GCM", "timer:cleanup-settled", {
+          path: attemptedCleanup.path,
+          sessionId: attemptedCleanup.sessionId,
+          status: result.status,
+        });
+        return "settled";
+      } catch (error) {
+        logger.flowWarn("GCM", "timer:cleanup-failed", {
+          path: attemptedCleanup.path,
+          sessionId: attemptedCleanup.sessionId,
+          endedAt: attemptedCleanup.endedAt,
+          error: logger.errorSummary(error),
+        });
+        return "pending";
+      }
+    })();
+    const trackedOperation = { cleanupKey, promise: operation };
+    this.pendingGcmTimerCleanupPromises.set(api.sourceApi, trackedOperation);
+    try {
+      return await operation;
+    } finally {
+      if (this.pendingGcmTimerCleanupPromises.get(api.sourceApi) === trackedOperation) {
+        this.pendingGcmTimerCleanupPromises.delete(api.sourceApi);
+      }
+    }
   }
 
   private scheduleWorkoutActionBars(): void {
@@ -5256,23 +5725,6 @@ export default class TPSHealthPlugin extends Plugin {
     return button;
   }
 
-  private async updateGcmFoodLogButtonVisibility(): Promise<void> {
-    const dateContext = await this.getActiveDailyNoteDateContext();
-    const visible = Boolean(dateContext);
-    const candidates = Array.from(document.querySelectorAll<HTMLElement>(
-      '[data-tps-gcm-external-action-id="tps-health:food-log"]',
-    ));
-    for (const el of candidates) {
-      el.toggleClass("tps-health-gcm-hidden", !visible);
-      el.toggleAttribute("aria-hidden", !visible);
-    }
-    logger.flow("GCM", "food-log-action:visibility", {
-      visible,
-      candidates: candidates.length,
-      ...await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext),
-    });
-  }
-
   private async getDailyNoteSettings(): Promise<{ format: string; folder: string }> {
     let format = this.settings.dailyNoteFormat || "YYYY-MM-DD";
     let folder = this.settings.dailyNoteFolder || "";
@@ -5441,13 +5893,16 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async createWorkoutTemplateFromState(
     state: { path: string; dailyNotePath: string; id: string; title: string; cooldownDays: number },
-    input: { name: string; cooldownDays?: number; defaultRestSeconds?: number }
+    input: { name: string; cooldownDays?: number; defaultRestSeconds?: number },
+    assertCurrent?: () => void,
   ): Promise<string> {
+    assertCurrent?.();
     const rawLayoutEntries = state.path
       ? await this.extractWorkoutLayoutEntriesFromSession(state.path)
       : state.dailyNotePath
         ? await this.extractWorkoutLayoutEntriesFromDaily(state.dailyNotePath, state.id)
         : [];
+    assertCurrent?.();
     logger.flow("WorkoutPlan", "template-from-active:layout-source", {
       sourcePath: state.path || "",
       sourceDailyNotePath: state.dailyNotePath || "",
@@ -5463,6 +5918,7 @@ export default class TPSHealthPlugin extends Plugin {
           : [])
         .map((exercise) => exercise.trim())
         .filter(Boolean))];
+    assertCurrent?.();
     if (!rawLayoutEntries.length) {
       logger.flow("WorkoutPlan", "template-from-active:fallback-task-names", {
         sourcePath: state.path || "",
@@ -5490,9 +5946,12 @@ export default class TPSHealthPlugin extends Plugin {
       : this.settings.defaultRestSeconds;
 
     await this.ensureFolder(this.settings.workoutPlansFolder);
+    assertCurrent?.();
     const path = await this.uniquePath(`${this.settings.workoutPlansFolder}/${sanitizeFileName(workoutPlanName)}.md`);
+    assertCurrent?.();
     const body = this.defaultWorkoutPlanTemplateFromSession(workoutPlanName, cooldownDays, defaultRestSeconds, layoutEntries);
     await this.app.vault.create(path, body);
+    assertCurrent?.();
     logger.flow("WorkoutPlan", "template-from-active:create", {
       path,
       name: workoutPlanName,
@@ -5916,6 +6375,44 @@ export default class TPSHealthPlugin extends Plugin {
       lastSetEndedAt: this.settings.lastSetEndedAt,
       setCount: this.settings.activeWorkoutSetCount || 0,
     };
+  }
+
+  private captureActiveWorkoutLifecycleSnapshot(): Readonly<ActiveWorkoutLifecycleSnapshot> | null {
+    if (!this.settings.activeWorkoutId
+      && !this.settings.activeWorkoutPath
+      && !this.settings.activeWorkoutDailyNotePath) return null;
+    return Object.freeze({
+      workoutId: this.settings.activeWorkoutId,
+      path: this.settings.activeWorkoutPath,
+      dailyNotePath: this.settings.activeWorkoutDailyNotePath,
+      planPath: this.settings.activeWorkoutPlanPath,
+      title: this.settings.activeWorkoutTitle,
+      startedAt: this.settings.activeWorkoutStartedAt,
+      sessionId: this.settings.activeWorkoutGcmTimerId,
+      skipped: this.settings.activeWorkoutGcmTimerSkipped === true,
+      cooldownDays: this.settings.activeWorkoutCooldownDays,
+      setCount: this.settings.activeWorkoutSetCount || 0,
+    });
+  }
+
+  private activeWorkoutOwnershipMatches(expected: Readonly<ActiveWorkoutLifecycleSnapshot>): boolean {
+    return this.settings.activeWorkoutId === expected.workoutId
+      && this.settings.activeWorkoutPath === expected.path
+      && this.settings.activeWorkoutDailyNotePath === expected.dailyNotePath
+      && this.settings.activeWorkoutStartedAt === expected.startedAt
+      && this.settings.activeWorkoutGcmTimerId === expected.sessionId
+      && (this.settings.activeWorkoutGcmTimerSkipped === true) === expected.skipped;
+  }
+
+  private assertActiveWorkoutOwnershipCurrent(expected: Readonly<ActiveWorkoutLifecycleSnapshot>): void {
+    if (this.activeWorkoutOwnershipMatches(expected)) return;
+    logger.flowWarn("Workout", "active-state:ownership-changed", {
+      expectedWorkoutId: expected.workoutId,
+      currentWorkoutId: this.settings.activeWorkoutId,
+      expectedSessionId: expected.sessionId,
+      currentSessionId: this.settings.activeWorkoutGcmTimerId,
+    });
+    throw new Error("The active workout changed while the operation was running.");
   }
 
   async getDailyFoodMacroTotals(dateIso: string): Promise<DailyFoodMacroTotals> {
@@ -12103,6 +12600,38 @@ function startedAtFromSetEnd(endedAt: string, durationSeconds?: number): string 
   const ended = Date.parse(endedAt);
   if (!Number.isFinite(ended) || !durationSeconds || durationSeconds <= 0) return endedAt;
   return new Date(ended - durationSeconds * 1000).toISOString();
+}
+
+function canonicalWorkoutEndInstant(value: string, startedAt?: string): string {
+  const end = new Date(value);
+  const endMillis = end.getTime();
+  if (!Number.isFinite(endMillis)) {
+    throw new TypeError("Workout finish requires a valid end instant.");
+  }
+  if (endMillis > Date.now() + TPS_GCM_TIMER_END_FUTURE_SKEW_MS) {
+    throw new RangeError("Workout finish cannot be far in the future.");
+  }
+  const startMillis = startedAt ? new Date(startedAt).getTime() : Number.NaN;
+  if (Number.isFinite(startMillis) && endMillis <= startMillis) {
+    throw new RangeError("Workout finish must be after workout start.");
+  }
+  return end.toISOString();
+}
+
+function canonicalWorkoutStartInstant(value: string): string {
+  const start = new Date(value);
+  const startMillis = start.getTime();
+  if (!Number.isFinite(startMillis)) {
+    throw new TypeError("Workout start requires a valid instant.");
+  }
+  if (startMillis > Date.now() + TPS_GCM_TIMER_END_FUTURE_SKEW_MS) {
+    throw new RangeError("Workout start cannot be far in the future.");
+  }
+  return start.toISOString();
+}
+
+function gcmTimerCleanupKey(cleanup: { path: string; sessionId: string; endedAt: string }): string {
+  return JSON.stringify([cleanup.path, cleanup.sessionId, cleanup.endedAt]);
 }
 
 function workoutDurationSeconds(startedAt: string | undefined, endedAt: string): number | undefined {

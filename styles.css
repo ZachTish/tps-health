@@ -68,29 +68,6 @@
   margin: 0 0 4px;
 }
 
-.tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"] .tps-gcm-parent-nav-label {
-  display: none;
-}
-
-.tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"] .tps-gcm-parent-nav-icon {
-  margin: 0;
-}
-
-.tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"] {
-  min-width: 40px;
-}
-
-.tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"] svg {
-  height: 18px;
-  width: 18px;
-}
-
-.tps-gcm-parent-nav-button--external[data-tps-gcm-external-action-id="tps-health:food-log"].tps-health-gcm-hidden,
-[data-tps-gcm-external-action-id="tps-health:food-log"].tps-health-gcm-hidden,
-.tps-health-gcm-hidden {
-  display: none;
-}
-
 .tps-health-settings-section p {
   margin: 0 0 4px;
 }
