@@ -10,6 +10,8 @@ import { applyBuiltInHealthGoalTargets, legacyUsdaApiKeyValue, normalizeTPSHealt
 import { assessFoodPlausibility, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodPlan, parseFoodDescription, type DescribeFoodPlan } from "./describe-food";
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
+import { TPSAiGatewayClient } from "./tps-ai-gateway-client";
+import type { TPSAiGatewayApiSnapshot } from "./tps-ai-gateway-contract";
 import * as logger from "./logger";
 import {
   DEFAULT_SETTINGS,
@@ -279,9 +281,16 @@ export default class TPSHealthPlugin extends Plugin {
   private usdaRejectedCredentials = new Set<string>();
   private usdaNotifiedCredentialErrors = new Set<string>();
   private usdaRequestQueue: Promise<void> = Promise.resolve();
+  private aiGatewayClient?: TPSAiGatewayClient;
+  private lifecycleEpoch = 0;
 
   async onload() {
+    const lifecycleEpoch = ++this.lifecycleEpoch;
+    const previousAiGatewayClient = this.aiGatewayClient;
+    this.aiGatewayClient = undefined;
+    previousAiGatewayClient?.dispose();
     const storedSettings = await this.loadData();
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
     this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {});
     logger.setLoggingEnabled(this.settings.enableLogging);
     const legacyUsdaApiKey = legacyUsdaApiKeyValue(storedSettings);
@@ -326,8 +335,10 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flowWarn("Settings", "initial-save:blocked-usda-migration", { reason: "plaintext-retained-for-retry" });
       } else {
         await this.saveData(this.settings);
+        if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
       }
     }
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.api = this.createApi();
     this.api.homeActions = createTPSHealthHomeActionProvider(this);
@@ -336,6 +347,32 @@ export default class TPSHealthPlugin extends Plugin {
       commands: ["tps-health:log-food", "tps-health:log-activity", "tps-health:start-workout"],
     });
     this.addSettingTab(new TPSHealthSettingTab(this.app, this));
+    const aiGatewayClient = new TPSAiGatewayClient(this.app, this.manifest.id);
+    if (!this.isCurrentLifecycle(lifecycleEpoch)) return;
+    this.aiGatewayClient = aiGatewayClient;
+    try {
+      aiGatewayClient.start(
+        (eventRef) => this.registerEvent(eventRef),
+        (api) => {
+          if (!this.isCurrentLifecycle(lifecycleEpoch)
+            || this.aiGatewayClient !== aiGatewayClient) return;
+          logger.flow("AiGateway", "availability:changed", {
+            available: !!api,
+            apiVersion: api?.apiVersion ?? null,
+          });
+        },
+      );
+    } catch (error) {
+      aiGatewayClient.dispose();
+      if (this.aiGatewayClient === aiGatewayClient) this.aiGatewayClient = undefined;
+      throw error;
+    }
+    if (!this.isCurrentLifecycle(lifecycleEpoch)
+      || this.aiGatewayClient !== aiGatewayClient) {
+      aiGatewayClient.dispose();
+      if (this.aiGatewayClient === aiGatewayClient) this.aiGatewayClient = undefined;
+      return;
+    }
 
     this.addCommand({
       id: "start-workout",
@@ -478,6 +515,10 @@ export default class TPSHealthPlugin extends Plugin {
 
   }
 
+  private isCurrentLifecycle(lifecycleEpoch: number): boolean {
+    return lifecycleEpoch === this.lifecycleEpoch;
+  }
+
   async saveSettings() {
     this.settings = normalizeTPSHealthSettings(this.settings);
     logger.setLoggingEnabled(this.settings.enableLogging);
@@ -542,7 +583,11 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.lifecycleEpoch += 1;
     logger.flow("Lifecycle", "unload");
+    const aiGatewayClient = this.aiGatewayClient;
+    this.aiGatewayClient = undefined;
+    aiGatewayClient?.dispose();
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
     this.removeWorkoutActionBars();
     this.unregisterGcmFoodLogButton?.();
@@ -865,12 +910,8 @@ export default class TPSHealthPlugin extends Plugin {
     return result.data;
   }
 
-  private getAiGatewayApi(): { completeStructured<T>(request: { taskId: string; messages: Array<{ role: "system" | "user" | "assistant"; content: string }>; schema: Record<string, unknown>; metadata?: Record<string, string | number | boolean> }): Promise<{ data: T; provider: string; model: string; traceId: string; attempts: number }> } | null {
-    const direct = (this.app as any).tpsAiGateway;
-    if (direct?.completeStructured) return direct;
-    const plugin = (this.app as any).plugins?.getPlugin?.("tps-ai-gateway");
-    const api = plugin?.api;
-    return api?.completeStructured ? api : null;
+  private getAiGatewayApi(): Readonly<TPSAiGatewayApiSnapshot> | undefined {
+    return this.aiGatewayClient?.getApi();
   }
 
   private async legacyOpenFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {

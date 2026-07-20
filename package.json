@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test scripts/test-home-actions.mjs && node --test scripts/test-food-log-date.mjs && node --test scripts/test-health-providers.mjs && node --test scripts/test-describe-food.mjs && npm run build",
+    "test": "node --test scripts/test-home-actions.mjs && node --test scripts/test-food-log-date.mjs && node --test scripts/test-health-providers.mjs && node --test scripts/test-ai-gateway-client.mjs && node --test scripts/test-ai-gateway-host-lifecycle.mjs && node --test scripts/test-describe-food.mjs && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [],
