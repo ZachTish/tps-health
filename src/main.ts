@@ -6,7 +6,7 @@ import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine, workoutSummaryLine } from "./format";
 import { resolveFoodLogDateKey } from "./food-log-date";
-import { applyBuiltInHealthGoalTargets, legacyUsdaApiKeyValue, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
+import { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { assessFoodPlausibility, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodPlan, parseFoodDescription, type DescribeFoodPlan } from "./describe-food";
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
@@ -263,6 +263,8 @@ export default class TPSHealthPlugin extends Plugin {
   private settingsSavePending = false;
   private lastSavedSettingsSnapshot: TPSHealthSettings | null = null;
   private retainedLegacyUsdaApiKey = "";
+  private settingsPersistenceBlockedByFutureSchema = false;
+  private settingsPersistenceBlockedNoticeShown = false;
   api!: TPSHealthApi;
   private unregisterGcmFoodLogButton: (() => void) | null = null;
   private lastFoodLogOpenAt = 0;
@@ -281,17 +283,22 @@ export default class TPSHealthPlugin extends Plugin {
 
   async onload() {
     const storedSettings = await this.loadData();
+    this.settingsPersistenceBlockedByFutureSchema = isFutureTPSHealthSettings(storedSettings);
     this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {});
     logger.setLoggingEnabled(this.settings.enableLogging);
     const legacyUsdaApiKey = legacyUsdaApiKeyValue(storedSettings);
     let usdaKeyMigration: ReturnType<typeof planLegacyUsdaApiKeyMigration> = null;
     try {
-      usdaKeyMigration = planLegacyUsdaApiKeyMigration(
+      if (this.settingsPersistenceBlockedByFutureSchema) {
+        logger.flowWarn("Settings", "future-schema:read-only", { settingsVersion: this.settings.settingsVersion });
+        new Notice("TPS Health settings were written by a newer plugin version. This version will use the compatible values but will not overwrite that settings file.", 12000);
+      }
+      usdaKeyMigration = this.settingsPersistenceBlockedByFutureSchema ? null : planLegacyUsdaApiKeyMigration(
         storedSettings,
         this.settings,
         (name) => this.app.secretStorage.getSecret(name),
       );
-      if (usdaKeyMigration) {
+      if (!this.settingsPersistenceBlockedByFutureSchema && usdaKeyMigration) {
         this.settings.usdaApiKeySecrets = usdaKeyMigration.secretNames;
         this.app.secretStorage.setSecret(usdaKeyMigration.secretName, usdaKeyMigration.value);
         if (this.app.secretStorage.getSecret(usdaKeyMigration.secretName) !== usdaKeyMigration.value) {
@@ -313,7 +320,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowError("Settings", "usda-api-key:migration-failed", new Error("USDA SecretStorage migration failed."), { credentialCount: this.settings.usdaApiKeySecrets.length, errorType: error instanceof Error ? error.name : typeof error });
       new Notice("TPS Health could not move the USDA API key into device-local SecretStorage. TPS Health will stay available, retain the plaintext setting, use DEMO_KEY for USDA search, and retry migration after reload.", 12000);
     }
-    const migrationNeeded = settingsNeedMigration(storedSettings, this.settings);
+    const migrationNeeded = !this.settingsPersistenceBlockedByFutureSchema && settingsNeedMigration(storedSettings, this.settings);
     logger.flow("Lifecycle", "load", {
       migrated: migrationNeeded && !this.retainedLegacyUsdaApiKey,
       foodLogTarget: this.settings.foodLogTarget,
@@ -324,7 +331,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (this.retainedLegacyUsdaApiKey) {
         logger.flowWarn("Settings", "initial-save:blocked-usda-migration", { reason: "plaintext-retained-for-retry" });
       } else {
-        await this.saveData(this.settings);
+        await this.saveData(settingsPersistencePayload(this.settings));
       }
     }
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
@@ -480,54 +487,91 @@ export default class TPSHealthPlugin extends Plugin {
   async saveSettings() {
     this.settings = normalizeTPSHealthSettings(this.settings);
     logger.setLoggingEnabled(this.settings.enableLogging);
+    if (this.settingsPersistenceBlockedByFutureSchema) {
+      this.notifySettingsPersistenceBlocked();
+      return;
+    }
+    this.settingsSavePending = true;
     if (this.settingsSavePromise) {
-      this.settingsSavePending = true;
       logger.flow("Settings", "save:queued");
       await this.settingsSavePromise;
       return;
     }
 
-    do {
-      this.settingsSavePending = false;
-      const snapshot = JSON.parse(JSON.stringify(this.settings));
-      const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, snapshot);
-      logger.flow("Settings", "save:start", {
-        changedKeys,
-        changedCount: changedKeys.length,
-        enableLogging: snapshot.enableLogging,
-        foodLogTarget: snapshot.foodLogTarget,
-        workoutLogTarget: snapshot.workoutLogTarget,
-        activeWorkoutPath: snapshot.activeWorkoutPath || "",
-        activeWorkoutSetCount: snapshot.activeWorkoutSetCount || 0,
-      });
-      const persistencePayload = settingsPersistencePayload(snapshot, this.retainedLegacyUsdaApiKey);
-      if (this.retainedLegacyUsdaApiKey) {
-        logger.flowWarn("Settings", "save:retaining-legacy-usda-key", { reason: "migration-retry-required" });
-      }
-      this.settingsSavePromise = this.saveData(persistencePayload);
-      try {
-        await this.settingsSavePromise;
-        this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(snapshot);
-        logger.flow("Settings", "save:done", {
+    const operation = Promise.resolve().then(() => this.flushSettingsSaveQueue());
+    this.settingsSavePromise = operation;
+    await operation;
+  }
+
+  private async flushSettingsSaveQueue(): Promise<void> {
+    try {
+      while (this.settingsSavePending && !this.settingsPersistenceBlockedByFutureSchema) {
+        this.settingsSavePending = false;
+        const localSnapshot = cloneSettingsSnapshot(this.settings);
+        const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, localSnapshot);
+        if (!changedKeys.length) continue;
+        const latestStored = await this.loadData();
+        if (isFutureTPSHealthSettings(latestStored)) {
+          this.settingsPersistenceBlockedByFutureSchema = true;
+          logger.flowWarn("Settings", "save:blocked-future-schema", { changedCount: changedKeys.length });
+          this.notifySettingsPersistenceBlocked();
+          return;
+        }
+        const persistencePayload = mergeTPSHealthSettingsChanges(
+          latestStored,
+          localSnapshot,
+          changedKeys,
+          this.retainedLegacyUsdaApiKey,
+        );
+        logger.flow("Settings", "save:start", {
           changedKeys,
           changedCount: changedKeys.length,
-          foodLogTarget: snapshot.foodLogTarget,
-          workoutLogTarget: snapshot.workoutLogTarget,
-          activeWorkoutPath: snapshot.activeWorkoutPath || "",
-          activeWorkoutSetCount: snapshot.activeWorkoutSetCount || 0,
+          enableLogging: persistencePayload.enableLogging,
+          foodLogTarget: persistencePayload.foodLogTarget,
+          workoutLogTarget: persistencePayload.workoutLogTarget,
+          activeWorkoutPath: persistencePayload.activeWorkoutPath || "",
+          activeWorkoutSetCount: persistencePayload.activeWorkoutSetCount || 0,
         });
-      } catch (error) {
-        logger.flowError("Settings", "save:failed", error, {
-          foodLogTarget: snapshot.foodLogTarget,
-          workoutLogTarget: snapshot.workoutLogTarget,
-          activeWorkoutPath: snapshot.activeWorkoutPath || "",
-          activeWorkoutSetCount: snapshot.activeWorkoutSetCount || 0,
-        });
-        throw error;
-      } finally {
-        this.settingsSavePromise = null;
+        if (this.retainedLegacyUsdaApiKey) {
+          logger.flowWarn("Settings", "save:retaining-legacy-usda-key", { reason: "migration-retry-required" });
+        }
+        try {
+          await this.saveData(persistencePayload);
+          const persistedSnapshot = normalizeTPSHealthSettings(persistencePayload);
+          const mutationsDuringSave = changedSettingsKeys(localSnapshot, this.settings);
+          this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(persistedSnapshot);
+          this.settings = mutationsDuringSave.length
+            ? normalizeTPSHealthSettings(mergeTPSHealthSettingsChanges(persistedSnapshot, this.settings, mutationsDuringSave))
+            : persistedSnapshot;
+          logger.setLoggingEnabled(this.settings.enableLogging);
+          logger.flow("Settings", "save:done", {
+            changedKeys,
+            changedCount: changedKeys.length,
+            foodLogTarget: persistedSnapshot.foodLogTarget,
+            workoutLogTarget: persistedSnapshot.workoutLogTarget,
+            activeWorkoutPath: persistedSnapshot.activeWorkoutPath || "",
+            activeWorkoutSetCount: persistedSnapshot.activeWorkoutSetCount || 0,
+          });
+        } catch (error) {
+          logger.flowError("Settings", "save:failed", error, {
+            foodLogTarget: localSnapshot.foodLogTarget,
+            workoutLogTarget: localSnapshot.workoutLogTarget,
+            activeWorkoutPath: localSnapshot.activeWorkoutPath || "",
+            activeWorkoutSetCount: localSnapshot.activeWorkoutSetCount || 0,
+          });
+          throw error;
+        }
       }
-    } while (this.settingsSavePending);
+    } finally {
+      this.settingsSavePromise = null;
+    }
+  }
+
+  private notifySettingsPersistenceBlocked(): void {
+    logger.flowWarn("Settings", "save:blocked", { reason: "future-schema", settingsVersion: this.settings.settingsVersion });
+    if (this.settingsPersistenceBlockedNoticeShown) return;
+    this.settingsPersistenceBlockedNoticeShown = true;
+    new Notice("TPS Health did not save settings because this vault contains settings from a newer TPS Health version. Update this device first.", 12000);
   }
 
   async updateBuiltInHealthGoalTarget(
@@ -13735,7 +13779,7 @@ function cloneSettingsSnapshot(settings: TPSHealthSettings): TPSHealthSettings {
 }
 
 function changedSettingsKeys(previous: TPSHealthSettings | null, next: TPSHealthSettings): string[] {
-  if (!previous) return [];
+  if (!previous) return Object.keys(next).sort();
   const previousRecord = previous as unknown as Record<string, unknown>;
   const nextRecord = next as unknown as Record<string, unknown>;
   const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);

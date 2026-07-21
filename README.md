@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.1.4
+
+- Settings saves reload the newest data and merge only locally changed fields, preserving synchronized preferences, unknown fields, and live food/workout state changed during the write.
+- Explicit values survive normalization, newer settings-schema files remain read-only, and legacy credential keys are removed only through the guarded migration path.
+- This backward-compatible patch keeps the minimum supported Obsidian version at 1.12.0 and requires no manual migration.
+
 ## Development and deployment
 
 Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtisherman/TishOS Plugin Development/TPS-health (Dev)`, outside both vaults. `npm run build` and watch builds deploy byte-changed runtime artifacts by default only to `/Users/zachtisherman/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Plugin Test Vault/.obsidian/plugins/tps-health`; `npm test` is therefore isolated even though it ends with a production-mode build. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-health` is an explicit guarded post-validation action. Neither target overwrites `data.json` or other runtime-owned state. Source-owned fixtures under `scripts/fixtures` keep Base-contract tests independent of either vault's notes and settings.
@@ -8,7 +14,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 
 ## Install with BRAT
 
-Add the private repository `ZachTish/tps-health` to BRAT and select **Latest** tracking so BRAT follows the newest GitHub release. For private-repository access, give BRAT a fine-grained GitHub token scoped to this repository with **Contents: Read-only** permission. Never commit the token to this repository, an Obsidian vault, or any synced note.
+Add the public repository `ZachTish/tps-health` to BRAT and select **Latest** so BRAT follows numbered releases without a private-repository token. Freeze a numeric version when a device should remain pinned.
 
 ## Mobile modal contract
 
@@ -212,7 +218,7 @@ Known limitation: native Bases table/list views operate on files and tasks, so t
 
 ## Settings
 
-Settings are normalized deterministically on load and before save. Vault-specific configuration such as custom folders, food log target/path, health goals, provider options, and API-key secret references is preserved even when it differs from source defaults. Health goal JSON uses one object per metric: `min` only means good at or above that value, `max` only means good at or below that value, and both `min` and `max` normalize to a healthy range regardless of the typed `kind`; reversed bounds are corrected on save. Obsolete persisted fields that are no longer part of `TPSHealthSettings`, including the legacy `foodLogHeading`, are stripped during this migration pass.
+Settings are normalized deterministically on load and before save. Vault-specific configuration such as custom folders, food log target/path, health goals, provider options, and API-key secret references is preserved even when it differs from source defaults. Unknown extension/newer-release fields are retained, while explicitly retired Health fields such as the legacy `foodLogHeading` are removed. A higher `settingsVersion` is treated as read-only: an older plugin may use compatible values but will not downgrade or rewrite that file. Every ordinary save reloads the latest persisted payload and applies only keys changed by the current plugin instance, so volatile food-draft and workout-state writes cannot overwrite preferences synced from another device. Health goal JSON uses one object per metric: `min` only means good at or above that value, `max` only means good at or below that value, and both `min` and `max` normalize to a healthy range regardless of the typed `kind`; reversed bounds are corrected on save.
 
 USDA FoodData Central credentials are an ordered list of up to five device-local Obsidian SecretStorage references. The first populated reference is primary; later populated references are fallbacks. Empty device-local references are skipped, preserving synced reference order on devices that do not have every secret. Automatic rotation occurs only for exact `API_KEY_MISSING` or `API_KEY_INVALID` responses. Disabled, unverified, unauthorized, generic 403, 5xx, timeout, network-error, and 429 responses do not rotate; 403 credential status is surfaced without exposing the reference or value. If no configured reference is populated, TPS Health uses public `DEMO_KEY`.
 

@@ -1,8 +1,10 @@
-import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
+import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 
 export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
 
 type SettingsRecord = Record<string, unknown>;
+
+const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "usdaApiKeySecret", "usdaApiKey"] as const;
 
 const WORKOUT_LOG_TARGETS = ["session-note", "daily-note", "both"];
 const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
@@ -11,7 +13,7 @@ const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
 const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["metadata-folder-tag", "folder", "tag", "metadata"];
 const HEALTH_GOAL_KINDS: HealthGoalKind[] = ["min", "max", "range", "counter"];
 
-export function normalizeTPSHealthSettings(stored: Partial<TPSHealthSettings> | SettingsRecord | null | undefined): TPSHealthSettings {
+export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   const storedRecord = stored && typeof stored === "object" && !Array.isArray(stored) ? stored as SettingsRecord : {};
   const raw = { ...DEFAULT_SETTINGS, ...storedRecord } as SettingsRecord;
   const settings = Object.keys(DEFAULT_SETTINGS).reduce((normalized, key) => {
@@ -77,7 +79,45 @@ export function normalizeTPSHealthSettings(stored: Partial<TPSHealthSettings> | 
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
 
   settings.healthGoals = normalizeHealthGoals(settings.healthGoals, settings);
-  return settings;
+  settings.settingsVersion = isFutureTPSHealthSettings(storedRecord)
+    ? healthSettingsVersion(storedRecord)
+    : TPS_HEALTH_SCHEMA_VERSION;
+
+  const preserved = Object.entries(storedRecord).reduce((result, [key, value]) => {
+    result[key] = cloneSettingValue(value);
+    return result;
+  }, {} as SettingsRecord);
+  for (const key of REMOVED_SETTING_KEYS) delete preserved[key];
+  for (const [key, value] of Object.entries(settings as unknown as SettingsRecord)) {
+    preserved[key] = cloneSettingValue(value);
+  }
+  return preserved as unknown as TPSHealthSettings;
+}
+
+export function healthSettingsVersion(value: unknown): number {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value as SettingsRecord : {};
+  const parsed = Number(record.settingsVersion);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+export function isFutureTPSHealthSettings(value: unknown): boolean {
+  return healthSettingsVersion(value) > TPS_HEALTH_SCHEMA_VERSION;
+}
+
+export function mergeTPSHealthSettingsChanges(
+  latestStored: unknown,
+  localSettings: TPSHealthSettings,
+  changedKeys: readonly string[],
+  retainedLegacyUsdaApiKey = "",
+): TPSHealthSettings & { usdaApiKey?: string } {
+  const merged = normalizeTPSHealthSettings(latestStored);
+  const mergedRecord = merged as unknown as SettingsRecord;
+  const localRecord = localSettings as unknown as SettingsRecord;
+  for (const key of changedKeys) {
+    if (key === "settingsVersion" || !Object.prototype.hasOwnProperty.call(localRecord, key)) continue;
+    mergedRecord[key] = cloneSettingValue(localRecord[key]);
+  }
+  return settingsPersistencePayload(normalizeTPSHealthSettings(mergedRecord), retainedLegacyUsdaApiKey);
 }
 
 export interface LegacyUsdaApiKeyMigration {
@@ -136,6 +176,7 @@ export function settingsPersistencePayload(
   retainedLegacyUsdaApiKey = "",
 ): TPSHealthSettings & { usdaApiKey?: string } {
   const payload: TPSHealthSettings & { usdaApiKey?: string } = { ...settings };
+  for (const key of REMOVED_SETTING_KEYS) delete (payload as unknown as SettingsRecord)[key];
   const retained = retainedLegacyUsdaApiKey.trim();
   if (retained) payload.usdaApiKey = retained;
   return payload;
@@ -187,8 +228,13 @@ function normalizePendingFoodLogDraft(value: unknown): TPSHealthSettings["pendin
 }
 
 function cloneSettingValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => typeof item === "object" && item ? { ...item } : item);
-  if (typeof value === "object" && value) return { ...value };
+  if (Array.isArray(value)) return value.map(cloneSettingValue);
+  if (typeof value === "object" && value) {
+    return Object.entries(value as SettingsRecord).reduce((clone, [key, entryValue]) => {
+      clone[key] = cloneSettingValue(entryValue);
+      return clone;
+    }, {} as SettingsRecord);
+  }
   return value;
 }
 

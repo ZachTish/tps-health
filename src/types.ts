@@ -15,6 +15,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
+export const TPS_HEALTH_SCHEMA_VERSION = 1;
 
 export interface HealthGoal {
   propertyKey: string;
@@ -27,6 +28,7 @@ export interface HealthGoal {
 }
 
 export interface TPSHealthSettings {
+  settingsVersion: number;
   dailyNoteFormat: string;
   dailyNoteFolder: string;
   workoutsFolder: string;
@@ -251,6 +253,7 @@ export interface WorkoutSession {
 }
 
 export const DEFAULT_SETTINGS: TPSHealthSettings = {
+  settingsVersion: TPS_HEALTH_SCHEMA_VERSION,
   dailyNoteFormat: "ddd, MMM DD YYYY",
   dailyNoteFolder: "",
   workoutsFolder: "Health/Workouts",
@@ -308,5 +311,3 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   pendingFoodLogDraft: null,
   enableLogging: false,
 };
-
-export const TPS_HEALTH_SCHEMA_VERSION = 1;

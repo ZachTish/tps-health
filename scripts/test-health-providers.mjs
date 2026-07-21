@@ -59,14 +59,14 @@ async function importPluginWithObsidianStub() {
     }
     globalThis.__TPSHealthTestTFile = TFile;
     export class Plugin {
-      constructor(app) { this.app = app; }
+      constructor(app) { this.app = app; this.__pluginData = null; }
       addCommand() {}
       addSettingTab() {}
       registerBasesView() {}
       registerEditorExtension() {}
       registerEvent() {}
-      loadData() { return null; }
-      saveData() {}
+      loadData() { return Promise.resolve(this.__pluginData == null ? null : JSON.parse(JSON.stringify(this.__pluginData))); }
+      saveData(value) { this.__pluginData = JSON.parse(JSON.stringify(value)); return Promise.resolve(); }
     }
     export class Modal { constructor(app) { this.app = app; } open() {} close() {} }
     export class Menu {
@@ -1524,7 +1524,7 @@ test("health source keeps session-note workouts and fast rollup paths available"
 });
 
 test("settings normalization removes stale fields while preserving live vault config", async () => {
-  const { applyBuiltInHealthGoalTargets, normalizeTPSHealthSettings, normalizeHealthGoalDefinition } = await importSettingsNormalizationUtility();
+  const { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, normalizeTPSHealthSettings, normalizeHealthGoalDefinition } = await importSettingsNormalizationUtility();
   const [mainSource, settingsSource] = await Promise.all([
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/settings.ts", import.meta.url)), "utf8")),
@@ -1579,6 +1579,7 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
+  assert.equal(normalized.settingsVersion, 1);
   assert.equal(normalized.pendingFoodLogDraft?.activeTab, "search");
   assert.equal(normalized.pendingFoodLogDraft?.searchInput, "eggs");
   assert.equal(normalized.pendingFoodLogDraft?.consumedDateInput, "2026-07-06T07:30");
@@ -1621,6 +1622,20 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(migratedWorkout.activeWorkoutTarget, "daily-note");
   assert.equal(Object.hasOwn(migratedWorkout, "workoutSessionBodyMode"), false);
   assert.equal(Object.hasOwn(migratedWorkout, "workoutExerciseLayout"), false);
+  const preservedUnknown = normalizeTPSHealthSettings({
+    settingsVersion: 1,
+    dailyNoteFolder: "Dailynotes",
+    extensionOwnedSetting: { enabled: true, nested: ["one"] },
+  });
+  assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
+  const futureSettings = normalizeTPSHealthSettings({
+    settingsVersion: 2,
+    dailyNoteFolder: "Future Dailynotes",
+    futureOnlySetting: { mode: "new" },
+  });
+  assert.equal(isFutureTPSHealthSettings(futureSettings), true);
+  assert.equal(futureSettings.settingsVersion, 2, "normalization must never downgrade a future schema");
+  assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
   assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-shape"/);
@@ -1630,9 +1645,9 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.match(mainSource, /goal: goal\.kind === "counter" \? undefined : goal\.max \?\? goal\.min/);
   assert.match(mainSource, /private lastSavedSettingsSnapshot: TPSHealthSettings \| null = null/);
   assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(this\.settings\)/);
-  assert.match(mainSource, /const changedKeys = changedSettingsKeys\(this\.lastSavedSettingsSnapshot, snapshot\)/);
-  assert.match(mainSource, /changedKeys,\s+changedCount: changedKeys\.length,\s+enableLogging: snapshot\.enableLogging/);
-  assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(snapshot\)/);
+  assert.match(mainSource, /const changedKeys = changedSettingsKeys\(this\.lastSavedSettingsSnapshot, localSnapshot\)/);
+  assert.match(mainSource, /changedKeys,\s+changedCount: changedKeys\.length,\s+enableLogging: persistencePayload\.enableLogging/);
+  assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(persistedSnapshot\)/);
   assert.match(mainSource, /function changedSettingsKeys\(previous: TPSHealthSettings \| null, next: TPSHealthSettings\): string\[\]/);
   assert.match(mainSource, /function stableSettingsValue\(value: unknown\): string/);
 });
@@ -1675,7 +1690,7 @@ test("USDA credential references and legacy plaintext migrate without destructiv
   const onloadSource = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("async saveSettings()"));
   assert.match(onloadSource, /planLegacyUsdaApiKeyMigration/);
   assert.ok(onloadSource.indexOf("secretStorage.setSecret") < onloadSource.indexOf("SecretStorage did not confirm"));
-  assert.ok(onloadSource.indexOf("SecretStorage did not confirm") < onloadSource.indexOf("saveData(this.settings)"));
+  assert.ok(onloadSource.indexOf("SecretStorage did not confirm") < onloadSource.indexOf("saveData(settingsPersistencePayload(this.settings))"));
   assert.match(onloadSource, /usda-api-key:migrated/);
   assert.match(onloadSource, /usda-api-key:migration-failed/);
   assert.match(mainSource, /private readUsdaCredentials\(\): UsdaCredential\[\]/);
@@ -1739,8 +1754,8 @@ test("failed USDA SecretStorage migration keeps Health online without purging th
   assert.doesNotMatch(migrationCatch, /throw error/);
   assert.match(migrationCatch, /TPS Health will stay available/);
   assert.match(onloadSource, /initial-save:blocked-usda-migration/);
-  assert.match(onloadSource, /if \(this\.retainedLegacyUsdaApiKey\) \{[\s\S]+?\} else \{\s+await this\.saveData\(this\.settings\);/);
-  assert.match(saveSource, /settingsPersistencePayload\(snapshot, this\.retainedLegacyUsdaApiKey\)/);
+  assert.match(onloadSource, /if \(this\.retainedLegacyUsdaApiKey\) \{[\s\S]+?\} else \{\s+await this\.saveData\(settingsPersistencePayload\(this\.settings\)\);/);
+  assert.match(saveSource, /mergeTPSHealthSettingsChanges\([\s\S]+?this\.retainedLegacyUsdaApiKey/);
   assert.match(saveSource, /save:retaining-legacy-usda-key/);
   assert.match(readKeySource, /const references = this\.retainedLegacyUsdaApiKey \? \[\] : this\.settings\.usdaApiKeySecrets/);
 
@@ -1785,6 +1800,76 @@ test("failed USDA SecretStorage migration keeps Health online without purging th
   assert.equal(Object.hasOwn(savedPayloads[0], "usdaApiKeySecret"), false);
 });
 
+test("volatile Health state saves merge with externally updated preferences and preserve extension fields", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const baseline = normalizeTPSHealthSettings({
+    settingsVersion: 1,
+    dailyNoteFolder: "Original Dailynotes",
+    activeWorkoutSetCount: 0,
+  });
+  plugin.settings = baseline;
+  plugin.lastSavedSettingsSnapshot = JSON.parse(JSON.stringify(baseline));
+  plugin.loadData = async () => ({
+    settingsVersion: 1,
+    dailyNoteFolder: "Synced Dailynotes",
+    activeWorkoutSetCount: 0,
+    extensionOwnedSetting: { preserved: true },
+  });
+  const savedPayloads = [];
+  plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
+
+  plugin.settings.activeWorkoutSetCount = 4;
+  await plugin.saveSettings();
+
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].dailyNoteFolder, "Synced Dailynotes", "an untouched preference changed by another device must win");
+  assert.equal(savedPayloads[0].activeWorkoutSetCount, 4, "the intended local volatile-state change must persist");
+  assert.deepEqual(savedPayloads[0].extensionOwnedSetting, { preserved: true });
+  assert.equal(plugin.settings.dailyNoteFolder, "Synced Dailynotes", "the in-memory view must adopt the merged persisted settings");
+});
+
+test("future Health settings remain read-only and are never downgraded or rewritten", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of [
+    "registerEditorSuggest",
+    "registerMarkdownPostProcessor",
+    "register",
+    "registerWorkoutTaskCompletionTracking",
+    "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback",
+    "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh",
+    "scheduleWorkoutActionBars",
+  ]) plugin[method] = () => {};
+  plugin.loadData = async () => ({
+    settingsVersion: 99,
+    dailyNoteFolder: "Future Dailynotes",
+    futureOnlySetting: { doNotLose: true },
+  });
+  const savedPayloads = [];
+  plugin.saveData = async (payload) => { savedPayloads.push(payload); };
+
+  await plugin.onload();
+  assert.equal(plugin.settings.settingsVersion, 99);
+  assert.deepEqual(plugin.settings.futureOnlySetting, { doNotLose: true });
+  assert.equal(savedPayloads.length, 0, "startup must not migrate a future schema");
+
+  plugin.settings.dailyNoteFolder = "Local edit that cannot safely persist";
+  await plugin.saveSettings();
+  assert.equal(savedPayloads.length, 0, "later state or settings changes must remain fail-closed");
+});
+
 test("built-in scalar health goals migrate, save, reload, and render canonically", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
   const stale = normalizeTPSHealthSettings({
@@ -1816,6 +1901,7 @@ test("built-in scalar health goals migrate, save, reload, and render canonically
   const plugin = new TPSHealthPlugin(fake.app);
   plugin.settings = stale;
   let persisted = null;
+  plugin.loadData = async () => persisted;
   plugin.saveData = async (settings) => {
     persisted = JSON.parse(JSON.stringify(settings));
   };
