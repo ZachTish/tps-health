@@ -1832,6 +1832,46 @@ test("volatile Health state saves merge with externally updated preferences and 
   assert.equal(plugin.settings.dailyNoteFolder, "Synced Dailynotes", "the in-memory view must adopt the merged persisted settings");
 });
 
+test("a queued Health revert repairs an uncertain failed write", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const baseline = normalizeTPSHealthSettings({ settingsVersion: 1, calorieGoal: 2000, proteinGoalG: 100 });
+  plugin.settings = JSON.parse(JSON.stringify(baseline));
+  plugin.lastSavedSettingsSnapshot = JSON.parse(JSON.stringify(baseline));
+  let disk = JSON.parse(JSON.stringify(baseline));
+  let releaseFailure;
+  let markFirstStarted;
+  const failureGate = new Promise((resolve) => { releaseFailure = resolve; });
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  let attempts = 0;
+  plugin.loadData = async () => JSON.parse(JSON.stringify(disk));
+  plugin.saveData = async (payload) => {
+    attempts += 1;
+    disk = JSON.parse(JSON.stringify(payload));
+    if (attempts === 1) {
+      markFirstStarted();
+      await failureGate;
+      throw new Error("uncertain write result");
+    }
+  };
+
+  plugin.settings.calorieGoal = 2100;
+  const first = plugin.saveSettings();
+  await firstStarted;
+  plugin.settings.calorieGoal = 2000;
+  plugin.settings.proteinGoalG = 125;
+  const newest = plugin.saveSettings();
+  releaseFailure();
+  await Promise.all([first, newest]);
+
+  assert.equal(attempts, 2);
+  assert.equal(disk.calorieGoal, 2000, "the same-as-baseline revert must be forced after an uncertain write");
+  assert.equal(disk.proteinGoalG, 125);
+});
+
 test("future Health settings remain read-only and are never downgraded or rewritten", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();

@@ -261,6 +261,7 @@ export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
   private settingsSavePromise: Promise<void> | null = null;
   private settingsSavePending = false;
+  private readonly uncertainSettingsSaveKeys = new Set<string>();
   private lastSavedSettingsSnapshot: TPSHealthSettings | null = null;
   private retainedLegacyUsdaApiKey = "";
   private settingsPersistenceBlockedByFutureSchema = false;
@@ -509,6 +510,9 @@ export default class TPSHealthPlugin extends Plugin {
         this.settingsSavePending = false;
         const localSnapshot = cloneSettingsSnapshot(this.settings);
         const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, localSnapshot);
+        for (const key of this.uncertainSettingsSaveKeys) {
+          if (!changedKeys.includes(key)) changedKeys.push(key);
+        }
         if (!changedKeys.length) continue;
         const latestStored = await this.loadData();
         if (isFutureTPSHealthSettings(latestStored)) {
@@ -540,6 +544,7 @@ export default class TPSHealthPlugin extends Plugin {
           const persistedSnapshot = normalizeTPSHealthSettings(persistencePayload);
           const mutationsDuringSave = changedSettingsKeys(localSnapshot, this.settings);
           this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(persistedSnapshot);
+          for (const key of changedKeys) this.uncertainSettingsSaveKeys.delete(key);
           this.settings = mutationsDuringSave.length
             ? normalizeTPSHealthSettings(mergeTPSHealthSettingsChanges(persistedSnapshot, this.settings, mutationsDuringSave))
             : persistedSnapshot;
@@ -553,13 +558,14 @@ export default class TPSHealthPlugin extends Plugin {
             activeWorkoutSetCount: persistedSnapshot.activeWorkoutSetCount || 0,
           });
         } catch (error) {
+          for (const key of changedKeys) this.uncertainSettingsSaveKeys.add(key);
           logger.flowError("Settings", "save:failed", error, {
             foodLogTarget: localSnapshot.foodLogTarget,
             workoutLogTarget: localSnapshot.workoutLogTarget,
             activeWorkoutPath: localSnapshot.activeWorkoutPath || "",
             activeWorkoutSetCount: localSnapshot.activeWorkoutSetCount || 0,
           });
-          throw error;
+          if (!this.settingsSavePending) throw error;
         }
       }
     } finally {
