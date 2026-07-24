@@ -78,7 +78,8 @@ test("Describe delegates AI transport to TPS AI Gateway and retains the local pa
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(mainSource, /\/api\/chat/);
   assert.match(mainSource, /return this\.legacyOpenFoodDescriber\(description, dateContext, onProgress\)/);
-  assert.match(settingsSource, /managed centrally in TPS AI Gateway/);
+  assert.match(settingsSource, /setButtonText\("Open AI Gateway settings"\)/);
+  assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
 });
 
 test("Describe limits AI to extraction and selects searched candidates deterministically", () => {

@@ -1,16 +1,17 @@
 # TPS Health
 
-## 0.1.4
+## 0.2.0
 
-- Settings saves reload the newest data and merge only locally changed fields, preserving synchronized preferences, unknown fields, and live food/workout state changed during the write.
-- Explicit values survive normalization, newer settings-schema files remain read-only, and legacy credential keys are removed only through the guarded migration path.
-- This backward-compatible patch keeps the minimum supported Obsidian version at 1.12.0 and requires no manual migration.
+- Settings now use five clean destinations for daily logging, food/goals, workouts, the note library, and integrations/advanced controls.
+- The existing exercise tag is now editable; conditional food-file and USDA credential controls retain route, disclosure, scroll, and focus context.
+- Existing health data and settings schemas are unchanged. This backward-compatible minor release keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
 
 ## Development and deployment
 
 Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtisherman/TishOS Plugin Development/TPS-health (Dev)`, outside both vaults. `npm run build` and watch builds deploy byte-changed runtime artifacts by default only to `/Users/zachtisherman/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Plugin Test Vault/.obsidian/plugins/tps-health`; `npm test` is therefore isolated even though it ends with a production-mode build. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-health` is an explicit guarded post-validation action. Neither target overwrites `data.json` or other runtime-owned state. Source-owned fixtures under `scripts/fixtures` keep Base-contract tests independent of either vault's notes and settings.
 
 - 2026-07-16 isolation validation: the Food Log Base test was made source-owned; the declared suite passed 97 tests with only its intentionally gated USDA live check skipped, and the emailed api.data.gov key then passed that optional USDA Foundation check 1/1. The required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Health in the registered test vault with independent default state. No live promotion occurred, and production runtime checksums remained unchanged.
+- 2026-07-24 settings-release validation: the final suite passed 107 tests with only the intentionally credential-gated live USDA check skipped (three Home, two date-owner, 86 provider, nine Describe, and seven routed-settings passes). The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all five settings destinations, conditional food-log controls, three intentional disclosures, and the direct AI Gateway settings handoff were inspected in the registered test vault without changing settings or calling a provider. The pre/post `data.json` SHA-256 remained `fafcc4f731c14d776efe202b3fe6ff0af63f6cfb68ebf6b6060702e18edeecf7`; production was not accessed or promoted.
 
 ## Install with BRAT
 
@@ -228,7 +229,15 @@ The normal test suite never spends the shared public `DEMO_KEY` quota. USDA requ
 
 The scalar Calorie goal, Protein goal, and Activity goal fields are canonical for the corresponding built-in rendered metrics. Changing one updates its `healthGoals` entry before save. On load, stale bounds that still equal a TPS default are migrated to the scalar value while explicitly non-default JSON bounds are preserved in storage; rendering still uses the canonical scalar target. Additional JSON-defined metrics are unaffected.
 
-The settings UI uses direct collapsible sections with descriptive titles for diagnostics, daily-note storage, reusable note folders, templates, GCM integration, workout logging, food logging, nutrition sources, goals, and API settings.
+The settings UI is a five-destination hub. Only the selected page is rendered, and the page choice is UI-only rather than another persisted setting:
+
+- **Daily logging** owns the daily-note format/folder, food-log target, the single-file path when relevant, section, and automatic rollups.
+- **Food & goals** owns branded nutrition search, the canonical calorie/protein/activity fields, and one optional **Custom goal JSON** disclosure for labels, colors, ranges, and additional metrics.
+- **Workouts** owns the workout target, daily summary link, rest behavior, cooldown default, and set notation.
+- **Note library** owns reusable-note folders, identification modes, workout/exercise/food/recipe tags (including the existing **Exercise tag** value), and one optional Templates disclosure.
+- **Integrations & advanced** owns the GCM food button, a direct **Open AI Gateway settings** handoff, one optional **Provider credentials** disclosure for Open Food Facts and ordered USDA references, and diagnostics.
+
+The route hub remains visible while scrolling. Route changes focus the selected page heading, and USDA add/edit/reorder/remove rerenders preserve the active route and scroll position while moving focus to a reachable credential control. On narrow screens, the five route buttons form a horizontal strip, setting controls wrap to full width, and secret/text/JSON inputs cannot force the settings pane wider than the phone.
 
 ### Diagnostics
 
@@ -285,7 +294,7 @@ Workout daily receipts are always inserted into the daily note body immediately 
 - Daily note format and folder
 - Workouts, workout plans, exercises, foods, and recipes folders
 - Food and workout note identification mode: frontmatter/folder/tag, folder only, tag only, or frontmatter only
-- Workout, food, and recipe tags used when tag-based identification is enabled
+- Workout, exercise, food, and recipe tags used for reusable-note identification and creation
 - Optional workout, workout plan, exercise, and food template paths
 - Show food log button in TPS Global Context Menu
 - Workout log target
@@ -615,9 +624,14 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 - 2026-07-13: Added the TPS Health contextual Home action provider for selected-day food and workout commands, with direct routing regression coverage and no active-file inference.
 - 2026-07-13: Compacted the Food Log controls, spacing, tabs, search results, and selected-food cards. Each food title now occupies a dedicated full-width card row so long names remain visible above metadata, macros, serving, and edit controls. Validation: focused provider regression, production build, Obsidian reload, and live Food Log UI QA.
 
+## Version notes
+
+- 0.2.0: Reorganized settings into five shallow accessible destinations, exposed the existing exercise tag, added conditional food-file visibility, and preserved route/focus context across USDA credential edits without changing the settings schema.
+- 0.1.4: Made settings persistence merge local intent into the newest data while preserving synchronized preferences, unknown fields, live health state, and guarded credential migrations.
+
 ## Settings layout
 
-Daily-note format and folder are root-level core controls. Reusable-note folders, identification, templates, integrations, workout/food logging, nutrition sources, goals, credentials, and diagnostics are optional collapsed groups. No nested accordion is used, and workout/food logging no longer expands on first open.
+TPS Health uses five shallow routed pages: **Daily logging**, **Food & goals**, **Workouts**, **Note library**, and **Integrations & advanced**. Only Custom goal JSON, Templates, and Provider credentials use optional disclosures; there are no nested accordions. The default route is Daily logging, navigation state is not persisted into plugin data, and credential rerenders retain route, disclosure, scroll, and keyboard-focus context.
 
 - 2026-07-13: Audited settings navigation, promoted daily log storage to the root, and made every optional group initially collapsed. Validation: settings hierarchy audit, full test suite, production build/deploy, and Obsidian reload.
 - 2026-07-13: Restored the declared activity API contract by exporting the existing `ensureActivityLogBase` and `logActivity` implementations through `api`; both routes retain structured call and mutation logging. Added source regression coverage after the settings-audit build exposed the omission.
