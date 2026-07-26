@@ -376,7 +376,7 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
   border-radius: 6px;
   display: grid;
   gap: 2px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 8px 0 10px;
   padding: 2px;
 }
@@ -384,14 +384,23 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
 .tps-health-food-tab {
   border-radius: 4px;
   font-size: var(--font-ui-small);
+  height: auto;
   min-height: 32px;
   padding: 4px 8px;
+  white-space: normal;
   width: 100%;
 }
 
 .tps-health-food-tab.is-active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+}
+
+.tps-health-food-tab:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+  position: relative;
+  z-index: 1;
 }
 
 .tps-health-food-tab-panel {
@@ -742,6 +751,20 @@ body.is-phone .tps-health-selection-controls {
   background: var(--background-modifier-hover);
 }
 
+.tps-health-result:focus-visible {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+  outline: none;
+}
+
+.tps-health-food-search-frame .tps-health-result button:focus-visible,
+.tps-health-food-search-frame .tps-health-search-actions button:focus-visible,
+.tps-health-food-search-frame .tps-health-selection button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
 .tps-health-result-title {
   color: var(--text-normal);
   font-weight: 600;
@@ -833,15 +856,113 @@ body.is-phone .tps-health-selection-controls {
   text-align: right;
 }
 
-.tps-health-scanner-video {
-  aspect-ratio: 4 / 3;
-  background: var(--background-secondary);
+.tps-health-scanner-status {
+  background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  margin-top: 12px;
-  max-height: 420px;
+  border-radius: 8px;
+  margin: 8px 0;
+  min-height: 2.8em;
+  padding: 8px 10px;
+}
+
+.tps-health-scanner-viewport {
+  background: #050505;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  height: min(420px, 42dvh);
+  margin: 8px 0 10px;
+  min-height: 180px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.tps-health-scanner-video {
+  background: #050505;
+  border: 0;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  margin: 0;
+  max-height: none;
   object-fit: cover;
   width: 100%;
+}
+
+/* Keep the standalone video usable while older call sites transition to the
+   viewport wrapper. */
+.tps-health-modal > .tps-health-scanner-video {
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  height: auto;
+  margin: 8px 0 10px;
+  max-height: 420px;
+}
+
+.tps-health-scanner-guide {
+  aspect-ratio: 2.35 / 1;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 999px rgba(0, 0, 0, 0.26),
+    0 0 18px rgba(0, 0, 0, 0.28);
+  left: 50%;
+  max-width: 360px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(76%, 360px);
+}
+
+.tps-health-scanner-guide::before,
+.tps-health-scanner-guide::after {
+  background: var(--interactive-accent);
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+}
+
+.tps-health-scanner-guide::before {
+  left: -2px;
+}
+
+.tps-health-scanner-guide::after {
+  right: -2px;
+}
+
+.tps-health-scanner-controls,
+.tps-health-scanner-manual {
+  border-top: 0;
+  padding: 6px 0;
+}
+
+.tps-health-scanner-controls .setting-item-control {
+  flex: 1 1 100%;
+  justify-content: center;
+}
+
+.tps-health-scanner-controls button {
+  flex: 1 1 112px;
+  height: auto;
+  min-height: 36px;
+  white-space: normal;
+}
+
+.tps-health-scanner-manual {
+  margin-top: 4px;
+}
+
+.tps-health-scanner-controls button:focus-visible,
+.tps-health-scanner-manual button:focus-visible,
+.tps-health-scanner-manual input:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .tps-health-food-image {
@@ -2346,10 +2467,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
     gap: 9px 10px;
   }
 
-  .tps-health-food-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .tps-health-describe-input {
     font-size: 16px;
     min-height: 132px;
@@ -2359,8 +2476,8 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
     min-height: 48px;
   }
 
-  .tps-health-scanner-video {
-    max-height: 45vh;
+  .tps-health-scanner-viewport {
+    height: min(360px, 40dvh);
   }
 
   .tps-health-log-summary {
@@ -2424,6 +2541,49 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
   .tps-health-modal .setting-item-control input {
     min-width: 100%;
+  }
+}
+
+@media (max-width: 600px), (hover: none) and (pointer: coarse) {
+  .tps-health-food-search-frame .tps-health-food-tab,
+  .tps-health-food-search-frame .tps-health-result,
+  .tps-health-food-search-frame .setting-item-control input,
+  .tps-health-food-search-frame .setting-item-control button,
+  .tps-health-food-search-frame .tps-health-result > .setting-item button,
+  .tps-health-food-search-frame .tps-health-search-actions button,
+  .tps-health-food-search-frame .tps-health-selection-step,
+  .tps-health-food-search-frame .tps-health-selection-controls input,
+  .tps-health-food-search-frame .tps-health-selection-controls select,
+  .tps-health-food-search-frame .tps-health-selection-controls button,
+  .tps-health-food-search-frame .tps-health-selection-header-actions button,
+  .tps-health-food-search-frame .tps-health-selection-actions button,
+  .tps-health-scanner-controls button,
+  .tps-health-scanner-manual input,
+  .tps-health-scanner-manual button {
+    min-height: 44px;
+  }
+
+  .tps-health-food-search-frame .tps-health-food-tab {
+    padding: 6px 4px;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-step {
+    height: 44px;
+    min-width: 44px;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls input,
+  .tps-health-food-search-frame .tps-health-selection-quantity {
+    height: 44px;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls select {
+    height: 44px;
+  }
+
+  .tps-health-scanner-controls .setting-item-control,
+  .tps-health-scanner-manual .setting-item-control {
+    align-items: stretch;
   }
 }
 

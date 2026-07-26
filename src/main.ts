@@ -57,6 +57,8 @@ interface BarcodeScannerOptions {
   adapters?: BarcodeScannerAdapters;
 }
 
+type FoodLogTab = "barcode" | "search" | "mine" | "describe";
+
 interface WorkoutOpenResult {
   requested: boolean;
   opened: boolean;
@@ -117,17 +119,49 @@ const LEGACY_WORKOUT_LOG_BASE_PATH = "Workout Log.base";
 const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan.md";
 const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode";
 const BARCODE_LOOKUP_TIMEOUT_MS = 5000;
+const BARCODE_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
+const BARCODE_MISS_CACHE_TTL_MS = 5 * 60 * 1000;
+const BARCODE_RESULT_CACHE_MAX_ENTRIES = 200;
 const USDA_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const USDA_SEARCH_CACHE_MAX_ENTRIES = 100;
 const USDA_RATE_LIMIT_FALLBACK_MS = 60 * 60 * 1000;
 const USDA_RATE_LIMIT_MAX_MS = 24 * 60 * 60 * 1000;
-const FOOD_SEARCH_DEBOUNCE_MS = 450;
+const OPEN_FOOD_FACTS_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const OPEN_FOOD_FACTS_SEARCH_CACHE_MAX_ENTRIES = 100;
+const FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100;
+const BARCODE_IMAGE_MAX_DIMENSION = 1600;
+const DESCRIBE_REMOTE_QUERY_BUDGET = 4;
 
 type UsdaCredentialSource = "demo" | "secret";
 
 interface UsdaSearchCacheEntry {
   expiresAt: number;
   foods: any[];
+}
+
+interface FoodItemsCacheEntry {
+  expiresAt: number;
+  items: FoodItem[];
+}
+
+interface BarcodeResultCacheEntry {
+  expiresAt: number;
+  item: FoodItem | null;
+}
+
+interface LocalFoodIndex {
+  signature: string;
+  items: FoodItem[];
+  byBarcode: Map<string, FoodItem>;
+  byName: Map<string, FoodItem[]>;
+  scannedFiles: number;
+}
+
+interface FoodUsageIndex {
+  signature: string;
+  stats: Map<string, FoodUsageStats>;
+  files: number;
+  readFailures: number;
 }
 
 interface UsdaCredential {
@@ -275,12 +309,22 @@ export default class TPSHealthPlugin extends Plugin {
   private finishPromptWorkoutFiles = new Set<string>();
   private workoutActionBarRefreshTimer: number | null = null;
   private foodLogNutritionRepairTimer: number | null = null;
+  private localFoodIndex: LocalFoodIndex | null = null;
+  private foodUsageIndex: FoodUsageIndex | null = null;
+  private localFoodIndexDirty = true;
+  private foodUsageIndexDirty = true;
+  private foodUsageIndexGeneration = 0;
+  private foodUsageIndexInFlight: { signature: string; generation: number; promise: Promise<FoodUsageIndex> } | null = null;
   private usdaSearchCache = new Map<string, UsdaSearchCacheEntry>();
   private usdaSearchInFlight = new Map<string, Promise<any[]>>();
   private usdaRateLimitedUntil = new Map<UsdaCredentialSource, number>();
   private usdaRejectedCredentials = new Set<string>();
   private usdaNotifiedCredentialErrors = new Set<string>();
   private usdaRequestQueue: Promise<void> = Promise.resolve();
+  private openFoodFactsSearchCache = new Map<string, FoodItemsCacheEntry>();
+  private openFoodFactsSearchInFlight = new Map<string, Promise<FoodItem[]>>();
+  private barcodeResultCache = new Map<string, BarcodeResultCacheEntry>();
+  private barcodeLookupInFlight = new Map<string, Promise<FoodItem | null>>();
 
   async onload() {
     const storedSettings = await this.loadData();
@@ -343,6 +387,7 @@ export default class TPSHealthPlugin extends Plugin {
       commands: ["tps-health:log-food", "tps-health:log-activity", "tps-health:start-workout"],
     });
     this.addSettingTab(new TPSHealthSettingTab(this.app, this));
+    this.registerFoodSearchIndexInvalidation();
 
     this.addCommand({
       id: "start-workout",
@@ -431,7 +476,7 @@ export default class TPSHealthPlugin extends Plugin {
       callback: () => this.traceCommand("scan-food-barcode", async () => {
         const dateContext = await this.getActiveDailyNoteDateContext();
         logger.flow("FoodDateContext", "scan-barcode:active-file", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
-        new BarcodeScannerModal(this.app, this, dateContext).open();
+        this.openFoodSearchModal(null, dateContext, "barcode");
       }),
     });
     this.addCommand({
@@ -642,13 +687,14 @@ export default class TPSHealthPlugin extends Plugin {
     this.scheduleGcmMenuRefresh();
   }
 
-  private openFoodSearchModal(initialDraft: InlineFoodDraft | null, dateContext: FoodLogDateContext | null): void {
+  private openFoodSearchModal(initialDraft: InlineFoodDraft | null, dateContext: FoodLogDateContext | null, initialTab?: FoodLogTab): void {
     const now = Date.now();
     const elapsedMs = now - this.lastFoodLogOpenAt;
     if (elapsedMs < 500) {
       logger.flow("FoodModal", "open-search:suppressed", {
         elapsedMs,
         hasInitialDraft: !!initialDraft,
+        initialTab: initialTab || "",
         ...summarizeDateContext(dateContext),
       });
       return;
@@ -656,9 +702,10 @@ export default class TPSHealthPlugin extends Plugin {
     this.lastFoodLogOpenAt = now;
     logger.flow("FoodModal", "open-search", {
       hasInitialDraft: !!initialDraft,
+      initialTab: initialTab || "",
       ...summarizeDateContext(dateContext),
     });
-    new FoodSearchModal(this.app, this, initialDraft, dateContext).open();
+    new FoodSearchModal(this.app, this, initialDraft, dateContext, initialTab).open();
   }
 
   async openFoodLogBase(): Promise<void> {
@@ -811,10 +858,20 @@ export default class TPSHealthPlugin extends Plugin {
       reviewOutcome,
     });
     onProgress?.("Matching foods and portions…");
-    const candidateGroups = await Promise.all(plannedFoods.map(async (food) => {
-      const searches = await Promise.all(food.queries.map((query) => this.searchFoods(query)));
-      return { food, candidates: dedupeFoods(searches.flat()).slice(0, 18) };
-    }));
+    const loggedStats = await this.getLoggedFoodStats("");
+    let remoteQueriesUsed = 0;
+    const candidateGroups = await mapWithConcurrency(plannedFoods, 3, async (food) => {
+      let candidates: FoodItem[] = [];
+      for (const query of food.queries.slice(0, 2)) {
+        candidates = dedupeFoods([...candidates, ...await this.searchLocalFoods(query, loggedStats)]);
+        if (candidates.length >= 8) break;
+        if (remoteQueriesUsed >= DESCRIBE_REMOTE_QUERY_BUDGET) continue;
+        remoteQueriesUsed++;
+        candidates = dedupeFoods([...candidates, ...await this.searchFoods(query, loggedStats)]);
+        if (candidates.length >= 8) break;
+      }
+      return { food, candidates: candidates.slice(0, 18) };
+    });
     const selectedByGroup = new Map<number, BatchFoodSelection>();
     candidateGroups.forEach((group, groupIndex) => {
       for (let candidateIndex = 0; candidateIndex < group.candidates.length; candidateIndex += 1) {
@@ -855,6 +912,8 @@ export default class TPSHealthPlugin extends Plugin {
       planned: plannedFoods.length,
       matched: selectedByGroup.size,
       estimated: plannedFoods.length - selectedByGroup.size,
+      remoteQueriesUsed,
+      remoteQueryBudget: DESCRIBE_REMOTE_QUERY_BUDGET,
       reviewOutcome,
     });
     if (!found.length) throw new Error("No sufficiently confident database matches were found.");
@@ -899,15 +958,23 @@ export default class TPSHealthPlugin extends Plugin {
     }
     onProgress?.("Matching foods and portions…");
     logger.flow("FoodDescribe", "match:start", { parts: parts.length, ...summarizeDateContext(dateContext) });
-    const matches = await Promise.all(parts.map(async (part) => {
-      const results = await this.searchFoods(part.query);
+    const loggedStats = await this.getLoggedFoodStats("");
+    let remoteQueriesUsed = 0;
+    const matches = await mapWithConcurrency(parts, 3, async (part) => {
+      let results = await this.searchLocalFoods(part.query, loggedStats);
+      if (!results.length && remoteQueriesUsed < DESCRIBE_REMOTE_QUERY_BUDGET) {
+        remoteQueriesUsed++;
+        results = await this.searchFoods(part.query, loggedStats);
+      }
       return { part, item: results[0] || null };
-    }));
+    });
     const found = matches.filter((match): match is typeof match & { item: FoodItem } => !!match.item);
     logger.flow("FoodDescribe", "match:done", {
       parts: parts.length,
       matched: found.length,
       missed: parts.length - found.length,
+      remoteQueriesUsed,
+      remoteQueryBudget: DESCRIBE_REMOTE_QUERY_BUDGET,
       ...summarizeDateContext(dateContext),
     });
     if (!found.length) {
@@ -2227,6 +2294,7 @@ export default class TPSHealthPlugin extends Plugin {
       path: writtenFile.path,
       dailyNotePath: dailyFile.path,
     });
+    this.markFoodUsageIndexDirty();
     if (this.settings.automaticDailyRollups) await this.updateDailyRollupForFile(dailyFile);
     if (options.focusAfterLog !== false) {
       await this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`);
@@ -2267,6 +2335,7 @@ export default class TPSHealthPlugin extends Plugin {
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
     await this.app.vault.create(path, body);
+    this.localFoodIndexDirty = true;
     logger.flow("Food", "note:create", { path, type, name: normalizedItem.name, template: Boolean(template), source: item.source });
     return { ...normalizedItem, id: path, source: "custom-note", sourcePath: path };
   }
@@ -2384,7 +2453,151 @@ export default class TPSHealthPlugin extends Plugin {
     return normalized;
   }
 
+  private foodIndexSettingsSignature(): string {
+    return JSON.stringify([
+      this.settings.foodIdentificationMode,
+      normalizePath(this.settings.foodsFolder || ""),
+      normalizePath(this.settings.recipesFolder || ""),
+      normalizeHealthTag(this.settings.customFoodTag || ""),
+      normalizeHealthTag(this.settings.recipeTag || ""),
+    ]);
+  }
+
+  private foodUsageSettingsSignature(): string {
+    return JSON.stringify([
+      normalizePath(this.settings.foodLogFilePath || ""),
+      normalizePath(this.settings.dailyNoteFolder || ""),
+    ]);
+  }
+
+  private isMarkdownEventFile(file: unknown): file is TFile {
+    return file instanceof TFile || Boolean(file && typeof file === "object" && /\.md$/i.test(String((file as any).path || "")));
+  }
+
+  private foodCatalogPathCouldChange(path: string): boolean {
+    const normalized = normalizePath(path || "");
+    if (!normalized) return false;
+    const folders = [this.settings.foodsFolder, this.settings.recipesFolder]
+      .map((folder) => normalizePath(folder || ""))
+      .filter(Boolean);
+    return folders.some((folder) => normalized === `${folder}.md` || normalized.startsWith(`${folder}/`))
+      || Boolean(this.localFoodIndex?.items.some((item) => item.sourcePath === normalized));
+  }
+
+  private foodUsagePathCouldChange(path: string): boolean {
+    const normalized = normalizePath(path || "");
+    if (!normalized) return false;
+    const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "");
+    return normalized === normalizePath(this.settings.foodLogFilePath || "")
+      || isFoodLogBaseDailyNoteFile(normalized, dailyFolder)
+      || /^Dailynotes\//i.test(normalized);
+  }
+
+  private invalidateFoodSearchIndexes(reason: string, file?: TFile, oldPath = ""): void {
+    const hadCatalog = Boolean(this.localFoodIndex);
+    const hadUsage = Boolean(this.foodUsageIndex);
+    const invalidateCatalog = !file
+      || this.foodCatalogPathCouldChange(file.path)
+      || this.foodCatalogPathCouldChange(oldPath)
+      || isFoodLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file));
+    const invalidateUsage = !file
+      || this.foodUsagePathCouldChange(file.path)
+      || this.foodUsagePathCouldChange(oldPath);
+    if (invalidateCatalog) this.localFoodIndexDirty = true;
+    if (invalidateUsage) this.markFoodUsageIndexDirty();
+    if ((invalidateCatalog && hadCatalog) || (invalidateUsage && hadUsage)) {
+      logger.flow("FoodIndex", "invalidate", {
+        reason,
+        path: file?.path || "",
+        oldPath,
+        catalog: invalidateCatalog,
+        usage: invalidateUsage,
+      });
+    }
+  }
+
+  private registerFoodSearchIndexInvalidation(): void {
+    const vault = this.app.vault as any;
+    const metadataCache = this.app.metadataCache as any;
+    if (typeof vault?.on === "function") {
+      this.registerEvent(vault.on("create", (file: TFile) => {
+        if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("create", file);
+      }));
+      this.registerEvent(vault.on("modify", (file: TFile) => {
+        if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("modify", file);
+      }));
+      this.registerEvent(vault.on("delete", (file: TFile) => {
+        if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("delete", file);
+      }));
+      this.registerEvent(vault.on("rename", (file: TFile, oldPath: string) => {
+        if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("rename", file, oldPath);
+      }));
+    }
+    if (typeof metadataCache?.on === "function") {
+      this.registerEvent(metadataCache.on("changed", (file: TFile) => {
+        if (!this.isMarkdownEventFile(file)) return;
+        this.invalidateFoodSearchIndexes("metadata", file);
+      }));
+    }
+  }
+
+  private getLocalFoodIndex(): LocalFoodIndex {
+    const signature = this.foodIndexSettingsSignature();
+    if (this.localFoodIndex && !this.localFoodIndexDirty && this.localFoodIndex.signature === signature) {
+      return this.localFoodIndex;
+    }
+    const files = this.app.vault.getMarkdownFiles()
+      .slice()
+      .sort((a, b) => (b.stat?.ctime || b.stat?.mtime || 0) - (a.stat?.ctime || a.stat?.mtime || 0));
+    const items: FoodItem[] = [];
+    const byBarcode = new Map<string, FoodItem>();
+    const byName = new Map<string, FoodItem[]>();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!isFoodLikeMarkdownFile(this, file, cache)) continue;
+      const item = this.foodFromFrontmatter(file, cache?.frontmatter || {});
+      items.push(item);
+      const normalizedName = normalizeLookup(item.name);
+      if (normalizedName) {
+        const named = byName.get(normalizedName) || [];
+        named.push(item);
+        byName.set(normalizedName, named);
+      }
+      if (item.barcode) {
+        for (const candidate of barcodeCandidates(item.barcode)) {
+          if (!byBarcode.has(candidate)) byBarcode.set(candidate, item);
+        }
+      }
+    }
+    this.localFoodIndex = { signature, items, byBarcode, byName, scannedFiles: files.length };
+    this.localFoodIndexDirty = false;
+    logger.flow("FoodIndex", "catalog-built", {
+      scannedFiles: files.length,
+      foods: items.length,
+      names: byName.size,
+      barcodes: byBarcode.size,
+    });
+    return this.localFoodIndex;
+  }
+
+  private markFoodUsageIndexDirty(): void {
+    this.foodUsageIndexDirty = true;
+    this.foodUsageIndexGeneration++;
+  }
+
   async findOrCreateFoodNote(item: FoodItem): Promise<FoodItem> {
+    if (item.sourcePath) {
+      const source = this.app.vault.getAbstractFileByPath(item.sourcePath);
+      if (source instanceof TFile && isFoodLikeMarkdownFile(this, source, this.app.metadataCache.getFileCache(source))) {
+        const existing = this.foodFromFrontmatter(source, this.app.metadataCache.getFileCache(source)?.frontmatter || {});
+        if (hasSearchableMacroData(existing.nutrition)) {
+          logger.flow("Food", "find-or-create:path-hit", { name: existing.name, sourcePath: source.path });
+          return existing;
+        }
+        logger.flowWarn("Food", "find-or-create:path-incomplete", { name: existing.name, sourcePath: source.path });
+      }
+      logger.flowWarn("Food", "find-or-create:path-missing", { name: item.name, sourcePath: item.sourcePath });
+    }
     const existing = item.barcode ? this.findFoodByBarcode(item.barcode) : null;
     if (existing) {
       logger.flow("Food", "find-or-create:barcode-hit", { name: existing.name, sourcePath: existing.sourcePath || "", barcode: item.barcode || "" });
@@ -2403,15 +2616,14 @@ export default class TPSHealthPlugin extends Plugin {
   private findFoodByName(name: string, brand?: string): FoodItem | null {
     const normalizedName = normalizeLookup(name);
     const normalizedBrand = normalizeLookup(brand || "");
-    for (const file of this.app.vault.getMarkdownFiles().slice().sort((a, b) => (b.stat?.ctime || b.stat?.mtime || 0) - (a.stat?.ctime || a.stat?.mtime || 0))) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      const fm = cache?.frontmatter || {};
-      if (!isFoodLikeMarkdownFile(this, file, cache)) continue;
-      if (normalizeLookup(String(fm.name || file.basename)) !== normalizedName) continue;
-      if (normalizedBrand && normalizeLookup(String(fm.brand || "")) !== normalizedBrand) continue;
-      return this.foodFromFrontmatter(file, fm);
+    const candidates = (this.getLocalFoodIndex().byName.get(normalizedName) || [])
+      .filter((item) => hasSearchableMacroData(item.nutrition));
+    if (normalizedBrand) {
+      return candidates.find((item) => normalizeLookup(item.brand || "") === normalizedBrand) || null;
     }
-    return null;
+    const brandless = candidates.find((item) => !normalizeLookup(item.brand || ""));
+    if (brandless) return brandless;
+    return candidates.length === 1 ? candidates[0] : null;
   }
 
   findRecipeIngredientFoodByName(name: string): FoodItem | null {
@@ -2454,6 +2666,7 @@ export default class TPSHealthPlugin extends Plugin {
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       Object.assign(frontmatter, foodFrontmatter(normalized, type));
     });
+    this.localFoodIndexDirty = true;
     logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name });
   }
 
@@ -2553,77 +2766,152 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("WorkoutOpen", "reading-mode:done", { path: file.path });
   }
 
+  async searchLocalFoods(query: string, usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
+    const stats = usageStats
+      || (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === this.foodUsageSettingsSignature()
+        ? this.foodUsageIndex.stats
+        : new Map<string, FoodUsageStats>());
+    const [custom, curated] = await Promise.all([
+      this.searchCustomFoods(query),
+      Promise.resolve(searchCuratedFoods(query)),
+    ]);
+    return rankFoodSearchResults(query, dedupeFoods([...custom, ...curated]), stats).slice(0, 30);
+  }
+
+  async getSavedFoods(usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
+    const stats = usageStats
+      || (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === this.foodUsageSettingsSignature()
+        ? this.foodUsageIndex.stats
+        : new Map<string, FoodUsageStats>());
+    const saved = this.getLocalFoodIndex().items
+      .filter((item) => item.source === "custom-note" && hasSearchableMacroData(item.nutrition));
+    return rankFoodSearchResults("", dedupeFoods(saved), stats);
+  }
+
   async searchFoods(query: string, usageStats?: Map<string, FoodUsageStats>, shouldContinue: () => boolean = () => true): Promise<FoodItem[]> {
     const providerBrandedSearch = this.settings.includeBrandedFoodSearch;
     return logger.timeAsync("FoodSearch", "search", { query, branded: providerBrandedSearch, brandedSetting: this.settings.includeBrandedFoodSearch }, async () => {
-    let usdaSearchActive = shouldContinue();
-    const usdaSearch = usdaSearchActive
-      ? this.withTimeout(
-        this.searchUsdaFoods(query, providerBrandedSearch, () => usdaSearchActive && shouldContinue()),
-        1500,
-        [],
-        { scope: "FoodSearch", event: "usda", data: { query, branded: providerBrandedSearch } },
-        () => { usdaSearchActive = false; },
-      )
-      : Promise.resolve([]);
-    const [custom, curated, usda, openFoodFacts, loggedStats] = await Promise.all([
-      this.searchCustomFoods(query),
-      Promise.resolve(searchCuratedFoods(query)),
-      usdaSearch,
-      providerBrandedSearch && shouldContinue()
+      let usdaSearchActive = shouldContinue();
+      const usdaSearch = usdaSearchActive
+        ? this.withTimeout(
+          this.searchUsdaFoods(query, providerBrandedSearch, () => usdaSearchActive && shouldContinue()),
+          1500,
+          [],
+          { scope: "FoodSearch", event: "usda", data: { query, branded: providerBrandedSearch } },
+          () => { usdaSearchActive = false; },
+        )
+        : Promise.resolve([]);
+      const openFoodFactsSearch = providerBrandedSearch && shouldContinue()
         ? this.withTimeout(this.searchOpenFoodFacts(query), 6000, [], { scope: "FoodSearch", event: "open-food-facts", data: { query, branded: true } })
-        : Promise.resolve([]),
-      usageStats ? Promise.resolve(usageStats) : this.getLoggedFoodStats(query),
-    ]);
-    const baseResults = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts]), loggedStats);
-    logger.flow("FoodSearch", "search:counts", {
-      query,
-      custom: custom.length,
-      curated: curated.length,
-      usda: usda.length,
-      openFoodFacts: openFoodFacts.length,
-      returned: Math.min(baseResults.length, 30),
-    });
-    return baseResults.slice(0, 30);
+        : Promise.resolve([]);
+      const [custom, curated, loggedStats] = await Promise.all([
+        this.searchCustomFoods(query),
+        Promise.resolve(searchCuratedFoods(query)),
+        usageStats ? Promise.resolve(usageStats) : this.getLoggedFoodStats(query),
+      ]);
+      if (!shouldContinue()) {
+        const local = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated]), loggedStats).slice(0, 30);
+        logger.flow("FoodSearch", "search:stale-local-only", { query, returned: local.length });
+        return local;
+      }
+      const [usda, openFoodFacts] = await Promise.all([usdaSearch, openFoodFactsSearch]);
+      const baseResults = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts]), loggedStats);
+      logger.flow("FoodSearch", "search:counts", {
+        query,
+        custom: custom.length,
+        curated: curated.length,
+        usda: usda.length,
+        openFoodFacts: openFoodFacts.length,
+        returned: Math.min(baseResults.length, 30),
+      });
+      return baseResults.slice(0, 30);
     });
   }
 
   async getLoggedFoodStats(query: string): Promise<Map<string, FoodUsageStats>> {
-    const tokens = normalizeLookup(query).split(" ").filter((token) => token.length > 1);
+    const signature = this.foodUsageSettingsSignature();
+    if (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === signature) {
+      logger.flow("FoodSearch", "usage:cache-hit", {
+        query,
+        files: this.foodUsageIndex.files,
+        usageKeys: this.foodUsageIndex.stats.size,
+      });
+      return this.foodUsageIndex.stats;
+    }
+    const generation = this.foodUsageIndexGeneration;
+    const inFlight = this.foodUsageIndexInFlight;
+    if (inFlight && inFlight.signature === signature && inFlight.generation === generation) {
+      logger.flow("FoodSearch", "usage:join-in-flight", { query, generation });
+      return (await inFlight.promise).stats;
+    }
+    const promise = this.buildFoodUsageIndex(signature);
+    this.foodUsageIndexInFlight = { signature, generation, promise };
+    try {
+      const built = await promise;
+      const current = generation === this.foodUsageIndexGeneration && signature === this.foodUsageSettingsSignature();
+      if (current && built.readFailures === 0) {
+        this.foodUsageIndex = built;
+        this.foodUsageIndexDirty = false;
+      } else {
+        this.foodUsageIndexDirty = true;
+        logger.flowWarn("FoodSearch", "usage:not-cached", {
+          query,
+          reason: current ? "read-failures" : "invalidated-during-scan",
+          generation,
+          currentGeneration: this.foodUsageIndexGeneration,
+          readFailures: built.readFailures,
+        });
+      }
+      logger.flow("FoodSearch", "usage:done", {
+        query,
+        files: built.files,
+        readFailures: built.readFailures,
+        usageKeys: built.stats.size,
+        cached: current && built.readFailures === 0,
+      });
+      return built.stats;
+    } finally {
+      if (this.foodUsageIndexInFlight?.promise === promise) this.foodUsageIndexInFlight = null;
+    }
+  }
+
+  private async buildFoodUsageIndex(signature: string): Promise<FoodUsageIndex> {
     const stats = new Map<string, FoodUsageStats>();
     const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "");
     const files = this.app.vault.getMarkdownFiles()
       .filter((file) => file.path === normalizePath(this.settings.foodLogFilePath || "") || isFoodLogBaseDailyNoteFile(file.path, dailyFolder) || /^Dailynotes\//i.test(file.path));
     let readFailures = 0;
-    for (const file of files) {
-      let content = "";
-      try {
-        content = await this.app.vault.cachedRead(file);
-      } catch (error) {
-        readFailures++;
-        logger.flowWarn("FoodSearch", "usage-read:failed", { path: file.path, error: logger.errorSummary(error) });
-        continue;
-      }
-      for (const line of content.split("\n")) {
-        if (!isFoodLogLine(line)) continue;
-        const name = readStringField(line, "food") || foodNameFromFoodLogSummary(line);
-        if (!name) continue;
-        const brand = readStringField(line, "brand");
-        const barcode = readStringField(line, "barcode");
-        const foodPath = readStringField(line, "foodPath");
-        const searchable = normalizeLookup([name, brand, foodPath].filter(Boolean).join(" "));
-        if (tokens.length && !tokens.some((token) => searchable.includes(token))) continue;
-        const completed = readStringField(line, "completedDate") || readStringField(line, "createdDate") || "";
-        for (const key of foodUsageKeys({ name, brand, barcode, sourcePath: foodPath } as FoodItem)) {
-          const entry = stats.get(key) || { count: 0, lastLoggedAt: "" };
-          entry.count += 1;
-          if (completed && completed > entry.lastLoggedAt) entry.lastLoggedAt = completed;
-          stats.set(key, entry);
+    const batchSize = 8;
+    for (let start = 0; start < files.length; start += batchSize) {
+      const batch = files.slice(start, start + batchSize);
+      const contents = await Promise.all(batch.map(async (file) => {
+        try {
+          return { file, content: await this.app.vault.cachedRead(file) };
+        } catch (error) {
+          readFailures++;
+          logger.flowWarn("FoodSearch", "usage-read:failed", { path: file.path, error: logger.errorSummary(error) });
+          return { file, content: "" };
+        }
+      }));
+      for (const { content } of contents) {
+        for (const line of content.split("\n")) {
+          if (!isFoodLogLine(line)) continue;
+          const name = readStringField(line, "food") || foodNameFromFoodLogSummary(line);
+          if (!name) continue;
+          const brand = readStringField(line, "brand");
+          const barcode = readStringField(line, "barcode");
+          const foodPath = readStringField(line, "foodPath");
+          const completed = readStringField(line, "completedDate") || readStringField(line, "createdDate") || "";
+          for (const key of foodUsageKeys({ name, brand, barcode, sourcePath: foodPath } as FoodItem)) {
+            const entry = stats.get(key) || { count: 0, lastLoggedAt: "" };
+            entry.count += 1;
+            if (completed && completed > entry.lastLoggedAt) entry.lastLoggedAt = completed;
+            stats.set(key, entry);
+          }
         }
       }
     }
-    logger.flow("FoodSearch", "usage:done", { query, files: files.length, readFailures, usageKeys: stats.size });
-    return stats;
+    return { signature, stats, files: files.length, readFailures };
   }
 
   async logFoodFromInput(input: LogFoodInput): Promise<FoodLogEntry> {
@@ -2970,25 +3258,15 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async searchCustomFoods(query: string): Promise<FoodItem[]> {
     const normalized = normalizeLookup(query);
-    const files = this.app.vault.getMarkdownFiles();
+    const index = this.getLocalFoodIndex();
     const stats = {
-      scanned: files.length,
-      recognized: 0,
+      scanned: index.scannedFiles,
+      recognized: index.items.length,
       noMacroData: 0,
       queryMiss: 0,
       returned: 0,
     };
-    const results = files
-      .map((file) => ({ file, cache: this.app.metadataCache.getFileCache(file) }))
-      .filter(({ file, cache }) => {
-        const recognized = isFoodLikeMarkdownFile(this, file, cache);
-        if (recognized) stats.recognized++;
-        return recognized;
-      })
-      .map(({ file, cache }) => {
-        const fm = cache?.frontmatter || {};
-        return this.foodFromFrontmatter(file, fm);
-      })
+    const results = index.items
       .filter((item) => {
         const hasMacros = hasSearchableMacroData(item.nutrition);
         if (!hasMacros) stats.noMacroData++;
@@ -3001,7 +3279,7 @@ export default class TPSHealthPlugin extends Plugin {
       })
       .sort((a, b) => foodSearchScore(b, normalized) - foodSearchScore(a, normalized));
     stats.returned = results.length;
-    logger.flow("FoodSearch", "custom-scan:done", { query, ...stats });
+    logger.flow("FoodSearch", "custom-index:done", { query, ...stats });
     return results;
   }
 
@@ -3043,31 +3321,72 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async searchOpenFoodFacts(query: string): Promise<FoodItem[]> {
     if (!query.trim()) return [];
+    const normalized = normalizeLookup(query);
+    const providerQuery = foodSearchCorrectedQuery(normalized) || normalized;
+    const cacheKey = providerQuery;
+    const cached = this.openFoodFactsSearchCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.flow("FoodSearch", "open-food-facts:cache-hit", { query, returned: cached.items.length });
+      return cached.items;
+    }
+    if (cached) this.openFoodFactsSearchCache.delete(cacheKey);
+    const existing = this.openFoodFactsSearchInFlight.get(cacheKey);
+    if (existing) {
+      logger.flow("FoodSearch", "open-food-facts:join-in-flight", { query });
+      return existing;
+    }
+    const request = (async () => {
+      try {
+        const primary = await this.searchOpenFoodFactsRoute(providerQuery, "search", () => this.searchOpenFoodFactsSearch(providerQuery));
+        const fallback = primary.items.length
+          ? null
+          : await this.searchOpenFoodFactsRoute(providerQuery, "legacy", () => this.searchOpenFoodFactsLegacySearch(providerQuery));
+        const items = dedupeFoods([...primary.items, ...(fallback?.items || [])]);
+        const allAttemptedRoutesSucceeded = primary.succeeded && (!fallback || fallback.succeeded);
+        if (!items.length && !allAttemptedRoutesSucceeded) {
+          logger.flowWarn("FoodSearch", "open-food-facts:not-cached", { query, reason: "incomplete-empty-result" });
+          return [];
+        }
+        if (this.openFoodFactsSearchCache.size >= OPEN_FOOD_FACTS_SEARCH_CACHE_MAX_ENTRIES && !this.openFoodFactsSearchCache.has(cacheKey)) {
+          const oldest = this.openFoodFactsSearchCache.keys().next().value;
+          if (oldest) this.openFoodFactsSearchCache.delete(oldest);
+        }
+        this.openFoodFactsSearchCache.set(cacheKey, {
+          expiresAt: Date.now() + OPEN_FOOD_FACTS_SEARCH_CACHE_TTL_MS,
+          items,
+        });
+        logger.flow("FoodSearch", "open-food-facts:done", {
+          query,
+          providerQueryChanged: providerQuery !== normalized,
+          routes: fallback ? 2 : 1,
+          returned: items.length,
+        });
+        return items;
+      } catch (error) {
+        logger.flowWarn("FoodSearch", "open-food-facts:failed", { query, error: logger.errorSummary(error) });
+        return [];
+      }
+    })();
+    this.openFoodFactsSearchInFlight.set(cacheKey, request);
     try {
-      const results = await Promise.all(foodSearchQueryVariants(query).map(async (candidate) => {
-        const [search, legacy] = await Promise.all([
-          this.searchOpenFoodFactsRoute(candidate, "search", () => this.searchOpenFoodFactsSearch(candidate)),
-          this.searchOpenFoodFactsRoute(candidate, "legacy", () => this.searchOpenFoodFactsLegacySearch(candidate)),
-        ]);
-        return [...search, ...legacy];
-      }));
-      const items = dedupeFoods(results.flat());
-      logger.flow("FoodSearch", "open-food-facts:done", { query, variants: results.length, returned: items.length });
-      return items;
-    } catch (error) {
-      logger.flowWarn("FoodSearch", "open-food-facts:failed", { query, error: logger.errorSummary(error) });
-      return [];
+      return await request;
+    } finally {
+      if (this.openFoodFactsSearchInFlight.get(cacheKey) === request) this.openFoodFactsSearchInFlight.delete(cacheKey);
     }
   }
 
-  private async searchOpenFoodFactsRoute(query: string, route: "search" | "legacy", search: () => Promise<FoodItem[]>): Promise<FoodItem[]> {
+  private async searchOpenFoodFactsRoute(
+    query: string,
+    route: "search" | "legacy",
+    search: () => Promise<FoodItem[]>,
+  ): Promise<{ items: FoodItem[]; succeeded: boolean }> {
     try {
       const items = await search();
       logger.flow("FoodSearch", `open-food-facts:${route}:done`, { query, returned: items.length });
-      return items;
+      return { items, succeeded: true };
     } catch (error) {
       logger.flowWarn("FoodSearch", `open-food-facts:${route}:failed`, { query, error: logger.errorSummary(error) });
-      return [];
+      return { items: [], succeeded: false };
     }
   }
 
@@ -3376,22 +3695,67 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async lookupOpenFoodFactsBarcode(barcode: string): Promise<FoodItem | null> {
-    const candidates = barcodeCandidates(barcode);
-    logger.flow("Barcode", "lookup:start", { barcode: maskBarcode(barcode), candidates: candidates.length });
-    for (const code of candidates) {
-      const item = await this.withTimeout(
-        this.lookupOpenFoodFactsBarcodeCandidate(code),
-        BARCODE_LOOKUP_TIMEOUT_MS,
-        null,
-        { scope: "Barcode", event: "lookup-candidate", data: { barcode: maskBarcode(code) } },
-      );
-      if (item) {
-        logger.flow("Barcode", "lookup:hit", { barcode: maskBarcode(code), name: item.name, source: item.source });
-        return item;
-      }
+    const digits = barcode.replace(/\D/g, "");
+    if (!digits) return null;
+    const cacheKey = openFoodFactsBarcodeCacheKey(digits);
+    const cached = this.barcodeResultCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.flow("Barcode", "lookup:cache-hit", { barcode: maskBarcode(digits), matched: Boolean(cached.item) });
+      return cached.item;
     }
-    logger.flow("Barcode", "lookup:miss", { barcode: maskBarcode(barcode), candidates: candidates.length });
-    return null;
+    if (cached) this.barcodeResultCache.delete(cacheKey);
+    const existing = this.barcodeLookupInFlight.get(cacheKey);
+    if (existing) {
+      logger.flow("Barcode", "lookup:join-in-flight", { barcode: maskBarcode(digits) });
+      return existing;
+    }
+    const candidates = digits.length === 8 ? barcodeCandidates(digits) : [digits];
+    const request = (async () => {
+      logger.flow("Barcode", "lookup:start", { barcode: maskBarcode(digits), candidates: candidates.length });
+      let failures = 0;
+      for (const code of candidates) {
+        let timedOut = false;
+        try {
+          const item = await this.withTimeout(
+            this.lookupOpenFoodFactsBarcodeCandidate(code),
+            BARCODE_LOOKUP_TIMEOUT_MS,
+            null,
+            { scope: "Barcode", event: "lookup-candidate", data: { barcode: maskBarcode(code) } },
+            () => { timedOut = true; },
+          );
+          if (timedOut) {
+            failures++;
+            continue;
+          }
+          if (item) {
+            this.writeBarcodeResultCache(cacheKey, item, BARCODE_RESULT_CACHE_TTL_MS);
+            logger.flow("Barcode", "lookup:hit", { barcode: maskBarcode(code), name: item.name, source: item.source });
+            return item;
+          }
+        } catch (error) {
+          failures++;
+          logger.flowWarn("Barcode", "lookup-candidate:request-failed", { barcode: maskBarcode(code), error: logger.errorSummary(error) });
+        }
+      }
+      if (failures) throw new Error("Open Food Facts barcode lookup timed out or failed.");
+      this.writeBarcodeResultCache(cacheKey, null, BARCODE_MISS_CACHE_TTL_MS);
+      logger.flow("Barcode", "lookup:miss", { barcode: maskBarcode(digits), candidates: candidates.length });
+      return null;
+    })();
+    this.barcodeLookupInFlight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.barcodeLookupInFlight.get(cacheKey) === request) this.barcodeLookupInFlight.delete(cacheKey);
+    }
+  }
+
+  private writeBarcodeResultCache(cacheKey: string, item: FoodItem | null, ttlMs: number): void {
+    if (this.barcodeResultCache.size >= BARCODE_RESULT_CACHE_MAX_ENTRIES && !this.barcodeResultCache.has(cacheKey)) {
+      const oldest = this.barcodeResultCache.keys().next().value;
+      if (oldest) this.barcodeResultCache.delete(oldest);
+    }
+    this.barcodeResultCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, item });
   }
 
   async enrichFoodSearchItem(item: FoodItem): Promise<FoodItem> {
@@ -3415,21 +3779,7 @@ export default class TPSHealthPlugin extends Plugin {
       });
       if (response.json?.status !== 1 || !response.json?.product) {
         logger.flow("Barcode", "lookup-candidate:v2-miss", { barcode: maskBarcode(code), status: response.json?.status ?? "" });
-        const fallback = await requestUrl({
-          url: `https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`,
-          headers: this.foodFactsHeaders(),
-        });
-        if (fallback.json?.status !== 1 || !fallback.json?.product) {
-          logger.flow("Barcode", "lookup-candidate:v0-miss", { barcode: maskBarcode(code), status: fallback.json?.status ?? "" });
-          return null;
-        }
-        const fallbackItem = this.foodFactsProductToItem(fallback.json.product, code);
-        if (!hasSearchableMacroData(fallbackItem.nutrition)) {
-          logger.flowWarn("Barcode", "lookup-candidate:no-macros", { barcode: maskBarcode(code), route: "v0", name: fallbackItem.name });
-          return null;
-        }
-        logger.flow("Barcode", "lookup-candidate:done", { barcode: maskBarcode(code), route: "v0", name: fallbackItem.name });
-        return fallbackItem;
+        return null;
       }
       const item = this.foodFactsProductToItem(response.json.product, code);
       if (!hasSearchableMacroData(item.nutrition)) {
@@ -3463,19 +3813,20 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private foodFactsHeaders(): Record<string, string> {
+    const configured = this.settings.openFoodFactsUserAgent.trim();
+    const userAgent = !configured || configured === DEFAULT_SETTINGS.openFoodFactsUserAgent || configured === "TPSHealth/0.1 (Obsidian plugin)"
+      ? `TPSHealth/${this.manifest.version} (Obsidian plugin; https://github.com/ZachTish/tps-health)`
+      : configured;
     return {
       "Accept": "application/json",
-      "User-Agent": this.settings.openFoodFactsUserAgent,
+      "User-Agent": userAgent,
     };
   }
 
   private findFoodByBarcode(barcode: string): FoodItem | null {
-    const normalized = barcode.replace(/\D/g, "");
-    for (const file of this.app.vault.getMarkdownFiles().slice().sort((a, b) => (b.stat?.ctime || b.stat?.mtime || 0) - (a.stat?.ctime || a.stat?.mtime || 0))) {
-      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      if (String(fm.barcode || "").replace(/\D/g, "") === normalized) {
-        return this.foodFromFrontmatter(file, { ...fm, barcode: normalized });
-      }
+    for (const candidate of barcodeCandidates(barcode)) {
+      const item = this.getLocalFoodIndex().byBarcode.get(candidate);
+      if (item && hasSearchableMacroData(item.nutrition)) return item;
     }
     return null;
   }
@@ -6320,16 +6671,25 @@ class FoodSearchModal extends Modal {
   private consumedDateInput: string;
   private searchInput = "";
   private barcodeInput = "";
-  private activeFoodLogTab: "barcode" | "search" | "mine" | "describe";
+  private activeFoodLogTab: FoodLogTab;
   private searchInputEl: HTMLInputElement | null = null;
+  private searchButtonEl: HTMLButtonElement | null = null;
   private searchToken = 0;
   private searchTimer: number | null = null;
+  private draftPersistTimer: number | null = null;
+  private onlineSearchActive = false;
   private barcodeScannerModal: BarcodeScannerModal | null = null;
   private restoredPendingDraft = false;
   private describeRequestActive = false;
   private describeDismissed = false;
 
-  constructor(app: App, plugin: TPSHealthPlugin, private initialDraft: InlineFoodDraft | null = null, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    plugin: TPSHealthPlugin,
+    private initialDraft: InlineFoodDraft | null = null,
+    private dateContext: FoodLogDateContext | null = null,
+    initialTab?: FoodLogTab,
+  ) {
     super(app);
     this.plugin = plugin;
     const pendingDraft = initialDraft ? null : plugin.getPendingFoodLogDraft(dateContext);
@@ -6338,7 +6698,7 @@ class FoodSearchModal extends Modal {
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
     }
-    this.activeFoodLogTab = initialDraft?.query ? "search" : pendingDraft?.activeTab || "mine";
+    this.activeFoodLogTab = initialDraft?.query ? "search" : initialTab || pendingDraft?.activeTab || "mine";
     this.consumedDateInput = restoredFoodLogDraftConsumedDateInput(dateContext, pendingDraft);
     if (pendingDraft?.consumedDateInput) {
       const savedConsumedDateInput = pendingDraft.consumedDateInput.trim();
@@ -6360,7 +6720,11 @@ class FoodSearchModal extends Modal {
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Log food" });
     this.statusEl = this.contentEl.createDiv({ cls: "tps-health-status" });
+    this.statusEl.setAttr("role", "status");
+    this.statusEl.setAttr("aria-live", "polite");
     const tabsEl = this.contentEl.createDiv({ cls: "tps-health-food-tabs" });
+    tabsEl.setAttr("role", "tablist");
+    tabsEl.setAttr("aria-label", "Choose a food logging method");
     const panelsEl = this.contentEl.createDiv({ cls: "tps-health-food-tab-panels" });
     const panelByMode = {
       barcode: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
@@ -6368,8 +6732,9 @@ class FoodSearchModal extends Modal {
       mine: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
       describe: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
     };
-    const tabButtons = new Map<"barcode" | "search" | "mine" | "describe", HTMLButtonElement>();
-    const setActiveTab = (mode: "barcode" | "search" | "mine" | "describe") => {
+    const tabButtons = new Map<FoodLogTab, HTMLButtonElement>();
+    const tabOrder: FoodLogTab[] = ["barcode", "search", "mine", "describe"];
+    const setActiveTab = (mode: FoodLogTab) => {
       const token = ++this.searchToken;
       this.activeFoodLogTab = mode;
       logger.flow("FoodModal", "tab:set", { mode, selected: this.selectionItems.length });
@@ -6378,6 +6743,7 @@ class FoodSearchModal extends Modal {
         const active = candidate === mode;
         button.toggleClass("is-active", active);
         button.setAttr("aria-selected", active ? "true" : "false");
+        button.setAttr("tabindex", active ? "0" : "-1");
         panelByMode[candidate].toggleClass("is-active", active);
       }
       if (!this.resultsEl || !this.actionsEl) return;
@@ -6395,11 +6761,30 @@ class FoodSearchModal extends Modal {
         this.statusEl.setText("Describe the meal naturally. We’ll research it, self-review the plan, then prepare the tray.");
       }
     };
-    for (const [mode, label] of [["barcode", "Barcode"], ["search", "Search"], ["mine", "My foods/recipes"], ["describe", "Describe"]] as const) {
+    for (const [mode, label] of [["barcode", "Scan"], ["search", "Search"], ["mine", "Saved"], ["describe", "Describe"]] as const) {
       const button = tabsEl.createEl("button", { text: label, cls: "tps-health-food-tab" });
       button.setAttr("type", "button");
       button.setAttr("role", "tab");
+      button.id = `tps-health-food-tab-${mode}`;
+      const panel = panelByMode[mode];
+      panel.id = `tps-health-food-panel-${mode}`;
+      panel.setAttr("role", "tabpanel");
+      panel.setAttr("aria-labelledby", button.id);
+      button.setAttr("aria-controls", panel.id);
       button.addEventListener("click", () => setActiveTab(mode));
+      button.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const current = tabOrder.indexOf(mode);
+        const next = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? tabOrder.length - 1
+            : (current + (event.key === "ArrowRight" ? 1 : -1) + tabOrder.length) % tabOrder.length;
+        const nextMode = tabOrder[next];
+        setActiveTab(nextMode);
+        tabButtons.get(nextMode)?.focus();
+      });
       tabButtons.set(mode, button);
     }
 
@@ -6465,6 +6850,7 @@ class FoodSearchModal extends Modal {
           text.setValue(this.initialDraft.query);
           this.searchInput = this.initialDraft.query;
           this.queueSearch(this.initialDraft.query);
+          window.setTimeout(() => this.submitOnlineSearch(this.initialDraft?.query || ""), 0);
         } else if (this.searchInput) {
           text.setValue(this.searchInput);
           this.queueSearch(this.searchInput);
@@ -6472,15 +6858,30 @@ class FoodSearchModal extends Modal {
         text.inputEl.addEventListener("input", () => {
           this.searchInput = text.inputEl.value;
           this.scrollSearchIntoView();
-          this.persistDraft();
+          this.scheduleDraftPersist();
           this.queueSearch(text.inputEl.value);
         });
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" || event.isComposing) return;
+          event.preventDefault();
+          this.submitOnlineSearch(text.inputEl.value);
+        });
         text.inputEl.addEventListener("focus", () => this.scrollSearchIntoView());
+      })
+      .addButton((button) => {
+        this.searchButtonEl = button.buttonEl;
+        return button
+          .setButtonText("Search online")
+          .setCta()
+          .onClick(() => this.submitOnlineSearch(this.searchInput));
       });
     new Setting(panelByMode.barcode)
       .setName("Barcode")
       .addText((text) => {
         text.setPlaceholder("UPC or EAN");
+        text.inputEl.setAttr("inputmode", "numeric");
+        text.inputEl.setAttr("enterkeyhint", "search");
+        text.inputEl.setAttr("autocomplete", "off");
         text.inputEl.addEventListener("input", () => {
           this.barcodeInput = text.inputEl.value;
         });
@@ -6519,9 +6920,13 @@ class FoodSearchModal extends Modal {
     this.searchToken += 1;
     if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
     this.searchTimer = null;
+    if (this.draftPersistTimer !== null) window.clearTimeout(this.draftPersistTimer);
+    this.draftPersistTimer = null;
+    if (this.selectionItems.length) void this.persistDraft();
     this.barcodeScannerModal?.close();
     this.barcodeScannerModal = null;
     this.searchInputEl = null;
+    this.searchButtonEl = null;
     this.contentEl.empty();
   }
 
@@ -6548,14 +6953,17 @@ class FoodSearchModal extends Modal {
   private queueSearch(query: string): void {
     const token = ++this.searchToken;
     if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
-    logger.flow("FoodModal", "search:queued", { query, token });
+    this.onlineSearchActive = false;
+    if (this.searchButtonEl) this.searchButtonEl.disabled = false;
+    this.statusEl?.setAttr("aria-busy", "false");
+    logger.flow("FoodModal", "search:local-queued", { query, token });
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = null;
-      if (token === this.searchToken) this.runSearch(query, token);
-    }, FOOD_SEARCH_DEBOUNCE_MS);
+      if (token === this.searchToken) void this.runLocalSearch(query, token);
+    }, FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
   }
 
-  private async runSearch(query: string, token: number): Promise<void> {
+  private async runLocalSearch(query: string, token: number): Promise<void> {
     const trimmed = query.trim();
     this.resultsEl.empty();
     this.actionsEl.empty();
@@ -6563,22 +6971,85 @@ class FoodSearchModal extends Modal {
       this.statusEl.setText("Type at least 2 characters.");
       return;
     }
-    this.statusEl.setText("Searching food databases...");
+    this.statusEl.setText("Searching saved foods...");
     const start = performance.now();
-    const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken && this.activeFoodLogTab === "search");
-    if (token !== this.searchToken || this.activeFoodLogTab !== "search") {
-      logger.flow("FoodModal", "search:stale", { query: trimmed, token, activeTab: this.activeFoodLogTab });
-      return;
-    }
-    logger.flow("FoodModal", "search:done", {
+    const items = await this.plugin.searchLocalFoods(trimmed);
+    if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
+    logger.flow("FoodModal", "search:local-done", {
       query: trimmed,
       results: items.length,
       durationMs: Math.round(performance.now() - start),
     });
+    this.renderSearchResults(
+      trimmed,
+      items,
+      this.onlineSearchActive
+        ? items.length
+          ? `${items.length} quick match${items.length === 1 ? "" : "es"} · checking online databases...`
+          : "Checking online databases..."
+        : items.length
+          ? `${items.length} quick match${items.length === 1 ? "" : "es"}. Press Enter for online databases.`
+          : "No saved match. Press Enter to check online databases.",
+      "Quick matches",
+    );
+  }
+
+  private submitOnlineSearch(query: string): void {
+    const trimmed = query.trim();
+    if (trimmed.length < 2 || this.onlineSearchActive) {
+      if (trimmed.length < 2) this.statusEl.setText("Type at least 2 characters.");
+      return;
+    }
+    const token = ++this.searchToken;
+    if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    this.onlineSearchActive = true;
+    if (this.searchButtonEl) this.searchButtonEl.disabled = true;
+    void this.runLocalSearch(trimmed, token);
+    void this.runOnlineSearch(trimmed, token);
+  }
+
+  private async runOnlineSearch(query: string, token: number): Promise<void> {
+    const trimmed = query.trim();
+    this.statusEl.setAttr("aria-busy", "true");
+    this.statusEl.setText("Checking USDA and Open Food Facts...");
+    const start = performance.now();
+    try {
+      const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken && this.activeFoodLogTab === "search");
+      if (token !== this.searchToken || this.activeFoodLogTab !== "search") {
+        logger.flow("FoodModal", "search:stale", { query: trimmed, token, activeTab: this.activeFoodLogTab });
+        return;
+      }
+      logger.flow("FoodModal", "search:done", {
+        query: trimmed,
+        results: items.length,
+        durationMs: Math.round(performance.now() - start),
+      });
+      this.renderSearchResults(
+        trimmed,
+        items,
+        items.length ? `${items.length} results` : "No results. Try a brand, a more specific food, or create a custom food.",
+        "All results",
+      );
+    } catch (error) {
+      if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
+      logger.flowError("FoodModal", "search:failed", error, { query: trimmed });
+      this.statusEl.setText("Online search failed. Your saved matches are still available.");
+    } finally {
+      if (token === this.searchToken) {
+        this.onlineSearchActive = false;
+        if (this.searchButtonEl) this.searchButtonEl.disabled = false;
+        this.statusEl.setAttr("aria-busy", "false");
+      }
+    }
+  }
+
+  private renderSearchResults(query: string, items: FoodItem[], status: string, heading: string): void {
     this.resultsEl.empty();
-    this.statusEl.setText(items.length ? `${items.length} results` : "No results. Try a brand, a more specific food, or create a custom food.");
-    this.renderCreateAction(trimmed);
-    if (items.length) this.resultsEl.createDiv({ cls: "tps-health-result-section", text: "Search results" });
+    this.actionsEl.empty();
+    this.statusEl.setText(status);
+    this.renderCreateAction(query);
+    if (items.length) this.resultsEl.createDiv({ cls: "tps-health-result-section", text: heading });
     for (const item of items) {
       this.renderFoodResult(item, "Add");
     }
@@ -6592,7 +7063,15 @@ class FoodSearchModal extends Modal {
     }
     logger.flow("FoodModal", "barcode:add-start", { barcode: maskBarcode(barcode) });
     this.statusEl.setText(`Looking up barcode ${barcode}...`);
-    const item = await this.plugin.lookupFoodByBarcode(barcode);
+    let item: FoodItem | null = null;
+    try {
+      item = await this.plugin.lookupFoodByBarcode(barcode);
+    } catch (error) {
+      logger.flowWarn("FoodModal", "barcode:add-failed", { barcode: maskBarcode(barcode), error: logger.errorSummary(error) });
+      this.statusEl.setText("Could not reach the food database. Check your connection and try again.");
+      new Notice("Barcode lookup could not reach the food database.");
+      return;
+    }
     if (!item) {
       logger.flowWarn("FoodModal", "barcode:add-miss", { barcode: maskBarcode(barcode) });
       new Notice("No barcode match found. Create a local food note manually.");
@@ -6604,7 +7083,10 @@ class FoodSearchModal extends Modal {
         servingAmount: 1,
         servingUnit: "serving",
         nutrition: {},
-      }, "No database match found for this barcode. Review and create a local food note.", this.dateContext).open();
+      }, "No database match found for this barcode. Review and create a local food note.", this.dateContext, async (saved) => {
+        await this.addSelection(saved, null, { enrich: false });
+        this.statusEl.setText(`Added ${saved.name}`);
+      }).open();
       return;
     }
     await this.addSelection(item, null, { enrich: false });
@@ -6616,7 +7098,7 @@ class FoodSearchModal extends Modal {
     this.resultsEl.empty();
     this.statusEl.setText("Pick recent foods or search.");
     const loggedStats = await this.plugin.getLoggedFoodStats("");
-    const localFoods = await this.plugin.searchFoods("", loggedStats);
+    const localFoods = await this.plugin.getSavedFoods(loggedStats);
     if (token !== this.searchToken || this.activeFoodLogTab !== "mine") {
       logger.flow("FoodModal", "quick-picks:stale", { token, activeTab: this.activeFoodLogTab });
       return;
@@ -6643,11 +7125,29 @@ class FoodSearchModal extends Modal {
 
   private renderFoodResult(item: FoodItem, addLabel: string): void {
     const row = this.resultsEl.createDiv({ cls: "tps-health-result" });
+    row.setAttr("role", "button");
+    row.setAttr("tabindex", "0");
+    row.setAttr("aria-label", `Add ${item.name}`);
     row.createDiv({ cls: "tps-health-result-title", text: item.name });
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
     renderMacroPills(row.createDiv({ cls: "tps-health-result-macros" }), item.nutrition || {});
-    row.addEventListener("click", async () => {
-      await this.addSelection(item);
+    let adding = false;
+    const add = async () => {
+      if (adding) return;
+      adding = true;
+      row.setAttr("aria-busy", "true");
+      try {
+        await this.addSelection(item, null, { enrich: false });
+      } finally {
+        adding = false;
+        row.setAttr("aria-busy", "false");
+      }
+    };
+    row.addEventListener("click", () => void add());
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      void add();
     });
     const actions = new Setting(row)
       .addButton((button) => button
@@ -6655,7 +7155,7 @@ class FoodSearchModal extends Modal {
         .onClick(async (event) => {
           event.preventDefault();
           event.stopPropagation();
-          await this.addSelection(item);
+          await add();
         }))
       .addButton((button) => button
         .setButtonText("Choose amount")
@@ -6663,7 +7163,7 @@ class FoodSearchModal extends Modal {
           event.preventDefault();
           event.stopPropagation();
           this.close();
-          new FoodLogModal(this.app, this.plugin, await this.plugin.enrichFoodSearchItem(item), this.initialDraft, this.dateContext).open();
+          new FoodLogModal(this.app, this.plugin, item, this.initialDraft, this.dateContext).open();
         }));
     if (!item.sourcePath) actions.addButton((button) => button
         .setButtonText("Create from this")
@@ -6840,6 +7340,7 @@ class FoodSearchModal extends Modal {
       logger.flowWarn("FoodModal", "selection:log-empty", summarizeDateContext(this.dateContext));
       return;
     }
+    const loggedCount = this.selectionItems.length;
     const completedDate = resolveBatchFoodCompletedDate(this.consumedDateInput, this.dateContext);
     logger.flow("FoodModal", "selection:log-start", {
       selected: this.selectionItems.length,
@@ -6853,8 +7354,9 @@ class FoodSearchModal extends Modal {
       });
     }
     await this.plugin.clearPendingFoodLogDraft();
-    logger.flow("FoodModal", "selection:log-done", { selected: this.selectionItems.length, completedDate });
-    new Notice(`Logged ${this.selectionItems.length} foods.`);
+    this.selectionItems = [];
+    logger.flow("FoodModal", "selection:log-done", { selected: loggedCount, completedDate });
+    new Notice(`Logged ${loggedCount} foods.`);
     this.close();
   }
 
@@ -6929,6 +7431,15 @@ class FoodSearchModal extends Modal {
     const file = this.app.vault.getAbstractFileByPath(item.sourcePath);
     const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
     return file instanceof TFile ? foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings) : "food";
+  }
+
+  private scheduleDraftPersist(): void {
+    if (!this.selectionItems.length) return;
+    if (this.draftPersistTimer !== null) window.clearTimeout(this.draftPersistTimer);
+    this.draftPersistTimer = window.setTimeout(() => {
+      this.draftPersistTimer = null;
+      void this.persistDraft();
+    }, 300);
   }
 
   private async persistDraft(): Promise<void> {
@@ -7743,6 +8254,8 @@ class RecipeIngredientModal extends Modal {
   private query = "";
   private searchToken = 0;
   private searchTimer: number | null = null;
+  private onlineSearchButton: HTMLButtonElement | null = null;
+  private onlineSearchActive = false;
   private selectedFood: FoodItem | null = null;
   private quantityEl!: HTMLInputElement;
   private unitEl!: HTMLSelectElement;
@@ -7768,6 +8281,8 @@ class RecipeIngredientModal extends Modal {
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: `Add ${this.targetLabel} ingredient` });
     this.statusEl = this.contentEl.createDiv({ cls: "tps-health-status", text: "Search for a saved or provider food." });
+    this.statusEl.setAttr("role", "status");
+    this.statusEl.setAttr("aria-live", "polite");
     new Setting(this.contentEl)
       .setName("Food")
       .addText((text) => {
@@ -7776,6 +8291,18 @@ class RecipeIngredientModal extends Modal {
           this.query = text.inputEl.value;
           this.queueSearch(this.query);
         });
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void this.submitOnlineSearch();
+        });
+      })
+      .addButton((button) => {
+        this.onlineSearchButton = button.buttonEl;
+        button
+          .setButtonText("Search online")
+          .setCta()
+          .onClick(() => void this.submitOnlineSearch());
       });
     this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-recipe-add-results" });
     this.selectedEl = this.contentEl.createDiv({ cls: "tps-health-recipe-add-selected" });
@@ -7812,20 +8339,55 @@ class RecipeIngredientModal extends Modal {
       this.statusEl.setText("Type at least 2 characters.");
       return;
     }
-    this.statusEl.setText("Searching foods...");
+    this.statusEl.setText("Searching saved foods...");
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = null;
       if (token !== this.searchToken) return;
-      logger.flow("RecipeIngredient", "add-search:start", { sourcePath: this.sourcePath || "", query: trimmed, token });
-      void this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken).then((items) => {
+      logger.flow("RecipeIngredient", "add-search-local:start", { sourcePath: this.sourcePath || "", query: trimmed, token });
+      void this.plugin.searchLocalFoods(trimmed).then((items) => {
         if (token !== this.searchToken) return;
         this.renderResults(items.slice(0, 12));
+        if (!items.length) {
+          this.statusEl.setText("No saved matches. Press Enter or Search online.");
+        } else {
+          this.statusEl.setText(`${Math.min(items.length, 12)} saved result${items.length === 1 ? "" : "s"}. Press Enter to search online.`);
+        }
       }).catch((error) => {
         if (token !== this.searchToken) return;
-        logger.flowError("RecipeIngredient", "add-search:failed", error, { sourcePath: this.sourcePath || "", query: trimmed });
-        this.statusEl.setText("Search failed.");
+        logger.flowError("RecipeIngredient", "add-search-local:failed", error, { sourcePath: this.sourcePath || "", query: trimmed });
+        this.statusEl.setText("Saved-food search failed. You can still search online.");
       });
-    }, FOOD_SEARCH_DEBOUNCE_MS);
+    }, FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
+  }
+
+  private async submitOnlineSearch(): Promise<void> {
+    const trimmed = this.query.trim();
+    if (trimmed.length < 2 || this.onlineSearchActive) return;
+    if (this.searchTimer !== null) {
+      window.clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
+    const token = ++this.searchToken;
+    this.onlineSearchActive = true;
+    if (this.onlineSearchButton) this.onlineSearchButton.disabled = true;
+    this.statusEl.setAttr("aria-busy", "true");
+    this.statusEl.setText("Checking saved foods and online databases...");
+    logger.flow("RecipeIngredient", "add-search-online:start", { sourcePath: this.sourcePath || "", query: trimmed, token });
+    try {
+      const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken);
+      if (token !== this.searchToken) return;
+      this.renderResults(items.slice(0, 12));
+    } catch (error) {
+      if (token !== this.searchToken) return;
+      logger.flowError("RecipeIngredient", "add-search-online:failed", error, { sourcePath: this.sourcePath || "", query: trimmed });
+      this.statusEl.setText("Online search failed. Saved foods are still available.");
+    } finally {
+      if (token === this.searchToken) {
+        this.onlineSearchActive = false;
+        this.statusEl.setAttr("aria-busy", "false");
+        if (this.onlineSearchButton) this.onlineSearchButton.disabled = false;
+      }
+    }
   }
 
   onClose(): void {
@@ -7854,16 +8416,13 @@ class RecipeIngredientModal extends Modal {
   }
 
   private async selectFood(item: FoodItem): Promise<void> {
-    const token = ++this.searchToken;
-    this.statusEl.setText("Loading food details...");
-    const enriched = await this.plugin.enrichFoodSearchItem(item);
-    if (token !== this.searchToken) return;
-    this.selectedFood = enriched;
-    const metric = metricServingForFood(enriched);
-    const preferredUnit = metric?.unit || preferredRecipeIngredientUnit(enriched, enriched.servingUnit || "serving");
-    this.quantityEl.value = String(roundFoodLogQuantity(metric?.amount || enriched.servingAmount || 1));
-    this.renderUnitOptions(enriched, preferredUnit);
-    this.statusEl.setText(`Selected ${enriched.name}.`);
+    this.searchToken += 1;
+    this.selectedFood = item;
+    const metric = metricServingForFood(item);
+    const preferredUnit = metric?.unit || preferredRecipeIngredientUnit(item, item.servingUnit || "serving");
+    this.quantityEl.value = String(roundFoodLogQuantity(metric?.amount || item.servingAmount || 1));
+    this.renderUnitOptions(item, preferredUnit);
+    this.statusEl.setText(`Selected ${item.name}.`);
     this.renderSelectedFood();
   }
 
@@ -8852,7 +9411,7 @@ class FoodLogEditorSuggest extends EditorSuggest<InlineFoodSuggestion> {
       }
       logger.flowWarn("InlineFood", "suggest:source-missing", { sourcePath: draft.sourcePath });
     }
-    const items = await this.plugin.searchFoods(draft.query);
+    const items = await this.plugin.searchLocalFoods(draft.query);
     return items.slice(0, 8).map((item) => ({ draft, item }));
   }
 
@@ -8901,6 +9460,9 @@ class BarcodeScannerModal extends Modal {
   private canvasContext: CanvasRenderingContext2D | null = null;
   private stream: MediaStream | null = null;
   private scanInterval: number | null = null;
+  private nativeFallbackTimer: number | null = null;
+  private nativeFallbackInterval: number | null = null;
+  private nativeFallbackDecodeInProgress = false;
   private zxingVideoControls: any = null;
   private cameraSessionId = 0;
   private stopped = false;
@@ -8917,8 +9479,11 @@ class BarcodeScannerModal extends Modal {
   private shortcutInboxBaselineMtime = 0;
   private shortcutInboxLastProcessedMtime = 0;
   private shortcutInboxLastProcessedBarcode = "";
+  private shortcutInboxProcessing = false;
   private manualBarcode = "";
   private fileInputEl: HTMLInputElement | null = null;
+  private visibilityHandler: (() => void) | null = null;
+  private resumeCameraWhenVisible = false;
 
   constructor(
     app: App,
@@ -8941,27 +9506,29 @@ class BarcodeScannerModal extends Modal {
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Scan food barcode" });
     this.desiredFacingMode = this.desiredFacingMode || this.defaultFacingMode();
-    new Setting(this.contentEl)
-      .setName("Manual barcode")
-      .addText((text) => text
-        .setPlaceholder("UPC or EAN")
-        .onChange((value) => this.manualBarcode = value.trim()))
-      .addButton((button) => button
-        .setButtonText("Lookup")
-        .setCta()
-        .onClick(() => this.lookup(this.manualBarcode)));
+    const status = this.contentEl.createDiv({ cls: "tps-health-status tps-health-scanner-status", text: this.cameraHelpText() });
+    status.setAttr("role", "status");
+    status.setAttr("aria-live", "polite");
 
-    this.videoEl = this.contentEl.createEl("video");
+    const viewport = this.contentEl.createDiv({ cls: "tps-health-scanner-viewport" });
+    this.videoEl = viewport.createEl("video");
     this.videoEl.addClass("tps-health-scanner-video");
     this.videoEl.setAttr("playsinline", "true");
     this.videoEl.setAttr("autoplay", "true");
     this.videoEl.muted = true;
+    viewport.createDiv({
+      cls: "tps-health-scanner-guide",
+      attr: { "aria-hidden": "true" },
+    });
 
-    const status = this.contentEl.createDiv({ cls: "tps-health-status", text: this.cameraHelpText() });
     const controls = new Setting(this.contentEl)
-      .addButton((button) => button
+      .setClass("tps-health-scanner-controls");
+    if (!this.options.autoStart) {
+      controls.addButton((button) => button
         .setButtonText("Start camera")
+        .setCta()
         .onClick(() => this.startCamera(status)));
+    }
     if (this.shouldShowAppleShortcutButton()) {
       controls.addButton((button) => button
         .setButtonText("Apple Shortcut")
@@ -8984,6 +9551,28 @@ class BarcodeScannerModal extends Modal {
         .setButtonText("Scan image")
         .onClick(() => this.fileInputEl?.click()));
 
+    new Setting(this.contentEl)
+      .setClass("tps-health-scanner-manual")
+      .setName("Enter barcode")
+      .setDesc("Use a UPC or EAN when the camera cannot read the label.")
+      .addText((text) => {
+        text
+          .setPlaceholder("UPC or EAN")
+          .onChange((value) => this.manualBarcode = value.trim());
+        text.inputEl.setAttr("inputmode", "numeric");
+        text.inputEl.setAttr("enterkeyhint", "search");
+        text.inputEl.setAttr("autocomplete", "off");
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void this.lookup(this.manualBarcode, status);
+        });
+      })
+      .addButton((button) => button
+        .setButtonText("Lookup")
+        .setCta()
+        .onClick(() => this.lookup(this.manualBarcode, status)));
+
     this.fileInputEl = this.contentEl.createEl("input");
     this.fileInputEl.type = "file";
     this.fileInputEl.accept = "image/*";
@@ -8994,6 +9583,20 @@ class BarcodeScannerModal extends Modal {
       if (file) await this.scanImageFile(file, status);
       if (this.fileInputEl) this.fileInputEl.value = "";
     });
+    this.visibilityHandler = () => {
+      if (document.hidden && this.stream) {
+        this.resumeCameraWhenVisible = true;
+        this.stopScanning();
+        status.setText("Camera paused while Obsidian is in the background.");
+        logger.flow("Barcode", "camera:paused-hidden");
+      } else if (!document.hidden && this.resumeCameraWhenVisible && !this.stopped) {
+        this.resumeCameraWhenVisible = false;
+        status.setText("Restarting camera...");
+        logger.flow("Barcode", "camera:resume-visible");
+        void this.startCamera(status);
+      }
+    };
+    document.addEventListener("visibilitychange", this.visibilityHandler);
     if (this.options.autoStart) window.setTimeout(() => {
       if (!this.stopped) void this.startCamera(status);
     }, 0);
@@ -9010,6 +9613,9 @@ class BarcodeScannerModal extends Modal {
     this.stopped = true;
     this.stopScanning();
     this.stopShortcutInboxWatcher();
+    if (this.visibilityHandler) document.removeEventListener("visibilitychange", this.visibilityHandler);
+    this.visibilityHandler = null;
+    this.resumeCameraWhenVisible = false;
     this.options.onClose?.();
     this.contentEl.empty();
   }
@@ -9066,9 +9672,20 @@ class BarcodeScannerModal extends Modal {
   }
 
   private async processShortcutInbox(statusEl: HTMLElement): Promise<void> {
+    if (this.stopped || this.lookupInProgress || this.shortcutInboxProcessing) return;
+    this.shortcutInboxProcessing = true;
+    try {
+      await this.processShortcutInboxOnce(statusEl);
+    } finally {
+      this.shortcutInboxProcessing = false;
+    }
+  }
+
+  private async processShortcutInboxOnce(statusEl: HTMLElement): Promise<void> {
     if (this.stopped || this.lookupInProgress) return;
     const file = this.shortcutInboxFile();
     if (!file || file.stat.mtime <= this.shortcutInboxBaselineMtime || file.stat.mtime === this.shortcutInboxLastProcessedMtime) return;
+    const observedMtime = file.stat.mtime;
     let content = "";
     try {
       content = await this.app.vault.cachedRead(file);
@@ -9076,18 +9693,19 @@ class BarcodeScannerModal extends Modal {
       logger.flowWarn("Barcode", "shortcut-inbox:read-failed", { error: logger.errorSummary(error) });
       return;
     }
+    if (this.stopped || this.lookupInProgress) return;
     const barcode = shortcutBarcodeFromContent(content);
     if (!barcode) {
-      this.shortcutInboxLastProcessedMtime = file.stat.mtime;
+      this.shortcutInboxLastProcessedMtime = observedMtime;
       logger.flowWarn("Barcode", "shortcut-inbox:no-barcode", { inboxPath: SHORTCUT_BARCODE_INBOX_PATH });
       return;
     }
     if (barcode === this.shortcutInboxLastProcessedBarcode) {
-      this.shortcutInboxLastProcessedMtime = file.stat.mtime;
+      this.shortcutInboxLastProcessedMtime = observedMtime;
       logger.flow("Barcode", "shortcut-inbox:duplicate", { barcode: maskBarcode(barcode), inboxPath: SHORTCUT_BARCODE_INBOX_PATH });
       return;
     }
-    this.shortcutInboxLastProcessedMtime = file.stat.mtime;
+    this.shortcutInboxLastProcessedMtime = observedMtime;
     this.shortcutInboxLastProcessedBarcode = barcode;
     statusEl.setText(`Apple Shortcut barcode received: ${barcode}`);
     try {
@@ -9095,6 +9713,7 @@ class BarcodeScannerModal extends Modal {
     } catch (error) {
       logger.flowWarn("Barcode", "shortcut-inbox:clear-failed", { error: logger.errorSummary(error) });
     }
+    if (this.stopped || this.lookupInProgress) return;
     await this.lookup(barcode, statusEl);
   }
 
@@ -9121,29 +9740,49 @@ class BarcodeScannerModal extends Modal {
       return;
     }
     this.cameraStartInProgress = true;
-    ++this.cameraSessionId;
+    const sessionId = ++this.cameraSessionId;
     logger.flow("Barcode", "camera:start", { facingMode: this.desiredFacingMode || this.defaultFacingMode() });
     try {
       statusEl.setText("Checking native barcode scanner...");
-      if (await this.tryNativeBarcodeBridge(statusEl)) return;
+      if (await this.tryNativeBarcodeBridge(statusEl, sessionId)) return;
+      if (!this.isCameraSessionActive(sessionId)) return;
       statusEl.setText("Web camera scanner active. Scanning...");
       this.torchEnabled = false;
-      this.stream = await this.requestCameraStream();
-      this.videoEl.srcObject = this.stream;
+      const stream = await this.requestCameraStream(sessionId);
+      if (!this.isCameraSessionActive(sessionId)) {
+        stream.getTracks().forEach((track) => track.stop());
+        logger.flow("Barcode", "camera:stream-discarded-stale", { sessionId });
+        return;
+      }
+      this.stream = stream;
+      this.videoEl.srcObject = stream;
       await this.videoEl.play();
-      await this.startZxingVideoScan(statusEl);
+      if (!this.isCameraSessionActive(sessionId)) return;
+      await this.startZxingVideoScan(statusEl, sessionId);
+      if (!this.isCameraSessionActive(sessionId)) return;
       this.updateCameraControlButtons();
       logger.flow("Barcode", "camera:web-started", { facingMode: this.desiredFacingMode || this.defaultFacingMode() });
     } catch (error) {
+      if (!this.isCameraSessionActive(sessionId)) {
+        logger.flow("Barcode", "camera:start-error-ignored-stale", { sessionId });
+        return;
+      }
       logger.flowWarn("Barcode", "camera:start-failed", { error: logger.errorSummary(error) });
+      this.stopScanning();
       statusEl.setText(`Camera/scanner unavailable: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      this.cameraStartInProgress = false;
-      this.updateCameraControlButtons();
+      if (sessionId === this.cameraSessionId) {
+        this.cameraStartInProgress = false;
+        this.updateCameraControlButtons();
+      }
     }
   }
 
-  private async tryNativeBarcodeBridge(statusEl: HTMLElement): Promise<boolean> {
+  private isCameraSessionActive(sessionId: number): boolean {
+    return !this.stopped && sessionId === this.cameraSessionId;
+  }
+
+  private async tryNativeBarcodeBridge(statusEl: HTMLElement, sessionId: number): Promise<boolean> {
     if (!this.shouldTryNativeBarcodeBridge()) return false;
     const scan = this.getNativeBarcodeBridge();
     if (!scan) {
@@ -9153,7 +9792,19 @@ class BarcodeScannerModal extends Modal {
     }
     statusEl.setText("Opening native barcode scanner...");
     try {
-      const result = await scan();
+      const timeoutResult = { timedOut: true };
+      const result = await Promise.race([
+        scan(),
+        new Promise<typeof timeoutResult>((resolve) => {
+          window.setTimeout(() => resolve(timeoutResult), 1800);
+        }),
+      ]);
+      if (!this.isCameraSessionActive(sessionId)) return true;
+      if (result === timeoutResult) {
+        logger.flowWarn("Barcode", "native-bridge:timeout");
+        statusEl.setText("Native scanner did not respond; using web camera scanner.");
+        return false;
+      }
       const barcode = nativeBarcodeBridgeValue(result);
       if (!barcode) {
         logger.flowWarn("Barcode", "native-bridge:no-barcode", { resultType: typeof result });
@@ -9162,9 +9813,11 @@ class BarcodeScannerModal extends Modal {
       }
       statusEl.setText(`Barcode found: ${barcode}`);
       await this.lookup(barcode, statusEl);
+      if (!this.isCameraSessionActive(sessionId) && !this.stopped) return true;
       logger.flow("Barcode", "camera:native-bridge-used");
       return true;
     } catch (error) {
+      if (!this.isCameraSessionActive(sessionId)) return true;
       logger.flowWarn("Barcode", "native-bridge:failed", { error: logger.errorSummary(error) });
       statusEl.setText("Native scanner unavailable or cancelled; using web camera scanner.");
       return false;
@@ -9206,28 +9859,87 @@ class BarcodeScannerModal extends Modal {
     return null;
   }
 
-  private async startZxingVideoScan(statusEl: HTMLElement): Promise<void> {
+  private async startZxingVideoScan(statusEl: HTMLElement, sessionId: number): Promise<void> {
     if (!this.videoEl) {
       logger.flowWarn("Barcode", "zxing-video:no-video");
       return;
     }
     try {
       const reader = this.createLiveBarcodeReader();
-      this.zxingVideoControls = await reader.decodeFromVideoElement(this.videoEl, (result: any) => {
+      const controls = await reader.decodeFromVideoElement(this.videoEl, (result: any) => {
         const text = result?.getText?.() || result?.text || result?.code;
-        if (!text || this.stopped || this.lookupInProgress) return;
-        logger.flow("Barcode", "zxing-video:decoded", { barcode: maskBarcode(String(text)) });
-        statusEl.setText(`Barcode found: ${text}`);
-        void this.lookup(String(text), statusEl);
+        if (!text || !this.isCameraSessionActive(sessionId) || this.lookupInProgress) return;
+        const barcode = barcodeFromInput(String(text));
+        if (!barcode) return;
+        logger.flow("Barcode", "zxing-video:decoded", { barcode: maskBarcode(barcode) });
+        statusEl.setText(`Barcode found: ${barcode}`);
+        void this.lookup(barcode, statusEl);
       });
+      if (!this.isCameraSessionActive(sessionId)) {
+        controls?.stop?.();
+        logger.flow("Barcode", "zxing-video:controls-discarded-stale", { sessionId });
+        return;
+      }
+      this.zxingVideoControls = controls;
+      this.scheduleNativeVideoFallback(statusEl, sessionId);
     } catch (error) {
+      if (!this.isCameraSessionActive(sessionId)) return;
       logger.flowWarn("Barcode", "zxing-video:failed", { error: logger.errorSummary(error) });
       statusEl.setText("Camera active. Using backup scanner...");
-      await this.startCanvasScanLoop(statusEl);
+      await this.startCanvasScanLoop(statusEl, sessionId);
     }
   }
 
-  private async requestCameraStream(): Promise<MediaStream> {
+  private scheduleNativeVideoFallback(statusEl: HTMLElement, sessionId: number): void {
+    const detector = this.getNativeBarcodeDetector();
+    if (!detector || !this.videoEl) return;
+    this.clearNativeVideoFallback();
+    this.nativeFallbackTimer = window.setTimeout(() => {
+      this.nativeFallbackTimer = null;
+      if (!this.isCameraSessionActive(sessionId) || !this.videoEl) return;
+      logger.flow("Barcode", "native-video-fallback:start", { sessionId });
+      this.nativeFallbackInterval = window.setInterval(async () => {
+        if (!this.isCameraSessionActive(sessionId)
+          || this.lookupInProgress
+          || this.nativeFallbackDecodeInProgress
+          || !this.videoEl
+          || !this.videoEl.videoWidth) return;
+        this.nativeFallbackDecodeInProgress = true;
+        try {
+          const detections = await detector.detect(this.videoEl);
+          if (!this.isCameraSessionActive(sessionId)) return;
+          const rawValue = detections?.[0]?.rawValue;
+          if (!rawValue) return;
+          const barcode = barcodeFromInput(String(rawValue));
+          if (!barcode) return;
+          logger.flow("Barcode", "native-video-fallback:decoded", { barcode: maskBarcode(barcode) });
+          statusEl.setText(`Barcode found: ${barcode}`);
+          await this.lookup(barcode, statusEl);
+        } catch (error) {
+          if (this.isCameraSessionActive(sessionId)) {
+            logger.flowWarn("Barcode", "native-video-fallback:failed", { error: logger.errorSummary(error) });
+            this.clearNativeVideoFallback();
+          }
+        } finally {
+          this.nativeFallbackDecodeInProgress = false;
+        }
+      }, 350);
+    }, 800);
+  }
+
+  private clearNativeVideoFallback(): void {
+    if (this.nativeFallbackTimer != null) {
+      window.clearTimeout(this.nativeFallbackTimer);
+      this.nativeFallbackTimer = null;
+    }
+    if (this.nativeFallbackInterval != null) {
+      window.clearInterval(this.nativeFallbackInterval);
+      this.nativeFallbackInterval = null;
+    }
+    this.nativeFallbackDecodeInProgress = false;
+  }
+
+  private async requestCameraStream(sessionId: number): Promise<MediaStream> {
     const getUserMedia = this.options.adapters?.requestCameraStream || navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
     if (!getUserMedia) {
       throw new Error("Camera API is not available in this Obsidian view. Use Scan image or manual entry.");
@@ -9241,6 +9953,7 @@ class BarcodeScannerModal extends Modal {
         },
       });
     } catch (error: any) {
+      if (!this.isCameraSessionActive(sessionId)) throw error;
       try {
         return await getUserMedia({ video: true });
       } catch (fallbackError: any) {
@@ -9296,7 +10009,7 @@ class BarcodeScannerModal extends Modal {
     return /Android|iPhone|iPad|iPod/i.test(this.navigatorInfo().userAgent || "") ? "environment" : "user";
   }
 
-  private async startCanvasScanLoop(statusEl: HTMLElement): Promise<void> {
+  private async startCanvasScanLoop(statusEl: HTMLElement, sessionId: number): Promise<void> {
     if (!this.videoEl) {
       logger.flowWarn("Barcode", "canvas:no-video");
       return;
@@ -9311,7 +10024,7 @@ class BarcodeScannerModal extends Modal {
     if (this.scanInterval != null) window.clearInterval(this.scanInterval);
     logger.flow("Barcode", "canvas:loop-start");
     this.scanInterval = window.setInterval(async () => {
-      if (this.stopped || this.lookupInProgress || decodeInProgress || !this.videoEl || !this.canvasEl || !this.canvasContext) return;
+      if (!this.isCameraSessionActive(sessionId) || this.lookupInProgress || decodeInProgress || !this.videoEl || !this.canvasEl || !this.canvasContext) return;
       const width = this.videoEl.videoWidth;
       const height = this.videoEl.videoHeight;
       if (!width || !height) return;
@@ -9322,11 +10035,13 @@ class BarcodeScannerModal extends Modal {
         this.canvasEl.height = height;
         this.canvasContext.drawImage(this.videoEl, 0, 0, width, height);
         const heavy = attempts % 2 === 0;
-        const result = await this.tryDecodeCanvases(reader, barcodeScanCanvases(this.canvasEl, heavy));
-        if (result) {
-          logger.flow("Barcode", "canvas:decoded", { barcode: maskBarcode(result) });
-          statusEl.setText(`Barcode found: ${result}`);
-          await this.lookup(result, statusEl);
+        const result = await this.tryDecodeCanvases(reader, barcodeScanCanvases(this.canvasEl, heavy), sessionId);
+        if (!this.isCameraSessionActive(sessionId)) return;
+        const barcode = result ? barcodeFromInput(result) : null;
+        if (barcode) {
+          logger.flow("Barcode", "canvas:decoded", { barcode: maskBarcode(barcode) });
+          statusEl.setText(`Barcode found: ${barcode}`);
+          await this.lookup(barcode, statusEl);
         } else if (attempts % 12 === 0) {
           statusEl.setText("Scanning... keep the barcode steady, well lit, and centered.");
         }
@@ -9344,11 +10059,23 @@ class BarcodeScannerModal extends Modal {
     }
     statusEl.setText(`Scanning ${file.name}...`);
     logger.flow("Barcode", "image-scan:start", { type: file.type || "unknown" });
+    const sessionId = this.cameraSessionId;
     const imageUrl = URL.createObjectURL(file);
     try {
       const img = await loadImage(imageUrl);
+      if (this.stopped || sessionId !== this.cameraSessionId) return;
+      const sourceWidth = img.naturalWidth || img.width;
+      const sourceHeight = img.naturalHeight || img.height;
+      const scale = barcodeImageScale(img);
+      logger.flow("Barcode", "image-scan:dimensions", {
+        sourceWidth,
+        sourceHeight,
+        scanWidth: Math.round(sourceWidth * scale),
+        scanHeight: Math.round(sourceHeight * scale),
+      });
       const reader = this.createCanvasBarcodeReader();
-      const result = await this.tryDecodeCanvases(reader, barcodeImageCanvases(img));
+      const result = await this.tryDecodeCanvases(reader, barcodeImageCanvases(img), sessionId);
+      if (this.stopped || sessionId !== this.cameraSessionId) return;
       if (result) {
         logger.flow("Barcode", "image-scan:decoded", { barcode: maskBarcode(result) });
         statusEl.setText(`Barcode found: ${result}`);
@@ -9359,34 +10086,33 @@ class BarcodeScannerModal extends Modal {
       statusEl.setText("No barcode found in image. Try a clearer image or manual entry.");
     } catch (error) {
       logger.flowWarn("Barcode", "image-scan:failed", { error: logger.errorSummary(error) });
-      throw error;
+      statusEl.setText(`Could not scan that image: ${error instanceof Error ? error.message : String(error)}.`);
+      new Notice("Could not scan barcode image");
     } finally {
       URL.revokeObjectURL(imageUrl);
     }
   }
 
-  private async tryDecodeCanvases(reader: any, canvases: HTMLCanvasElement[]): Promise<string | null> {
-    const nativeResult = await this.tryNativeBarcodeDetector(canvases);
-    if (nativeResult) return nativeResult;
+  private async tryDecodeCanvases(reader: any, canvases: Iterable<HTMLCanvasElement>, sessionId?: number): Promise<string | null> {
     for (const canvas of canvases) {
+      if (this.stopped || (sessionId != null && sessionId !== this.cameraSessionId)) return null;
+      const nativeResult = await this.tryNativeBarcodeDetector(canvas);
+      if (nativeResult) return nativeResult;
       const result = await this.tryDecodeCanvas(reader, canvas);
       if (result) return result;
     }
     return null;
   }
 
-  private async tryNativeBarcodeDetector(canvases: HTMLCanvasElement[]): Promise<string | null> {
+  private async tryNativeBarcodeDetector(canvas: HTMLCanvasElement): Promise<string | null> {
     const detector = this.getNativeBarcodeDetector();
     if (!detector) return null;
-    for (const canvas of canvases) {
-      try {
-        const detections = await detector.detect(canvas);
-        const rawValue = detections?.[0]?.rawValue;
-        if (rawValue) return String(rawValue);
-      } catch (error) {
-        logger.flowWarn("Barcode", "native-detector:detect-failed", { error: logger.errorSummary(error) });
-        return null;
-      }
+    try {
+      const detections = await detector.detect(canvas);
+      const rawValue = detections?.[0]?.rawValue;
+      if (rawValue) return String(rawValue);
+    } catch (error) {
+      logger.flowWarn("Barcode", "native-detector:detect-failed", { error: logger.errorSummary(error) });
     }
     return null;
   }
@@ -9426,11 +10152,6 @@ class BarcodeScannerModal extends Modal {
   private async tryDecodeCanvas(reader: any, canvas: HTMLCanvasElement): Promise<string | null> {
     const methods = [
       () => reader.decodeFromCanvas?.(canvas),
-      () => {
-        const img = new Image();
-        img.src = canvas.toDataURL("image/png");
-        return reader.decodeFromImageElement?.(img);
-      },
       () => reader.decode?.(canvas),
     ];
     for (const method of methods) {
@@ -9461,9 +10182,19 @@ class BarcodeScannerModal extends Modal {
     logger.flow("Barcode", "scanner-lookup:start", { barcode: maskBarcode(barcode) });
     this.lookupInProgress = true;
     this.stopScanning();
+    const lookupSessionId = this.cameraSessionId;
+    try {
+      (navigator as any).vibrate?.(35);
+    } catch {
+      // Haptics are a best-effort scan acknowledgement.
+    }
     statusEl?.setText(`Looking up barcode ${barcode}...`);
     try {
       const item = await this.plugin.lookupFoodByBarcode(barcode);
+      if (this.stopped || lookupSessionId !== this.cameraSessionId) {
+        logger.flow("Barcode", "scanner-lookup:ignored-stale", { barcode: maskBarcode(barcode), lookupSessionId });
+        return;
+      }
       const reviewItem: FoodItem = item || {
         id: barcode,
         name: `Barcode ${barcode}`,
@@ -9478,8 +10209,16 @@ class BarcodeScannerModal extends Modal {
       }
       if (item && this.onItem) {
         await this.onItem(item);
+        if (this.stopped || lookupSessionId !== this.cameraSessionId) return;
       } else {
-        new BarcodeFoodReviewModal(this.app, this.plugin, reviewItem, item ? undefined : "No database match found for this barcode. Review and create a local food note.", this.dateContext).open();
+        new BarcodeFoodReviewModal(
+          this.app,
+          this.plugin,
+          reviewItem,
+          item ? undefined : "No database match found for this barcode. Review and create a local food note.",
+          this.dateContext,
+          this.onItem,
+        ).open();
       }
       logger.flow("Barcode", "scanner-lookup:done", {
         barcode: maskBarcode(barcode),
@@ -9488,22 +10227,30 @@ class BarcodeScannerModal extends Modal {
       });
       this.close();
     } catch (error) {
+      if (this.stopped || lookupSessionId !== this.cameraSessionId) return;
       logger.flowWarn("Barcode", "lookup-ui:failed", { barcode: maskBarcode(barcode), error: logger.errorSummary(error) });
       this.lookupInProgress = false;
       this.stopped = false;
       statusEl?.setText(`Barcode lookup failed: ${error instanceof Error ? error.message : String(error)}. You can try again, scan an image, or enter manually.`);
       new Notice("Barcode lookup failed");
+      if (statusEl && this.options.autoStart) {
+        window.setTimeout(() => {
+          if (!this.stopped && !this.lookupInProgress && !this.stream) void this.startCamera(statusEl);
+        }, 800);
+      }
     }
   }
 
   private stopScanning(): void {
     this.cameraSessionId++;
+    this.cameraStartInProgress = false;
     try {
       this.zxingVideoControls?.stop?.();
     } catch (error) {
       logger.flowWarn("Barcode", "zxing-video:stop-failed", { error: logger.errorSummary(error) });
     }
     this.zxingVideoControls = null;
+    this.clearNativeVideoFallback();
     if (this.scanInterval != null) {
       window.clearInterval(this.scanInterval);
       this.scanInterval = null;
@@ -9538,7 +10285,14 @@ class BarcodeScannerModal extends Modal {
 }
 
 class BarcodeFoodReviewModal extends Modal {
-  constructor(app: App, private plugin: TPSHealthPlugin, private item: FoodItem, private warning?: string, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private item: FoodItem,
+    private warning?: string,
+    private dateContext: FoodLogDateContext | null = null,
+    private onSaved?: (item: FoodItem) => Promise<void> | void,
+  ) {
     super(app);
   }
 
@@ -9557,6 +10311,7 @@ class BarcodeFoodReviewModal extends Modal {
       const image = this.contentEl.createEl("img");
       image.addClass("tps-health-food-image");
       image.src = this.item.imageUrl;
+      image.alt = this.item.name ? `${this.item.name} product` : "Scanned product";
     }
     let name = this.item.name;
     let brand = this.item.brand || "";
@@ -9603,7 +10358,7 @@ class BarcodeFoodReviewModal extends Modal {
     updateCaloriePreview();
     new Setting(this.contentEl)
       .addButton((button) => button
-        .setButtonText("Create and log")
+        .setButtonText(this.onSaved ? "Create and add" : "Create food")
         .setCta()
         .onClick(async () => {
           if (!name) {
@@ -9628,7 +10383,8 @@ class BarcodeFoodReviewModal extends Modal {
             });
             logger.flow("FoodLogModal", "barcode-review:done", { name: saved.name, sourcePath: saved.sourcePath || "", barcode: maskBarcode(saved.barcode || this.item.barcode || "") });
             this.close();
-            new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
+            if (this.onSaved) await this.onSaved(saved);
+            else new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
           } catch (error) {
             logger.flowError("FoodLogModal", "barcode-review:failed", error, { name, barcode: maskBarcode(this.item.barcode || "") });
             throw error;
@@ -12250,7 +13006,9 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
     .filter((item) => item.name && item.nutrition && hasSearchableMacroData(item.nutrition))
     .filter((item) => isRelevantFoodResult(query, foodSearchFields(item)))
     .filter((item) => !isUnloggedBroadExternalFoodResult(item, tokens, usageStats))
-    .sort((a, b) => foodSearchScore(b, normalizedQuery, usageStats) - foodSearchScore(a, normalizedQuery, usageStats));
+    .map((item) => ({ item, score: foodSearchScore(item, normalizedQuery, usageStats) }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ item }) => item);
 }
 
 function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = new Map<string, FoodUsageStats>()): number {
@@ -12343,7 +13101,7 @@ function foodUsageForItem(item: FoodItem, usageStats: Map<string, FoodUsageStats
     const usage = usageStats.get(key);
     if (!usage) continue;
     out = {
-      count: out.count + usage.count,
+      count: Math.max(out.count, usage.count),
       lastLoggedAt: usage.lastLoggedAt > out.lastLoggedAt ? usage.lastLoggedAt : out.lastLoggedAt,
     };
   }
@@ -12536,13 +13294,23 @@ function foodRollupValue(totals: Required<Nutrition>, propertyKey: string): numb
 
 function dedupeFoods(items: FoodItem[]): FoodItem[] {
   const byKey = new Map<string, FoodItem>();
+  const keysByName = new Map<string, string[]>();
   for (const item of items) {
-    const matchingNutritionKey = Array.from(byKey.entries())
-      .find(([, existing]) => sameNamedEquivalentMetricFood(existing, item))?.[0];
+    const normalizedName = normalizeLookup(item.name);
+    const matchingNutritionKey = (keysByName.get(normalizedName) || [])
+      .find((candidateKey) => {
+        const existing = byKey.get(candidateKey);
+        return Boolean(existing && sameNamedEquivalentMetricFood(existing, item));
+      });
     const key = matchingNutritionKey || foodDedupeKey(item);
     const existing = byKey.get(key);
     if (!existing || foodCandidateCompletenessScore(item) > foodCandidateCompletenessScore(existing)) {
       byKey.set(key, item);
+    }
+    if (!existing) {
+      const nameKeys = keysByName.get(normalizedName) || [];
+      if (!nameKeys.includes(key)) nameKeys.push(key);
+      keysByName.set(normalizedName, nameKeys);
     }
   }
   return Array.from(byKey.values());
@@ -12557,6 +13325,12 @@ function foodDedupeKey(item: FoodItem): string {
 
 function sameNamedEquivalentMetricFood(a: FoodItem, b: FoodItem): boolean {
   if (normalizeLookup(a.name) !== normalizeLookup(b.name)) return false;
+  const leftBarcode = (a.barcode || "").replace(/\D/g, "");
+  const rightBarcode = (b.barcode || "").replace(/\D/g, "");
+  if (leftBarcode && rightBarcode && openFoodFactsBarcodeCacheKey(leftBarcode) !== openFoodFactsBarcodeCacheKey(rightBarcode)) return false;
+  const leftBrand = normalizeLookup(a.brand || "");
+  const rightBrand = normalizeLookup(b.brand || "");
+  if (leftBrand !== rightBrand) return false;
   const left = perMetricNutrition(a);
   const right = perMetricNutrition(b);
   if (!left || !right || left.unit !== right.unit) return false;
@@ -12625,17 +13399,17 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 function createBarcodeReader(): any {
-  return new BrowserMultiFormatReader(createBarcodeHints()) as any;
+  return new BrowserMultiFormatReader(createBarcodeHints(true)) as any;
 }
 
 function createLiveBarcodeReader(): any {
-  return new BrowserMultiFormatOneDReader(createBarcodeHints(), {
-    delayBetweenScanAttempts: 90,
+  return new BrowserMultiFormatOneDReader(createBarcodeHints(false), {
+    delayBetweenScanAttempts: 120,
     delayBetweenScanSuccess: 90,
   }) as any;
 }
 
-function createBarcodeHints(): Map<any, any> {
+function createBarcodeHints(tryHarder: boolean): Map<any, any> {
   const hints = new Map();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, [
     BarcodeFormat.UPC_A,
@@ -12644,7 +13418,7 @@ function createBarcodeHints(): Map<any, any> {
     BarcodeFormat.EAN_8,
     BarcodeFormat.CODE_128,
   ]);
-  hints.set(DecodeHintType.TRY_HARDER, true);
+  if (tryHarder) hints.set(DecodeHintType.TRY_HARDER, true);
   return hints;
 }
 
@@ -12679,27 +13453,36 @@ function nativeBarcodeBridgeValue(result: unknown): string | null {
   return null;
 }
 
-function barcodeScanCanvases(source: HTMLCanvasElement, heavy: boolean): HTMLCanvasElement[] {
-  const out: HTMLCanvasElement[] = [];
+function* barcodeScanCanvases(source: HTMLCanvasElement, heavy: boolean): IterableIterator<HTMLCanvasElement> {
+  if (source.width > 0 && source.height > 0) yield source;
   const regions = barcodeScanRegions(source.width, source.height, heavy);
   for (const region of regions) {
-    out.push(cropCanvas(source, region, region.scale, region.options));
-    if (region.rotate) out.push(cropCanvas(source, region, region.scale, region.options, true));
+    const cropped = cropCanvas(source, region, region.scale, region.options);
+    if (cropped.width > 0 && cropped.height > 0) yield cropped;
+    if (region.rotate) {
+      const rotated = cropCanvas(source, region, region.scale, region.options, true);
+      if (rotated.width > 0 && rotated.height > 0) yield rotated;
+    }
   }
-  out.splice(Math.min(2, out.length), 0, source);
-  return out.filter((canvas) => canvas.width > 0 && canvas.height > 0);
 }
 
-function barcodeImageCanvases(img: HTMLImageElement): HTMLCanvasElement[] {
-  const base = imageToCanvas(img, 1, {});
-  const out = [
-    ...barcodeScanCanvases(base, true),
-    imageToCanvas(img, 2, {}),
-    imageToCanvas(img, 2, { contrast: 2 }),
-    imageToCanvas(img, 2, { threshold: 128 }),
-    imageToCanvas(img, 0.5, {}),
-  ];
-  return out.filter((canvas) => canvas.width > 0 && canvas.height > 0);
+function barcodeImageScale(img: HTMLImageElement): number {
+  const width = img.naturalWidth || img.width;
+  const height = img.naturalHeight || img.height;
+  const largestDimension = Math.max(width, height);
+  return largestDimension > BARCODE_IMAGE_MAX_DIMENSION
+    ? BARCODE_IMAGE_MAX_DIMENSION / largestDimension
+    : 1;
+}
+
+function* barcodeImageCanvases(img: HTMLImageElement): IterableIterator<HTMLCanvasElement> {
+  const scale = barcodeImageScale(img);
+  const base = imageToCanvas(img, scale, {});
+  yield* barcodeScanCanvases(base, true);
+  for (const options of [{ contrast: 2 }, { threshold: 128 }]) {
+    const processed = imageToCanvas(img, scale, options);
+    if (processed.width > 0 && processed.height > 0) yield processed;
+  }
 }
 
 function barcodeScanRegions(width: number, height: number, heavy: boolean): BarcodeCanvasRegion[] {
@@ -12741,8 +13524,11 @@ function cropCanvas(
   const sy = Math.max(0, Math.floor(sourceHeight * region.y));
   const sw = Math.max(1, Math.min(sourceWidth - sx, Math.floor(sourceWidth * region.width)));
   const sh = Math.max(1, Math.min(sourceHeight - sy, Math.floor(sourceHeight * region.height)));
-  const targetWidth = Math.max(1, Math.floor((rotate ? sh : sw) * scale));
-  const targetHeight = Math.max(1, Math.floor((rotate ? sw : sh) * scale));
+  const unboundedWidth = Math.max(1, Math.floor((rotate ? sh : sw) * scale));
+  const unboundedHeight = Math.max(1, Math.floor((rotate ? sw : sh) * scale));
+  const boundedScale = Math.min(1, BARCODE_IMAGE_MAX_DIMENSION / Math.max(unboundedWidth, unboundedHeight));
+  const targetWidth = Math.max(1, Math.floor(unboundedWidth * boundedScale));
+  const targetHeight = Math.max(1, Math.floor(unboundedHeight * boundedScale));
   const canvas = document.createElement("canvas");
   canvas.width = targetWidth;
   canvas.height = targetHeight;
@@ -12831,10 +13617,16 @@ export function barcodeCandidates(raw: string): string[] {
   return [...candidates];
 }
 
+function openFoodFactsBarcodeCacheKey(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  return digits.length === 13 && digits.startsWith("0") ? digits.slice(1) : digits;
+}
+
 function expandUpce(upce: string): string | null {
   const digits = upce.replace(/\D/g, "");
   if (digits.length !== 8) return null;
   const numberSystem = digits[0];
+  if (numberSystem !== "0" && numberSystem !== "1") return null;
   const body = digits.slice(1, 7);
   const check = digits[7];
   const last = body[5];
@@ -12848,7 +13640,17 @@ function expandUpce(upce: string): string | null {
   } else {
     upcaBody = `${numberSystem}${body.slice(0, 5)}0000${last}`;
   }
+  if (upcCheckDigit(upcaBody) !== check) return null;
   return `${upcaBody}${check}`;
+}
+
+function upcCheckDigit(body: string): string | null {
+  if (!/^\d{11}$/.test(body)) return null;
+  let sum = 0;
+  for (let index = 0; index < body.length; index++) {
+    sum += Number(body[index]) * (index % 2 === 0 ? 3 : 1);
+  }
+  return String((10 - (sum % 10)) % 10);
 }
 
 function titleCase(value: string): string {
@@ -13465,7 +14267,15 @@ function renderMacroPills(container: HTMLElement, nutrition: Nutrition): void {
 function foodResultMeta(item: FoodItem): string {
   const serving = [item.servingAmount ? round(item.servingAmount) : "", item.servingUnit || "serving"].filter(Boolean).join(" ");
   const metric = item.servingGrams ? `${round(item.servingGrams)} g` : item.servingMl ? `${round(item.servingMl)} ml` : "";
-  return [item.brand, item.source, metric ? `${serving} = ${metric}` : serving].filter(Boolean).join(" • ");
+  const source = {
+    "custom-note": "Saved",
+    "custom-inline": "Inline",
+    curated: "Built-in",
+    usda: "USDA",
+    "open-food-facts": "Open Food Facts",
+    manual: "Manual",
+  }[item.source] || item.source;
+  return [item.brand, source, metric ? `${serving} = ${metric}` : serving].filter(Boolean).join(" • ");
 }
 
 function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext: FoodLogDateContext | null): boolean {
@@ -13817,6 +14627,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -13826,11 +14650,13 @@ function sanitizeFileName(value: string): string {
 }
 
 function normalizeLookup(value: string): string {
-  return value.toLowerCase()
+  return value.normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
     .replace(/\bsugar[\s-]*free\b/g, "sugar free")
     .replace(/\bpb\s*&?\s*j\b/g, "peanut butter jelly")
     .replace(/[’']/g, "")
     .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }

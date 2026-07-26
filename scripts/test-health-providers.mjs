@@ -265,7 +265,8 @@ function installDeterministicBrowserGlobals() {
 }
 
 test("food logger queues searched foods without leaving the search flow", () => {
-  assert.match(mainSource, /activeFoodLogTab: "barcode" \| "search" \| "mine"/);
+  assert.match(mainSource, /type FoodLogTab = "barcode" \| "search" \| "mine" \| "describe"/);
+  assert.match(mainSource, /private activeFoodLogTab: FoodLogTab/);
   assert.doesNotMatch(mainSource, /Quick add/);
   assert.doesNotMatch(mainSource, /parseQuickFoodEntries/);
   assert.doesNotMatch(mainSource, /handleQuickAdd/);
@@ -284,14 +285,21 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /private async persistDraft\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-empty"/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:create-recipe-empty"/);
-  assert.match(mainSource, /await this\.plugin\.clearPendingFoodLogDraft\(\);[\s\S]+new Notice\(`Logged \$\{this\.selectionItems\.length\} foods\.`\);/);
+  assert.match(mainSource, /const loggedCount = this\.selectionItems\.length;[\s\S]+await this\.plugin\.clearPendingFoodLogDraft\(\);[\s\S]+this\.selectionItems = \[\];[\s\S]+new Notice\(`Logged \$\{loggedCount\} foods\.`\);/);
   assert.match(mainSource, /Added \$\{addedName\}\. Search for another food or log selected\./);
   assert.match(mainSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);\s+this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
   assert.match(stylesSource, /\.tps-health-selection\.is-empty/);
-  assert.match(stylesSource, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(stylesSource, /\.tps-health-food-tabs[\s\S]+grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(mainSource, /tabsEl\.setAttr\("role", "tablist"\)/);
+  assert.match(mainSource, /button\.setAttr\("role", "tab"\)/);
+  assert.match(mainSource, /panel\.setAttr\("role", "tabpanel"\)/);
+  assert.match(mainSource, /button\.setAttr\("aria-selected", active \? "true" : "false"\)/);
+  assert.match(mainSource, /button\.setAttr\("aria-controls", panel\.id\)/);
+  assert.match(mainSource, /\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
+  assert.match(stylesSource, /\.tps-health-food-tab:focus-visible/);
 });
 
 test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
@@ -369,7 +377,8 @@ test("food and recipe edits require an explicit linked-instance versioning choic
   assert.match(mainSource, /if \(linkScope === "cancel"\) return/);
   assert.match(mainSource, /path: createNewVersion \? undefined : this\.editPath/);
   assert.match(mainSource, /merge: !createNewVersion/);
-  assert.match(mainSource, /getMarkdownFiles\(\)\.slice\(\)\.sort\(\(a, b\) => \(b\.stat\?\.ctime \|\| b\.stat\?\.mtime \|\| 0\) - \(a\.stat\?\.ctime \|\| a\.stat\?\.mtime \|\| 0\)\)/);
+  assert.match(mainSource, /private getLocalFoodIndex\(\): LocalFoodIndex/);
+  assert.match(mainSource, /const files = this\.app\.vault\.getMarkdownFiles\(\)[\s\S]+?\.sort\(\(a, b\) => \(b\.stat\?\.ctime \|\| b\.stat\?\.mtime \|\| 0\) - \(a\.stat\?\.ctime \|\| a\.stat\?\.mtime \|\| 0\)\)/);
 });
 
 test("logged meal editing exposes draft ingredient amounts before linked-instance save", () => {
@@ -451,8 +460,10 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /logger\.flow\("Recipe", "ingredient:add-done"/);
   assert.match(mainSource, /class RecipeIngredientModal extends Modal/);
   assert.match(mainSource, /new RecipeIngredientModal\(plugin\.app, plugin, sourcePath\)\.open\(\)/);
+  assert.match(mainSource, /this\.plugin\.searchLocalFoods\(trimmed\)/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
-  assert.match(mainSource, /FOOD_SEARCH_DEBOUNCE_MS = 450/);
+  assert.match(mainSource, /FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100/);
+  assert.match(mainSource, /setButtonText\("Search online"\)/);
   assert.match(mainSource, /if \(this\.searchTimer !== null\) window\.clearTimeout\(this\.searchTimer\)/);
   assert.match(mainSource, /const savedFood = await this\.plugin\.findOrCreateFoodNote\(this\.selectedFood\)/);
   assert.match(mainSource, /await this\.plugin\.addRecipeIngredientLine\(this\.sourcePath, \{/);
@@ -712,6 +723,481 @@ test("food search honors the branded-provider toggle", async () => {
   await searchUsdaFoods("apple", true);
   assert.equal(usdaDataTypes.length, 1);
   assert.equal(usdaDataTypes[0].split(",").includes("Branded"), true);
+});
+
+test("local food and usage indexes are reused until explicitly invalidated", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    dailyNoteFolder: "Daily Notes",
+    foodLogFilePath: "Food Log.md",
+    includeBrandedFoodSearch: false,
+  };
+  fake.files.set("Health/Foods/Indexed Apple.md", [
+    "---",
+    "kind: food",
+    "name: \"Indexed Apple\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 95",
+    "proteinG: 1",
+    "carbsG: 25",
+    "fatG: 0.3",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Daily Notes/2026-07-26.md", "- Indexed Apple [food:: Indexed Apple] [qty:: 1] [unit:: serving] [createdDate:: 2026-07-26T08:00:00.000Z]\n");
+
+  const getMarkdownFiles = fake.app.vault.getMarkdownFiles.bind(fake.app.vault);
+  let markdownScans = 0;
+  fake.app.vault.getMarkdownFiles = () => {
+    markdownScans += 1;
+    return getMarkdownFiles();
+  };
+  const cachedRead = fake.app.vault.cachedRead.bind(fake.app.vault);
+  let historyReads = 0;
+  fake.app.vault.cachedRead = async (file) => {
+    historyReads += 1;
+    return cachedRead(file);
+  };
+
+  const first = await plugin.searchLocalFoods("indexed");
+  const second = await plugin.searchLocalFoods("indexed");
+  assert.ok(first.some((item) => item.name === "Indexed Apple"));
+  assert.ok(second.some((item) => item.name === "Indexed Apple"));
+  assert.equal(markdownScans, 1, "repeated local searches should reuse one catalog scan");
+
+  const firstUsage = await plugin.getLoggedFoodStats("indexed");
+  const secondUsage = await plugin.getLoggedFoodStats("apple");
+  assert.equal(firstUsage, secondUsage, "history lookups should reuse the same cached usage map");
+  assert.equal(historyReads, 1, "repeated history lookups should not reread daily notes");
+  const savedFoods = await plugin.getSavedFoods(firstUsage);
+  assert.deepEqual(savedFoods.map((item) => item.name), ["Indexed Apple"]);
+  assert.ok(savedFoods.every((item) => item.source === "custom-note"), "Saved must never be filled with curated suggestions");
+
+  fake.files.set("Health/Foods/Indexed Yogurt.md", [
+    "---",
+    "kind: food",
+    "name: \"Indexed Yogurt\"",
+    "servingAmount: 1",
+    "servingUnit: cup",
+    "calories: 120",
+    "proteinG: 15",
+    "carbsG: 8",
+    "fatG: 2",
+    "---",
+    "",
+  ].join("\n"));
+  assert.equal((await plugin.searchLocalFoods("indexed yogurt")).some((item) => item.name === "Indexed Yogurt"), false);
+  plugin.invalidateFoodSearchIndexes("test");
+  assert.ok((await plugin.searchLocalFoods("indexed yogurt")).some((item) => item.name === "Indexed Yogurt"));
+  await plugin.getLoggedFoodStats("indexed");
+  assert.equal(markdownScans, 4, "catalog and usage each rebuild once after invalidation");
+  assert.equal(historyReads, 2);
+
+  const invalidationSource = mainSource.slice(
+    mainSource.indexOf("private registerFoodSearchIndexInvalidation"),
+    mainSource.indexOf("private getLocalFoodIndex"),
+  );
+  for (const eventName of ["create", "modify", "delete", "rename"]) {
+    assert.match(invalidationSource, new RegExp(`vault\\.on\\("${eventName}"`));
+  }
+  assert.match(invalidationSource, /metadataCache\.on\("changed"/);
+  assert.match(invalidationSource, /this\.invalidateFoodSearchIndexes\("metadata", file\)/);
+});
+
+test("food index invalidation ignores unrelated metadata churn", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    dailyNoteFolder: "Daily Notes",
+    foodLogFilePath: "Food Log.md",
+  };
+  fake.files.set("Health/Foods/Indexed Apple.md", [
+    "---",
+    "kind: food",
+    "name: \"Indexed Apple\"",
+    "calories: 95",
+    "proteinG: 1",
+    "carbsG: 25",
+    "fatG: 0.3",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Daily Notes/2026-07-26.md", "- Indexed Apple [food:: Indexed Apple] [createdDate:: 2026-07-26T08:00:00.000Z]\n");
+  fake.files.set("Projects/Unrelated.md", "---\nkind: project\n---\n");
+
+  await plugin.searchLocalFoods("indexed");
+  await plugin.getLoggedFoodStats("indexed");
+  const TFile = globalThis.__TPSHealthTestTFile;
+
+  plugin.invalidateFoodSearchIndexes("metadata", new TFile("Projects/Unrelated.md"));
+  assert.equal(plugin.localFoodIndexDirty, false, "unrelated note metadata must not force a catalog rescan");
+  assert.equal(plugin.foodUsageIndexDirty, false, "unrelated note metadata must not force a history rescan");
+
+  plugin.invalidateFoodSearchIndexes("metadata", new TFile("Daily Notes/2026-07-26.md"));
+  assert.equal(plugin.localFoodIndexDirty, false, "daily-note edits must not force a food catalog rescan");
+  assert.equal(plugin.foodUsageIndexDirty, true, "daily-note edits must invalidate usage ranking");
+
+  plugin.foodUsageIndexDirty = false;
+  plugin.invalidateFoodSearchIndexes("metadata", new TFile("Health/Foods/Indexed Apple.md"));
+  assert.equal(plugin.localFoodIndexDirty, true, "food-note metadata changes must invalidate the catalog");
+  assert.equal(plugin.foodUsageIndexDirty, false, "food-note metadata changes must not invalidate daily usage");
+});
+
+test("usage index coalesces reads and cannot publish a snapshot invalidated mid-scan", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFolder: "Daily Notes",
+    foodLogFilePath: "Food Log.md",
+  };
+  const dailyPath = "Daily Notes/2026-07-26.md";
+  const logLine = "- Indexed Apple [food:: Indexed Apple] [createdDate:: 2026-07-26T08:00:00.000Z]\n";
+  fake.files.set(dailyPath, logLine);
+  let releaseRead;
+  const heldRead = new Promise((resolve) => {
+    releaseRead = resolve;
+  });
+  let reads = 0;
+  const normalRead = fake.app.vault.cachedRead.bind(fake.app.vault);
+  fake.app.vault.cachedRead = async () => {
+    reads += 1;
+    return heldRead;
+  };
+
+  const first = plugin.getLoggedFoodStats("first");
+  const joined = plugin.getLoggedFoodStats("joined");
+  assert.equal(reads, 1, "concurrent history requests should share one scan");
+  const TFile = globalThis.__TPSHealthTestTFile;
+  plugin.invalidateFoodSearchIndexes("modify", new TFile(dailyPath));
+  releaseRead(logLine);
+  await Promise.all([first, joined]);
+  assert.equal(plugin.foodUsageIndexDirty, true, "a mid-scan edit must keep the usage index dirty");
+
+  fake.app.vault.cachedRead = normalRead;
+  await plugin.getLoggedFoodStats("rebuilt");
+  assert.equal(plugin.foodUsageIndexDirty, false, "the next request should rebuild and publish a clean snapshot");
+  assert.equal(reads, 1, "the held scan should still perform only one underlying read");
+});
+
+test("local-as-you-type search stays offline while explicit search invokes providers", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    includeBrandedFoodSearch: true,
+  };
+  fake.files.set("Health/Foods/Network Probe.md", [
+    "---",
+    "kind: food",
+    "name: \"Network Probe Food\"",
+    "servingAmount: 1",
+    "servingUnit: serving",
+    "calories: 100",
+    "proteinG: 10",
+    "carbsG: 10",
+    "fatG: 2",
+    "---",
+    "",
+  ].join("\n"));
+  let usdaCalls = 0;
+  let openFoodFactsCalls = 0;
+  plugin.searchUsdaFoods = async () => {
+    usdaCalls += 1;
+    return [];
+  };
+  plugin.searchOpenFoodFacts = async () => {
+    openFoodFactsCalls += 1;
+    return [];
+  };
+  plugin.getLoggedFoodStats = async () => new Map();
+
+  const local = await plugin.searchLocalFoods("network probe");
+  assert.ok(local.some((item) => item.name === "Network Probe Food"));
+  assert.equal(usdaCalls, 0);
+  assert.equal(openFoodFactsCalls, 0);
+
+  await plugin.searchFoods("network probe");
+  assert.equal(usdaCalls, 1);
+  assert.equal(openFoodFactsCalls, 1);
+  assert.match(mainSource, /private queueSearch\(query: string\): void[\s\S]+this\.runLocalSearch\(query, token\)/);
+  assert.match(mainSource, /private submitOnlineSearch\(query: string\): void/);
+  assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken/);
+  assert.match(mainSource, /Press Enter (?:for|to check) online databases/);
+  assert.match(mainSource, /class FoodLogEditorSuggest[\s\S]+this\.plugin\.searchLocalFoods\(draft\.query\)/);
+});
+
+test("Open Food Facts text search coalesces requests, caches results, and caps route fan-out", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    openFoodFactsUserAgent: USER_AGENT,
+  };
+  const proteinBar = {
+    code: "012345678905",
+    product_name: "Acme Protein Bar",
+    brands: "Acme",
+    serving_quantity: 50,
+    serving_size: "50 g",
+    nutriments: {
+      "energy-kcal_100g": 400,
+      proteins_100g: 40,
+      carbohydrates_100g: 30,
+      fat_100g: 12,
+    },
+  };
+  const legacySnack = {
+    ...proteinBar,
+    code: "012345678912",
+    product_name: "Legacy Snack",
+    brands: "Legacy",
+  };
+  const requests = [];
+  let releasePrimary;
+  const heldPrimary = new Promise((resolve) => {
+    releasePrimary = resolve;
+  });
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return heldPrimary;
+  };
+  try {
+    const first = plugin.searchOpenFoodFacts("acme protein bar");
+    const joined = plugin.searchOpenFoodFacts("  acme   protein bar ");
+    assert.equal(requests.length, 1, "identical in-flight searches should share one provider request");
+    releasePrimary({ status: 200, headers: {}, json: { hits: [proteinBar] } });
+    const [firstResults, joinedResults] = await Promise.all([first, joined]);
+    assert.equal(firstResults[0]?.name, "Acme Protein Bar");
+    assert.equal(joinedResults[0]?.name, "Acme Protein Bar");
+    assert.equal(requests.length, 1);
+
+    const cached = await plugin.searchOpenFoodFacts("acme protein bar");
+    assert.equal(cached[0]?.name, "Acme Protein Bar");
+    assert.equal(requests.length, 1, "cached searches should not spend another OFF request");
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      if (options.url.startsWith("https://search.openfoodfacts.org/")) {
+        return { status: 200, headers: {}, json: { hits: [] } };
+      }
+      return { status: 200, headers: {}, json: { products: [legacySnack] } };
+    };
+    const fallbackResults = await plugin.searchOpenFoodFacts("legacy snack");
+    assert.equal(fallbackResults[0]?.name, "Legacy Snack");
+    assert.equal(requests.length, 3, "a miss should make one primary request and at most one legacy fallback");
+    assert.equal(requests.filter((request) => request.url.startsWith("https://search.openfoodfacts.org/")).length, 2);
+    assert.equal(requests.filter((request) => request.url.startsWith("https://world.openfoodfacts.org/cgi/search.pl")).length, 1);
+    assert.ok(requests.every((request) => request.headers?.["User-Agent"] === USER_AGENT));
+
+    await plugin.searchOpenFoodFacts(" legacy  snack ");
+    assert.equal(requests.length, 3, "the fallback result should also be cached");
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      throw new Error("temporary OFF outage");
+    };
+    assert.deepEqual(await plugin.searchOpenFoodFacts("temporary outage probe"), []);
+    const failedRequestCount = requests.length;
+    assert.equal(failedRequestCount, 5, "a failed primary route may spend only one legacy fallback request");
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      return {
+        status: 200,
+        headers: {},
+        json: { hits: [{ ...proteinBar, code: "012345678929", product_name: "Temporary Outage Probe" }] },
+      };
+    };
+    const retryAfterFailure = await plugin.searchOpenFoodFacts("temporary outage probe");
+    assert.equal(retryAfterFailure[0]?.name, "Temporary Outage Probe");
+    assert.equal(requests.length, failedRequestCount + 1, "transient provider failures must not become cached misses");
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      if (options.url.startsWith("https://search.openfoodfacts.org/")) {
+        return { status: 200, headers: {}, json: { hits: [] } };
+      }
+      throw new Error("temporary legacy route outage");
+    };
+    assert.deepEqual(await plugin.searchOpenFoodFacts("partial outage probe"), []);
+    const partialFailureRequestCount = requests.length;
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      return {
+        status: 200,
+        headers: {},
+        json: { hits: [{ ...proteinBar, code: "012345678936", product_name: "Partial Outage Probe" }] },
+      };
+    };
+    const retryAfterPartialFailure = await plugin.searchOpenFoodFacts("partial outage probe");
+    assert.equal(retryAfterPartialFailure[0]?.name, "Partial Outage Probe");
+    assert.equal(requests.length, partialFailureRequestCount + 1, "a partially failed empty search must remain retryable");
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("barcode lookup resolves local UPC aliases and coalesces equivalent remote lookups", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const localFake = createFakeHealthApp();
+  const localPlugin = new TPSHealthPlugin(localFake.app);
+  localPlugin.settings = {
+    ...localPlugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+  };
+  localFake.files.set("Health/Foods/Alias Bar.md", [
+    "---",
+    "kind: food",
+    "name: \"Alias Bar\"",
+    "barcode: \"012345678905\"",
+    "servingAmount: 1",
+    "servingUnit: bar",
+    "calories: 200",
+    "proteinG: 20",
+    "carbsG: 20",
+    "fatG: 7",
+    "---",
+    "",
+  ].join("\n"));
+  let localRemoteCalls = 0;
+  localPlugin.lookupOpenFoodFactsBarcode = async () => {
+    localRemoteCalls += 1;
+    return null;
+  };
+  const localAlias = await localPlugin.lookupFoodByBarcode("0012345678905");
+  assert.equal(localAlias?.name, "Alias Bar");
+  assert.equal(localRemoteCalls, 0, "a UPC/EAN alias found in the local index must not hit the network");
+
+  const remoteFake = createFakeHealthApp();
+  const remotePlugin = new TPSHealthPlugin(remoteFake.app);
+  remotePlugin.settings = {
+    ...remotePlugin.settings,
+    openFoodFactsUserAgent: USER_AGENT,
+  };
+  window.setTimeout = (callback, delay) => globalThis.setTimeout(callback, delay);
+  window.clearTimeout = (timer) => globalThis.clearTimeout(timer);
+  let candidateCalls = 0;
+  let releaseCandidate;
+  const heldCandidate = new Promise((resolve) => {
+    releaseCandidate = resolve;
+  });
+  remotePlugin.lookupOpenFoodFactsBarcodeCandidate = async () => {
+    candidateCalls += 1;
+    return heldCandidate;
+  };
+  const remoteItem = {
+    id: "012345678905",
+    name: "Remote Alias Bar",
+    barcode: "012345678905",
+    source: "open-food-facts",
+    servingAmount: 1,
+    servingUnit: "bar",
+    nutrition: { calories: 210, proteinG: 20, carbsG: 21, fatG: 7 },
+  };
+  const first = remotePlugin.lookupOpenFoodFactsBarcode("0012345678905");
+  const joined = remotePlugin.lookupOpenFoodFactsBarcode("012345678905");
+  assert.equal(candidateCalls, 1, "equivalent UPC/EAN lookups should join one request");
+  releaseCandidate(remoteItem);
+  assert.equal((await first)?.name, "Remote Alias Bar");
+  assert.equal((await joined)?.name, "Remote Alias Bar");
+  assert.equal((await remotePlugin.lookupOpenFoodFactsBarcode("012345678905"))?.name, "Remote Alias Bar");
+  assert.equal(candidateCalls, 1, "a successful barcode lookup should be served from cache");
+
+  remotePlugin.lookupOpenFoodFactsBarcodeCandidate = async () => {
+    candidateCalls += 1;
+    return null;
+  };
+  assert.equal(await remotePlugin.lookupOpenFoodFactsBarcode("4006381333931"), null);
+  assert.equal(await remotePlugin.lookupOpenFoodFactsBarcode("4006381333931"), null);
+  assert.equal(candidateCalls, 2, "a confirmed barcode miss should be negatively cached");
+});
+
+test("typed and camera barcode misses return newly created foods to the existing tray", () => {
+  const typedLookup = mainSource.slice(
+    mainSource.indexOf("private async handleBarcodeAdd"),
+    mainSource.indexOf("private async renderQuickPicks"),
+  );
+  const scannerLookup = mainSource.slice(
+    mainSource.indexOf("private async lookup(rawBarcode"),
+    mainSource.indexOf("private stopScanning"),
+  );
+  const reviewModal = mainSource.slice(
+    mainSource.indexOf("class BarcodeFoodReviewModal"),
+    mainSource.indexOf("class FoodLogModal"),
+  );
+  assert.match(typedLookup, /new BarcodeFoodReviewModal\([\s\S]+this\.dateContext, async \(saved\) => \{\s+await this\.addSelection\(saved, null, \{ enrich: false \}\);\s+this\.statusEl\.setText\(`Added \$\{saved\.name\}`\);/);
+  assert.match(scannerLookup, /new BarcodeFoodReviewModal\([\s\S]+this\.dateContext,\s+this\.onItem,/);
+  assert.match(reviewModal, /private onSaved\?: \(item: FoodItem\) => Promise<void> \| void/);
+  assert.match(reviewModal, /\.setButtonText\(this\.onSaved \? "Create and add" : "Create food"\)/);
+  assert.match(reviewModal, /if \(this\.onSaved\) await this\.onSaved\(saved\);\s+else new FoodLogModal/);
+  assert.doesNotMatch(reviewModal, /Create and log/);
+});
+
+test("food result metadata uses clean source labels", () => {
+  assert.match(mainSource, /"custom-note": "Saved"/);
+  assert.match(mainSource, /curated: "Built-in"/);
+  assert.match(mainSource, /usda: "USDA"/);
+  assert.match(mainSource, /"open-food-facts": "Open Food Facts"/);
+  assert.match(mainSource, /manual: "Manual"/);
+  assert.doesNotMatch(
+    mainSource.slice(mainSource.indexOf("function foodResultMeta"), mainSource.indexOf("function foodLogDraftMatchesDateContext")),
+    /return \[item\.brand, item\.source/,
+  );
+});
+
+test("Describe bounds provider fan-out and reuses one history snapshot", () => {
+  const aiDescribe = mainSource.slice(
+    mainSource.indexOf("private async openFoodDescriberWithAi"),
+    mainSource.indexOf("private async describeFoodAi"),
+  );
+  const legacyDescribe = mainSource.slice(
+    mainSource.indexOf("private async legacyOpenFoodDescriber"),
+    mainSource.indexOf("openWorkoutStarter"),
+  );
+  assert.match(aiDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
+  assert.match(aiDescribe, /mapWithConcurrency\(plannedFoods, 3, async \(food\) =>/);
+  assert.match(aiDescribe, /for \(const query of food\.queries\.slice\(0, 2\)\)/);
+  assert.match(aiDescribe, /this\.searchLocalFoods\(query, loggedStats\)/);
+  assert.match(aiDescribe, /if \(remoteQueriesUsed >= DESCRIBE_REMOTE_QUERY_BUDGET\) continue/);
+  assert.match(aiDescribe, /remoteQueriesUsed\+\+/);
+  assert.match(aiDescribe, /this\.searchFoods\(query, loggedStats\)/);
+  assert.match(aiDescribe, /if \(candidates\.length >= 8\) break/);
+  assert.match(legacyDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
+  assert.match(legacyDescribe, /mapWithConcurrency\(parts, 3, async \(part\) =>/);
+  assert.match(legacyDescribe, /this\.searchLocalFoods\(part\.query, loggedStats\)/);
+  assert.match(legacyDescribe, /remoteQueriesUsed < DESCRIBE_REMOTE_QUERY_BUDGET/);
+  assert.match(legacyDescribe, /this\.searchFoods\(part\.query, loggedStats\)/);
+  assert.match(mainSource, /const DESCRIBE_REMOTE_QUERY_BUDGET = 4/);
+  assert.match(mainSource, /async function mapWithConcurrency<T, R>\(items: T\[\], concurrency: number/);
+  assert.match(mainSource, /Array\.from\(\{ length: Math\.min\(Math\.max\(1, concurrency\), items\.length\) \}/);
 });
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {
@@ -1499,7 +1985,9 @@ test("health source keeps session-note workouts and fast rollup paths available"
   assert.match(mainSource, /case "consumedCalories": return totals\.calories/);
   assert.match(mainSource, /case "cal": return totals\.calories/);
   assert.match(mainSource, /logger\.flow\("FoodSearch", "open-food-facts:done"/);
-  assert.match(mainSource, /logger\.flow\("FoodSearch", "custom-scan:done", \{ query, \.\.\.stats \}\)/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "custom-index:done", \{ query, \.\.\.stats \}\)/);
+  assert.match(mainSource, /logger\.flow\("FoodIndex", "catalog-built"/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:cache-hit"/);
   assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:path-hit"/);
   assert.match(mainSource, /logger\.flowWarn\("Food", "upsert-resolve:path-missing"/);
   assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:barcode-hit"/);
@@ -1513,7 +2001,7 @@ test("health source keeps session-note workouts and fast rollup paths available"
   assert.match(mainSource, /logger\.flowWarn\(log\.scope, `\$\{log\.event\}:timeout`/);
   assert.match(mainSource, /logger\.flow\("FoodSearch", "usda:done"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "lookup-candidate:v2-miss"/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "lookup-candidate:v0-miss"/);
+  assert.doesNotMatch(mainSource, /lookup-candidate:v0-miss/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "lookup-candidate:no-macros"/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "lookup-candidate:failed"/);
   assert.match(mainSource, /private async readConfiguredTemplate\(kind: "workout" \| "workout-plan" \| "exercise" \| "food", configuredPath: string\): Promise<string>/);
@@ -2364,6 +2852,9 @@ test("barcode normalization keeps valid UPC candidates without creating 11-digit
   const { barcodeCandidates } = await importPluginWithObsidianStub();
   assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "012345678905"]);
   assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905"]);
+  assert.deepEqual(barcodeCandidates("04252614"), ["04252614", "042100005264"]);
+  assert.deepEqual(barcodeCandidates("24252614"), ["24252614"], "UPC-E expansion must reject unsupported number systems");
+  assert.deepEqual(barcodeCandidates("04252615"), ["04252615"], "UPC-E expansion must reject an invalid check digit");
   assert.ok(barcodeCandidates("0012345678905").every((candidate) => candidate.length !== 11));
 });
 
@@ -2374,7 +2865,7 @@ test("log food command seeds search and amount from the active inline food draft
   ]);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "log-food:active-file"/);
   assert.match(mainSource, /this\.openFoodSearchModal\(this\.getActiveInlineFoodDraft\(\), dateContext\)/);
-  assert.match(mainSource, /new FoodSearchModal\(this\.app, this, initialDraft, dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new FoodSearchModal\(this\.app, this, initialDraft, dateContext, initialTab\)\.open\(\)/);
   assert.doesNotMatch(mainSource, /private async handleNaturalAdd\(input: string\): Promise<void>/);
   assert.match(mainSource, /private async handleBarcodeAdd\(input: string\): Promise<void>/);
   assert.doesNotMatch(mainSource, /function parseQuickFoodInput\(input: string\): QuickFoodInput \| null/);
@@ -2407,7 +2898,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private getActiveInlineFoodDraft\(\): InlineFoodDraft \| null/);
   assert.doesNotMatch(mainSource, /\.setName\("Natural add"\)/);
   assert.doesNotMatch(mainSource, /\["natural", "Text"\]/);
-  assert.match(mainSource, /\["barcode", "Barcode"\], \["search", "Search"\], \["mine", "My foods\/recipes"\]/);
+  assert.match(mainSource, /\["barcode", "Scan"\], \["search", "Search"\], \["mine", "Saved"\], \["describe", "Describe"\]/);
   assert.match(mainSource, /\.setName\("Search food"\)/);
   assert.match(mainSource, /\.setName\("Barcode"\)/);
   assert.match(mainSource, /const token = \+\+this\.searchToken;\s+this\.activeFoodLogTab = mode;/);
@@ -2434,8 +2925,8 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /if \(!trimmed \|\| \/\^now\$\/i\.test\(trimmed\)\) return isoNow\(\);/);
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
-  assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);/);
-  assert.match(mainSource, /row\.addEventListener\("click", async \(\) => \{\s+await this\.addSelection\(item\);/);
+  assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
+  assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item, null, \{ enrich: false \}\);[\s\S]+row\.addEventListener\("click", \(\) => void add\(\)\);/);
   assert.match(mainSource, /setButtonText\("Choose amount"\)/);
   assert.match(mainSource, /if \(!item\.sourcePath\) actions\.addButton/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
@@ -2448,6 +2939,11 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private options: BarcodeScannerOptions = \{\}/);
   assert.match(mainSource, /if \(this\.options\.autoStart\) window\.setTimeout\(\(\) => \{\s+if \(!this\.stopped\) void this\.startCamera\(status\);/);
   assert.match(mainSource, /logger\.flow\("Barcode", "camera:start-skipped-active"/);
+  assert.match(mainSource, /const sessionId = \+\+this\.cameraSessionId/);
+  assert.match(mainSource, /private isCameraSessionActive\(sessionId: number\): boolean/);
+  assert.match(mainSource, /if \(!this\.isCameraSessionActive\(sessionId\)\) \{\s+stream\.getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\);/);
+  assert.match(mainSource, /logger\.flow\("Barcode", "camera:stream-discarded-stale"/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "camera:start-failed"[\s\S]+this\.stopScanning\(\);\s+statusEl\.setText\(`Camera\/scanner unavailable:/);
   assert.match(mainSource, /private desiredFacingMode: "environment" \| "user" \| "" = ""/);
   assert.match(mainSource, /private torchEnabled = false/);
   assert.match(mainSource, /setButtonText\("Flash"\)\s+\.onClick\(\(\) => this\.toggleTorch\(status\)\)/);
@@ -2460,8 +2956,8 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /logger\.flow\("Barcode", "camera:flip", \{ facingMode: this\.desiredFacingMode \}\)/);
   assert.match(mainSource, /this\.stopScanning\(\);\s+this\.updateCameraControlButtons\(\);\s+statusEl\.setText\(`Switching to \$\{this\.desiredFacingMode === "environment" \? "rear" : "front"\} camera\.\.\.`\);/);
   assert.match(mainSource, /facingMode: \{ ideal: this\.desiredFacingMode \|\| this\.defaultFacingMode\(\) \}/);
-  assert.match(mainSource, /statusEl\.setText\("Checking native barcode scanner\.\.\."\);\s+if \(await this\.tryNativeBarcodeBridge\(statusEl\)\) return;\s+statusEl\.setText\("Web camera scanner active\. Scanning\.\.\."\);/);
-  assert.match(mainSource, /private async tryNativeBarcodeBridge\(statusEl: HTMLElement\): Promise<boolean>/);
+  assert.match(mainSource, /statusEl\.setText\("Checking native barcode scanner\.\.\."\);\s+if \(await this\.tryNativeBarcodeBridge\(statusEl, sessionId\)\) return;\s+if \(!this\.isCameraSessionActive\(sessionId\)\) return;\s+statusEl\.setText\("Web camera scanner active\. Scanning\.\.\."\);/);
+  assert.match(mainSource, /private async tryNativeBarcodeBridge\(statusEl: HTMLElement, sessionId: number\): Promise<boolean>/);
   assert.match(mainSource, /private shouldTryNativeBarcodeBridge\(\): boolean/);
   assert.match(mainSource, /Macintosh\/i\.test\(userAgent\) && nav\.maxTouchPoints > 1/);
   assert.match(mainSource, /private getNativeBarcodeBridge\(\): \(\(\) => Promise<unknown>\) \| null/);
@@ -2479,6 +2975,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan\.md"/);
   assert.match(mainSource, /const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode"/);
   assert.match(mainSource, /private shortcutInboxEventRefs: EventRef\[\] = \[\]/);
+  assert.match(mainSource, /private shortcutInboxProcessing = false/);
   assert.match(mainSource, /if \(this\.shouldShowAppleShortcutButton\(\)\) \{\s+controls\.addButton\(\(button\) => button\s+\.setButtonText\("Apple Shortcut"\)\s+\.onClick\(\(\) => this\.openAppleShortcut\(status\)\)\);/);
   assert.match(mainSource, /statusEl\.setText\(`Opening Apple Shortcut\. TPS Health is watching \$\{SHORTCUT_BARCODE_INBOX_PATH\} for the scanned barcode\.`\);/);
   assert.match(mainSource, /logger\.flow\("Barcode", "shortcut:open", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
@@ -2487,10 +2984,12 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /this\.app\.vault\.on\("modify", \(changed\) => \{/);
   assert.match(mainSource, /this\.shortcutInboxPollInterval = window\.setInterval\(\(\) => \{/);
   assert.match(mainSource, /const barcode = shortcutBarcodeFromContent\(content\);/);
+  assert.match(mainSource, /content = await this\.app\.vault\.cachedRead\(file\);[\s\S]+if \(this\.stopped \|\| this\.lookupInProgress\) return;\s+const barcode = shortcutBarcodeFromContent\(content\);/);
   assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:watch-start"/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut-inbox:no-barcode"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:duplicate"/);
   assert.match(mainSource, /await this\.app\.vault\.modify\(file, `Processed by TPS Health at \$\{isoNow\(\)\}\\n`\);/);
+  assert.match(mainSource, /await this\.app\.vault\.modify\(file,[\s\S]+if \(this\.stopped \|\| this\.lookupInProgress\) return;\s+await this\.lookup\(barcode, statusEl\);/);
   assert.match(mainSource, /await this\.lookup\(barcode, statusEl\);/);
   assert.match(mainSource, /function appleShortcutBarcodeUrl\(\): string \{\s+return `shortcuts:\/\/run-shortcut\?name=\$\{encodeURIComponent\(SHORTCUT_BARCODE_NAME\)\}`;/);
   assert.match(mainSource, /function shortcutBarcodeFromContent\(content: string\): string \| null \{\s+const match = content\.match\(\/\(\?:\^\|\\D\)\(\\d\{7,14\}\)\(\?:\\D\|\$\)\/\);/);
@@ -2498,20 +2997,25 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /function createLiveBarcodeReader\(\): any/);
   assert.match(mainSource, /private createLiveBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createLiveReader\?\.\(\) \|\| createLiveBarcodeReader\(\);/);
   assert.match(mainSource, /private createCanvasBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createCanvasReader\?\.\(\) \|\| createBarcodeReader\(\);/);
-  assert.match(mainSource, /new BrowserMultiFormatOneDReader\(createBarcodeHints\(\), \{/);
-  assert.match(mainSource, /delayBetweenScanAttempts: 90/);
-  assert.match(mainSource, /await this\.startZxingVideoScan\(statusEl\)/);
-  assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+this\.zxingVideoControls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(String\(text\)\) \}\)/);
+  assert.match(mainSource, /new BrowserMultiFormatOneDReader\(createBarcodeHints\(false\), \{/);
+  assert.match(mainSource, /delayBetweenScanAttempts: 120/);
+  assert.match(mainSource, /await this\.startZxingVideoScan\(statusEl, sessionId\)/);
+  assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+const controls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
+  assert.match(mainSource, /if \(!this\.isCameraSessionActive\(sessionId\)\) \{\s+controls\?\.stop\?\.\(\);/);
+  assert.match(mainSource, /const barcode = barcodeFromInput\(String\(text\)\);\s+if \(!barcode\) return;\s+logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
+  assert.match(mainSource, /this\.scheduleNativeVideoFallback\(statusEl, sessionId\)/);
+  assert.match(mainSource, /private scheduleNativeVideoFallback\(statusEl: HTMLElement, sessionId: number\): void/);
+  assert.match(mainSource, /native-video-fallback:decoded/);
+  assert.match(mainSource, /this\.clearNativeVideoFallback\(\)/);
   assert.doesNotMatch(mainSource, /scheduleCanvasScanFallback/);
   assert.doesNotMatch(mainSource, /fallbackScanTimeout/);
-  assert.match(mainSource, /logger\.flowWarn\("Barcode", "zxing-video:failed"[\s\S]+await this\.startCanvasScanLoop\(statusEl\);/);
+  assert.match(mainSource, /logger\.flowWarn\("Barcode", "zxing-video:failed"[\s\S]+await this\.startCanvasScanLoop\(statusEl, sessionId\);/);
   assert.match(mainSource, /this\.zxingVideoControls\?\.stop\?\.\(\)/);
   assert.match(mainSource, /DecodeHintType\.POSSIBLE_FORMATS/);
   assert.match(mainSource, /BarcodeFormat\.UPC_A/);
-  assert.match(mainSource, /DecodeHintType\.TRY_HARDER, true/);
+  assert.match(mainSource, /if \(tryHarder\) hints\.set\(DecodeHintType\.TRY_HARDER, true\)/);
   assert.match(mainSource, /barcodeScanCanvases\(this\.canvasEl, heavy\)/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "canvas:decoded", \{ barcode: maskBarcode\(result\) \}\)/);
+  assert.match(mainSource, /const barcode = result \? barcodeFromInput\(result\) : null;\s+if \(barcode\) \{\s+logger\.flow\("Barcode", "canvas:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "image-scan:not-image"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "image-scan:decoded", \{ barcode: maskBarcode\(result\) \}\)/);
   assert.match(mainSource, /const getUserMedia = this\.options\.adapters\?\.requestCameraStream \|\| navigator\.mediaDevices\?\.getUserMedia\?\.bind\(navigator\.mediaDevices\)/);
@@ -2519,21 +3023,37 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /return await getUserMedia\(\{ video: true \}\)/);
   assert.match(mainSource, /const reader = this\.createCanvasBarcodeReader\(\);/);
   assert.match(mainSource, /let decodeInProgress = false/);
-  assert.match(mainSource, /this\.stopped \|\| this\.lookupInProgress \|\| decodeInProgress/);
+  assert.match(mainSource, /!this\.isCameraSessionActive\(sessionId\) \|\| this\.lookupInProgress \|\| decodeInProgress/);
   assert.match(mainSource, /attempts % 2 === 0/);
   assert.match(mainSource, /keep the barcode steady, well lit, and centered/);
   assert.match(mainSource, /\}, 180\);/);
   assert.doesNotMatch(mainSource, /move closer so the barcode fills more of the camera frame/);
+  assert.match(mainSource, /function\* barcodeScanCanvases\(source: HTMLCanvasElement, heavy: boolean\): IterableIterator<HTMLCanvasElement>/);
   assert.match(mainSource, /function barcodeScanRegions\(width: number, height: number, heavy: boolean\): BarcodeCanvasRegion\[\]/);
-  assert.match(mainSource, /out\.splice\(Math\.min\(2, out\.length\), 0, source\)/);
+  assert.doesNotMatch(mainSource, /out\.splice\(Math\.min\(2, out\.length\), 0, source\)/);
   assert.match(mainSource, /x: 0\.25, y: 0\.48, width: 0\.5, height: 0\.42, scale: 2\.5, rotate: true/);
   assert.match(mainSource, /function cropCanvas\(/);
   assert.match(mainSource, /ctx\.rotate\(Math\.PI \/ 2\)/);
-  assert.match(mainSource, /function barcodeImageCanvases\(img: HTMLImageElement\): HTMLCanvasElement\[\]/);
+  assert.match(mainSource, /const BARCODE_IMAGE_MAX_DIMENSION = 1600/);
+  assert.match(mainSource, /function barcodeImageScale\(img: HTMLImageElement\): number/);
+  assert.match(mainSource, /function\* barcodeImageCanvases\(img: HTMLImageElement\): IterableIterator<HTMLCanvasElement>/);
+  assert.match(mainSource, /private async tryDecodeCanvases\(reader: any, canvases: Iterable<HTMLCanvasElement>, sessionId\?: number\)/);
+  assert.doesNotMatch(mainSource, /canvas\.toDataURL/);
+  assert.doesNotMatch(mainSource, /decodeFromImageElement/);
+  assert.match(mainSource, /scanner-lookup:ignored-stale/);
+  assert.match(mainSource, /\(navigator as any\)\.vibrate\?\.\(35\)/);
+  assert.match(mainSource, /tps-health-scanner-viewport/);
+  assert.match(mainSource, /tps-health-scanner-guide/);
+  assert.match(mainSource, /inputmode", "numeric"/);
+  assert.match(stylesSource, /\.tps-health-scanner-status/);
+  assert.match(stylesSource, /\.tps-health-scanner-viewport/);
+  assert.match(stylesSource, /\.tps-health-scanner-guide/);
+  assert.match(stylesSource, /\.tps-health-scanner-controls button:focus-visible/);
+  assert.match(stylesSource, /min-height: 44px/);
   assert.match(mainSource, /const BARCODE_LOOKUP_TIMEOUT_MS = 5000;/);
   assert.match(mainSource, /this\.withTimeout\(\s*this\.lookupOpenFoodFactsBarcodeCandidate\(code\),\s*BARCODE_LOOKUP_TIMEOUT_MS,\s*null,/);
   assert.match(mainSource, /await this\.addSelection\(item, null, \{ enrich: false \}\);\s+logger\.flow\("FoodModal", "barcode:add-hit"/);
-  assert.match(mainSource, /const loggedStats = await this\.plugin\.getLoggedFoodStats\(""\);\s+const localFoods = await this\.plugin\.searchFoods\("", loggedStats\);/);
+  assert.match(mainSource, /const loggedStats = await this\.plugin\.getLoggedFoodStats\(""\);\s+const localFoods = await this\.plugin\.getSavedFoods\(loggedStats\);/);
   assert.match(readmeSource, /Apple's true VisionKit scanner is native app code/);
   assert.match(readmeSource, /probes for known native barcode bridge shapes/);
   assert.match(readmeSource, /when no bridge exists, is cancelled, or errors/);
@@ -3779,7 +4299,7 @@ test("food log unit options are scoped to the food serving type", async () => {
 
 test("food search expands colloquial grocery queries like protein doritos", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
-  assert.match(mainSource, /private openFoodSearchModal\(initialDraft: InlineFoodDraft \| null, dateContext: FoodLogDateContext \| null\): void/);
+  assert.match(mainSource, /private openFoodSearchModal\(initialDraft: InlineFoodDraft \| null, dateContext: FoodLogDateContext \| null, initialTab\?: FoodLogTab\): void/);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "open-food-logger:provided"/);
   assert.match(mainSource, /logger\.flow\("FoodDateContext", "scan-barcode:active-file"/);
   assert.match(mainSource, /private async summarizeDailyNoteDateContext\(file: TFile \| null \| undefined, dateContext: FoodLogDateContext \| null\): Promise<Record<string, unknown>>/);
@@ -3800,8 +4320,14 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /target\?\.closest<HTMLElement>\('\[data-tps-gcm-external-action-id="tps-health:food-log"\]'\)/);
   assert.doesNotMatch(mainSource, /button\[aria-label="Log food"\]/);
   assert.doesNotMatch(mainSource, /button\[title="Log food"\]/);
-  assert.match(mainSource, /function foodSearchQueryVariants\(query: string\): string\[\]/);
-  assert.match(mainSource, /private async searchOpenFoodFactsRoute\(query: string, route: "search" \| "legacy"/);
+  assert.match(mainSource, /const providerQuery = foodSearchCorrectedQuery\(normalized\) \|\| normalized/);
+  assert.match(mainSource, /const primary = await this\.searchOpenFoodFactsRoute\(providerQuery, "search"/);
+  assert.match(mainSource, /const fallback = primary\.items\.length\s+\? null\s+: await this\.searchOpenFoodFactsRoute\(providerQuery, "legacy"/);
+  assert.doesNotMatch(mainSource.slice(
+    mainSource.indexOf("private async searchOpenFoodFacts(query: string)"),
+    mainSource.indexOf("private async searchOpenFoodFactsRoute"),
+  ), /foodSearchQueryVariants/);
+  assert.match(mainSource, /private async searchOpenFoodFactsRoute\(\s+query: string,\s+route: "search" \| "legacy"/);
   assert.match(mainSource, /open-food-facts:\$\{route\}:failed/);
   assert.match(mainSource, /const FOOD_SEARCH_TOKEN_CORRECTIONS: Record<string, string> = \{/);
   assert.match(mainSource, /carmel: "caramel"/);
@@ -3839,7 +4365,7 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /if \(item\.source === "custom-note"\) score \+= 45/);
   assert.match(mainSource, /if \(usage\.count\) score \+= 90 \+ Math\.min\(usage\.count, 10\) \* 10/);
   assert.match(mainSource, /logger\.flowWarn\("FoodSearch", "usage-read:failed", \{ path: file\.path, error: logger\.errorSummary\(error\) \}\)/);
-  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:done", \{ query, files: files\.length, readFailures, usageKeys: stats\.size \}\)/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:done", \{[\s\S]+files: built\.files,[\s\S]+usageKeys: built\.stats\.size,[\s\S]+cached:/);
   assert.match(mainSource, /if \(item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
   assert.match(mainSource, /if \(item\.source === "usda" && item\.brand\) score -= 24/);
   assert.match(mainSource, /tokens\.length === 1 && item\.source === "open-food-facts" && !usage\.count/);

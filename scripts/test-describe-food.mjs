@@ -99,7 +99,7 @@ test("Describe limits AI to extraction and selects searched candidates determini
   assert.match(mainSource, /amountGrams: describedSelectionAmountGrams\(entry\)/);
   assert.match(mainSource, /for \(let candidateIndex = 0; candidateIndex < group\.candidates\.length/);
   assert.ok(
-    mainSource.indexOf('taskId: "health.describe-food.review"') < mainSource.indexOf("const candidateGroups = await Promise.all"),
+    mainSource.indexOf('taskId: "health.describe-food.review"') < mainSource.indexOf("const candidateGroups = await mapWithConcurrency"),
     "the review pass must complete before provider candidate search",
   );
 });
