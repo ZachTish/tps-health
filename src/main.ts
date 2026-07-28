@@ -2546,15 +2546,15 @@ export default class TPSHealthPlugin extends Plugin {
     if (this.localFoodIndex && !this.localFoodIndexDirty && this.localFoodIndex.signature === signature) {
       return this.localFoodIndex;
     }
-    const files = this.app.vault.getMarkdownFiles()
-      .slice()
-      .sort((a, b) => (b.stat?.ctime || b.stat?.mtime || 0) - (a.stat?.ctime || a.stat?.mtime || 0));
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    const files = markdownFiles
+      .map((file) => ({ file, cache: this.app.metadataCache.getFileCache(file) }))
+      .filter(({ file, cache }) => isFoodLikeMarkdownFile(this, file, cache))
+      .sort((a, b) => (b.file.stat?.ctime || b.file.stat?.mtime || 0) - (a.file.stat?.ctime || a.file.stat?.mtime || 0));
     const items: FoodItem[] = [];
     const byBarcode = new Map<string, FoodItem>();
     const byName = new Map<string, FoodItem[]>();
-    for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      if (!isFoodLikeMarkdownFile(this, file, cache)) continue;
+    for (const { file, cache } of files) {
       const item = this.foodFromFrontmatter(file, cache?.frontmatter || {});
       items.push(item);
       const normalizedName = normalizeLookup(item.name);
@@ -2569,10 +2569,10 @@ export default class TPSHealthPlugin extends Plugin {
         }
       }
     }
-    this.localFoodIndex = { signature, items, byBarcode, byName, scannedFiles: files.length };
+    this.localFoodIndex = { signature, items, byBarcode, byName, scannedFiles: markdownFiles.length };
     this.localFoodIndexDirty = false;
     logger.flow("FoodIndex", "catalog-built", {
-      scannedFiles: files.length,
+      scannedFiles: markdownFiles.length,
       foods: items.length,
       names: byName.size,
       barcodes: byBarcode.size,
@@ -3852,7 +3852,7 @@ export default class TPSHealthPlugin extends Plugin {
   async updateDailyRollupForFile(file: TFile): Promise<DailyRollup> {
     logger.flow("Rollup", "update:start", { path: file.path, target: this.settings.foodLogTarget, goals: this.settings.healthGoals.length });
     const content = await this.app.vault.read(file);
-    const totals = await this.calculateFoodTotals(await this.readDailyFoodRollupContent(file), file.path);
+    const totals = await this.calculateFoodTotals(await this.readDailyFoodRollupContent(file, content), file.path);
     const cleaned = removeLegacyRollupBlock(content, this.settings.rollupHeading);
     if (cleaned !== content) {
       logger.flow("Rollup", "legacy-block:removed", { path: file.path, heading: this.settings.rollupHeading });
@@ -3897,8 +3897,8 @@ export default class TPSHealthPlugin extends Plugin {
     }, dailyNotePath);
   }
 
-  private async readDailyFoodRollupContent(dailyFile: TFile): Promise<string> {
-    const dailyContent = await this.app.vault.read(dailyFile);
+  private async readDailyFoodRollupContent(dailyFile: TFile, existingDailyContent?: string): Promise<string> {
+    const dailyContent = existingDailyContent ?? await this.app.vault.read(dailyFile);
     if (this.settings.foodLogTarget !== "single-file") {
       logger.flow("Rollup", "content:daily-note", { path: dailyFile.path, bytes: dailyContent.length });
       return dailyContent;

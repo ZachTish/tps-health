@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.3.1
+
+- Local food indexing now filters eligible food notes before timestamp sorting, so unrelated Markdown files do not participate in sort comparisons.
+- Daily rollups reuse the daily-note content already read by the update path instead of reading the same note twice.
+- Food ordering, scan accounting, rollup totals and fallbacks, settings, stored health data, and provider behavior remain unchanged.
+- This backward-compatible performance release keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
+- Validation passed 118 checks with one intentionally credential-gated USDA test skipped, the separate final build, isolated runtime deployment, Obsidian 1.12.7 reload, and loaded-plugin verification; exact evidence and hashes are in `release-notes/0.3.1.md`.
+
 ## 0.3.0
 
 - Food search is now local-first: saved foods use an invalidation-aware in-memory index, repeated history reads are cached, and online USDA/Open Food Facts lookup happens only when the user explicitly asks for it.
@@ -637,6 +645,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.3.1: Filters local-food candidates before sorting and reuses the daily-note read during rollup calculation, with no data, settings, provider, ordering, or total changes.
 - 0.3.0: Made food discovery local-first and indexed, unified barcode scanning with the normal food tray, bounded provider/camera/image work, and polished the four-mode mobile and accessible UI without changing persisted settings or health data.
 - 0.2.0: Reorganized settings into five shallow accessible destinations, exposed the existing exercise tag, added conditional food-file visibility, and preserved route/focus context across USDA credential edits without changing the settings schema.
 - 0.1.4: Made settings persistence merge local intent into the newest data while preserving synchronized preferences, unknown fields, live health state, and guarded credential migrations.

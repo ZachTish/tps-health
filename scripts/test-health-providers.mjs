@@ -378,7 +378,10 @@ test("food and recipe edits require an explicit linked-instance versioning choic
   assert.match(mainSource, /path: createNewVersion \? undefined : this\.editPath/);
   assert.match(mainSource, /merge: !createNewVersion/);
   assert.match(mainSource, /private getLocalFoodIndex\(\): LocalFoodIndex/);
-  assert.match(mainSource, /const files = this\.app\.vault\.getMarkdownFiles\(\)[\s\S]+?\.sort\(\(a, b\) => \(b\.stat\?\.ctime \|\| b\.stat\?\.mtime \|\| 0\) - \(a\.stat\?\.ctime \|\| a\.stat\?\.mtime \|\| 0\)\)/);
+  assert.match(mainSource, /const markdownFiles = this\.app\.vault\.getMarkdownFiles\(\);/);
+  assert.match(mainSource, /\.filter\(\(\{ file, cache \}\) => isFoodLikeMarkdownFile\(this, file, cache\)\)/);
+  assert.match(mainSource, /\.sort\(\(a, b\) => \(b\.file\.stat\?\.ctime \|\| b\.file\.stat\?\.mtime \|\| 0\) - \(a\.file\.stat\?\.ctime \|\| a\.file\.stat\?\.mtime \|\| 0\)\)/);
+  assert.match(mainSource, /scannedFiles: markdownFiles\.length/);
 });
 
 test("logged meal editing exposes draft ingredient amounts before linked-instance save", () => {
@@ -810,6 +813,75 @@ test("local food and usage indexes are reused until explicitly invalidated", asy
   }
   assert.match(invalidationSource, /metadataCache\.on\("changed"/);
   assert.match(invalidationSource, /this\.invalidateFoodSearchIndexes\("metadata", file\)/);
+});
+
+test("local food index filters candidates before sorting without changing order or scan accounting", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+  };
+
+  const foodFiles = [
+    { path: "Health/Foods/Newest.md", timestamp: 400, name: "Newest" },
+    { path: "Health/Foods/Tied First.md", timestamp: 300, name: "Tied First" },
+    { path: "Health/Foods/Tied Second.md", timestamp: 300, name: "Tied Second" },
+    { path: "Health/Foods/Oldest.md", timestamp: 100, name: "Oldest" },
+  ];
+  for (const food of foodFiles) {
+    fake.files.set(food.path, [
+      "---",
+      "kind: food",
+      `name: "${food.name}"`,
+      "calories: 100",
+      "proteinG: 1",
+      "---",
+      "",
+    ].join("\n"));
+  }
+  for (let index = 0; index < 200; index += 1) {
+    fake.files.set(`Projects/Unrelated ${String(index).padStart(3, "0")}.md`, "---\nkind: project\n---\n");
+  }
+
+  const TFile = globalThis.__TPSHealthTestTFile;
+  let statReads = 0;
+  const descriptors = [
+    ...Array.from({ length: 200 }, (_, index) => ({
+      path: `Projects/Unrelated ${String(index).padStart(3, "0")}.md`,
+      timestamp: 10_000 - index,
+    })),
+    ...foodFiles,
+  ];
+  fake.app.vault.getMarkdownFiles = () => descriptors.map(({ path, timestamp }) => {
+    const file = new TFile(path);
+    Object.defineProperty(file, "stat", {
+      configurable: true,
+      get() {
+        statReads += 1;
+        return { ctime: timestamp, mtime: timestamp };
+      },
+    });
+    return file;
+  });
+
+  const index = plugin.getLocalFoodIndex();
+  assert.deepEqual(
+    index.items.map((item) => item.sourcePath),
+    [
+      "Health/Foods/Newest.md",
+      "Health/Foods/Tied First.md",
+      "Health/Foods/Tied Second.md",
+      "Health/Foods/Oldest.md",
+    ],
+    "filtering before the stable timestamp sort must preserve the prior food ordering",
+  );
+  assert.equal(index.scannedFiles, descriptors.length, "scan accounting must still report every inspected Markdown file");
+  assert.ok(statReads <= 32, `only the four eligible food candidates should participate in sorting (stat reads: ${statReads})`);
 });
 
 test("food index invalidation ignores unrelated metadata churn", async () => {
@@ -1948,6 +2020,65 @@ test("single-file food logs can be filtered by scheduled daily note path", () =>
   const totals = calculateFoodTotals(content, undefined, "Daily Notes/Thu, Jun 04 2026.md");
   assert.equal(round(totals.calories), 280);
   assert.equal(round(totals.proteinG), 21);
+});
+
+test("daily rollup reuses the first daily-note read for every storage route and fallback", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const dailyPath = "Daily Notes/2026-07-28.md";
+  const dailyFoodLine = "- Apple [food:: Apple] [qty:: 1] [unit:: serving] [cal:: 95] [protein:: 1] [carbs:: 25] [fat:: 0.3]";
+
+  const runCase = async ({ target, dailyContent, logContent }) => {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      foodLogTarget: target,
+      foodLogFilePath: "Food Log.md",
+      healthGoals: [],
+      rollupHeading: "Health Rollup",
+    };
+    fake.files.set(dailyPath, dailyContent);
+    if (logContent != null) fake.files.set("Food Log.md", logContent);
+
+    const reads = new Map();
+    const read = fake.app.vault.read.bind(fake.app.vault);
+    fake.app.vault.read = async (file) => {
+      reads.set(file.path, (reads.get(file.path) || 0) + 1);
+      return read(file);
+    };
+
+    const totals = await plugin.updateDailyRollupForFile(new TFile(dailyPath));
+    return { totals, reads };
+  };
+
+  const dailyRoute = await runCase({
+    target: "daily-note",
+    dailyContent: dailyFoodLine,
+  });
+  assert.equal(round(dailyRoute.totals.calories), 95);
+  assert.equal(round(dailyRoute.totals.proteinG), 1);
+  assert.equal(dailyRoute.reads.get(dailyPath), 1, "daily-note rollup must read its daily note once");
+
+  const singleFileRoute = await runCase({
+    target: "single-file",
+    dailyContent: "# Tuesday\n",
+    logContent: "- Yogurt [food:: Yogurt] [qty:: 1] [unit:: serving] [cal:: 120] [protein:: 15] [carbs:: 8] [fat:: 2] [dailyNotePath:: Daily Notes/2026-07-28.md]",
+  });
+  assert.equal(round(singleFileRoute.totals.calories), 120);
+  assert.equal(round(singleFileRoute.totals.proteinG), 15);
+  assert.equal(singleFileRoute.reads.get(dailyPath), 1, "single-file rollup must reuse the daily-note content already read");
+  assert.equal(singleFileRoute.reads.get("Food Log.md"), 1, "single-file rollup must still read its configured log exactly once");
+
+  const missingSingleFile = await runCase({
+    target: "single-file",
+    dailyContent: dailyFoodLine,
+  });
+  assert.equal(round(missingSingleFile.totals.calories), 95, "a missing single-file log must retain the daily-note fallback");
+  assert.equal(round(missingSingleFile.totals.proteinG), 1);
+  assert.equal(missingSingleFile.reads.get(dailyPath), 1, "the missing-log fallback must not reread the daily note");
+  assert.equal(missingSingleFile.reads.has("Food Log.md"), false, "a missing log must not trigger an invalid file read");
 });
 
 test("health source keeps session-note workouts and fast rollup paths available", async () => {
