@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.3.2
+
+- Interactive exercise and workout-plan searches now classify, filter, and materialize results in one ordered vault pass instead of four collection passes.
+- Recognition routes, archive/food exclusions, query matching, result order, diagnostics counters, settings, and stored health data remain unchanged.
+- This backward-compatible performance patch keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
+
 ## 0.3.1
 
 - Local food indexing now filters eligible food notes before timestamp sorting, so unrelated Markdown files do not participate in sort comparisons.
@@ -23,6 +29,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 - 2026-07-16 isolation validation: the Food Log Base test was made source-owned; the declared suite passed 97 tests with only its intentionally gated USDA live check skipped, and the emailed api.data.gov key then passed that optional USDA Foundation check 1/1. The required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Health in the registered test vault with independent default state. No live promotion occurred, and production runtime checksums remained unchanged.
 - 2026-07-24 settings-release validation: the final suite passed 107 tests with only the intentionally credential-gated live USDA check skipped (three Home, two date-owner, 86 provider, nine Describe, and seven routed-settings passes). The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all five settings destinations, conditional food-log controls, three intentional disclosures, and the direct AI Gateway settings handoff were inspected in the registered test vault without changing settings or calling a provider. The pre/post `data.json` SHA-256 remained `fafcc4f731c14d776efe202b3fe6ff0af63f6cfb68ebf6b6060702e18edeecf7`; production was not accessed or promoted.
 - 2026-07-26 food-discovery release validation: the final suite passed 117 tests with only the intentionally credential-gated live USDA check skipped (three Home, two date-owner, 96 provider, nine Describe, and seven routed-settings tests; 116 passed and one skipped). The mandatory standalone build reported `[runtime-deploy] target=test ... unchanged` after the suite deployed `main.js`, `manifest.json`, and `styles.css`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; the four accessible food modes, local-only Saved empty state, explicit `Search online` action, retained selected-food tray, and camera-first scanner status/guide/controls/manual fallback were inspected in the registered test vault. No food was logged, no online text search was triggered, no preference was changed, and the existing pending draft was returned to Saved before closing; its expected modal autosave refreshed transient draft timing only. Source and test-runtime artifacts were byte-identical, and production was not accessed or promoted.
+- 2026-07-28 search-efficiency validation: 119 of 120 declared checks passed and the intentionally credential-gated live USDA check was skipped (three Home, two date-owner, 99 provider checks with 98 passed, nine Describe, and seven routed-settings checks). Table-driven regressions verified exact exercise/workout-plan objects, ordering, recognition routes, counters, logs, and metadata-cache access, and 50,000 randomized supported inputs matched the former pipelines. The required standalone build deployed only to `[runtime-deploy] target=test`. After **Reload app without saving**, Obsidian 1.12.7 registered **TPS Health: Log food**; no modal was submitted and no provider was called. Test-runtime `data.json` remained SHA-256 `17bd273fc88c814d0d17336acafe9f813de58e6e4a897394ad6849c57f0a0fc0`; production was not accessed or promoted.
 
 ## Install with BRAT
 
@@ -645,6 +652,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.3.2: Replaced four-pass exercise and workout-plan search pipelines with single ordered loops while preserving every result and diagnostic counter.
 - 0.3.1: Filters local-food candidates before sorting and reuses the daily-note read during rollup calculation, with no data, settings, provider, ordering, or total changes.
 - 0.3.0: Made food discovery local-first and indexed, unified barcode scanning with the normal food tray, bounded provider/camera/image work, and polished the four-mode mobile and accessible UI without changing persisted settings or health data.
 - 0.2.0: Reorganized settings into five shallow accessible destinations, exposed the existing exercise tag, added conditional food-file visibility, and preserved route/focus context across USDA credential edits without changing the settings schema.

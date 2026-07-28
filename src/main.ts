@@ -3032,32 +3032,31 @@ export default class TPSHealthPlugin extends Plugin {
       queryMiss: 0,
       returned: 0,
     };
-    const results = files
-      .map((file) => ({ file, cache: this.app.metadataCache.getFileCache(file) }))
-      .filter(({ file, cache }) => {
-        const tags = cache?.tags?.map((tag) => tag.tag) || [];
-        const fm = cache?.frontmatter || {};
-        if (isArchivedHealthPath(file.path)) {
-          stats.archived++;
-          return false;
-        }
-        if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
-          stats.foodLike++;
-          return false;
-        }
-        const recognized = tags.includes(this.settings.exerciseTag) ||
-          fm.kind === "exercise" ||
-          fm.tpsType === "health-exercise" ||
-          file.path.startsWith(`${this.settings.exercisesFolder}/`);
-        if (recognized) stats.recognized++;
-        return recognized;
-      })
-      .filter(({ file, cache }) => {
-        const matchesQuery = `${cache?.frontmatter?.name || file.basename}`.toLowerCase().includes(lowered);
-        if (!matchesQuery) stats.queryMiss++;
-        return matchesQuery;
-      })
-      .map(({ file, cache }) => this.exerciseFromFrontmatter(file, cache?.frontmatter || {}));
+    const results: ExerciseItem[] = [];
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const tags = cache?.tags?.map((tag) => tag.tag) || [];
+      const fm = cache?.frontmatter || {};
+      if (isArchivedHealthPath(file.path)) {
+        stats.archived++;
+        continue;
+      }
+      if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
+        stats.foodLike++;
+        continue;
+      }
+      const recognized = tags.includes(this.settings.exerciseTag) ||
+        fm.kind === "exercise" ||
+        fm.tpsType === "health-exercise" ||
+        file.path.startsWith(`${this.settings.exercisesFolder}/`);
+      if (!recognized) continue;
+      stats.recognized++;
+      if (!`${fm.name || file.basename}`.toLowerCase().includes(lowered)) {
+        stats.queryMiss++;
+        continue;
+      }
+      results.push(this.exerciseFromFrontmatter(file, fm));
+    }
     stats.returned = results.length;
     logger.flow("Exercise", "search:done", { query, ...stats });
     return results;
@@ -3169,23 +3168,22 @@ export default class TPSHealthPlugin extends Plugin {
       queryMiss: 0,
       returned: 0,
     };
-    const results = files
-      .map((file) => ({ file, cache: this.app.metadataCache.getFileCache(file) }))
-      .filter(({ file, cache }) => {
-        const fm = cache?.frontmatter || {};
-        const recognized = fm.tpsType === "health-workout-plan" ||
-          fm.tpsType === "health-routine" ||
-          fm.kind === "workout-plan" ||
-          file.path.startsWith(`${this.settings.workoutPlansFolder}/`);
-        if (recognized) stats.recognized++;
-        return recognized;
-      })
-      .filter(({ file, cache }) => {
-        const matchesQuery = `${cache?.frontmatter?.name || cache?.frontmatter?.title || file.basename}`.toLowerCase().includes(lowered);
-        if (!matchesQuery) stats.queryMiss++;
-        return matchesQuery;
-      })
-      .map(({ file, cache }) => this.workoutPlanFromFrontmatter(file, cache?.frontmatter || {}));
+    const results: WorkoutPlanItem[] = [];
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache?.frontmatter || {};
+      const recognized = fm.tpsType === "health-workout-plan" ||
+        fm.tpsType === "health-routine" ||
+        fm.kind === "workout-plan" ||
+        file.path.startsWith(`${this.settings.workoutPlansFolder}/`);
+      if (!recognized) continue;
+      stats.recognized++;
+      if (!`${fm.name || fm.title || file.basename}`.toLowerCase().includes(lowered)) {
+        stats.queryMiss++;
+        continue;
+      }
+      results.push(this.workoutPlanFromFrontmatter(file, fm));
+    }
     stats.returned = results.length;
     logger.flow("WorkoutPlan", "search:done", { query, ...stats });
     return results;

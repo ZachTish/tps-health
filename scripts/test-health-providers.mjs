@@ -4361,6 +4361,110 @@ test("active workout can log five exercises with superset and dropset groups", a
   ]);
 });
 
+test("exercise and workout-plan searches preserve legacy order, counters, and one metadata lookup per file", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    exercisesFolder: "Health/Exercises",
+    workoutPlansFolder: "Health/Workout Plans",
+    enableLogging: true,
+  };
+
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const exerciseResult = (path, name, overrides = {}) => ({
+    id: path, name, sourcePath: path, category: "strength",
+    primaryMuscles: [], secondaryMuscles: [], equipment: [],
+    defaultRestSeconds: undefined, defaultSetType: "normal", recommendedRestDays: undefined,
+    ...overrides,
+  });
+  const workoutPlanResult = (path, name, overrides = {}) => ({
+    id: path, name, sourcePath: path,
+    workflowKind: "workflow", workflowType: "workout", recurrenceMode: "completion-triggered",
+    cooldownDays: undefined, targetGapDays: undefined, defaultRestSeconds: undefined,
+    lastCompletedDate: undefined, nextEligibleDate: undefined, notes: undefined,
+    ...overrides,
+  });
+  const scenarios = [
+    {
+      query: "nEeDlE",
+      logMessage: "[TPS Health] [Exercise] search:done",
+      stats: { scanned: 8, archived: 1, foodLike: 1, recognized: 5, queryMiss: 1, returned: 4 },
+      search: (query) => plugin.searchExercises(query),
+      cases: [
+        { path: "Health/Exercises/Zulu Needle.md", cache: { frontmatter: { name: "Zulu Needle", category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 } }, expected: exerciseResult("Health/Exercises/Zulu Needle.md", "Zulu Needle", { category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 }) },
+        { path: "Elsewhere/Type Needle.md", cache: { frontmatter: { name: "Type Needle", tpsType: "health-exercise", equipment: ["band"] } }, expected: exerciseResult("Elsewhere/Type Needle.md", "Type Needle", { equipment: ["band"] }) },
+        { path: "Elsewhere/Tagged Needle.md", cache: { frontmatter: { name: "Tagged Needle", recommendedRestDays: 2 }, tags: [{ tag: plugin.settings.exerciseTag }] }, expected: exerciseResult("Elsewhere/Tagged Needle.md", "Tagged Needle", { recommendedRestDays: 2 }) },
+        { path: "Elsewhere/Kind Needle.md", cache: { frontmatter: { name: "Kind Needle", kind: "exercise", defaultSetType: "warmup" } }, expected: exerciseResult("Elsewhere/Kind Needle.md", "Kind Needle", { defaultSetType: "warmup" }) },
+        { path: "Elsewhere/Exercise Miss.md", cache: { frontmatter: { name: "No Match", kind: "exercise" } } },
+        { path: "Health/Exercises/Food Needle.md", cache: { frontmatter: { name: "Food Needle", kind: "food" } } },
+        { path: "Archive/Exercise Needle.md", cache: { frontmatter: { name: "Archived Needle", kind: "exercise" } } },
+        { path: "Elsewhere/Unrecognized Needle.md", cache: { frontmatter: { name: "Unrecognized Needle" } } },
+      ],
+    },
+    {
+      query: "NeEdLe",
+      logMessage: "[TPS Health] [WorkoutPlan] search:done",
+      stats: { scanned: 6, recognized: 5, queryMiss: 1, returned: 4 },
+      search: (query) => plugin.searchWorkoutPlans(query),
+      cases: [
+        { path: "Health/Workout Plans/Zulu Needle Plan.md", cache: { frontmatter: { title: "Zulu Needle Plan", cooldownDays: 3 } }, expected: workoutPlanResult("Health/Workout Plans/Zulu Needle Plan.md", "Zulu Needle Plan", { cooldownDays: 3 }) },
+        { path: "Elsewhere/Routine Needle.md", cache: { frontmatter: { name: "Routine Needle", tpsType: "health-routine", targetGapDays: 4 } }, expected: workoutPlanResult("Elsewhere/Routine Needle.md", "Routine Needle", { targetGapDays: 4 }) },
+        { path: "Elsewhere/Type Needle Plan.md", cache: { frontmatter: { name: "Type Needle Plan", tpsType: "health-workout-plan", defaultRestSeconds: 90 } }, expected: workoutPlanResult("Elsewhere/Type Needle Plan.md", "Type Needle Plan", { defaultRestSeconds: 90 }) },
+        { path: "Elsewhere/Kind Needle Plan.md", cache: { frontmatter: { name: "Kind Needle Plan", kind: "workout-plan", notes: "Keep order" } }, expected: workoutPlanResult("Elsewhere/Kind Needle Plan.md", "Kind Needle Plan", { notes: "Keep order" }) },
+        { path: "Elsewhere/Workout Miss.md", cache: { frontmatter: { name: "No Match", kind: "workout-plan" } } },
+        { path: "Elsewhere/Unrecognized Needle Plan.md", cache: { frontmatter: { name: "Unrecognized Needle Plan" } } },
+      ],
+    },
+  ];
+  const installScenario = (scenario) => {
+    const files = scenario.cases.map(({ path }) => new TFile(path));
+    const caches = new Map(scenario.cases.map(({ path, cache }) => [path, cache]));
+    const lookups = [];
+    fake.app.vault.getMarkdownFiles = () => files;
+    fake.app.metadataCache.getFileCache = (file) => {
+      lookups.push(file.path);
+      return caches.get(file.path);
+    };
+    return { files, lookups };
+  };
+
+  const originalConsoleLog = console.log;
+  const logCalls = [];
+  console.log = (...args) => logCalls.push(args);
+  try {
+    await plugin.saveSettings();
+    logCalls.length = 0;
+    for (const scenario of scenarios) {
+      const { files, lookups } = installScenario(scenario);
+      const results = await scenario.search(scenario.query);
+      assert.deepEqual(results, scenario.cases.flatMap(({ expected }) => expected ? [expected] : []));
+      assert.deepEqual(lookups, files.map((file) => file.path));
+      const logCall = logCalls.find(([message]) => message === scenario.logMessage);
+      assert.deepEqual(logCall?.[1], { query: scenario.query, ...scenario.stats });
+    }
+  } finally {
+    plugin.settings.enableLogging = false;
+    await plugin.saveSettings();
+    console.log = originalConsoleLog;
+  }
+
+  const exerciseMethod = mainSource.slice(
+    mainSource.indexOf("async searchExercises"),
+    mainSource.indexOf("async getActiveWorkoutExerciseNames"),
+  );
+  const workoutPlanMethod = mainSource.slice(
+    mainSource.indexOf("async searchWorkoutPlans"),
+    mainSource.indexOf("async createWorkoutPlan"),
+  );
+  assert.match(exerciseMethod, /for \(const file of files\)/);
+  assert.match(workoutPlanMethod, /for \(const file of files\)/);
+  assert.doesNotMatch(exerciseMethod, /\.map\(\(file\) => \(\{ file, cache:/);
+  assert.doesNotMatch(workoutPlanMethod, /\.map\(\(file\) => \(\{ file, cache:/);
+});
+
 test("food note template placeholders render source-of-truth fields", () => {
   const template = [
     "---",
