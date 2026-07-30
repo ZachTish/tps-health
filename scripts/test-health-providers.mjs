@@ -2529,6 +2529,131 @@ test("future Health settings remain read-only and are never downgraded or rewrit
   assert.equal(savedPayloads.length, 0, "later state or settings changes must remain fail-closed");
 });
 
+test("GCM food action retries reuse one Health lifecycle listener", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const layoutListeners = [];
+  fake.app.workspace.on = (event, callback) => {
+    if (event === "layout-change") layoutListeners.push(callback);
+    return { event, callback };
+  };
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of [
+    "register",
+    "registerEditorSuggest",
+    "registerMarkdownPostProcessor",
+    "registerFoodSearchIndexInvalidation",
+    "registerWorkoutTaskCompletionTracking",
+    "registerGcmFoodLogButtonTapFallback",
+    "registerInlineFoodLogMenuHandler",
+    "scheduleFoodLogNutritionRepair",
+    "removeWorkoutActionBars",
+  ]) plugin[method] = () => {};
+  let menuRefreshes = 0;
+  let workoutRefreshes = 0;
+  plugin.scheduleGcmMenuRefresh = () => { menuRefreshes += 1; };
+  plugin.scheduleWorkoutActionBars = () => { workoutRefreshes += 1; };
+  plugin.createApi = () => ({});
+  const loadedSettings = settingsPersistencePayload(normalizeTPSHealthSettings({
+    settingsVersion: 1,
+    showFoodLogButtonInGcm: true,
+  }));
+  plugin.loadData = async () => structuredClone(loadedSettings);
+
+  await plugin.onload();
+  const listenerCounts = [layoutListeners.length];
+  for (let dispatch = 0; dispatch < 10; dispatch += 1) {
+    for (const listener of [...layoutListeners]) listener();
+    listenerCounts.push(layoutListeners.length);
+  }
+  assert.deepEqual(listenerCounts, Array(11).fill(1), "an unavailable GCM must not multiply retry listeners");
+  menuRefreshes = 0;
+  workoutRefreshes = 0;
+
+  let registrationAttempts = 0;
+  let registrations = 0;
+  let unregistrations = 0;
+  let registration;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      externalActions: {
+        register(action) {
+          registrationAttempts += 1;
+          if (registrationAttempts === 1) throw new Error("GCM is still initializing");
+          if (registrationAttempts === 2) return null;
+          registrations += 1;
+          registration = action;
+          return () => {
+            unregistrations += 1;
+            throw new Error("stale GCM disposer failed");
+          };
+        },
+      },
+    },
+  };
+  for (const listener of [...layoutListeners]) listener();
+  assert.equal(registrationAttempts, 1);
+  assert.equal(registrations, 0);
+  assert.equal(menuRefreshes, 1, "a thrown registration must not block the shared menu refresh");
+  assert.equal(workoutRefreshes, 1, "a thrown registration must not block the shared workout refresh");
+
+  for (const listener of [...layoutListeners]) listener();
+  assert.equal(registrationAttempts, 2);
+  assert.equal(registrations, 0);
+  assert.equal(menuRefreshes, 2, "an invalid disposer must not block the shared menu refresh");
+  assert.equal(workoutRefreshes, 2, "an invalid disposer must not block the shared workout refresh");
+
+  for (const listener of [...layoutListeners]) listener();
+  assert.equal(registrationAttempts, 3);
+  assert.equal(registrations, 1);
+  assert.equal(menuRefreshes, 4, "successful registration schedules its action and the shared lifecycle refresh");
+  assert.equal(workoutRefreshes, 3);
+
+  for (const listener of [...layoutListeners]) listener();
+
+  assert.equal(registrations, 1, "the single lifecycle listener must register exactly once when GCM becomes ready");
+  assert.equal(registrationAttempts, 3);
+  assert.equal(menuRefreshes, 5);
+  assert.equal(workoutRefreshes, 4);
+  assert.equal(registration.id, "food-log");
+  assert.equal(registration.pluginId, "tps-health");
+  assert.equal(layoutListeners.length, 1);
+
+  delete fake.app.plugins.plugins["tps-global-context-menu"];
+  for (const listener of [...layoutListeners]) listener();
+  assert.equal(unregistrations, 1, "provider removal must release the stale registration once");
+  assert.equal(registrations, 1);
+
+  let replacementRegistrations = 0;
+  let replacementUnregistrations = 0;
+  let replacementRegistration;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      externalActions: {
+        register(action) {
+          replacementRegistrations += 1;
+          replacementRegistration = action;
+          return () => { replacementUnregistrations += 1; };
+        },
+      },
+    },
+  };
+  for (const listener of [...layoutListeners]) listener();
+  for (const listener of [...layoutListeners]) listener();
+  assert.equal(replacementRegistrations, 1, "a replacement GCM provider must receive one fresh registration");
+  assert.equal(replacementRegistration.id, "food-log");
+  assert.equal(replacementRegistration.pluginId, "tps-health");
+
+  plugin.onunload();
+  assert.equal(unregistrations, 1);
+  assert.equal(replacementUnregistrations, 1);
+});
+
 test("built-in scalar health goals migrate, save, reload, and render canonically", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
   const stale = normalizeTPSHealthSettings({
