@@ -1435,7 +1435,7 @@ export default class TPSHealthPlugin extends Plugin {
     });
     if (file instanceof TFile) {
       const normalizedSetCount = await this.normalizeWorkoutNoteSetTasks(file, fm, endedAt);
-      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      await this.processHealthFrontmatter(file, (frontmatter) => {
         frontmatter.kind = frontmatter.kind || "workout";
         frontmatter.workoutId = frontmatter.workoutId || workoutId;
         frontmatter.runKind = frontmatter.runKind || "run";
@@ -2690,7 +2690,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async updateFoodNote(file: TFile, item: FoodItem, type: FoodNoteType): Promise<void> {
     const normalized = this.prepareFoodNoteItem(item, type);
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, foodFrontmatter(normalized, type));
     });
     this.localFoodIndexDirty = true;
@@ -3154,7 +3154,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("Exercise", "upsert:create", { name: input.name, requestedPath: input.path || "", merge: input.merge !== false });
       return this.createExercise(input);
     }
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, exerciseFrontmatter(input, this.settings.defaultRestSeconds));
     });
     logger.flow("Exercise", "upsert:merge", { path: file.path, name: input.name });
@@ -3249,7 +3249,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("WorkoutPlan", "upsert:create", { name: input.name, requestedPath: input.path || "", merge: input.merge !== false });
       return this.createWorkoutPlan(input);
     }
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, workoutPlanFrontmatter(input, this.settings.defaultWorkoutCooldownDays, this.settings.defaultRestSeconds));
     });
     logger.flow("WorkoutPlan", "upsert:merge", { path: file.path, name: input.name });
@@ -3883,7 +3883,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("Rollup", "legacy-block:removed", { path: file.path, heading: this.settings.rollupHeading });
       await this.app.vault.modify(file, cleaned);
     }
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       delete frontmatter.tpsHealthCalories;
       delete frontmatter.tpsHealthProteinG;
       delete frontmatter.tpsHealthCarbsG;
@@ -4320,7 +4320,7 @@ export default class TPSHealthPlugin extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) return;
     const secondsSincePreviousCompletion = nullableSecondsBetween(plan?.lastCompletedDate, startedAt);
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       frontmatter.kind = frontmatter.kind || "workout";
       frontmatter.workoutId = frontmatter.workoutId || workoutId;
       frontmatter.title = frontmatter.title || title;
@@ -4347,7 +4347,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async updateActiveWorkoutSetFrontmatter(file: TFile, set: WorkoutSet, timeSincePreviousSetSeconds?: number): Promise<void> {
     const setCount = (this.settings.activeWorkoutSetCount || 0) + 1;
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       frontmatter.kind = frontmatter.kind || "workout";
       frontmatter.runKind = frontmatter.runKind || "run";
       frontmatter.runType = frontmatter.runType || "workout";
@@ -4525,7 +4525,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async updateWorkoutTaskCompletionFrontmatter(file: TFile, completedAt: string, setCount: number, restSeconds?: number): Promise<void> {
     logger.flow("WorkoutTask", "frontmatter:update", { path: file.path, completedAt, setCount, restSeconds: restSeconds ?? 0 });
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       frontmatter.kind = frontmatter.kind || "workout";
       frontmatter.runKind = frontmatter.runKind || "run";
       frontmatter.runType = frontmatter.runType || "workout";
@@ -4697,6 +4697,17 @@ export default class TPSHealthPlugin extends Plugin {
     const { format, folder } = await this.getDailyNoteSettings();
     const fileName = `${window.moment().format(format)}.md`;
     return normalizePath(folder ? `${folder}/${fileName}` : fileName);
+  }
+
+  private async processHealthFrontmatter(
+    file: TFile,
+    mutator: (frontmatter: Record<string, unknown>) => void,
+  ): Promise<unknown> {
+    const frontmatterApi = this.getGcmApi()?.frontmatter;
+    if (typeof frontmatterApi?.process === "function") {
+      return await frontmatterApi.process(file, mutator);
+    }
+    return await this.app.fileManager.processFrontMatter(file, mutator);
   }
 
   private getGcmApi(): any {
@@ -5208,7 +5219,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("WorkoutPlan", "completion:missing-plan", { planPath, sessionPath });
       return;
     }
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
       frontmatter.kind = frontmatter.kind || "workout-plan";
       frontmatter.workflowKind = frontmatter.workflowKind || "workflow";
       frontmatter.workflowType = frontmatter.workflowType || "workout";

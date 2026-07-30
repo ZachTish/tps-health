@@ -2654,6 +2654,172 @@ test("GCM food action retries reuse one Health lifecycle listener", async () => 
   assert.equal(replacementUnregistrations, 1);
 });
 
+test("Health frontmatter writes prefer the supported GCM API exactly once and propagate its result and errors", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const plugin = new TPSHealthPlugin(fake.app);
+  const file = new TFile("Health/Workouts/GCM Route QA.md");
+  const expectedResult = false;
+  let gcmCalls = 0;
+  let nativeCalls = 0;
+  let mutatorCalls = 0;
+  let capturedFrontmatter = null;
+
+  fake.app.fileManager.processFrontMatter = async () => {
+    nativeCalls += 1;
+    return { route: "native" };
+  };
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      frontmatter: {
+        async process(target, mutator) {
+          gcmCalls += 1;
+          assert.equal(target, file);
+          const frontmatter = {};
+          mutatorCalls += 1;
+          await mutator(frontmatter);
+          capturedFrontmatter = frontmatter;
+          return expectedResult;
+        },
+      },
+    },
+  };
+
+  const result = await plugin.processHealthFrontmatter(file, (frontmatter) => {
+    frontmatter.status = "complete";
+    frontmatter.completedDate = "2026-07-30T12:34:56.000Z";
+  });
+  assert.equal(result, expectedResult);
+  assert.equal(gcmCalls, 1);
+  assert.equal(nativeCalls, 0);
+  assert.equal(mutatorCalls, 1);
+  assert.deepEqual(capturedFrontmatter, {
+    status: "complete",
+    completedDate: "2026-07-30T12:34:56.000Z",
+  });
+
+  const expectedError = new Error("GCM frontmatter write failed");
+  fake.app.plugins.plugins["tps-global-context-menu"].api.frontmatter.process = async () => {
+    gcmCalls += 1;
+    throw expectedError;
+  };
+  await assert.rejects(
+    () => plugin.processHealthFrontmatter(file, () => {}),
+    (error) => error === expectedError,
+  );
+  assert.equal(gcmCalls, 2);
+  assert.equal(nativeCalls, 0, "a failed GCM write must not be replayed through native Obsidian");
+});
+
+test("Health frontmatter writes use the native standalone route exactly once and propagate its result and errors", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const plugin = new TPSHealthPlugin(fake.app);
+  const file = new TFile("Health/Foods/Native Route QA.md");
+  const expectedResult = { route: "native" };
+  let nativeCalls = 0;
+  let mutatorCalls = 0;
+  let capturedFrontmatter = null;
+
+  fake.app.fileManager.processFrontMatter = async (target, mutator) => {
+    nativeCalls += 1;
+    assert.equal(target, file);
+    const frontmatter = {};
+    mutatorCalls += 1;
+    await mutator(frontmatter);
+    capturedFrontmatter = frontmatter;
+    return expectedResult;
+  };
+
+  const result = await plugin.processHealthFrontmatter(file, (frontmatter) => {
+    frontmatter.name = "Native Route QA";
+  });
+  assert.equal(result, expectedResult);
+  assert.equal(nativeCalls, 1);
+  assert.equal(mutatorCalls, 1);
+  assert.deepEqual(capturedFrontmatter, { name: "Native Route QA" });
+
+  const expectedError = new Error("Native frontmatter write failed");
+  fake.app.fileManager.processFrontMatter = async () => {
+    nativeCalls += 1;
+    throw expectedError;
+  };
+  await assert.rejects(
+    () => plugin.processHealthFrontmatter(file, () => {}),
+    (error) => error === expectedError,
+  );
+  assert.equal(nativeCalls, 2);
+});
+
+test("workout completion sends unchanged status and completedDate values through the GCM frontmatter route", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const path = "Health/Workouts/Finish Route QA.md";
+  const endedAt = "2026-07-30T12:34:56.000Z";
+  fake.files.set(path, [
+    "---",
+    "kind: workout",
+    "workoutId: workout-route-qa",
+    "status: active",
+    "startedAt: 2026-07-30T11:34:56.000Z",
+    "cooldownDays: 0",
+    "---",
+    "",
+  ].join("\n"));
+  plugin.settings = {
+    ...plugin.settings,
+    activeWorkoutPath: path,
+    activeWorkoutId: "workout-route-qa",
+    activeWorkoutDailyNotePath: "",
+    activeWorkoutPlanPath: "",
+    activeWorkoutStartedAt: "2026-07-30T11:34:56.000Z",
+    activeWorkoutCooldownDays: 0,
+    activeWorkoutSetCount: 0,
+    defaultWorkoutCooldownDays: 0,
+  };
+  plugin.normalizeWorkoutNoteSetTasks = async () => 0;
+  plugin.stopGcmWorkoutTimer = async () => {};
+  plugin.clearActiveWorkoutState = async () => {};
+  let nativeCalls = 0;
+  let gcmCalls = 0;
+  let capturedFrontmatter = null;
+  fake.app.fileManager.processFrontMatter = async () => {
+    nativeCalls += 1;
+  };
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      frontmatter: {
+        async process(file, mutator) {
+          gcmCalls += 1;
+          const frontmatter = parseFrontmatter(fake.files.get(file.path) || "");
+          await mutator(frontmatter);
+          capturedFrontmatter = frontmatter;
+          return true;
+        },
+      },
+    },
+  };
+
+  await plugin.finishWorkout({ endedAt, cooldownDays: 0 });
+
+  assert.equal(gcmCalls, 1);
+  assert.equal(nativeCalls, 0);
+  assert.equal(capturedFrontmatter.status, "complete");
+  assert.equal(capturedFrontmatter.completedDate, endedAt);
+  assert.equal(capturedFrontmatter.endedAt, endedAt);
+});
+
+test("all Health-owned Markdown frontmatter writes share the explicit routing helper", () => {
+  assert.equal((mainSource.match(/await this\.processHealthFrontmatter\(/g) || []).length, 9);
+  assert.equal((mainSource.match(/this\.app\.fileManager\.processFrontMatter\(/g) || []).length, 1);
+});
+
 test("built-in scalar health goals migrate, save, reload, and render canonically", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
   const stale = normalizeTPSHealthSettings({
