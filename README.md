@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.3.5
+
+- Exact exercise-name resolution now reads one Obsidian metadata snapshot per visited note and reuses it for frontmatter and tags. A lookup that visits `k` files uses `k` cache reads instead of `2k`, an exact 50% reduction.
+- One snapshot prevents frontmatter from one cache generation from being combined with tags from another. Archive and food exclusions, exercise-tag and `tpsType` recognition, configured-folder recognition, normalized exact-name matching, first-match order, defaults, and returned exercise fields remain unchanged.
+- Exact public 0.3.4 and the optimized class produced zero output mismatches across six representative and 2,000 seeded randomized scenarios while cache reads fell from 47,288 to 23,644. The permanent regression also covers null caches, legacy non-recognition cases, and a rotating-cache coherence adversary.
+- This backward-compatible performance and reliability patch adds no persistent cache, fallback, listener, monkeypatch, setting, schema, API, note mutation, or migration. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.3.4
 
 - All nine Health-owned Markdown frontmatter write sites now call GCM's supported `frontmatter.process` API directly when it is available, removing Health's runtime dependence on GCM globally replacing Obsidian's `fileManager.processFrontMatter`.

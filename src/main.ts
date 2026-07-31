@@ -6338,8 +6338,9 @@ export default class TPSHealthPlugin extends Plugin {
   private findExercise(name: string): ExerciseItem | null {
     const normalized = normalizeLookup(name);
     for (const file of this.app.vault.getMarkdownFiles()) {
-      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      const tags = this.app.metadataCache.getFileCache(file)?.tags?.map((tag) => tag.tag) || [];
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache?.frontmatter || {};
+      const tags = cache?.tags?.map((tag) => tag.tag) || [];
       if (isArchivedHealthPath(file.path)) continue;
       if (hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
       const isExercise = tags.includes(this.settings.exerciseTag) ||

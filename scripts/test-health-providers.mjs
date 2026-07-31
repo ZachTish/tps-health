@@ -4756,6 +4756,160 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
   assert.doesNotMatch(workoutPlanMethod, /\.map\(\(file\) => \(\{ file, cache:/);
 });
 
+test("exact exercise lookup reuses one coherent metadata snapshot per scanned file", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    exercisesFolder: "Health/Exercises",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    exerciseTag: "#tps/exercise",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+  };
+
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const exerciseResult = (path, name, overrides = {}) => ({
+    id: path,
+    name,
+    sourcePath: path,
+    category: "strength",
+    primaryMuscles: [],
+    secondaryMuscles: [],
+    equipment: [],
+    defaultRestSeconds: undefined,
+    defaultSetType: "normal",
+    recommendedRestDays: undefined,
+    ...overrides,
+  });
+  const runLookup = (name, entries) => {
+    const files = entries.map(({ path }) => new TFile(path));
+    const caches = new Map(entries.map(({ path, cache }) => [path, cache]));
+    const lookups = [];
+    fake.app.vault.getMarkdownFiles = () => files;
+    fake.app.metadataCache.getFileCache = (file) => {
+      lookups.push(file.path);
+      return caches.get(file.path);
+    };
+    return { result: plugin.findExercise(name), files, lookups };
+  };
+
+  const orderedCases = [
+    {
+      path: "_archive/Archived Needle.md",
+      cache: { frontmatter: { name: "Needle Target", tpsType: "health-exercise" } },
+    },
+    {
+      path: "Health/Exercises/Food Needle.md",
+      cache: {
+        frontmatter: { name: "Needle Target", kind: "food" },
+        tags: [{ tag: plugin.settings.exerciseTag }],
+      },
+    },
+    { path: "Elsewhere/No Cache.md", cache: undefined },
+    {
+      path: "Elsewhere/Tagged Needle.md",
+      cache: {
+        frontmatter: {
+          name: "Needle Target",
+          category: "mobility",
+          primaryMuscles: ["hips"],
+          defaultRestSeconds: 45,
+        },
+        tags: [{ tag: plugin.settings.exerciseTag }],
+      },
+    },
+    {
+      path: "Health/Exercises/Later Needle.md",
+      cache: { frontmatter: { name: "Needle Target", category: "cardio" } },
+    },
+  ];
+  const ordered = runLookup("  needle TARGET  ", orderedCases);
+  assert.deepEqual(ordered.result, exerciseResult("Elsewhere/Tagged Needle.md", "Needle Target", {
+    category: "mobility",
+    primaryMuscles: ["hips"],
+    defaultRestSeconds: 45,
+  }));
+  assert.deepEqual(
+    ordered.lookups,
+    ordered.files.slice(0, 4).map((file) => file.path),
+    "the ordered scan should read each visited note exactly once and stop after the first match",
+  );
+
+  const miss = runLookup("Needle Target", [
+    { path: "Elsewhere/Missing Cache.md", cache: undefined },
+    { path: "Elsewhere/Unrelated.md", cache: { frontmatter: { name: "Other" } } },
+    { path: "Health/Foods/Food.md", cache: { frontmatter: { name: "Needle Target", tpsType: "health-food" } } },
+  ]);
+  assert.equal(miss.result, null);
+  assert.deepEqual(miss.lookups, miss.files.map((file) => file.path));
+
+  const recognitionCases = [
+    {
+      path: "Health/Exercises/Null Folder Match.md",
+      cache: null,
+      name: "Null Folder Match",
+      expected: exerciseResult("Health/Exercises/Null Folder Match.md", "Null Folder Match"),
+    },
+    {
+      path: "Elsewhere/Type Match.md",
+      cache: { frontmatter: { name: "Type Match", tpsType: "health-exercise" } },
+      name: "Type Match",
+      expected: exerciseResult("Elsewhere/Type Match.md", "Type Match"),
+    },
+    {
+      path: "Elsewhere/Frontmatter Tag Only.md",
+      cache: { frontmatter: { name: "Frontmatter Tag Only", tags: plugin.settings.exerciseTag } },
+      name: "Frontmatter Tag Only",
+      expected: null,
+    },
+    {
+      path: "Elsewhere/Kind Only.md",
+      cache: { frontmatter: { name: "Kind Only", kind: "exercise" } },
+      name: "Kind Only",
+      expected: null,
+    },
+  ];
+  for (const scenario of recognitionCases) {
+    const lookup = runLookup(scenario.name, [scenario]);
+    assert.deepEqual(lookup.result, scenario.expected);
+    assert.deepEqual(lookup.lookups, [scenario.path]);
+  }
+
+  const rotatingFile = new TFile("Elsewhere/Rotating Snapshot.md");
+  const rotatingCaches = [
+    { frontmatter: { name: "Rotating Snapshot", tpsType: "health-exercise", category: "mobility" } },
+    {
+      frontmatter: { name: "Rotating Snapshot", tpsType: "health-exercise", category: "cardio" },
+      tags: [{ tag: plugin.settings.customFoodTag }],
+    },
+  ];
+  let rotatingReads = 0;
+  fake.app.vault.getMarkdownFiles = () => [rotatingFile];
+  fake.app.metadataCache.getFileCache = () => rotatingCaches[Math.min(rotatingReads++, rotatingCaches.length - 1)];
+  assert.deepEqual(plugin.findExercise("Rotating Snapshot"), {
+    ...exerciseResult(rotatingFile.path, "Rotating Snapshot"),
+    category: "mobility",
+  });
+  assert.equal(rotatingReads, 1, "frontmatter and tags must come from one coherent cache generation");
+
+  const findExerciseMethod = mainSource.slice(
+    mainSource.indexOf("private findExercise(name: string)"),
+    mainSource.indexOf("private exerciseFromFrontmatter", mainSource.indexOf("private findExercise(name: string)")),
+  );
+  assert.equal(
+    findExerciseMethod.match(/metadataCache\.getFileCache\(file\)/g)?.length ?? 0,
+    1,
+    "findExercise should capture one cache snapshot per file",
+  );
+  assert.match(findExerciseMethod, /const cache = this\.app\.metadataCache\.getFileCache\(file\);/);
+  assert.match(findExerciseMethod, /const fm = cache\?\.frontmatter \|\| \{\};/);
+  assert.match(findExerciseMethod, /const tags = cache\?\.tags\?\.map/);
+});
+
 test("food note template placeholders render source-of-truth fields", () => {
   const template = [
     "---",
