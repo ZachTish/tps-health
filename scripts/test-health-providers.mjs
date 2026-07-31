@@ -884,6 +884,92 @@ test("local food index filters candidates before sorting without changing order 
   assert.ok(statReads <= 32, `only the four eligible food candidates should participate in sorting (stat reads: ${statReads})`);
 });
 
+test("custom food search scores each match at most once without changing order or identity", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+  };
+
+  const tiedPaths = [];
+  for (let index = 0; index < 8; index += 1) {
+    const path = `Health/Foods/Rank ${String(index).padStart(2, "0")}.md`;
+    tiedPaths.push(path);
+    fake.files.set(path, [
+      "---",
+      "kind: food",
+      "name: \"Café Protein Food\"",
+      index === 0 ? "brand: \"Singleton Unique\"" : index % 3 === 0 ? "brand: \"Test Brand\"" : "",
+      index % 5 === 0 ? `barcode: \"rank-${index}\"` : "",
+      "calories: 100",
+      "proteinG: 10",
+      "---",
+      "",
+    ].filter(Boolean).join("\n"));
+  }
+  fake.files.set("Health/Foods/Macro-less.md", [
+    "---",
+    "kind: food",
+    "name: \"Café Protein Food\"",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Query Miss.md", [
+    "---",
+    "kind: food",
+    "name: \"Unrelated Food\"",
+    "calories: 100",
+    "proteinG: 10",
+    "---",
+    "",
+  ].join("\n"));
+
+  const index = plugin.getLocalFoodIndex();
+  const tiedItems = tiedPaths.map((path) => index.items.find((item) => item.sourcePath === path));
+  assert.ok(tiedItems.every(Boolean));
+  let scoreReads = 0;
+  for (const item of index.items) {
+    const filteredOut = item.sourcePath?.endsWith("Macro-less.md") || item.sourcePath?.endsWith("Query Miss.md");
+    Object.defineProperty(item, "servingGrams", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        if (filteredOut) throw new Error("filtered custom foods must never be scored");
+        scoreReads += 1;
+        return 100;
+      },
+    });
+  }
+
+  const expected = [...tiedItems].sort((left, right) => {
+    const simpleScore = (item) => (item.brand ? 4 : 0) + (item.barcode ? 2 : 0);
+    return simpleScore(right) - simpleScore(left);
+  });
+  const ranked = await plugin.searchCustomFoods("  CAFÉ   protein  ");
+  assert.deepEqual(ranked.map((item) => item.sourcePath), expected.map((item) => item.sourcePath));
+  ranked.forEach((item, resultIndex) => assert.strictEqual(item, expected[resultIndex], "ranking must return the original indexed object"));
+  assert.equal(scoreReads, tiedItems.length, "each eligible custom food must be scored once");
+
+  scoreReads = 0;
+  const singleton = await plugin.searchCustomFoods(" singleton   unique ");
+  assert.deepEqual(singleton, [tiedItems[0]]);
+  assert.strictEqual(singleton[0], tiedItems[0]);
+  assert.equal(scoreReads, 0, "a singleton match must retain the released zero-score path");
+
+  tiedItems[1].aliases = ["duel"];
+  tiedItems[2].aliases = ["duel"];
+  tiedItems[2].barcode = "duel-winner";
+  scoreReads = 0;
+  const duel = await plugin.searchCustomFoods("duel");
+  assert.deepEqual(duel, [tiedItems[2], tiedItems[1]], "two non-tied matches must still be sorted");
+  assert.equal(scoreReads, 2, "two matched foods must each be scored once");
+});
+
 test("food index invalidation ignores unrelated metadata churn", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();

@@ -3291,7 +3291,7 @@ export default class TPSHealthPlugin extends Plugin {
       queryMiss: 0,
       returned: 0,
     };
-    const results = index.items
+    const matches = index.items
       .filter((item) => {
         const hasMacros = hasSearchableMacroData(item.nutrition);
         if (!hasMacros) stats.noMacroData++;
@@ -3301,8 +3301,11 @@ export default class TPSHealthPlugin extends Plugin {
         const matchesQuery = isRelevantFoodResult(normalized, foodSearchFields(item));
         if (!matchesQuery) stats.queryMiss++;
         return matchesQuery;
-      })
-      .sort((a, b) => foodSearchScore(b, normalized) - foodSearchScore(a, normalized));
+      });
+    const results = matches.length < 2 ? matches : matches
+      .map((item) => ({ item, score: foodSearchScore(item, normalized) }))
+      .sort((a, b) => b.score - a.score)
+      .map(({ item }) => item);
     stats.returned = results.length;
     logger.flow("FoodSearch", "custom-index:done", { query, ...stats });
     return results;

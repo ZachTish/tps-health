@@ -1,5 +1,15 @@
 # TPS Health
 
+## 0.3.6
+
+- Saved custom-food search now calculates each eligible result's deterministic relevance score once before stable sorting instead of recalculating both foods inside every comparator call.
+- Macro-less and query-miss foods are still removed before scoring. Empty and singleton result sets retain the released no-score path, while two or more matches keep the same descending score order, stable tie order, and original `FoodItem` object identities.
+- Exact public `0.3.5` returned the expected eight-food ranking but failed the new before-source operation gate after evaluating those eight scores 30 times. Version `0.3.6` evaluates them exactly eight times; filtered throw-probes remain untouched, a singleton performs zero scoring, and two differently scored foods are still reordered correctly.
+- The released and optimized actual plugin classes produced zero output, order, identity, or supported-error mismatches across 200 representative randomized cases while score calls fell from 37,518 to 5,089.
+- In a controlled 12,000-food benchmark over 21 alternating rounds, score calls fell from 152,098 to 12,000 (92.11%), median search time from 629.091 ms to 71.740 ms (88.60%), and p95 from 643.444 ms to 85.973 ms (86.64%). Output order was identical in every round.
+- This is an invocation-local decorate/sort/unwrap pass and adds no cache, timer, listener, fallback, monkeypatch, state, setting, schema, API, note mutation, migration, or unsupported Obsidian API use. All food-search fields, matching, counters, logging, serving data, downstream usage-aware ranking, and minimum Obsidian `1.12.0` are unchanged.
+- Final validation passed 126 of 127 declared checks with only the intentionally credential-gated live USDA check skipped. A separate build deployed byte-identical artifacts to the isolated test vault, Obsidian 1.12.7 reloaded with all nine Health commands registered, and runtime `data.json` remained SHA-256 `17bd273fc88c814d0d17336acafe9f813de58e6e4a897394ad6849c57f0a0fc0`; no Health command, provider, setting, or production vault was invoked.
+
 ## 0.3.5
 
 - Exact exercise-name resolution now reads one Obsidian metadata snapshot per visited note and reuses it for frontmatter and tags. A lookup that visits `k` files uses `k` cache reads instead of `2k`, an exact 50% reduction.
