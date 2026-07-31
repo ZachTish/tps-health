@@ -7143,8 +7143,19 @@ class FoodSearchModal extends Modal {
       logger.flow("FoodModal", "quick-picks:stale", { token, activeTab: this.activeFoodLogTab });
       return;
     }
-    const recent = rankFoodSearchResults("", localFoods, loggedStats).filter((item) => foodUsageForItem(item, loggedStats).count > 0).slice(0, 8);
-    const local = rankFoodSearchResults("", localFoods, loggedStats).filter((item) => !recent.some((recentItem) => foodSelectionKey(recentItem) === foodSelectionKey(item))).slice(0, 8);
+    const recent: FoodItem[] = [];
+    for (const item of localFoods) {
+      if (foodUsageForItem(item, loggedStats).count <= 0) continue;
+      recent.push(item);
+      if (recent.length === 8) break;
+    }
+    const recentKeys = new Set(recent.map(foodSelectionKey));
+    const local: FoodItem[] = [];
+    for (const item of localFoods) {
+      if (recentKeys.has(foodSelectionKey(item))) continue;
+      local.push(item);
+      if (local.length === 8) break;
+    }
     logger.flow("FoodModal", "quick-picks:done", {
       recent: recent.length,
       local: local.length,

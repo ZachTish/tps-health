@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.3.7
+
+- Saved Foods quick picks now reuse the fully ranked, deduplicated catalog already returned by `getSavedFoods()` instead of ranking that same catalog two additional times.
+- The first eight used foods and first eight remaining foods keep the released headings, order, exact `FoodItem` identities, usage rules, selection keys, and empty state. Providers, barcode and scanner flows, search behavior, settings, stored data, and compatibility routes are unchanged.
+- The released and candidate modal classes produced zero output, order, or identity mismatches across 1,000 randomized scenarios containing 120,784 foods. On 1,000 already ranked foods, redundant serving-metric reads fell from 2,000 to zero.
+- Across 31 alternating 12,000-food rounds, median Saved Foods rendering work fell from 240.168 ms to 82.530 ms (65.64%) and p95 from 249.757 ms to 88.275 ms (64.66%). The bundle change is approximately 57 bytes and adds no cache, listener, timer, fallback, state, setting, schema, migration, network call, or unsupported Obsidian API.
+- This is a backward-compatible patch with no migration. Minimum supported Obsidian remains 1.12.0.
+- Final validation passed 127 of 128 declared checks with only the credential-gated live USDA check skipped. An independent actual-class adversary added 3,000 randomized scenarios, ties, colliding selection keys, and both stale-render routes with zero mismatches; its 1,000-food median fell 69.53%. The versioned artifact deployed only to the isolated test runtime, Obsidian 1.12.7 reloaded with all nine Health commands registered, and the palette was dismissed without opening a modal, logging food, changing settings, or calling a provider. Source/runtime artifacts were byte-identical, `data.json` remained SHA-256 `17bd273fc88c814d0d17336acafe9f813de58e6e4a897394ad6849c57f0a0fc0`, `.hotreload` remained unchanged, and production was not accessed.
+
 ## 0.3.6
 
 - Saved custom-food search now calculates each eligible result's deterministic relevance score once before stable sorting instead of recalculating both foods inside every comparator call.

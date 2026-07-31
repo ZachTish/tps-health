@@ -6,7 +6,8 @@ import * as esbuild from "esbuild";
 import { readFileSync } from "node:fs";
 
 const USER_AGENT = "TPSHealth/0.1 (Obsidian plugin test)";
-const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const mainEntryPoint = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+const mainSource = readFileSync(mainEntryPoint, "utf8");
 const apiSource = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const sharedMobileOverlaySource = readFileSync(new URL("../../TPS-Global-Context-Menu (Dev)/src/utils/mobile-overlay.ts", import.meta.url), "utf8");
@@ -111,7 +112,7 @@ async function importPluginWithObsidianStub() {
     ["@zxing/library", zxingLibraryStub],
   ]);
   const build = await esbuild.build({
-    entryPoints: [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
+    entryPoints: [mainEntryPoint],
     bundle: true,
     format: "esm",
     platform: "node",
@@ -119,6 +120,13 @@ async function importPluginWithObsidianStub() {
     plugins: [{
       name: "virtual-test-stubs",
       setup(build) {
+        build.onLoad({ filter: /main\.ts$/ }, (args) => {
+          if (args.path !== mainEntryPoint) return null;
+          return {
+            contents: `${mainSource}\nexport { FoodSearchModal };`,
+            loader: "ts",
+          };
+        });
         build.onResolve({ filter: /.*/ }, (args) => {
           if (virtualModules.has(args.path)) return { path: args.path, namespace: "test-stub" };
           return null;
@@ -968,6 +976,92 @@ test("custom food search scores each match at most once without changing order o
   const duel = await plugin.searchCustomFoods("duel");
   assert.deepEqual(duel, [tiedItems[2], tiedItems[1]], "two non-tied matches must still be sorted");
   assert.equal(scoreReads, 2, "two matched foods must each be scored once");
+});
+
+test("Saved quick picks reuse the ranked local catalog without rescoring it", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodIdentificationMode: "folder",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+  };
+
+  for (let index = 0; index < 12; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    fake.files.set(`Health/Foods/Food ${suffix}.md`, [
+      "---",
+      "kind: food",
+      `name: "Food ${suffix}"`,
+      "calories: 100",
+      "proteinG: 10",
+      "carbsG: 5",
+      "fatG: 2",
+      "---",
+      "",
+    ].join("\n"));
+  }
+
+  const index = plugin.getLocalFoodIndex();
+  let scoreReads = 0;
+  for (const item of index.items) {
+    Object.defineProperty(item, "servingGrams", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        scoreReads += 1;
+        return 100;
+      },
+    });
+  }
+
+  const loggedStats = new Map();
+  for (let itemIndex = 0; itemIndex < 10; itemIndex += 1) {
+    loggedStats.set(`path:Health/Foods/Food ${String(itemIndex).padStart(2, "0")}.md`, {
+      count: itemIndex + 1,
+      lastLoggedAt: "2026-07-31T12:00:00.000Z",
+    });
+  }
+  plugin.getLoggedFoodStats = async () => loggedStats;
+
+  const modal = new FoodSearchModal(fake.app, plugin);
+  const headings = [];
+  const rendered = { recent: [], local: [] };
+  let section = "";
+  modal.resultsEl = {
+    empty() {},
+    createDiv(options = {}) {
+      if (options.text === "Recent and frequent") {
+        section = "recent";
+        headings.push(options.text);
+      } else if (options.text === "My foods") {
+        section = "local";
+        headings.push(options.text);
+      }
+      return {};
+    },
+  };
+  modal.statusEl = { setText() {} };
+  modal.searchToken = 7;
+  modal.activeFoodLogTab = "mine";
+  modal.renderFoodResult = (item) => rendered[section].push(item);
+
+  await modal.renderQuickPicks(7);
+
+  assert.equal(scoreReads, index.items.length, "Saved quick picks must not score the already-ranked catalog again");
+  assert.deepEqual(headings, ["Recent and frequent", "My foods"]);
+  const itemsByName = new Map(index.items.map((item) => [item.name, item]));
+  const expectedRecent = ["Food 09", "Food 08", "Food 07", "Food 06", "Food 05", "Food 04", "Food 03", "Food 02"]
+    .map((name) => itemsByName.get(name));
+  const expectedLocal = ["Food 01", "Food 00", "Food 10", "Food 11"]
+    .map((name) => itemsByName.get(name));
+  assert.deepEqual(rendered.recent, expectedRecent);
+  assert.deepEqual(rendered.local, expectedLocal);
+  rendered.recent.forEach((item, resultIndex) => assert.strictEqual(item, expectedRecent[resultIndex]));
+  rendered.local.forEach((item, resultIndex) => assert.strictEqual(item, expectedLocal[resultIndex]));
 });
 
 test("food index invalidation ignores unrelated metadata churn", async () => {
