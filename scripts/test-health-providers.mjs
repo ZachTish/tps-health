@@ -3557,7 +3557,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /logger\.flow\("Barcode", "camera:flip-busy"\)/);
   assert.match(mainSource, /logger\.flow\("Barcode", "camera:flip", \{ facingMode: this\.desiredFacingMode \}\)/);
   assert.match(mainSource, /this\.stopScanning\(\);\s+this\.updateCameraControlButtons\(\);\s+statusEl\.setText\(`Switching to \$\{this\.desiredFacingMode === "environment" \? "rear" : "front"\} camera\.\.\.`\);/);
-  assert.match(mainSource, /facingMode: \{ ideal: this\.desiredFacingMode \|\| this\.defaultFacingMode\(\) \}/);
+  assert.match(mainSource, /barcodeCameraConstraints\(this\.desiredFacingMode \|\| this\.defaultFacingMode\(\)\)/);
   assert.match(mainSource, /statusEl\.setText\("Checking native barcode scanner\.\.\."\);\s+if \(await this\.tryNativeBarcodeBridge\(statusEl, sessionId\)\) return;\s+if \(!this\.isCameraSessionActive\(sessionId\)\) return;\s+statusEl\.setText\("Web camera scanner active\. Scanning\.\.\."\);/);
   assert.match(mainSource, /private async tryNativeBarcodeBridge\(statusEl: HTMLElement, sessionId: number\): Promise<boolean>/);
   assert.match(mainSource, /private shouldTryNativeBarcodeBridge\(\): boolean/);
@@ -3599,13 +3599,15 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /function createLiveBarcodeReader\(\): any/);
   assert.match(mainSource, /private createLiveBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createLiveReader\?\.\(\) \|\| createLiveBarcodeReader\(\);/);
   assert.match(mainSource, /private createCanvasBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createCanvasReader\?\.\(\) \|\| createBarcodeReader\(\);/);
-  assert.match(mainSource, /new BrowserMultiFormatOneDReader\(createBarcodeHints\(false\), \{/);
-  assert.match(mainSource, /delayBetweenScanAttempts: 120/);
+  assert.match(mainSource, /new BrowserMultiFormatOneDReader\(createBarcodeHints\(true\), \{/);
+  assert.match(mainSource, /delayBetweenScanAttempts: 80/);
   assert.match(mainSource, /await this\.startZxingVideoScan\(statusEl, sessionId\)/);
+  assert.match(mainSource, /void this\.optimizeCameraTrack\(sessionId\);\s+await this\.startZxingVideoScan\(statusEl, sessionId\)/);
   assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+const controls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
   assert.match(mainSource, /if \(!this\.isCameraSessionActive\(sessionId\)\) \{\s+controls\?\.stop\?\.\(\);/);
   assert.match(mainSource, /const barcode = barcodeFromInput\(String\(text\)\);\s+if \(!barcode\) return;\s+logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
   assert.match(mainSource, /this\.scheduleNativeVideoFallback\(statusEl, sessionId\)/);
+  assert.match(mainSource, /void this\.startCanvasScanLoop\(statusEl, sessionId\)/);
   assert.match(mainSource, /private scheduleNativeVideoFallback\(statusEl: HTMLElement, sessionId: number\): void/);
   assert.match(mainSource, /native-video-fallback:decoded/);
   assert.match(mainSource, /this\.clearNativeVideoFallback\(\)/);
@@ -3616,26 +3618,32 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /DecodeHintType\.POSSIBLE_FORMATS/);
   assert.match(mainSource, /BarcodeFormat\.UPC_A/);
   assert.match(mainSource, /if \(tryHarder\) hints\.set\(DecodeHintType\.TRY_HARDER, true\)/);
-  assert.match(mainSource, /barcodeScanCanvases\(this\.canvasEl, heavy\)/);
+  assert.match(mainSource, /barcodeLiveScanCanvases\(this\.canvasEl, attempts\)/);
   assert.match(mainSource, /const barcode = result \? barcodeFromInput\(result\) : null;\s+if \(barcode\) \{\s+logger\.flow\("Barcode", "canvas:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "image-scan:not-image"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "image-scan:decoded", \{ barcode: maskBarcode\(result\) \}\)/);
   assert.match(mainSource, /const getUserMedia = this\.options\.adapters\?\.requestCameraStream \|\| navigator\.mediaDevices\?\.getUserMedia\?\.bind\(navigator\.mediaDevices\)/);
-  assert.match(mainSource, /return await getUserMedia\(\{\s+video: \{/);
+  assert.match(mainSource, /return await getUserMedia\(barcodeCameraConstraints\(/);
   assert.match(mainSource, /return await getUserMedia\(\{ video: true \}\)/);
   assert.match(mainSource, /const reader = this\.createCanvasBarcodeReader\(\);/);
   assert.match(mainSource, /let decodeInProgress = false/);
   assert.match(mainSource, /!this\.isCameraSessionActive\(sessionId\) \|\| this\.lookupInProgress \|\| decodeInProgress/);
-  assert.match(mainSource, /attempts % 2 === 0/);
+  assert.match(mainSource, /BARCODE_ASSIST_ROTATION_ANGLES\[Math\.abs\(attempt\) % BARCODE_ASSIST_ROTATION_ANGLES\.length\]/);
   assert.match(mainSource, /keep the barcode steady, well lit, and centered/);
-  assert.match(mainSource, /\}, 180\);/);
+  assert.match(mainSource, /\}, BARCODE_LIVE_SCAN_INTERVAL_MS\);/);
   assert.doesNotMatch(mainSource, /move closer so the barcode fills more of the camera frame/);
   assert.match(mainSource, /function\* barcodeScanCanvases\(source: HTMLCanvasElement, heavy: boolean\): IterableIterator<HTMLCanvasElement>/);
   assert.match(mainSource, /function barcodeScanRegions\(width: number, height: number, heavy: boolean\): BarcodeCanvasRegion\[\]/);
   assert.doesNotMatch(mainSource, /out\.splice\(Math\.min\(2, out\.length\), 0, source\)/);
-  assert.match(mainSource, /x: 0\.25, y: 0\.48, width: 0\.5, height: 0\.42, scale: 2\.5, rotate: true/);
+  assert.match(mainSource, /x: 0\.25, y: 0\.48, width: 0\.5, height: 0\.42, scale: 2\.5, rotationDegrees: \[0, 90\]/);
   assert.match(mainSource, /function cropCanvas\(/);
-  assert.match(mainSource, /ctx\.rotate\(Math\.PI \/ 2\)/);
+  assert.match(mainSource, /ctx\.rotate\(radians\)/);
+  assert.match(mainSource, /export const BARCODE_ASSIST_ROTATION_ANGLES = \[0, 22\.5, 45, 67\.5\] as const/);
+  assert.match(mainSource, /private async optimizeCameraTrack\(sessionId: number\)/);
+  assert.match(mainSource, /focusMode: "continuous"/);
+  assert.match(mainSource, /pointsOfInterest: \[\{ x: 0\.5, y: 0\.5 \}\]/);
+  assert.match(mainSource, /barcodeAssistZoomPlan\(capabilities\?\.zoom/);
+  assert.match(mainSource, /barcodeCameraConstraints\(this\.desiredFacingMode \|\| this\.defaultFacingMode\(\)\)/);
   assert.match(mainSource, /const BARCODE_IMAGE_MAX_DIMENSION = 1600/);
   assert.match(mainSource, /function barcodeImageScale\(img: HTMLImageElement\): number/);
   assert.match(mainSource, /function\* barcodeImageCanvases\(img: HTMLImageElement\): IterableIterator<HTMLCanvasElement>/);
@@ -3667,6 +3675,36 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(readmeSource, /obsidian:\/\/advanced-uri\?vault=TishOS%20v0\.1&filepath=TPS%20Health%20Barcode%20Scan\.md&data=<Shortcut Scanned Code>&mode=overwrite/);
   assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \|\| 1;/);
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
+});
+
+test("barcode assist covers arbitrary orientation and adapts camera distance", async () => {
+  const {
+    BARCODE_ASSIST_ROTATION_ANGLES,
+    barcodeAssistZoomPlan,
+    barcodeCameraConstraints,
+  } = await importPluginWithObsidianStub();
+
+  assert.deepEqual([...BARCODE_ASSIST_ROTATION_ANGLES], [0, 22.5, 45, 67.5]);
+  for (let barcodeAngle = 0; barcodeAngle < 180; barcodeAngle += 0.5) {
+    const bestResidual = Math.min(...BARCODE_ASSIST_ROTATION_ANGLES.map((correction) => {
+      const normalized = ((barcodeAngle + correction) % 90 + 90) % 90;
+      return Math.min(normalized, 90 - normalized);
+    }));
+    assert.ok(bestResidual <= 11.25, `angle ${barcodeAngle} has residual ${bestResidual}`);
+  }
+
+  assert.deepEqual(barcodeCameraConstraints("environment"), {
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1920, max: 1920 },
+      height: { ideal: 1080, max: 1080 },
+      frameRate: { ideal: 30 },
+    },
+  });
+  assert.deepEqual(barcodeAssistZoomPlan({ min: 1, max: 6 }, 1), { base: 1, assist: 2 });
+  assert.deepEqual(barcodeAssistZoomPlan({ min: 0.5, max: 1.5 }, 0.5), { base: 0.5, assist: 1.5 });
+  assert.equal(barcodeAssistZoomPlan({ min: 1, max: 1.1 }, 1), null);
+  assert.equal(barcodeAssistZoomPlan(undefined, 1), null);
 });
 
 test("food logging modal consumed-time defaults are date-context aware", async () => {
@@ -4038,7 +4076,11 @@ test("completed inline food logs render as live preview chips", async () => {
   const fs = await import("node:fs/promises");
   const mainSource = await fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8");
   const stylesSource = await fs.readFile(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
-  assert.match(mainSource, /if \(Platform\.isMobileApp\) \{\s+logger\.flow\("FoodLog", "editor-extension:skip-mobile", \{ reason: "avoid-mobile-note-open-regressions" \}\);\s+\} else \{\s+this\.registerEditorExtension\(createFoodLogChipExtension\(this\)\);\s+\}/);
+  assert.match(mainSource, /this\.registerEditorExtension\(Platform\.isMobileApp\s+\? createMobileFoodLogChipExtension\(this\)\s+: createFoodLogChipExtension\(this\)\);/);
+  assert.match(mainSource, /function createMobileFoodLogChipExtension\(plugin: TPSHealthPlugin\)/);
+  assert.match(mainSource, /function buildMobileFoodLogChipDecorations\(plugin: TPSHealthPlugin, state: EditorState\)/);
+  assert.match(mainSource, /selectionTouchesLineInState\(state, line\.from, line\.to\)/);
+  assert.match(mainSource, /new FoodLogChipWidget\(plugin, chip, \{ filePath, lineNumber: line\.number - 1, line: line\.text \}\),\s+block: true/);
   assert.match(mainSource, /registerEditorExtension\(createWorkoutSetChipExtension\(this\)\)/);
   assert.match(mainSource, /class WorkoutExercisePickerModal extends Modal/);
   assert.match(mainSource, /text: "Workout • 0\/0"/);
@@ -4128,10 +4170,13 @@ test("completed inline food logs render as live preview chips", async () => {
   assert.match(mainSource, /function markdownFilePathForRenderedElement\(plugin: TPSHealthPlugin, element: HTMLElement\): string/);
   assert.match(mainSource, /const items = root\.matches\("li"\) \? \[root, \.\.\.Array\.from\(root\.querySelectorAll\("li"\)\)\] : Array\.from\(root\.querySelectorAll\("li"\)\);/);
   assert.match(stylesSource, /\.tps-health-food-chip/);
+  assert.match(stylesSource, /width: min\(42rem, 100%\)/);
+  assert.doesNotMatch(stylesSource, /width: min\(42rem, max\(24rem, 100%\)\)/);
   assert.match(stylesSource, /grid-template-areas:/);
   assert.match(stylesSource, /@media \(max-width: 520px\), \(hover: none\) and \(pointer: coarse\) \{/);
   assert.match(stylesSource, /"food menu"\s+"macros macros"\s+"serving amount"/);
-  assert.match(stylesSource, /width: min\(100%, calc\(100vw - 96px\)\)/);
+  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-food-chip \{\s+display: grid !important;[\s\S]+width: 100%;/);
+  assert.match(stylesSource, /\.tps-health-food-chip-macros \{\s+flex-wrap: wrap;\s+justify-content: flex-start;\s+overflow: visible;/);
   assert.match(stylesSource, /\.tps-health-food-chip-serving/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros/);
   assert.match(stylesSource, /"food macros menu"\s+"serving amount menu"/);

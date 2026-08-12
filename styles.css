@@ -1007,7 +1007,7 @@ body.is-phone .tps-health-selection-controls {
   padding: 6px 7px 6px 9px;
   touch-action: manipulation;
   vertical-align: baseline;
-  width: min(42rem, max(24rem, 100%));
+  width: min(42rem, 100%);
 }
 
 .tps-health-food-chip-serving {
@@ -1267,6 +1267,7 @@ body.is-phone .tps-health-selection-controls {
 @media (max-width: 520px), (hover: none) and (pointer: coarse) {
   .tps-health-food-entry-row {
     margin: 6px 0;
+    padding-inline-start: 0;
   }
 
   .tps-health-food-chip {
@@ -1274,7 +1275,7 @@ body.is-phone .tps-health-selection-controls {
     background: color-mix(in srgb, var(--background-secondary) 86%, var(--background-primary));
     border-color: color-mix(in srgb, var(--background-modifier-border) 82%, var(--text-muted) 18%);
     border-radius: 10px;
-    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+    box-shadow: none;
     display: grid;
     gap: 4px 8px;
     grid-template-areas:
@@ -1285,7 +1286,14 @@ body.is-phone .tps-health-selection-controls {
     max-width: 100%;
     min-height: 0;
     padding: 7px 8px;
-    width: min(100%, calc(100vw - 96px));
+    width: 100%;
+  }
+
+  .markdown-source-view.mod-cm6 .cm-content .tps-health-food-chip {
+    display: grid !important;
+    margin: 2px 0;
+    max-width: 100%;
+    width: 100%;
   }
 
   .tps-health-food-chip-food {
@@ -1293,6 +1301,7 @@ body.is-phone .tps-health-selection-controls {
     font-size: var(--font-ui-small);
     font-weight: 650;
     line-height: 1.25;
+    white-space: normal;
   }
 
   .tps-health-food-chip-serving {
@@ -1304,14 +1313,10 @@ body.is-phone .tps-health-selection-controls {
   }
 
   .tps-health-food-chip-macros {
+    flex-wrap: wrap;
     justify-content: flex-start;
-    overflow-x: auto;
+    overflow: visible;
     padding: 1px 0;
-    scrollbar-width: none;
-  }
-
-  .tps-health-food-chip-macros::-webkit-scrollbar {
-    display: none;
   }
 
   .tps-health-food-chip-macro {

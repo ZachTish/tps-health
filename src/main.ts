@@ -130,6 +130,10 @@ const OPEN_FOOD_FACTS_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const OPEN_FOOD_FACTS_SEARCH_CACHE_MAX_ENTRIES = 100;
 const FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100;
 const BARCODE_IMAGE_MAX_DIMENSION = 1600;
+const BARCODE_LIVE_SCAN_INTERVAL_MS = 120;
+const BARCODE_ASSIST_ZOOM_DELAY_MS = 650;
+const BARCODE_ASSIST_ZOOM_HOLD_MS = 750;
+export const BARCODE_ASSIST_ROTATION_ANGLES = [0, 22.5, 45, 67.5] as const;
 const DESCRIBE_REMOTE_QUERY_BUDGET = 4;
 
 type UsdaCredentialSource = "demo" | "secret";
@@ -493,11 +497,9 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorSuggest(new FoodLogEditorSuggest(this.app, this));
     this.registerEditorExtension(createRecipeIngredientEditorExtension(this));
     this.registerEditorExtension(createWorkoutSetChipExtension(this));
-    if (Platform.isMobileApp) {
-      logger.flow("FoodLog", "editor-extension:skip-mobile", { reason: "avoid-mobile-note-open-regressions" });
-    } else {
-      this.registerEditorExtension(createFoodLogChipExtension(this));
-    }
+    this.registerEditorExtension(Platform.isMobileApp
+      ? createMobileFoodLogChipExtension(this)
+      : createFoodLogChipExtension(this));
     this.registerMarkdownPostProcessor((root, ctx) => {
       ctx.addChild(new TPSHealthRenderedControlsChild(root, this, ctx));
     });
@@ -7939,6 +7941,40 @@ function createFoodLogChipExtension(plugin: TPSHealthPlugin) {
   });
 }
 
+function createMobileFoodLogChipExtension(plugin: TPSHealthPlugin) {
+  return StateField.define<DecorationSet>({
+    create(state) {
+      return buildMobileFoodLogChipDecorations(plugin, state);
+    },
+    update(decorations, transaction) {
+      if (transaction.docChanged || transaction.selection) {
+        return buildMobileFoodLogChipDecorations(plugin, transaction.state);
+      }
+      return decorations;
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+}
+
+function buildMobileFoodLogChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
+  if (!state.field(editorLivePreviewField, false)) return Decoration.none;
+  const activeFile = plugin.app.workspace.getActiveFile();
+  const filePath = activeFile instanceof TFile ? activeFile.path : "";
+  if (!filePath || isRecipeLikeMarkdownFile(plugin, filePath)) return Decoration.none;
+  const builder = new RangeSetBuilder<Decoration>();
+  for (let index = 1; index <= state.doc.lines; index++) {
+    const line = state.doc.line(index);
+    if (!isFoodLogLine(line.text) || selectionTouchesLineInState(state, line.from, line.to)) continue;
+    const chip = foodLogChipDataFromLine(line.text);
+    if (!chip) continue;
+    builder.add(line.from, line.to, Decoration.replace({
+      widget: new FoodLogChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: line.text }),
+      block: true,
+    }));
+  }
+  return builder.finish();
+}
+
 function createRecipeIngredientEditorExtension(plugin: TPSHealthPlugin) {
   return StateField.define<DecorationSet>({
     create(state) {
@@ -9535,6 +9571,7 @@ class BarcodeScannerModal extends Modal {
   private fileInputEl: HTMLInputElement | null = null;
   private visibilityHandler: (() => void) | null = null;
   private resumeCameraWhenVisible = false;
+  private cameraAssistTimers: number[] = [];
 
   constructor(
     app: App,
@@ -9809,6 +9846,7 @@ class BarcodeScannerModal extends Modal {
       this.videoEl.srcObject = stream;
       await this.videoEl.play();
       if (!this.isCameraSessionActive(sessionId)) return;
+      void this.optimizeCameraTrack(sessionId);
       await this.startZxingVideoScan(statusEl, sessionId);
       if (!this.isCameraSessionActive(sessionId)) return;
       this.updateCameraControlButtons();
@@ -9933,6 +9971,7 @@ class BarcodeScannerModal extends Modal {
       }
       this.zxingVideoControls = controls;
       this.scheduleNativeVideoFallback(statusEl, sessionId);
+      void this.startCanvasScanLoop(statusEl, sessionId);
     } catch (error) {
       if (!this.isCameraSessionActive(sessionId)) return;
       logger.flowWarn("Barcode", "zxing-video:failed", { error: logger.errorSummary(error) });
@@ -9974,8 +10013,8 @@ class BarcodeScannerModal extends Modal {
         } finally {
           this.nativeFallbackDecodeInProgress = false;
         }
-      }, 350);
-    }, 800);
+      }, BARCODE_LIVE_SCAN_INTERVAL_MS);
+    }, 0);
   }
 
   private clearNativeVideoFallback(): void {
@@ -9996,13 +10035,7 @@ class BarcodeScannerModal extends Modal {
       throw new Error("Camera API is not available in this Obsidian view. Use Scan image or manual entry.");
     }
     try {
-      return await getUserMedia({
-        video: {
-          facingMode: { ideal: this.desiredFacingMode || this.defaultFacingMode() },
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-        },
-      });
+      return await getUserMedia(barcodeCameraConstraints(this.desiredFacingMode || this.defaultFacingMode()));
     } catch (error: any) {
       if (!this.isCameraSessionActive(sessionId)) throw error;
       try {
@@ -10011,6 +10044,66 @@ class BarcodeScannerModal extends Modal {
         throw new Error(this.cameraErrorMessage(fallbackError || error));
       }
     }
+  }
+
+  private async optimizeCameraTrack(sessionId: number): Promise<void> {
+    const track = this.stream?.getVideoTracks()[0];
+    if (!track || !this.isCameraSessionActive(sessionId)) return;
+    const capabilities = track.getCapabilities?.() as any;
+    const applied: string[] = [];
+    if (Array.isArray(capabilities?.focusMode) && capabilities.focusMode.includes("continuous")) {
+      if (await this.applyCameraConstraint(track, { focusMode: "continuous" }, sessionId)) applied.push("continuous-focus");
+    }
+    if (!this.isCameraSessionActive(sessionId)) return;
+    if (capabilities && Object.prototype.hasOwnProperty.call(capabilities, "pointsOfInterest")) {
+      if (await this.applyCameraConstraint(track, { pointsOfInterest: [{ x: 0.5, y: 0.5 }] }, sessionId)) applied.push("center-focus");
+    }
+    if (!this.isCameraSessionActive(sessionId)) return;
+    const zoomPlan = barcodeAssistZoomPlan(capabilities?.zoom, (track.getSettings?.() as any)?.zoom);
+    if (zoomPlan) {
+      this.scheduleCameraAssistZoom(track, zoomPlan, sessionId);
+      applied.push("adaptive-zoom");
+    }
+    logger.flow("Barcode", "camera:optimized", {
+      applied,
+      width: (track.getSettings?.() as any)?.width || 0,
+      height: (track.getSettings?.() as any)?.height || 0,
+    });
+  }
+
+  private async applyCameraConstraint(track: MediaStreamTrack, constraint: Record<string, unknown>, sessionId: number): Promise<boolean> {
+    if (!this.isCameraSessionActive(sessionId)) return false;
+    try {
+      await (track.applyConstraints as any)({ advanced: [constraint] });
+      return this.isCameraSessionActive(sessionId);
+    } catch (error) {
+      logger.flow("Barcode", "camera:constraint-unavailable", {
+        constraint: Object.keys(constraint)[0] || "unknown",
+        error: logger.errorSummary(error),
+      });
+      return false;
+    }
+  }
+
+  private scheduleCameraAssistZoom(track: MediaStreamTrack, plan: { base: number; assist: number }, sessionId: number): void {
+    this.clearCameraAssistTimers();
+    const schedule = (delay: number, zoom: number, route: "assist" | "base") => {
+      const timer = window.setTimeout(async () => {
+        this.cameraAssistTimers = this.cameraAssistTimers.filter((value) => value !== timer);
+        if (!this.isCameraSessionActive(sessionId) || this.lookupInProgress) return;
+        if (await this.applyCameraConstraint(track, { zoom }, sessionId)) {
+          logger.flow("Barcode", `camera:zoom-${route}`, { zoom });
+        }
+      }, delay);
+      this.cameraAssistTimers.push(timer);
+    };
+    schedule(BARCODE_ASSIST_ZOOM_DELAY_MS, plan.assist, "assist");
+    schedule(BARCODE_ASSIST_ZOOM_DELAY_MS + BARCODE_ASSIST_ZOOM_HOLD_MS, plan.base, "base");
+  }
+
+  private clearCameraAssistTimers(): void {
+    for (const timer of this.cameraAssistTimers) window.clearTimeout(timer);
+    this.cameraAssistTimers = [];
   }
 
   private async toggleTorch(statusEl: HTMLElement): Promise<void> {
@@ -10085,8 +10178,7 @@ class BarcodeScannerModal extends Modal {
         this.canvasEl.width = width;
         this.canvasEl.height = height;
         this.canvasContext.drawImage(this.videoEl, 0, 0, width, height);
-        const heavy = attempts % 2 === 0;
-        const result = await this.tryDecodeCanvases(reader, barcodeScanCanvases(this.canvasEl, heavy), sessionId);
+        const result = await this.tryDecodeCanvases(reader, barcodeLiveScanCanvases(this.canvasEl, attempts), sessionId);
         if (!this.isCameraSessionActive(sessionId)) return;
         const barcode = result ? barcodeFromInput(result) : null;
         if (barcode) {
@@ -10099,7 +10191,7 @@ class BarcodeScannerModal extends Modal {
       } finally {
         decodeInProgress = false;
       }
-    }, 180);
+    }, BARCODE_LIVE_SCAN_INTERVAL_MS);
   }
 
   private async scanImageFile(file: File, statusEl: HTMLElement): Promise<void> {
@@ -10302,6 +10394,7 @@ class BarcodeScannerModal extends Modal {
     }
     this.zxingVideoControls = null;
     this.clearNativeVideoFallback();
+    this.clearCameraAssistTimers();
     if (this.scanInterval != null) {
       window.clearInterval(this.scanInterval);
       this.scanInterval = null;
@@ -13454,8 +13547,8 @@ function createBarcodeReader(): any {
 }
 
 function createLiveBarcodeReader(): any {
-  return new BrowserMultiFormatOneDReader(createBarcodeHints(false), {
-    delayBetweenScanAttempts: 120,
+  return new BrowserMultiFormatOneDReader(createBarcodeHints(true), {
+    delayBetweenScanAttempts: 80,
     delayBetweenScanSuccess: 90,
   }) as any;
 }
@@ -13508,13 +13601,44 @@ function* barcodeScanCanvases(source: HTMLCanvasElement, heavy: boolean): Iterab
   if (source.width > 0 && source.height > 0) yield source;
   const regions = barcodeScanRegions(source.width, source.height, heavy);
   for (const region of regions) {
-    const cropped = cropCanvas(source, region, region.scale, region.options);
-    if (cropped.width > 0 && cropped.height > 0) yield cropped;
-    if (region.rotate) {
-      const rotated = cropCanvas(source, region, region.scale, region.options, true);
-      if (rotated.width > 0 && rotated.height > 0) yield rotated;
+    for (const rotationDegrees of region.rotationDegrees || [0]) {
+      const cropped = cropCanvas(source, region, region.scale, region.options, rotationDegrees);
+      if (cropped.width > 0 && cropped.height > 0) yield cropped;
     }
   }
+}
+
+function* barcodeLiveScanCanvases(source: HTMLCanvasElement, attempt: number): IterableIterator<HTMLCanvasElement> {
+  const rotationDegrees = BARCODE_ASSIST_ROTATION_ANGLES[Math.abs(attempt) % BARCODE_ASSIST_ROTATION_ANGLES.length];
+  const fullFrame: BarcodeCanvasRegion = { x: 0, y: 0, width: 1, height: 1, scale: 1 };
+  const center: BarcodeCanvasRegion = { x: 0.16, y: 0.24, width: 0.68, height: 0.52, scale: 2.5 };
+  const rotatedFullFrame = cropCanvas(source, fullFrame, fullFrame.scale, {}, rotationDegrees);
+  if (rotatedFullFrame.width > 0 && rotatedFullFrame.height > 0) yield rotatedFullFrame;
+  const rotatedCenter = cropCanvas(source, center, center.scale, {}, rotationDegrees);
+  if (rotatedCenter.width > 0 && rotatedCenter.height > 0) yield rotatedCenter;
+}
+
+export function barcodeCameraConstraints(facingMode: "environment" | "user"): MediaStreamConstraints {
+  return {
+    video: {
+      facingMode: { ideal: facingMode },
+      width: { ideal: 1920, max: 1920 },
+      height: { ideal: 1080, max: 1080 },
+      frameRate: { ideal: 30 },
+    },
+  };
+}
+
+export function barcodeAssistZoomPlan(
+  range: { min?: number; max?: number } | null | undefined,
+  current?: number,
+): { base: number; assist: number } | null {
+  const min = Number(range?.min);
+  const max = Number(range?.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+  const base = Math.min(max, Math.max(min, Number.isFinite(current) ? Number(current) : min));
+  const assist = Math.min(max, Math.max(base + 0.75, Math.min(2, max)));
+  return assist - base >= 0.25 ? { base, assist } : null;
 }
 
 function barcodeImageScale(img: HTMLImageElement): number {
@@ -13538,15 +13662,15 @@ function* barcodeImageCanvases(img: HTMLImageElement): IterableIterator<HTMLCanv
 
 function barcodeScanRegions(width: number, height: number, heavy: boolean): BarcodeCanvasRegion[] {
   const regions: BarcodeCanvasRegion[] = [
-    { x: 0.25, y: 0.48, width: 0.5, height: 0.42, scale: 2.5, rotate: true },
-    { x: 0.18, y: 0.25, width: 0.64, height: 0.5, scale: 2, rotate: true },
+    { x: 0.25, y: 0.48, width: 0.5, height: 0.42, scale: 2.5, rotationDegrees: [0, 90] },
+    { x: 0.18, y: 0.25, width: 0.64, height: 0.5, scale: 2, rotationDegrees: [0, 90] },
   ];
   if (heavy) {
     regions.push(
-      { x: 0.2, y: 0.45, width: 0.6, height: 0.5, scale: 3, rotate: true, options: { contrast: 2 } },
-      { x: 0.2, y: 0.45, width: 0.6, height: 0.5, scale: 3, rotate: true, options: { threshold: 128 } },
-      { x: 0.05, y: 0.28, width: 0.45, height: 0.55, scale: 2.25, rotate: true },
-      { x: 0.5, y: 0.28, width: 0.45, height: 0.55, scale: 2.25, rotate: true },
+      { x: 0.2, y: 0.45, width: 0.6, height: 0.5, scale: 3, rotationDegrees: BARCODE_ASSIST_ROTATION_ANGLES, options: { contrast: 2 } },
+      { x: 0.2, y: 0.45, width: 0.6, height: 0.5, scale: 3, rotationDegrees: BARCODE_ASSIST_ROTATION_ANGLES, options: { threshold: 128 } },
+      { x: 0.05, y: 0.28, width: 0.45, height: 0.55, scale: 2.25, rotationDegrees: BARCODE_ASSIST_ROTATION_ANGLES },
+      { x: 0.5, y: 0.28, width: 0.45, height: 0.55, scale: 2.25, rotationDegrees: BARCODE_ASSIST_ROTATION_ANGLES },
     );
   }
   return regions.filter((region) => region.width * width >= 80 && region.height * height >= 80);
@@ -13558,7 +13682,7 @@ interface BarcodeCanvasRegion {
   width: number;
   height: number;
   scale: number;
-  rotate?: boolean;
+  rotationDegrees?: readonly number[];
   options?: { contrast?: number; brightness?: number; threshold?: number };
 }
 
@@ -13567,7 +13691,7 @@ function cropCanvas(
   region: BarcodeCanvasRegion,
   scale: number,
   options: { contrast?: number; brightness?: number; threshold?: number } = {},
-  rotate = false,
+  rotationDegrees = 0,
 ): HTMLCanvasElement {
   const sourceWidth = source.width;
   const sourceHeight = source.height;
@@ -13575,8 +13699,11 @@ function cropCanvas(
   const sy = Math.max(0, Math.floor(sourceHeight * region.y));
   const sw = Math.max(1, Math.min(sourceWidth - sx, Math.floor(sourceWidth * region.width)));
   const sh = Math.max(1, Math.min(sourceHeight - sy, Math.floor(sourceHeight * region.height)));
-  const unboundedWidth = Math.max(1, Math.floor((rotate ? sh : sw) * scale));
-  const unboundedHeight = Math.max(1, Math.floor((rotate ? sw : sh) * scale));
+  const radians = rotationDegrees * Math.PI / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  const unboundedWidth = Math.max(1, Math.ceil((sw * cos + sh * sin) * scale));
+  const unboundedHeight = Math.max(1, Math.ceil((sw * sin + sh * cos) * scale));
   const boundedScale = Math.min(1, BARCODE_IMAGE_MAX_DIMENSION / Math.max(unboundedWidth, unboundedHeight));
   const targetWidth = Math.max(1, Math.floor(unboundedWidth * boundedScale));
   const targetHeight = Math.max(1, Math.floor(unboundedHeight * boundedScale));
@@ -13585,14 +13712,11 @@ function cropCanvas(
   canvas.height = targetHeight;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return canvas;
-  ctx.imageSmoothingEnabled = scale !== 1;
-  if (rotate) {
-    ctx.translate(targetWidth / 2, targetHeight / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.drawImage(source, sx, sy, sw, sh, -targetHeight / 2, -targetWidth / 2, targetHeight, targetWidth);
-  } else {
-    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
-  }
+  const drawScale = scale * boundedScale;
+  ctx.imageSmoothingEnabled = drawScale !== 1;
+  ctx.translate(targetWidth / 2, targetHeight / 2);
+  ctx.rotate(radians);
+  ctx.drawImage(source, sx, sy, sw, sh, -sw * drawScale / 2, -sh * drawScale / 2, sw * drawScale, sh * drawScale);
   if (options.contrast || options.brightness || options.threshold != null) {
     applyImageProcessing(ctx, targetWidth, targetHeight, options);
   }
