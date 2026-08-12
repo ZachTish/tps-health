@@ -497,9 +497,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorSuggest(new FoodLogEditorSuggest(this.app, this));
     this.registerEditorExtension(createRecipeIngredientEditorExtension(this));
     this.registerEditorExtension(createWorkoutSetChipExtension(this));
-    this.registerEditorExtension(Platform.isMobileApp
-      ? createMobileFoodLogChipExtension(this)
-      : createFoodLogChipExtension(this));
+    this.registerEditorExtension(createFoodLogChipExtension(this));
     this.registerMarkdownPostProcessor((root, ctx) => {
       ctx.addChild(new TPSHealthRenderedControlsChild(root, this, ctx));
     });
@@ -7768,7 +7766,11 @@ interface RecipeIngredientSelection {
 }
 
 class FoodLogChipWidget extends WidgetType {
-  constructor(private plugin: TPSHealthPlugin, private data: FoodLogChipData, private source: FoodLogLineSource) {
+  constructor(
+    private plugin: TPSHealthPlugin,
+    private data: FoodLogChipData,
+    private source: FoodLogLineSource,
+  ) {
     super();
   }
 
@@ -7883,94 +7885,44 @@ function foodLogChipElement(data: FoodLogChipData, actions?: { onMenu?: (event: 
     }
     details.appendChild(macros);
   }
-  chip.appendChild(details);
 
   if (actions?.onMenu) {
     const menuButton = document.createElement("button");
     menuButton.className = "tps-health-food-chip-menu";
     menuButton.type = "button";
     menuButton.setAttribute("aria-label", `Food log actions for ${data.food}`);
-    menuButton.textContent = "...";
+    menuButton.textContent = "⋯";
     menuButton.addEventListener("click", actions.onMenu);
-    chip.appendChild(menuButton);
+    details.appendChild(menuButton);
   }
+  chip.appendChild(details);
 
   return chip;
 }
 
 export function partitionFoodLogChipMacros(values: readonly string[]): { calories?: string; macros: string[] } {
   const calorieIndex = values.findIndex((value) => /\bkcal\b/i.test(value));
-  if (calorieIndex < 0) return { macros: [...values] };
+  const macros = values.filter((value, index) => index !== calorieIndex && !isZeroOptionalFoodLogMacro(value));
+  if (calorieIndex < 0) return { macros };
   return {
     calories: values[calorieIndex],
-    macros: values.filter((_value, index) => index !== calorieIndex),
+    macros,
   };
 }
 
-function createFoodLogChipExtension(plugin: TPSHealthPlugin) {
-  return ViewPlugin.fromClass(class {
-    decorations: DecorationSet;
-    filePath: string | null;
-
-    constructor(view: EditorView) {
-      this.filePath = this.activeFilePath(view);
-      this.decorations = this.buildDecorations(view);
-    }
-
-    update(update: ViewUpdate): void {
-      const filePath = this.activeFilePath(update.view);
-      if (update.docChanged || update.viewportChanged || update.selectionSet || filePath !== this.filePath) {
-        this.filePath = filePath;
-        this.decorations = this.buildDecorations(update.view);
-      }
-    }
-
-    private buildDecorations(view: EditorView): DecorationSet {
-      const builder = new RangeSetBuilder<Decoration>();
-      const activeFilePath = this.activeFilePath(view);
-      if (isRecipeLikeMarkdownFile(plugin, activeFilePath)) return Decoration.none;
-      for (const { from, to } of view.visibleRanges) {
-        let position = from;
-        while (position <= to) {
-          const line = view.state.doc.lineAt(position);
-          if (line.to > to && position !== from) break;
-          position = line.to + 1;
-          if (line.from === line.to) continue;
-          const text = line.text;
-          if (!isFoodLogLine(text)) continue;
-          const chip = foodLogChipDataFromLine(text);
-          if (!chip) continue;
-          const filePath = activeFilePath;
-          if (!filePath) continue;
-          builder.add(line.from, line.to, Decoration.replace({
-            widget: new FoodLogChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: text }),
-          }));
-        }
-      }
-      return builder.finish();
-    }
-
-    private activeFilePath(view?: EditorView): string | null {
-      if (view) {
-        const owningFile = markdownFilePathForRenderedElement(plugin, view.dom);
-        if (owningFile) return owningFile;
-      }
-      const file = plugin.app.workspace.getActiveViewOfType(MarkdownView)?.file;
-      return file?.path || null;
-    }
-  }, {
-    decorations: (plugin) => plugin.decorations,
-  });
+function isZeroOptionalFoodLogMacro(value: string): boolean {
+  const match = value.trim().match(/^(SA|Alc)\s+(-?\d+(?:\.\d+)?)g$/i);
+  return Boolean(match && Math.abs(Number(match[2])) < 0.0001);
 }
 
-function createMobileFoodLogChipExtension(plugin: TPSHealthPlugin) {
+function createFoodLogChipExtension(plugin: TPSHealthPlugin) {
   return StateField.define<DecorationSet>({
     create(state) {
-      return buildMobileFoodLogChipDecorations(plugin, state);
+      return buildFoodLogChipDecorations(plugin, state);
     },
     update(decorations, transaction) {
       if (transaction.docChanged || transaction.selection) {
-        return buildMobileFoodLogChipDecorations(plugin, transaction.state);
+        return buildFoodLogChipDecorations(plugin, transaction.state);
       }
       return decorations;
     },
@@ -7978,7 +7930,7 @@ function createMobileFoodLogChipExtension(plugin: TPSHealthPlugin) {
   });
 }
 
-function buildMobileFoodLogChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
+function buildFoodLogChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
   if (!state.field(editorLivePreviewField, false)) return Decoration.none;
   const activeFile = plugin.app.workspace.getActiveFile();
   const filePath = activeFile instanceof TFile ? activeFile.path : "";

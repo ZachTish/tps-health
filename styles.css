@@ -994,38 +994,38 @@ body.is-phone .tps-health-selection-controls {
   border-radius: 8px;
   box-sizing: border-box;
   color: var(--text-normal);
-  display: inline-grid;
+  display: grid;
   font-size: var(--font-ui-small);
-  gap: 5px 10px;
+  gap: 4px 8px;
   grid-template-areas:
-    "food calories menu"
-    "details details details";
-  grid-template-columns: minmax(8ch, 1fr) max-content max-content;
+    "food"
+    "details";
+  grid-template-columns: minmax(0, 1fr);
   line-height: 1.35;
   max-width: calc(100vw - 72px);
   min-height: 42px;
   padding: 6px 7px 6px 9px;
+  position: relative;
   touch-action: manipulation;
   vertical-align: baseline;
-  width: min(42rem, 100%);
+  width: 100%;
 }
 
 .tps-health-food-chip-serving {
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
-  color: var(--text-normal);
+  color: var(--text-muted);
   font-weight: 650;
-  padding: 0 6px;
+  padding: 0;
   white-space: nowrap;
 }
 
 .tps-health-food-chip-food {
+  box-sizing: border-box;
   color: var(--link-color);
   grid-area: food;
   font-weight: 650;
   min-width: 0;
   overflow: hidden;
+  max-width: calc(100% - 5.25rem);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1039,38 +1039,52 @@ body.is-phone .tps-health-selection-controls {
 
 .tps-health-food-chip-calories {
   align-self: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
   grid-area: calories;
   justify-self: end;
+  padding: 0;
+  position: absolute;
+  right: 8px;
+  top: 7px;
 }
 
 .tps-health-food-chip-details {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
   grid-area: details;
   min-width: 0;
+  overflow: hidden;
 }
 
 .tps-health-food-chip-macros {
   align-items: center;
   display: flex;
   font-size: var(--font-ui-smaller);
-  gap: 4px;
+  gap: 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
 }
 
 .tps-health-food-chip-macro {
-  background: color-mix(in srgb, var(--background-primary) 78%, var(--interactive-accent) 22%);
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
-  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   font-weight: 650;
   line-height: 1.45;
-  padding: 0 6px;
+  padding: 0;
+}
+
+.tps-health-food-chip-macros .tps-health-food-chip-macro + .tps-health-food-chip-macro::before {
+  color: var(--text-faint);
+  content: "·";
+  margin: 0 5px;
 }
 
 .tps-health-food-chip-menu {
@@ -1082,14 +1096,14 @@ body.is-phone .tps-health-selection-controls {
   display: inline-flex;
   font-size: var(--font-ui-smaller);
   font-weight: 700;
-  grid-area: menu;
   height: 22px;
   justify-content: center;
   line-height: 1;
   margin: 0;
   min-height: 22px;
-  min-width: 28px;
-  padding: 0 6px;
+  margin-left: auto;
+  min-width: 24px;
+  padding: 0 4px;
 }
 
 .tps-health-food-chip-menu:hover,
@@ -1289,9 +1303,9 @@ body.is-phone .tps-health-selection-controls {
     display: grid;
     gap: 4px 8px;
     grid-template-areas:
-      "food calories menu"
-      "details details details";
-    grid-template-columns: minmax(0, 1fr) max-content max-content;
+      "food"
+      "details";
+    grid-template-columns: minmax(0, 1fr);
     max-width: 100%;
     min-height: 0;
     padding: 7px 8px;
@@ -1317,19 +1331,18 @@ body.is-phone .tps-health-selection-controls {
     justify-self: start;
     max-width: 100%;
     overflow: hidden;
-    padding: 1px 7px;
     text-overflow: ellipsis;
   }
 
   .tps-health-food-chip-macros {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-start;
-    overflow: visible;
-    padding: 1px 0;
+    overflow: hidden;
+    padding: 0;
   }
 
   .tps-health-food-chip-details {
-    gap: 4px 6px;
+    gap: 6px;
   }
 
   .tps-health-food-chip-macro {
@@ -1347,7 +1360,7 @@ body.is-phone .tps-health-selection-controls {
     border-radius: 8px;
     height: 28px;
     min-height: 28px;
-    min-width: 34px;
+    min-width: 28px;
   }
 
   .tps-health-recipe-ingredient {
