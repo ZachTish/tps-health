@@ -994,13 +994,9 @@ body.is-phone .tps-health-selection-controls {
   border-radius: 8px;
   box-sizing: border-box;
   color: var(--text-normal);
-  display: grid;
+  display: block;
   font-size: var(--font-ui-small);
   gap: 4px 8px;
-  grid-template-areas:
-    "food"
-    "details";
-  grid-template-columns: minmax(0, 1fr);
   line-height: 1.35;
   max-width: calc(100vw - 72px);
   min-height: 42px;
@@ -1021,12 +1017,14 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-food-chip-food {
   box-sizing: border-box;
   color: var(--link-color);
-  grid-area: food;
   font-weight: 650;
+  left: 9px;
   min-width: 0;
   overflow: hidden;
-  max-width: calc(100% - 5.25rem);
+  position: absolute;
+  right: 5.25rem;
   text-overflow: ellipsis;
+  top: 7px;
   white-space: nowrap;
 }
 
@@ -1055,7 +1053,7 @@ body.is-phone .tps-health-selection-controls {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
-  grid-area: details;
+  margin-top: 22px;
   min-width: 0;
   overflow: hidden;
 }
@@ -1300,12 +1298,8 @@ body.is-phone .tps-health-selection-controls {
     border-color: color-mix(in srgb, var(--background-modifier-border) 82%, var(--text-muted) 18%);
     border-radius: 10px;
     box-shadow: none;
-    display: grid;
+    display: block;
     gap: 4px 8px;
-    grid-template-areas:
-      "food"
-      "details";
-    grid-template-columns: minmax(0, 1fr);
     max-width: 100%;
     min-height: 0;
     padding: 7px 8px;
@@ -1313,7 +1307,7 @@ body.is-phone .tps-health-selection-controls {
   }
 
   .markdown-source-view.mod-cm6 .cm-content .tps-health-food-chip {
-    display: grid !important;
+    display: block !important;
     margin: 2px 0;
     max-width: 100%;
     width: 100%;
@@ -1324,6 +1318,7 @@ body.is-phone .tps-health-selection-controls {
     font-size: var(--font-ui-small);
     font-weight: 650;
     line-height: 1.25;
+    left: 8px;
     white-space: nowrap;
   }
 

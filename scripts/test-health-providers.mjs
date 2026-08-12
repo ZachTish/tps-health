@@ -4188,13 +4188,12 @@ test("completed inline food logs render as live preview chips", async () => {
   assert.match(mainSource, /function markdownFilePathForRenderedElement\(plugin: TPSHealthPlugin, element: HTMLElement\): string/);
   assert.match(mainSource, /const items = root\.matches\("li"\) \? \[root, \.\.\.Array\.from\(root\.querySelectorAll\("li"\)\)\] : Array\.from\(root\.querySelectorAll\("li"\)\);/);
   assert.match(stylesSource, /\.tps-health-food-chip/);
-  assert.match(stylesSource, /\.tps-health-food-chip \{[\s\S]*display: grid;[\s\S]*width: 100%;/);
+  assert.match(stylesSource, /\.tps-health-food-chip \{[\s\S]*display: block;[\s\S]*width: 100%;/);
   assert.doesNotMatch(stylesSource, /width: min\(42rem, max\(24rem, 100%\)\)/);
-  assert.match(stylesSource, /grid-template-areas:/);
   assert.match(stylesSource, /@media \(max-width: 520px\), \(hover: none\) and \(pointer: coarse\) \{/);
-  assert.match(stylesSource, /"food"\s+"details"/);
+  assert.match(stylesSource, /\.tps-health-food-chip-food \{[\s\S]*position: absolute;[\s\S]*right: 5\.25rem;[\s\S]*text-overflow: ellipsis;/);
   assert.match(stylesSource, /\.tps-health-food-chip-calories \{[\s\S]*position: absolute;[\s\S]*right: 8px;[\s\S]*top: 7px;/);
-  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-food-chip \{\s+display: grid !important;[\s\S]+width: 100%;/);
+  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-food-chip \{\s+display: block !important;[\s\S]+width: 100%;/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros \{\s+flex-wrap: nowrap;\s+justify-content: flex-start;\s+overflow: hidden;/);
   assert.match(stylesSource, /\.tps-health-food-chip-serving/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros/);

@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.4.3
+
+- Extremely narrow Live Preview leaves now give the title and calories explicit, non-overlapping first-line regions. Long titles ellipsize before the calorie label instead of painting beneath it.
+- The compact second line and unified desktop/mobile block renderer from 0.4.2 are unchanged. This patch changes no settings, note data, nutrition values, actions, APIs, or minimum compatibility.
+- Final validation passed 129 runnable checks with only the credential-gated live USDA check skipped. The versioned artifact was built and reloaded in the isolated test vault on Obsidian 1.13.7, where the restored three-pane layout visually confirmed a short title, an extreme long-title ellipsis, right-aligned calories, and the serving/macro row. Production was not accessed.
+
 ## 0.4.2
 
 - Live Preview food-log records now use one supported block-decoration renderer on desktop and mobile, so cards stay aligned to the editor and resize with narrow leaves instead of shrink-wrapping or drifting horizontally.
@@ -722,6 +728,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.4.3: Prevents long food titles from painting under calories in extremely narrow Live Preview leaves.
 - 0.4.2: Unifies Live Preview food rows as responsive block cards with title/calories on line one and serving plus compact macros on line two.
 - 0.4.1: Gives food-log titles the first-row width, moves calories to the row end, and groups serving plus remaining macros on the second row.
 - 0.4.0: Adds arbitrary-angle, close/distant camera assistance and a mobile-safe Live Preview food-log renderer without changing persisted settings or note data.
