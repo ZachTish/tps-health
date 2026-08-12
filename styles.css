@@ -998,8 +998,8 @@ body.is-phone .tps-health-selection-controls {
   font-size: var(--font-ui-small);
   gap: 5px 10px;
   grid-template-areas:
-    "food macros menu"
-    "serving amount menu";
+    "food calories menu"
+    "details details details";
   grid-template-columns: minmax(8ch, 1fr) max-content max-content;
   line-height: 1.35;
   max-width: calc(100vw - 72px);
@@ -1015,7 +1015,6 @@ body.is-phone .tps-health-selection-controls {
   border: 1px solid var(--background-modifier-border);
   border-radius: 999px;
   color: var(--text-normal);
-  grid-area: serving;
   font-weight: 650;
   padding: 0 6px;
   white-space: nowrap;
@@ -1034,19 +1033,30 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-food-chip-amount {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
-  grid-area: amount;
-  justify-self: end;
   opacity: 0.82;
   white-space: nowrap;
+}
+
+.tps-health-food-chip-calories {
+  align-self: center;
+  grid-area: calories;
+  justify-self: end;
+}
+
+.tps-health-food-chip-details {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  grid-area: details;
+  min-width: 0;
 }
 
 .tps-health-food-chip-macros {
   align-items: center;
   display: flex;
   font-size: var(--font-ui-smaller);
-  grid-area: macros;
   gap: 4px;
-  justify-content: flex-end;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -1279,10 +1289,9 @@ body.is-phone .tps-health-selection-controls {
     display: grid;
     gap: 4px 8px;
     grid-template-areas:
-      "food menu"
-      "macros macros"
-      "serving amount";
-    grid-template-columns: minmax(0, 1fr) max-content;
+      "food calories menu"
+      "details details details";
+    grid-template-columns: minmax(0, 1fr) max-content max-content;
     max-width: 100%;
     min-height: 0;
     padding: 7px 8px;
@@ -1301,7 +1310,7 @@ body.is-phone .tps-health-selection-controls {
     font-size: var(--font-ui-small);
     font-weight: 650;
     line-height: 1.25;
-    white-space: normal;
+    white-space: nowrap;
   }
 
   .tps-health-food-chip-serving {
@@ -1317,6 +1326,10 @@ body.is-phone .tps-health-selection-controls {
     justify-content: flex-start;
     overflow: visible;
     padding: 1px 0;
+  }
+
+  .tps-health-food-chip-details {
+    gap: 4px 6px;
   }
 
   .tps-health-food-chip-macro {

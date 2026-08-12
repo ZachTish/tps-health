@@ -7832,8 +7832,8 @@ class RecipeIngredientAddWidget extends WidgetType {
 }
 
 function foodLogChipElement(data: FoodLogChipData, actions?: { onMenu?: (event: MouseEvent) => void }): HTMLElement {
-    const chip = document.createElement("span");
-    chip.className = "tps-health-food-chip";
+  const chip = document.createElement("span");
+  chip.className = "tps-health-food-chip";
   chip.setAttribute("title", data.amount ? `${data.food} - ${data.amount}` : data.food);
   if (actions?.onMenu) {
     chip.addEventListener("contextmenu", actions.onMenu);
@@ -7842,35 +7842,48 @@ function foodLogChipElement(data: FoodLogChipData, actions?: { onMenu?: (event: 
     });
   }
 
-    const serving = document.createElement("span");
-    serving.className = "tps-health-food-chip-serving";
-  serving.textContent = data.serving;
-    chip.appendChild(serving);
-
-    const food = document.createElement("span");
-    food.className = "tps-health-food-chip-food";
+  const food = document.createElement("span");
+  food.className = "tps-health-food-chip-food";
   food.textContent = data.food;
-    chip.appendChild(food);
+  chip.appendChild(food);
+
+  const { calories, macros: macroValues } = partitionFoodLogChipMacros(data.macros);
+  if (calories) {
+    const calorie = document.createElement("span");
+    calorie.className = "tps-health-food-chip-calories tps-health-food-chip-macro";
+    calorie.setAttribute("aria-label", `Calories: ${calories}`);
+    calorie.textContent = calories;
+    chip.appendChild(calorie);
+  }
+
+  const details = document.createElement("span");
+  details.className = "tps-health-food-chip-details";
+
+  const serving = document.createElement("span");
+  serving.className = "tps-health-food-chip-serving";
+  serving.textContent = data.serving;
+  details.appendChild(serving);
 
   if (data.amount && data.amount !== data.serving) {
-      const amount = document.createElement("span");
-      amount.className = "tps-health-food-chip-amount";
+    const amount = document.createElement("span");
+    amount.className = "tps-health-food-chip-amount";
     amount.textContent = data.amount;
-      chip.appendChild(amount);
-    }
+    details.appendChild(amount);
+  }
 
-  if (data.macros.length) {
+  if (macroValues.length) {
     const macros = document.createElement("span");
     macros.className = "tps-health-food-chip-macros";
-    macros.setAttribute("aria-label", `Nutrition: ${data.macros.join(", ")}`);
-    for (const value of data.macros) {
+    macros.setAttribute("aria-label", `Macros: ${macroValues.join(", ")}`);
+    for (const value of macroValues) {
       const macro = document.createElement("span");
       macro.className = "tps-health-food-chip-macro";
       macro.textContent = value;
       macros.appendChild(macro);
     }
-    chip.appendChild(macros);
+    details.appendChild(macros);
   }
+  chip.appendChild(details);
 
   if (actions?.onMenu) {
     const menuButton = document.createElement("button");
@@ -7883,6 +7896,15 @@ function foodLogChipElement(data: FoodLogChipData, actions?: { onMenu?: (event: 
   }
 
   return chip;
+}
+
+export function partitionFoodLogChipMacros(values: readonly string[]): { calories?: string; macros: string[] } {
+  const calorieIndex = values.findIndex((value) => /\bkcal\b/i.test(value));
+  if (calorieIndex < 0) return { macros: [...values] };
+  return {
+    calories: values[calorieIndex],
+    macros: values.filter((_value, index) => index !== calorieIndex),
+  };
 }
 
 function createFoodLogChipExtension(plugin: TPSHealthPlugin) {

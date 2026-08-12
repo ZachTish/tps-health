@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.4.1
+
+- Food-log chips now use two intentional rows on iPhone, other mobile clients, and narrow editor panes. The food title receives all remaining first-row width, calories sit at its right edge, and the action menu remains reachable at the far end.
+- The second row keeps serving, converted amount when present, and protein/carbohydrate/fat/other macro pills together. Nutrition values no longer squeeze ordinary food names into a tiny first-row column.
+- Calorie extraction is semantic rather than positional, so a calorie value is promoted correctly even when a legacy or reconstructed macro list places it later. Records without calories retain every available macro on the details row.
+- This backward-compatible layout patch changes no setting, note data, food-log parser, totals, API, or minimum compatibility. Obsidian 1.12.0 remains the minimum supported version.
+- Final validation passed 129 runnable checks with only the credential-gated live USDA check skipped. The versioned artifact was built and reloaded in the isolated test vault on Obsidian 1.13.7, where the archived long-name fixture visually confirmed the two-row hierarchy without editing a note, logging food, or calling a provider. Production was not accessed.
+
 ## 0.4.0
 
 - The barcode camera now requests a sharper 1920×1080 rear-facing stream and starts ZXing, native `BarcodeDetector`, and a bounded multi-angle assist immediately. `TRY_HARDER`, expanded ZXing row coverage, full-frame plus enlarged-center candidates, and 0°/22.5°/45°/67.5° correction passes cover arbitrary label orientation while keeping one canvas decode in flight.
@@ -109,7 +117,7 @@ Workout summaries are appended to the selected day's daily note body. TPS Health
 
 These lines are plain Dataview inline fields so they are easy to type manually and query without plugin state. Generated linked-food entries store the consumed instance, scaled known nutrients, source metadata, barcode, serving metadata, timestamps, and notes. Reusable nutrition, brand, source, barcode, serving metadata, and ingredient details still live on the linked food note as the editable source of truth. If both local food-note nutrition and inline macro fields are present, the inline macro fields are treated as explicit per-instance overrides so manual edits are reflected in rollups.
 
-On iPhone and other Obsidian Mobile clients, Live Preview uses a direct CodeMirror state-field block decoration for completed food-log lines. The long inline record stays hidden while the cursor is off the line and becomes editable source when the line is selected. Mobile chips use the editor width instead of viewport arithmetic, allow long food names and macro pills to wrap, and omit the elevated shadow so daily notes remain compact and readable. This transient render state adds no setting or persisted data.
+On iPhone and other Obsidian Mobile clients, Live Preview uses a direct CodeMirror state-field block decoration for completed food-log lines. The long inline record stays hidden while the cursor is off the line and becomes editable source when the line is selected. Mobile chips use the editor width instead of viewport arithmetic: the food title and calories share the first row, while serving, converted amount, and remaining macro pills share and wrap on the second row. The chip omits the elevated shadow so daily notes remain compact and readable. This transient render state adds no setting or persisted data.
 
 ## Food And Recipe Notes
 
@@ -706,6 +714,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.4.1: Gives food-log titles the first-row width, moves calories to the row end, and groups serving plus remaining macros on the second row.
 - 0.4.0: Adds arbitrary-angle, close/distant camera assistance and a mobile-safe Live Preview food-log renderer without changing persisted settings or note data.
 - 0.3.4: Routes every Health-owned Markdown frontmatter mutation through GCM's supported API when present, with one native standalone route and no catch-and-replay fallback.
 - 0.3.3: Reuses one owned lifecycle listener for GCM food-action registration retries and safely recovers from registration, disposer, and provider-replacement failures.

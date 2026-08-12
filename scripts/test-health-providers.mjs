@@ -3707,6 +3707,21 @@ test("barcode assist covers arbitrary orientation and adapts camera distance", a
   assert.equal(barcodeAssistZoomPlan(undefined, 1), null);
 });
 
+test("food log chips keep calories on the title row and macros on the serving row", async () => {
+  const { partitionFoodLogChipMacros } = await importPluginWithObsidianStub();
+  assert.deepEqual(partitionFoodLogChipMacros(["328.3 kcal", "P 52.4g", "C 0g", "F 9.8g"]), {
+    calories: "328.3 kcal",
+    macros: ["P 52.4g", "C 0g", "F 9.8g"],
+  });
+  assert.deepEqual(partitionFoodLogChipMacros(["P 12g", "160 kcal", "F 2g"]), {
+    calories: "160 kcal",
+    macros: ["P 12g", "F 2g"],
+  });
+  assert.deepEqual(partitionFoodLogChipMacros(["P 12g", "F 2g"]), {
+    macros: ["P 12g", "F 2g"],
+  });
+});
+
 test("food logging modal consumed-time defaults are date-context aware", async () => {
   const { initialFoodLogConsumedDateInput, restoredFoodLogDraftConsumedDateInput } = await importPluginWithObsidianStub();
   assert.match(initialFoodLogConsumedDateInput(null), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
@@ -4106,7 +4121,10 @@ test("completed inline food logs render as live preview chips", async () => {
   assert.match(mainSource, /class FoodLogChipWidget extends WidgetType/);
   assert.match(mainSource, /new FoodLogChipWidget\(plugin, chip, \{ filePath, lineNumber: line\.number - 1, line: text \}\)/);
   assert.match(mainSource, /menuButton\.className = "tps-health-food-chip-menu"/);
-  assert.match(mainSource, /macros\.setAttribute\("aria-label", `Nutrition: \$\{data\.macros\.join\(", "\)\}`\)/);
+  assert.match(mainSource, /partitionFoodLogChipMacros\(data\.macros\)/);
+  assert.match(mainSource, /calorie\.className = "tps-health-food-chip-calories tps-health-food-chip-macro"/);
+  assert.match(mainSource, /details\.className = "tps-health-food-chip-details"/);
+  assert.match(mainSource, /macros\.setAttribute\("aria-label", `Macros: \$\{macroValues\.join\(", "\)\}`\)/);
   assert.match(mainSource, /macro\.className = "tps-health-food-chip-macro"/);
   assert.match(mainSource, /macro\.textContent = value/);
   assert.match(mainSource, /void plugin\.openFoodLogEntryMenuFromLine\(event, ctx\.sourcePath, lineNumber, text\)/);
@@ -4174,12 +4192,13 @@ test("completed inline food logs render as live preview chips", async () => {
   assert.doesNotMatch(stylesSource, /width: min\(42rem, max\(24rem, 100%\)\)/);
   assert.match(stylesSource, /grid-template-areas:/);
   assert.match(stylesSource, /@media \(max-width: 520px\), \(hover: none\) and \(pointer: coarse\) \{/);
-  assert.match(stylesSource, /"food menu"\s+"macros macros"\s+"serving amount"/);
+  assert.match(stylesSource, /"food calories menu"\s+"details details details"/);
   assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-food-chip \{\s+display: grid !important;[\s\S]+width: 100%;/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros \{\s+flex-wrap: wrap;\s+justify-content: flex-start;\s+overflow: visible;/);
   assert.match(stylesSource, /\.tps-health-food-chip-serving/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros/);
-  assert.match(stylesSource, /"food macros menu"\s+"serving amount menu"/);
+  assert.match(stylesSource, /\.tps-health-food-chip-calories/);
+  assert.match(stylesSource, /\.tps-health-food-chip-details/);
   assert.match(stylesSource, /\.tps-health-food-chip-macro \{[\s\S]*font-variant-numeric: tabular-nums;/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros \{[\s\S]*justify-content: flex-end;/);
   assert.match(stylesSource, /\.tps-health-food-chip-menu/);
