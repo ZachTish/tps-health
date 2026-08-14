@@ -96,7 +96,7 @@ test("Describe limits AI to extraction and selects searched candidates determini
   assert.match(mainSource, /one piece of salmon sashimi is one ordinary sashimi slice, not 100 g/);
   assert.match(mainSource, /portionRoute: estimatedUnitGrams \? "estimated-unit-to-grams" : nativeUnit \? "native-unit" : "metric"/);
   assert.match(mainSource, /resolveFoodLogServingWithGramAmount\(loggedItem, quantity, unit, options\.amountGrams\)/);
-  assert.match(mainSource, /amountGrams: describedSelectionAmountGrams\(entry\)/);
+  assert.match(mainSource, /amountGrams: describedSelectionAmountGrams\(captured\.selection\)/);
   assert.match(mainSource, /for \(let candidateIndex = 0; candidateIndex < group\.candidates\.length/);
   assert.ok(
     mainSource.indexOf('taskId: "health.describe-food.review"') < mainSource.indexOf("const candidateGroups = await mapWithConcurrency"),

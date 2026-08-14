@@ -92,6 +92,8 @@ export interface Nutrition {
   sodiumMg?: number;
 }
 
+export type NutritionBasis = "labeled-serving" | "per-100g" | "per-100ml" | "estimated-serving";
+
 export interface FoodItem {
   id: string;
   name: string;
@@ -105,6 +107,7 @@ export interface FoodItem {
   servingUnit?: string;
   servingGrams?: number;
   servingMl?: number;
+  nutritionBasis?: NutritionBasis;
   recipeServings?: number;
   source: FoodSource;
   sourcePath?: string;

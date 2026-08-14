@@ -1116,6 +1116,29 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("FoodDraft", "cleared", { selected });
   }
 
+  async replacePendingFoodLogDraftIfCurrent(expectedId: string | null, draft: PendingFoodLogDraft | null): Promise<boolean> {
+    const currentId = this.settings.pendingFoodLogDraft?.id || null;
+    if (currentId !== expectedId) {
+      logger.flowWarn("FoodDraft", "replace:stale-skip", {
+        expectedId: expectedId || "",
+        currentId: currentId || "",
+        nextId: draft?.id || "",
+        selected: draft?.selectionItems.length || 0,
+      });
+      return false;
+    }
+    const previousSelected = this.settings.pendingFoodLogDraft?.selectionItems.length || 0;
+    this.settings.pendingFoodLogDraft = draft;
+    await this.saveSettings();
+    logger.flow("FoodDraft", draft ? "replace:saved" : "replace:cleared", {
+      draftId: draft?.id || expectedId || "",
+      previousSelected,
+      selected: draft?.selectionItems.length || 0,
+      ...summarizeDateContext(draft?.dateContext),
+    });
+    return true;
+  }
+
   async getFoodLogDateContextForFile(file: TFile | null | undefined): Promise<FoodLogDateContext | null> {
     return this.getDailyNoteDateContext(file);
   }
@@ -2358,9 +2381,23 @@ export default class TPSHealthPlugin extends Plugin {
       dailyNotePath: dailyFile.path,
     });
     this.markFoodUsageIndexDirty();
-    if (this.settings.automaticDailyRollups) await this.updateDailyRollupForFile(dailyFile);
+    let rollupUpdated = false;
+    if (this.settings.automaticDailyRollups) {
+      try {
+        await this.updateDailyRollupForFile(dailyFile);
+        rollupUpdated = true;
+      } catch (error) {
+        logger.flowError("FoodLog", "post-write:rollup-failed", error, { path: dailyFile.path, foodId: entry.id, target });
+        new Notice("Food was logged, but TPS Health could not refresh the daily rollup.", 10000);
+      }
+    }
     if (options.focusAfterLog !== false) {
-      await this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`);
+      try {
+        await this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`);
+      } catch (error) {
+        logger.flowError("FoodLog", "post-write:focus-failed", error, { path: dailyFile.path, foodId: entry.id, target });
+        new Notice("Food was logged, but TPS Health could not focus the new entry.", 10000);
+      }
     } else {
       logger.flow("FoodLog", "focus:skipped", { path: dailyFile.path, foodId: entry.id, target });
     }
@@ -2369,7 +2406,7 @@ export default class TPSHealthPlugin extends Plugin {
       food: loggedItem.name,
       target,
       dailyNotePath: dailyFile.path,
-      rollupUpdated: this.settings.automaticDailyRollups,
+      rollupUpdated,
     });
     new Notice("Logged food");
     return entry;
@@ -2419,6 +2456,7 @@ export default class TPSHealthPlugin extends Plugin {
       `servingUnit: "${(item.servingUnit || "serving").replace(/"/g, '\\"')}"`,
       item.servingGrams ? `servingGrams: ${round(item.servingGrams)}` : "",
       item.servingMl ? `servingMl: ${round(item.servingMl)}` : "",
+      item.nutritionBasis ? `nutritionBasis: ${item.nutritionBasis}` : "",
       isRecipeLikeFoodType(type) ? `recipeServings: ${recipeServingsForFood(item, type)}` : "",
       item.confidence != null ? `confidence: ${item.confidence}` : "",
       `calories: ${nutrition.calories || 0}`,
@@ -2457,6 +2495,7 @@ export default class TPSHealthPlugin extends Plugin {
       servingUnit: item.servingUnit || "serving",
       servingGrams: item.servingGrams == null ? "" : String(round(item.servingGrams)),
       servingMl: item.servingMl == null ? "" : String(round(item.servingMl)),
+      nutritionBasis: item.nutritionBasis || "",
       recipeServings: isRecipeLikeFoodType(type) ? String(recipeServingsForFood(item, type)) : "",
       calories: String(nutrition.calories || 0),
       proteinG: String(nutrition.proteinG || 0),
@@ -2470,10 +2509,13 @@ export default class TPSHealthPlugin extends Plugin {
       sodiumMg: String(nutrition.sodiumMg || 0),
       confidence: item.confidence == null ? "" : String(item.confidence),
     };
-    return Object.entries(replacements).reduce(
+    const rendered = Object.entries(replacements).reduce(
       (output, [key, value]) => output.split(`{{${key}}}`).join(value),
       template,
     );
+    return item.nutritionBasis
+      ? updateYamlFrontmatterContent(rendered, { nutritionBasis: item.nutritionBasis })
+      : rendered;
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
@@ -2655,6 +2697,8 @@ export default class TPSHealthPlugin extends Plugin {
       if (source instanceof TFile && isFoodLikeMarkdownFile(this, source, this.app.metadataCache.getFileCache(source))) {
         const existing = this.foodFromFrontmatter(source, this.app.metadataCache.getFileCache(source)?.frontmatter || {});
         if (hasSearchableMacroData(existing.nutrition)) {
+          const upgraded = await this.upgradeLocalFoodServingPair(existing, item, "source-path");
+          if (upgraded !== existing) return upgraded;
           logger.flow("Food", "find-or-create:path-hit", { name: existing.name, sourcePath: source.path });
           return existing;
         }
@@ -2664,6 +2708,8 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const existing = item.barcode ? this.findFoodByBarcode(item.barcode) : null;
     if (existing) {
+      const upgraded = await this.upgradeLocalFoodServingPair(existing, item, "barcode");
+      if (upgraded !== existing) return upgraded;
       logger.flow("Food", "find-or-create:barcode-hit", { name: existing.name, sourcePath: existing.sourcePath || "", barcode: item.barcode || "" });
       return existing;
     }
@@ -3378,6 +3424,7 @@ export default class TPSHealthPlugin extends Plugin {
       servingUnit: isMeal ? "meal" : String(fm.servingUnit || "serving"),
       servingGrams: isMeal ? undefined : numberOrUndefined(fm.servingGrams),
       servingMl: isMeal ? undefined : numberOrUndefined(fm.servingMl),
+      nutritionBasis: isMeal ? undefined : nutritionBasisFromValue(fm.nutritionBasis),
       recipeServings: isMeal ? 1 : numberOrUndefined(fm.recipeServings),
       source: "custom-note",
       sourcePath: file.path,
@@ -3535,6 +3582,8 @@ export default class TPSHealthPlugin extends Plugin {
   private foodFactsSearchProductToItem(product: any): FoodItem {
     const brands = Array.isArray(product.brands) ? product.brands.join(", ") : product.brands;
     const serving = foodFactsServing(product);
+    const basis = foodFactsNutritionBasis(product, serving);
+    const itemServing = foodFactsItemServing(serving, basis);
     return normalizeFoodMetricServing({
       id: String(product.code || id("off")),
       name: foodFactsProductName(product),
@@ -3543,12 +3592,10 @@ export default class TPSHealthPlugin extends Plugin {
       barcode: product.code ? String(product.code) : undefined,
       imageUrl: product.image_small_url || product.image_thumb_url || undefined,
       ingredients: product.ingredients_text ? String(product.ingredients_text) : undefined,
-      servingAmount: 1,
-      servingUnit: serving.unit,
-      servingGrams: serving.grams,
-      servingMl: serving.ml,
+      ...itemServing,
+      nutritionBasis: basis,
       source: "open-food-facts",
-      nutrition: foodFactsNutrition(product, serving),
+      nutrition: foodFactsNutrition(product, serving, basis),
     });
   }
 
@@ -3569,6 +3616,10 @@ export default class TPSHealthPlugin extends Plugin {
           const brandOwner = String(food.brandOwner || "").trim();
           const brand = brandName || brandOwner || undefined;
           const barcode = String(food.gtinUpc || "").replace(/\D/g, "") || undefined;
+          const serving = usdaFoodServing(food);
+          const nutrition = serving.nutritionBasis === "labeled-serving"
+            ? scaleKnownNutrition(usdaFoodNutrition(food), (serving.servingGrams || serving.servingMl || 100) / 100)
+            : usdaFoodNutrition(food);
           return {
             id: `usda-${food.fdcId}`,
             name: titleCase(String(food.description).toLowerCase()),
@@ -3576,10 +3627,13 @@ export default class TPSHealthPlugin extends Plugin {
             aliases: usdaFoodAliases(food, brand),
             barcode,
             ingredients: food.ingredients ? String(food.ingredients) : undefined,
-            servingAmount: 1,
-            servingUnit: "100 g",
+            servingAmount: serving.servingAmount,
+            servingUnit: serving.servingUnit,
+            servingGrams: serving.servingGrams,
+            servingMl: serving.servingMl,
+            nutritionBasis: serving.nutritionBasis,
             source: "usda",
-            nutrition: usdaFoodNutrition(food),
+            nutrition,
           } as FoodItem;
         })
         .filter((item) => hasSearchableMacroData(item.nutrition))
@@ -3821,6 +3875,11 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("Barcode", "lookup:join-in-flight", { barcode: maskBarcode(digits) });
       return existing;
     }
+    const rateLimitRemainingMs = Math.max(0, this.openFoodFactsRateLimitedUntil - Date.now());
+    if (rateLimitRemainingMs) {
+      logger.flowWarn("Barcode", "lookup:rate-limit-skip", { barcode: maskBarcode(digits), retryAfterMs: rateLimitRemainingMs });
+      return null;
+    }
     const candidates = digits.length === 8 ? barcodeCandidates(digits) : [digits];
     const request = (async () => {
       logger.flow("Barcode", "lookup:start", { barcode: maskBarcode(digits), candidates: candidates.length });
@@ -3845,6 +3904,7 @@ export default class TPSHealthPlugin extends Plugin {
             return item;
           }
         } catch (error) {
+          if (error instanceof OpenFoodFactsRateLimitError) throw error;
           failures++;
           logger.flowWarn("Barcode", "lookup-candidate:request-failed", { barcode: maskBarcode(code), error: logger.errorSummary(error) });
         }
@@ -3871,14 +3931,59 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async enrichFoodSearchItem(item: FoodItem): Promise<FoodItem> {
-    if (item.source !== "open-food-facts" || !item.barcode) return item;
+    const enrichLocalServing = item.source === "custom-note" && foodNeedsProviderServingEnrichment(item);
+    if (!item.barcode || (item.source !== "open-food-facts" && !enrichLocalServing)) return item;
     try {
       const full = await this.lookupOpenFoodFactsBarcode(item.barcode);
-      return full ? { ...item, ...full, id: item.id || full.id } : item;
+      if (!full) return item;
+      const enriched = mergeEnrichedFoodSearchItem(item, full);
+      return enrichLocalServing
+        ? await this.upgradeLocalFoodServingPair(item, enriched, "provider-enrichment")
+        : enriched;
     } catch (error) {
       logger.flowWarn("FoodSearch", "open-food-facts:enrich-failed", { barcode: maskBarcode(item.barcode), error: logger.errorSummary(error) });
       return item;
     }
+  }
+
+  private async upgradeLocalFoodServingPair(local: FoodItem, candidate: FoodItem, route: string): Promise<FoodItem> {
+    if (local.source !== "custom-note" || foodServingPairQuality(candidate) <= foodServingPairQuality(local)) return local;
+    const file = local.sourcePath ? this.app.vault.getAbstractFileByPath(local.sourcePath) : null;
+    if (!(file instanceof TFile)) {
+      logger.flowWarn("Food", "serving-upgrade:missing-note", { route, name: local.name, sourcePath: local.sourcePath || "" });
+      return local;
+    }
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    const type = foodNoteTypeFromFrontmatter(frontmatter, file, this.settings);
+    if (type !== "food") {
+      logger.flowWarn("Food", "serving-upgrade:non-food-skip", { route, name: local.name, sourcePath: file.path, type });
+      return local;
+    }
+    const identity = mergeFoodCandidateMetadata(local, candidate);
+    const upgraded = mergeFoodServingPair({
+      ...identity,
+      id: local.id,
+      name: local.name,
+      aliases: local.aliases,
+      source: "custom-note",
+      sourcePath: file.path,
+      notes: local.notes,
+    }, candidate);
+    try {
+      await this.updateFoodNote(file, upgraded, "food", false);
+      logger.flow("Food", "serving-upgrade:done", {
+        route,
+        name: local.name,
+        sourcePath: file.path,
+        previousBasis: local.nutritionBasis || "",
+        nutritionBasis: upgraded.nutritionBasis || "",
+        servingGrams: upgraded.servingGrams || 0,
+        servingMl: upgraded.servingMl || 0,
+      });
+    } catch (error) {
+      logger.flowWarn("Food", "serving-upgrade:persist-failed", { route, name: local.name, sourcePath: file.path, error: logger.errorSummary(error) });
+    }
+    return upgraded;
   }
 
   private async lookupOpenFoodFactsBarcodeCandidate(code: string): Promise<FoodItem | null> {
@@ -3888,7 +3993,15 @@ export default class TPSHealthPlugin extends Plugin {
       const response = await requestUrl({
         url: `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=code,product_name,brands,categories,categories_tags,serving_quantity,serving_quantity_unit,serving_size,nutriments,image_url,ingredients_text`,
         headers: this.foodFactsHeaders(),
+        throw: false,
       });
+      if (response.status === 429) {
+        const delayMs = boundedRetryAfterMs(response.headers, OPEN_FOOD_FACTS_RATE_LIMIT_FALLBACK_MS, OPEN_FOOD_FACTS_RATE_LIMIT_MAX_MS);
+        this.openFoodFactsRateLimitedUntil = Math.max(this.openFoodFactsRateLimitedUntil, Date.now() + delayMs);
+        logger.flowWarn("Barcode", "lookup-candidate:rate-limited", { barcode: maskBarcode(code), retryAfterMs: delayMs });
+        throw new OpenFoodFactsRateLimitError(delayMs);
+      }
+      if (response.status < 200 || response.status >= 300) throw new Error(`Open Food Facts product lookup returned HTTP ${response.status}`);
       if (response.json?.status !== 1 || !response.json?.product) {
         logger.flow("Barcode", "lookup-candidate:v2-miss", { barcode: maskBarcode(code), status: response.json?.status ?? "" });
         return null;
@@ -3908,6 +4021,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private foodFactsProductToItem(product: any, code: string): FoodItem {
     const serving = foodFactsServing(product);
+    const basis = foodFactsNutritionBasis(product, serving);
+    const itemServing = foodFactsItemServing(serving, basis);
     return normalizeFoodMetricServing({
       id: String(product.code || code),
       name: String(product.product_name || `Barcode ${code}`),
@@ -3915,12 +4030,10 @@ export default class TPSHealthPlugin extends Plugin {
       barcode: String(product.code || code),
       imageUrl: product.image_url ? String(product.image_url) : undefined,
       ingredients: product.ingredients_text ? String(product.ingredients_text) : undefined,
-      servingAmount: 1,
-      servingUnit: serving.unit,
-      servingGrams: serving.grams,
-      servingMl: serving.ml,
+      ...itemServing,
+      nutritionBasis: basis,
       source: "open-food-facts",
-      nutrition: foodFactsNutrition(product, serving),
+      nutrition: foodFactsNutrition(product, serving, basis),
     });
   }
 
@@ -5771,7 +5884,7 @@ export default class TPSHealthPlugin extends Plugin {
     return {
       version: 1 as const,
       entities: {
-        food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", "ingredients", "sourceImagePath"],
+        food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "nutritionBasis", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", "ingredients", "sourceImagePath"],
         foodLog: ["type", "foodPath", "servings", "amount", "unit", "createdDate", "completedDate"],
         activityLog: ["type", "activity", "activityType", "activityId", "source", "sourceId", "device", "startedAt", "completedDate", "durationMinutes", "distance", "distanceUnit", "steps", "caloriesBurned", "dailyNotePath", "note"],
         exercise: ["name", "category", "primaryMuscles", "secondaryMuscles", "equipment", "defaultRestSeconds", "defaultSetType", "recommendedRestDays"],
@@ -5927,15 +6040,10 @@ export default class TPSHealthPlugin extends Plugin {
       return input.item;
     }
     if (input.barcode) {
-      const existing = this.findFoodByBarcode(input.barcode);
-      if (existing) {
-        logger.flow("Food", "resolve-input:barcode-local", { barcode: maskBarcode(input.barcode), name: existing.name, sourcePath: existing.sourcePath || "" });
-        return existing;
-      }
-      const remote = await this.lookupOpenFoodFactsBarcode(input.barcode);
-      if (remote) {
-        logger.flow("Food", "resolve-input:barcode-remote", { barcode: maskBarcode(input.barcode), name: remote.name, source: remote.source });
-        return remote;
+      const resolved = await this.lookupFoodByBarcode(input.barcode);
+      if (resolved) {
+        logger.flow("Food", "resolve-input:barcode-hit", { barcode: maskBarcode(input.barcode), name: resolved.name, source: resolved.source, sourcePath: resolved.sourcePath || "" });
+        return resolved;
       }
       logger.flowWarn("Food", "resolve-input:barcode-miss", { barcode: maskBarcode(input.barcode) });
     }
@@ -5959,8 +6067,13 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const existing = this.findFoodByBarcode(normalized);
     if (existing) {
-      logger.flow("Barcode", "lookup:local-hit", { barcode: maskBarcode(normalized), name: existing.name, sourcePath: existing.sourcePath || "" });
-      return existing;
+      const enriched = await this.enrichFoodSearchItem(existing);
+      logger.flow("Barcode", enriched === existing ? "lookup:local-hit" : "lookup:local-enriched", {
+        barcode: maskBarcode(normalized),
+        name: enriched.name,
+        sourcePath: enriched.sourcePath || "",
+      });
+      return enriched;
     }
     const remote = await this.lookupOpenFoodFactsBarcode(normalized);
     if (remote) {
@@ -6703,10 +6816,21 @@ class FoodLogRecipeModal extends Modal {
 
 class BatchFoodRecipeModal extends Modal {
   private recipeName: string;
+  private entries: BatchFoodSelection[];
+  private submitting = false;
+  private submitButtonEl: HTMLButtonElement | null = null;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private entries: BatchFoodSelection[], private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    entries: BatchFoodSelection[],
+    private dateContext: FoodLogDateContext | null = null,
+    private onMealCreated?: (saved: FoodItem) => void | Promise<void>,
+    private onMealLogged?: (saved: FoodItem, entry: FoodLogEntry) => void | Promise<void>,
+  ) {
     super(app);
-    this.recipeName = entries.map((entry) => entry.item.name).slice(0, 3).join(" + ");
+    this.entries = entries.map(cloneBatchFoodSelection);
+    this.recipeName = this.entries.map((entry) => entry.item.name).slice(0, 3).join(" + ");
   }
 
   onOpen(): void {
@@ -6734,10 +6858,13 @@ class BatchFoodRecipeModal extends Modal {
         .onChange((value) => this.recipeName = value.trim()));
     const mealNameInput = this.contentEl.querySelector<HTMLInputElement>('.setting-item input[type="text"]');
     mealNameInput?.addEventListener("focus", () => scrollHealthModalInputIntoView(mealNameInput));
-    new Setting(this.contentEl).addButton((button) => button
-      .setButtonText("Create meal")
-      .setCta()
-      .onClick(() => void this.createRecipe()));
+    new Setting(this.contentEl).addButton((button) => {
+      this.submitButtonEl = button.buttonEl;
+      return button
+        .setButtonText("Create meal")
+        .setCta()
+        .onClick(() => void this.createRecipe());
+    });
   }
 
   onClose(): void {
@@ -6754,19 +6881,26 @@ class BatchFoodRecipeModal extends Modal {
   }
 
   private async createRecipe(): Promise<void> {
+    if (this.submitting) return;
     const name = this.recipeName.trim() || this.entries.map((entry) => entry.item.name).slice(0, 3).join(" + ");
     logger.flow("FoodModal", "meal:create-submit", { selected: this.entries.length, name });
     if (!this.entries.length) {
       logger.flowWarn("FoodModal", "meal:create-empty", summarizeDateContext(this.dateContext));
       return;
     }
+    this.submitting = true;
+    if (this.submitButtonEl) {
+      this.submitButtonEl.disabled = true;
+      this.submitButtonEl.setText("Creating meal…");
+    }
+    let saved: FoodItem;
     try {
       const ingredientLines: string[] = [];
       for (const entry of this.entries) {
         ingredientLines.push(await recipeIngredientLineFromBatchSelection(this.plugin, entry));
       }
       const ingredients = ingredientLines.join("\n");
-      const saved = await this.plugin.createFoodFromInput({
+      saved = await this.plugin.createFoodFromInput({
         type: "meal",
         name,
         servingAmount: 1,
@@ -6774,15 +6908,36 @@ class BatchFoodRecipeModal extends Modal {
         recipeServings: 1,
         ingredients,
       });
-      logger.flow("FoodModal", "meal:create-done", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "" });
-      new Notice(`Created meal ${saved.name}.`);
-      this.close();
-      logger.flow("FoodModal", "meal:log-modal-open", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
-      new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext).open();
     } catch (error) {
+      this.submitting = false;
+      if (this.submitButtonEl) {
+        this.submitButtonEl.disabled = false;
+        this.submitButtonEl.setText("Create meal");
+      }
       logger.flowError("FoodModal", "meal:create-failed", error, { selected: this.entries.length, name, ...summarizeDateContext(this.dateContext) });
       throw error;
     }
+    logger.flow("FoodModal", "meal:create-done", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "" });
+    new Notice(`Created meal ${saved.name}.`);
+    if (this.onMealCreated) {
+      try {
+        await this.onMealCreated(saved);
+      } catch (error) {
+        logger.flowError("FoodModal", "meal:queue-replace-failed", error, { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
+        new Notice("The meal was created, but TPS Health could not finish saving the updated food tray. The meal can still be logged.", 10000);
+      }
+    }
+    this.close();
+    logger.flow("FoodModal", "meal:log-modal-open", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
+    new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext, async (entry) => {
+      if (!this.onMealLogged) return;
+      try {
+        await this.onMealLogged(saved, entry);
+      } catch (error) {
+        logger.flowError("FoodModal", "meal:queue-cleanup-failed", error, { name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
+        new Notice("The meal was logged, but TPS Health could not finish clearing it from the food tray.", 10000);
+      }
+    }).open();
   }
 }
 
@@ -6806,6 +6961,10 @@ class FoodSearchModal extends Modal {
   private restoredPendingDraft = false;
   private describeRequestActive = false;
   private describeDismissed = false;
+  private readonly draftId: string;
+  private draftExpectedId: string | null;
+  private suppressDraftPersistOnClose = false;
+  private selectionSubmitting = false;
 
   constructor(
     app: App,
@@ -6817,8 +6976,10 @@ class FoodSearchModal extends Modal {
     super(app);
     this.plugin = plugin;
     const pendingDraft = initialDraft ? null : plugin.getPendingFoodLogDraft(dateContext);
+    this.draftId = id("pending-food-log");
+    this.draftExpectedId = pendingDraft?.id || null;
     if (pendingDraft) {
-      this.selectionItems = pendingDraft.selectionItems.map((entry) => ({ ...entry, item: { ...entry.item } }));
+      this.selectionItems = pendingDraft.selectionItems.map(cloneBatchFoodSelection);
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
     }
@@ -7046,7 +7207,7 @@ class FoodSearchModal extends Modal {
     this.searchTimer = null;
     if (this.draftPersistTimer !== null) window.clearTimeout(this.draftPersistTimer);
     this.draftPersistTimer = null;
-    if (this.selectionItems.length) void this.persistDraft();
+    if (!this.suppressDraftPersistOnClose && this.selectionItems.length) void this.persistDraft();
     this.barcodeScannerModal?.close();
     this.barcodeScannerModal = null;
     this.searchInputEl = null;
@@ -7272,7 +7433,7 @@ class FoodSearchModal extends Modal {
       adding = true;
       row.setAttr("aria-busy", "true");
       try {
-        await this.addSelection(item, null, { enrich: false });
+        await this.addSelection(item);
       } finally {
         adding = false;
         row.setAttr("aria-busy", "false");
@@ -7297,8 +7458,10 @@ class FoodSearchModal extends Modal {
         .onClick(async (event) => {
           event.preventDefault();
           event.stopPropagation();
+          row.setAttr("aria-busy", "true");
+          const enriched = await this.plugin.enrichFoodSearchItem(item);
           this.close();
-          new FoodLogModal(this.app, this.plugin, item, this.initialDraft, this.dateContext).open();
+          new FoodLogModal(this.app, this.plugin, enriched, this.initialDraft, this.dateContext).open();
         }));
     if (!item.sourcePath) actions.addButton((button) => button
         .setButtonText("Create from this")
@@ -7317,12 +7480,12 @@ class FoodSearchModal extends Modal {
       : enriched;
     const existing = this.selectionItems.find((entry) => foodSelectionKey(entry.item) === foodSelectionKey(enriched));
     if (existing) {
-      existing.quantity = roundFoodLogQuantity(existing.quantity + (draft?.quantity || 1));
+      existing.quantity = roundFoodLogQuantity(existing.quantity + (draft?.quantity ?? defaultFoodLogQuantity(enriched)));
       if (draft?.unit) existing.unit = draft.unit;
     } else {
       this.selectionItems.unshift({
         item: selectedItem,
-        quantity: draft?.quantity || this.initialDraft?.quantity || 1,
+        quantity: draft?.quantity ?? this.initialDraft?.quantity ?? defaultFoodLogQuantity(enriched),
         unit: draft?.unit || this.initialDraft?.unit || preferredFoodLogUnit(enriched),
       });
     }
@@ -7353,12 +7516,14 @@ class FoodSearchModal extends Modal {
     header.createDiv({ cls: "tps-health-selection-title", text: `${this.selectionItems.length} selected` });
     renderMacroPills(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
-    const logButton = headerActions.createEl("button", { text: "Log selected", cls: "mod-cta" });
+    const logButton = headerActions.createEl("button", { text: this.selectionSubmitting ? "Logging…" : "Log selected", cls: "mod-cta" });
+    logButton.disabled = this.selectionSubmitting;
+    logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
     logButton.addEventListener("click", () => this.logSelected());
     const clearButton = headerActions.createEl("button", { text: "Clear", cls: "mod-muted" });
     clearButton.addEventListener("click", () => {
       this.selectionItems = [];
-      void this.plugin.clearPendingFoodLogDraft();
+      void this.persistDraft();
       this.renderSelection();
       this.focusSearchInput();
     });
@@ -7471,28 +7636,114 @@ class FoodSearchModal extends Modal {
   }
 
   private async logSelected(): Promise<void> {
+    if (this.selectionSubmitting) {
+      logger.flowWarn("FoodModal", "selection:log-suppressed-active", { selected: this.selectionItems.length });
+      return;
+    }
     if (!this.selectionItems.length) {
       logger.flowWarn("FoodModal", "selection:log-empty", summarizeDateContext(this.dateContext));
       return;
     }
-    const loggedCount = this.selectionItems.length;
+    const snapshot = this.selectionItems.map((entry) => ({
+      entry,
+      selection: cloneBatchFoodSelection(entry),
+      signature: batchFoodSelectionSignature(entry),
+    }));
     const completedDate = resolveBatchFoodCompletedDate(this.consumedDateInput, this.dateContext);
+    this.selectionSubmitting = true;
+    this.renderSelection();
     logger.flow("FoodModal", "selection:log-start", {
-      selected: this.selectionItems.length,
+      selected: snapshot.length,
       completedDate,
       ...summarizeDateContext(this.dateContext),
     });
-    for (const entry of this.selectionItems) {
-      await this.plugin.logFood(entry.item, entry.quantity, entry.unit, undefined, completedDate, true, this.dateContext?.foodLogTarget, {
-        focusAfterLog: this.dateContext?.focusAfterLog,
-        amountGrams: describedSelectionAmountGrams(entry),
-      });
+    let loggedCount = 0;
+    let persistWarningShown = false;
+    this.cancelDraftPersistTimer();
+    try {
+      const claimed = await this.persistDraftIfOwned();
+      if (!claimed) {
+        logger.flowWarn("FoodModal", "selection:log-draft-not-claimed", {
+          draftId: this.draftId,
+          currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
+          selected: this.selectionItems.length,
+        });
+      }
+    } catch (error) {
+      persistWarningShown = true;
+      logger.flowError("FoodModal", "selection:log-draft-claim-failed", error, { draftId: this.draftId, selected: this.selectionItems.length });
+      new Notice("TPS Health could not save the current tray state. Keep this logger open while logging.", 10000);
     }
-    await this.plugin.clearPendingFoodLogDraft();
-    this.selectionItems = [];
+    for (const captured of snapshot) {
+      try {
+        await this.plugin.logFood(captured.selection.item, captured.selection.quantity, captured.selection.unit, undefined, completedDate, true, this.dateContext?.foodLogTarget, {
+          focusAfterLog: this.dateContext?.focusAfterLog,
+          amountGrams: describedSelectionAmountGrams(captured.selection),
+        });
+      } catch (error) {
+        logger.flowError("FoodModal", "selection:log-failed", error, {
+          selected: snapshot.length,
+          logged: loggedCount,
+          food: captured.selection.item.name,
+          completedDate,
+        });
+        this.selectionSubmitting = false;
+        this.renderSelection();
+        new Notice(loggedCount
+          ? `Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. ${captured.selection.item.name} and the remaining tray were not logged.`
+          : `Could not log ${captured.selection.item.name}. The tray was kept for retry.`, 10000);
+        return;
+      }
+
+      loggedCount += 1;
+      this.cancelDraftPersistTimer();
+      const committedIndex = this.selectionItems.findIndex((candidate) => (
+        candidate === captured.entry && batchFoodSelectionSignature(candidate) === captured.signature
+      ));
+      if (committedIndex >= 0) {
+        this.selectionItems = [
+          ...this.selectionItems.slice(0, committedIndex),
+          ...this.selectionItems.slice(committedIndex + 1),
+        ];
+      } else {
+        logger.flowWarn("FoodModal", "selection:log-consume-missing-or-changed", {
+          food: captured.selection.item.name,
+          selected: this.selectionItems.length,
+          logged: loggedCount,
+        });
+      }
+      try {
+        const persisted = await this.persistDraftIfOwned();
+        if (!persisted) {
+          logger.flowWarn("FoodModal", "selection:log-consume-not-persisted", {
+            draftId: this.draftId,
+            currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
+            selected: this.selectionItems.length,
+            logged: loggedCount,
+          });
+        }
+      } catch (error) {
+        logger.flowError("FoodModal", "selection:log-consume-persist-failed", error, {
+          draftId: this.draftId,
+          selected: this.selectionItems.length,
+          logged: loggedCount,
+        });
+        if (!persistWarningShown) {
+          persistWarningShown = true;
+          new Notice("Food was logged, but TPS Health could not save the cleaned-up tray. Keep this logger open until you finish.", 10000);
+        }
+      }
+      this.renderSelection();
+    }
+
+    this.selectionSubmitting = false;
     logger.flow("FoodModal", "selection:log-done", { selected: loggedCount, completedDate });
     new Notice(`Logged ${loggedCount} foods.`);
-    this.close();
+    this.renderSelection();
+    if (!this.selectionItems.length) {
+      this.suppressDraftPersistOnClose = true;
+      this.close();
+    }
   }
 
   private async createRecipeFromSelection(): Promise<void> {
@@ -7500,8 +7751,109 @@ class FoodSearchModal extends Modal {
       logger.flowWarn("FoodModal", "selection:create-recipe-empty", summarizeDateContext(this.dateContext));
       return;
     }
-    logger.flow("FoodModal", "selection:create-recipe", { selected: this.selectionItems.length });
-    new BatchFoodRecipeModal(this.app, this.plugin, [...this.selectionItems], this.dateContext).open();
+    const snapshot = this.selectionItems.map(cloneBatchFoodSelection);
+    let queuedMealTransition: QueuedMealTransition | null = null;
+    logger.flow("FoodModal", "selection:create-recipe", { selected: snapshot.length, draftId: this.draftId });
+    void this.persistDraft();
+    new BatchFoodRecipeModal(this.app, this.plugin, snapshot, this.dateContext,
+      async (saved) => {
+        queuedMealTransition = await this.replaceIngredientSnapshotWithMeal(snapshot, saved);
+      },
+      async () => {
+        if (!queuedMealTransition) {
+          logger.flowWarn("FoodModal", "meal:queue-cleanup-missing-transition", { draftId: this.draftId });
+          new Notice("The meal was logged, but TPS Health could not identify its queued tray item to remove.", 10000);
+          return;
+        }
+        await this.removeLoggedQueuedMeal(queuedMealTransition);
+      },
+    ).open();
+  }
+
+  private async replaceIngredientSnapshotWithMeal(ingredientSnapshot: readonly BatchFoodSelection[], saved: FoodItem): Promise<QueuedMealTransition> {
+    this.cancelDraftPersistTimer();
+    const { remaining, removed } = removeBatchFoodSelectionSnapshot(this.selectionItems, ingredientSnapshot);
+    const queuedMeal = cloneBatchFoodSelection({
+      item: saved,
+      quantity: 1,
+      unit: preferredFoodLogUnit(saved),
+    });
+    const transition: QueuedMealTransition = {
+      draftId: this.draftId,
+      entry: queuedMeal,
+      signature: batchFoodSelectionSignature(queuedMeal),
+    };
+    this.selectionItems = [queuedMeal, ...remaining];
+    this.renderSelection();
+    logger.flow("FoodModal", "meal:queue-replaced", {
+      draftId: this.draftId,
+      captured: ingredientSnapshot.length,
+      removed,
+      selected: this.selectionItems.length,
+      name: saved.name,
+      sourcePath: saved.sourcePath || "",
+    });
+    try {
+      const persisted = await this.persistDraftIfOwned();
+      if (!persisted) {
+        logger.flowWarn("FoodModal", "meal:queue-replace-not-persisted", {
+          draftId: this.draftId,
+          currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
+          selected: this.selectionItems.length,
+        });
+      }
+    } catch (error) {
+      logger.flowError("FoodModal", "meal:queue-replace-persist-failed", error, { draftId: this.draftId, selected: this.selectionItems.length });
+      new Notice("The meal is queued, but TPS Health could not save the updated tray. Keep this logger open until the meal is logged.", 10000);
+    }
+    return transition;
+  }
+
+  private async removeLoggedQueuedMeal(transition: QueuedMealTransition): Promise<void> {
+    this.cancelDraftPersistTimer();
+    if (transition.draftId !== this.draftId) {
+      logger.flowWarn("FoodModal", "meal:queue-consume-wrong-draft", {
+        transitionDraftId: transition.draftId,
+        draftId: this.draftId,
+      });
+      return;
+    }
+    const mealIndex = this.selectionItems.findIndex((candidate) => candidate === transition.entry);
+    if (mealIndex >= 0) {
+      this.selectionItems = [
+        ...this.selectionItems.slice(0, mealIndex),
+        ...this.selectionItems.slice(mealIndex + 1),
+      ];
+      logger.flow("FoodModal", "meal:queue-consumed", {
+        draftId: transition.draftId,
+        signature: transition.signature,
+        selected: this.selectionItems.length,
+      });
+    } else {
+      logger.flowWarn("FoodModal", "meal:queue-consume-missing", {
+        draftId: transition.draftId,
+        signature: transition.signature,
+        selected: this.selectionItems.length,
+      });
+    }
+    this.renderSelection();
+    try {
+      const persisted = await this.persistDraftIfOwned();
+      if (!persisted) {
+        logger.flowWarn("FoodModal", "meal:queue-consume-not-persisted", {
+          draftId: transition.draftId,
+          currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
+          selected: this.selectionItems.length,
+        });
+      }
+    } catch (error) {
+      logger.flowError("FoodModal", "meal:queue-consume-persist-failed", error, { draftId: transition.draftId, selected: this.selectionItems.length });
+      new Notice("The meal was logged, but TPS Health could not save the cleaned-up tray.", 10000);
+    }
+    if (!this.selectionItems.length) {
+      this.suppressDraftPersistOnClose = true;
+      this.close();
+    }
   }
 
   private async openSelectionFoodEditor(entry: BatchFoodSelection): Promise<void> {
@@ -7570,38 +7922,57 @@ class FoodSearchModal extends Modal {
 
   private scheduleDraftPersist(): void {
     if (!this.selectionItems.length) return;
-    if (this.draftPersistTimer !== null) window.clearTimeout(this.draftPersistTimer);
+    this.cancelDraftPersistTimer();
     this.draftPersistTimer = window.setTimeout(() => {
       this.draftPersistTimer = null;
       void this.persistDraft();
     }, 300);
   }
 
+  private cancelDraftPersistTimer(): void {
+    if (this.draftPersistTimer !== null) window.clearTimeout(this.draftPersistTimer);
+    this.draftPersistTimer = null;
+  }
+
   private async persistDraft(): Promise<void> {
+    await this.persistDraftIfOwned();
+  }
+
+  private async persistDraftIfOwned(): Promise<boolean> {
     if (!this.selectionItems.length) {
-      await this.plugin.clearPendingFoodLogDraft();
-      return;
+      if (this.draftExpectedId !== this.draftId) return true;
+      const currentId = this.plugin.settings.pendingFoodLogDraft?.id || null;
+      const clearOperation = this.plugin.replacePendingFoodLogDraftIfCurrent(this.draftId, null);
+      if (currentId === this.draftId && !this.plugin.settings.pendingFoodLogDraft) this.draftExpectedId = null;
+      const cleared = await clearOperation;
+      return cleared;
     }
     logger.flow("FoodModal", "draft:persist", {
+      draftId: this.draftId,
       selected: this.selectionItems.length,
       activeTab: this.activeFoodLogTab,
       ...summarizeDateContext(this.dateContext),
     });
-    await this.plugin.savePendingFoodLogDraft({
-      id: this.plugin.settings.pendingFoodLogDraft?.id || id("pending-food-log"),
+    const draft: PendingFoodLogDraft = {
+      id: this.draftId,
       updatedAt: new Date().toISOString(),
       activeTab: this.activeFoodLogTab,
       searchInput: this.searchInput,
       consumedDateInput: this.consumedDateInput,
       dateContext: this.dateContext ? { ...this.dateContext } : null,
-      selectionItems: this.selectionItems.map((entry) => ({
-        item: { ...entry.item, nutrition: entry.item.nutrition ? { ...entry.item.nutrition } : undefined },
-        quantity: entry.quantity,
-        unit: entry.unit,
-        describedUnit: entry.describedUnit,
-        estimatedUnitGrams: entry.estimatedUnitGrams,
-      })),
-    });
+      selectionItems: this.selectionItems.map(cloneBatchFoodSelection),
+    };
+    try {
+      const expectedId = this.draftExpectedId;
+      const currentId = this.plugin.settings.pendingFoodLogDraft?.id || null;
+      const replaceOperation = this.plugin.replacePendingFoodLogDraftIfCurrent(expectedId, draft);
+      if (currentId === expectedId && this.plugin.settings.pendingFoodLogDraft?.id === this.draftId) this.draftExpectedId = this.draftId;
+      const replaced = await replaceOperation;
+      return replaced;
+    } catch (error) {
+      if (this.plugin.settings.pendingFoodLogDraft?.id === this.draftId) this.draftExpectedId = this.draftId;
+      throw error;
+    }
   }
 
   private renderCreateAction(query: string): void {
@@ -7624,6 +7995,66 @@ interface BatchFoodSelection {
   unit: string;
   describedUnit?: string;
   estimatedUnitGrams?: number;
+}
+
+interface QueuedMealTransition {
+  draftId: string;
+  entry: BatchFoodSelection;
+  signature: string;
+}
+
+function cloneBatchFoodSelection(entry: BatchFoodSelection): BatchFoodSelection {
+  return {
+    item: {
+      ...entry.item,
+      aliases: entry.item.aliases ? [...entry.item.aliases] : undefined,
+      nutrition: entry.item.nutrition ? { ...entry.item.nutrition } : undefined,
+    },
+    quantity: entry.quantity,
+    unit: entry.unit,
+    describedUnit: entry.describedUnit,
+    estimatedUnitGrams: entry.estimatedUnitGrams,
+  };
+}
+
+function batchFoodSelectionSignature(entry: BatchFoodSelection): string {
+  return JSON.stringify([
+    foodQueueItemSignature(entry.item),
+    entry.item.source,
+    entry.item.aliases || [],
+    entry.item.imageUrl || "",
+    entry.item.sourceImagePath || "",
+    entry.item.nutritionBasis || "",
+    entry.item.confidence ?? null,
+    entry.item.notes || "",
+    entry.item.nutrition?.sugarAlcoholCaloriesPerG ?? null,
+    entry.quantity,
+    entry.unit,
+    entry.describedUnit || "",
+    entry.estimatedUnitGrams ?? null,
+  ]);
+}
+
+function removeBatchFoodSelectionSnapshot(
+  current: readonly BatchFoodSelection[],
+  snapshot: readonly BatchFoodSelection[],
+): { remaining: BatchFoodSelection[]; removed: number } {
+  const remainingSignatures = new Map<string, number>();
+  for (const entry of snapshot) {
+    const signature = batchFoodSelectionSignature(entry);
+    remainingSignatures.set(signature, (remainingSignatures.get(signature) || 0) + 1);
+  }
+  let removed = 0;
+  const remaining = current.filter((entry) => {
+    const signature = batchFoodSelectionSignature(entry);
+    const count = remainingSignatures.get(signature) || 0;
+    if (!count) return true;
+    removed += 1;
+    if (count === 1) remainingSignatures.delete(signature);
+    else remainingSignatures.set(signature, count - 1);
+    return false;
+  });
+  return { remaining, removed };
 }
 
 function foodSelectionKey(item: FoodItem): string {
@@ -8562,12 +8993,14 @@ class RecipeIngredientModal extends Modal {
 
   private async selectFood(item: FoodItem): Promise<void> {
     this.searchToken += 1;
-    this.selectedFood = item;
-    const metric = metricServingForFood(item);
-    const preferredUnit = metric?.unit || preferredRecipeIngredientUnit(item, item.servingUnit || "serving");
-    this.quantityEl.value = String(roundFoodLogQuantity(metric?.amount || item.servingAmount || 1));
-    this.renderUnitOptions(item, preferredUnit);
-    this.statusEl.setText(`Selected ${item.name}.`);
+    this.statusEl.setText(`Loading labeled serving for ${item.name}…`);
+    const enriched = await this.plugin.enrichFoodSearchItem(item);
+    this.selectedFood = enriched;
+    const metric = metricServingForFood(enriched);
+    const preferredUnit = metric?.unit || preferredRecipeIngredientUnit(enriched, enriched.servingUnit || "serving");
+    this.quantityEl.value = String(roundFoodLogQuantity(metric?.amount || enriched.servingAmount || 1));
+    this.renderUnitOptions(enriched, preferredUnit);
+    this.statusEl.setText(`Selected ${enriched.name}.`);
     this.renderSelectedFood();
   }
 
@@ -10596,8 +11029,16 @@ class BarcodeFoodReviewModal extends Modal {
 }
 
 class FoodLogModal extends Modal {
+  private submitting = false;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private item: FoodItem, private initialDraft: InlineFoodDraft | null = null, private dateContext: FoodLogDateContext | null = null) {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private item: FoodItem,
+    private initialDraft: InlineFoodDraft | null = null,
+    private dateContext: FoodLogDateContext | null = null,
+    private onLogged?: (entry: FoodLogEntry) => void | Promise<void>,
+  ) {
     super(app);
   }
 
@@ -10606,7 +11047,7 @@ class FoodLogModal extends Modal {
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: this.item.name });
-    let quantity = this.initialDraft?.quantity || 1;
+    let quantity = this.initialDraft?.quantity ?? defaultFoodLogQuantity(this.item);
     let unit = this.initialDraft?.unit || preferredFoodLogUnit(this.item);
     let section = this.plugin.settings.defaultFoodLogSection;
     let consumedDateInput = initialFoodLogConsumedDateInput(this.dateContext);
@@ -10676,20 +11117,40 @@ class FoodLogModal extends Modal {
         .setPlaceholder("Food Log, Breakfast, Workout Fuel...")
         .setValue(section)
         .onChange((value) => section = value.trim()));
-    new Setting(this.contentEl).addButton((button) => button.setButtonText("Log").setCta().onClick(async () => {
-      const completedDate = resolveBatchFoodCompletedDate(consumedDateInput, this.dateContext);
-      logger.flow("FoodLogModal", "submit", {
-        ...summarizeFoodItem(this.item),
-        quantity,
-        unit,
-        section: section || "",
-        completedDate,
-        ...summarizeDateContext(this.dateContext),
-      });
-      try {
-        await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, true, this.dateContext?.foodLogTarget, {
-          focusAfterLog: this.dateContext?.focusAfterLog,
+    new Setting(this.contentEl).addButton((button) => {
+      const submitButtonEl = button.buttonEl;
+      return button.setButtonText("Log").setCta().onClick(async () => {
+        if (this.submitting) return;
+        this.submitting = true;
+        submitButtonEl.disabled = true;
+        submitButtonEl.setText("Logging…");
+        const completedDate = resolveBatchFoodCompletedDate(consumedDateInput, this.dateContext);
+        logger.flow("FoodLogModal", "submit", {
+          ...summarizeFoodItem(this.item),
+          quantity,
+          unit,
+          section: section || "",
+          completedDate,
+          ...summarizeDateContext(this.dateContext),
         });
+        let loggedEntry: FoodLogEntry;
+        try {
+          loggedEntry = await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, true, this.dateContext?.foodLogTarget, {
+            focusAfterLog: this.dateContext?.focusAfterLog,
+          });
+        } catch (error) {
+          this.submitting = false;
+          submitButtonEl.disabled = false;
+          submitButtonEl.setText("Log");
+          logger.flowError("FoodLogModal", "failed", error, {
+            ...summarizeFoodItem(this.item),
+            quantity,
+            unit,
+            completedDate,
+            ...summarizeDateContext(this.dateContext),
+          });
+          throw error;
+        }
         logger.flow("FoodLogModal", "done", {
           ...summarizeFoodItem(this.item),
           quantity,
@@ -10697,18 +11158,23 @@ class FoodLogModal extends Modal {
           completedDate,
           ...summarizeDateContext(this.dateContext),
         });
+        if (this.onLogged) {
+          submitButtonEl.setText("Finishing…");
+          try {
+            await this.onLogged(loggedEntry);
+          } catch (error) {
+            logger.flowError("FoodLogModal", "success-callback-failed", error, {
+              ...summarizeFoodItem(this.item),
+              foodId: loggedEntry.id,
+              completedDate,
+              ...summarizeDateContext(this.dateContext),
+            });
+            new Notice("Food was logged, but TPS Health could not finish the follow-up cleanup.", 10000);
+          }
+        }
         this.close();
-      } catch (error) {
-        logger.flowError("FoodLogModal", "failed", error, {
-          ...summarizeFoodItem(this.item),
-          quantity,
-          unit,
-          completedDate,
-          ...summarizeDateContext(this.dateContext),
-        });
-        throw error;
-      }
-    }));
+      });
+    });
   }
 
   onClose(): void {
@@ -11592,6 +12058,49 @@ function chooseFoodEditLinkScope(app: App, entityLabel: string): Promise<FoodEdi
   return new Promise((resolve) => new FoodEditLinkScopeModal(app, entityLabel, resolve).open());
 }
 
+const CUSTOM_FOOD_NUTRITION_FIELDS: Array<keyof Nutrition> = [
+  "calories",
+  "proteinG",
+  "carbsG",
+  "fatG",
+  "fiberG",
+  "sugarG",
+  "sugarAlcoholG",
+  "sugarAlcoholCaloriesPerG",
+  "alcoholG",
+  "sodiumMg",
+];
+
+function customFoodServingMetadataForSave(
+  baseFood: FoodItem | undefined,
+  servingAmount: number,
+  servingUnit: string,
+  nutrition: Nutrition,
+): Pick<FoodItem, "servingGrams" | "servingMl" | "nutritionBasis"> {
+  const normalizedUnit = String(servingUnit || "serving").trim() || "serving";
+  const baseAmount = baseFood?.servingAmount ?? 1;
+  const baseUnit = String(baseFood?.servingUnit || "serving").trim() || "serving";
+  const servingUnchanged = Boolean(baseFood) &&
+    baseAmount === servingAmount &&
+    normalizeServingUnit(baseUnit) === normalizeServingUnit(normalizedUnit);
+  const nutritionUnchanged = Boolean(baseFood) && CUSTOM_FOOD_NUTRITION_FIELDS.every((key) =>
+    (baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
+  if (servingUnchanged && nutritionUnchanged) {
+    return {
+      servingGrams: baseFood?.servingGrams,
+      servingMl: baseFood?.servingMl,
+      nutritionBasis: baseFood?.nutritionBasis,
+    };
+  }
+
+  const metric = parseMetricServing(servingAmount, normalizedUnit);
+  return {
+    servingGrams: metric?.unit === "g" ? metric.amount : undefined,
+    servingMl: metric?.unit === "ml" ? metric.amount : undefined,
+    nutritionBasis: "labeled-serving",
+  };
+}
+
 class CustomFoodModal extends Modal {
 
   constructor(
@@ -11879,6 +12388,13 @@ class CustomFoodModal extends Modal {
         const ingredientsForSave = isRecipeLikeFoodType(this.type)
           ? savedIngredients.map(recipeIngredientMarkdown).join("\n")
           : this.baseFood?.ingredients;
+        const servingMetadata = this.type === "food"
+          ? customFoodServingMetadataForSave(this.baseFood, servingAmount, servingUnit, nutrition)
+          : {
+            servingGrams: this.baseFood?.servingGrams,
+            servingMl: this.baseFood?.servingMl,
+            nutritionBasis: this.baseFood?.nutritionBasis,
+          };
         const saved = await this.plugin.upsertFoodFromInput({
           type: this.type,
           path: createNewVersion ? undefined : this.editPath,
@@ -11891,8 +12407,7 @@ class CustomFoodModal extends Modal {
           servingAmount,
           servingUnit,
           recipeServings,
-          servingGrams: this.baseFood?.servingGrams,
-          servingMl: this.baseFood?.servingMl,
+          ...servingMetadata,
           sourceImagePath: this.baseFood?.sourceImagePath,
           notes: this.baseFood?.notes,
           nutrition,
@@ -12378,7 +12893,9 @@ function normalizeFoodMetricServing(item: FoodItem): FoodItem {
   const serving = sanitizeFoodServingMetrics(normalizeFoodServingPortion(item));
   if (serving.servingGrams || serving.servingMl) return serving;
   const metric = parseMetricServing(serving.servingAmount || 1, serving.servingUnit || "");
-  const inferredDrinkServing = !metric ? inferredDrinkServingForFood(serving) : null;
+  const inferredDrinkServing = !metric && serving.nutritionBasis == null
+    ? inferredDrinkServingForFood(serving)
+    : null;
   const inferredMultiplier = inferredDrinkServing && shouldTreatNutritionAsPer100ml(serving, inferredDrinkServing.ml) ? inferredDrinkServing.ml / 100 : 1;
   return {
     ...serving,
@@ -12430,6 +12947,7 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
     servingUnit,
     servingGrams: input.servingGrams,
     servingMl: input.servingMl,
+    nutritionBasis: input.nutritionBasis,
     recipeServings: input.recipeServings,
     source: "manual",
     confidence: input.confidence,
@@ -12453,6 +12971,7 @@ function foodFrontmatter(item: FoodItem, type: FoodNoteType): Record<string, unk
     servingUnit: item.servingUnit || "serving",
     servingGrams: item.servingGrams == null ? undefined : round(item.servingGrams),
     servingMl: item.servingMl == null ? undefined : round(item.servingMl),
+    nutritionBasis: isRecipeLikeFoodType(type) ? undefined : item.nutritionBasis,
     recipeServings: isRecipeLikeFoodType(type) ? recipeServingsForFood(item, type) : undefined,
     calories: nutrition.calories || 0,
     proteinG: nutrition.proteinG || 0,
@@ -12611,6 +13130,12 @@ function aliasesFromFrontmatter(value: unknown): string[] | undefined {
   return normalized.length ? Array.from(new Set(normalized)) : undefined;
 }
 
+function nutritionBasisFromValue(value: unknown): FoodItem["nutritionBasis"] {
+  return value === "labeled-serving" || value === "per-100g" || value === "per-100ml" || value === "estimated-serving"
+    ? value
+    : undefined;
+}
+
 function foodSearchFields(item: FoodItem): Array<unknown> {
   return [item.name, item.brand, foodAliasesForItem(item).join(" "), item.notes, item.ingredients];
 }
@@ -12727,6 +13252,33 @@ function usdaFoodNutrition(food: any): Nutrition {
   };
 }
 
+function usdaFoodServing(food: any): Pick<FoodItem, "servingAmount" | "servingUnit" | "servingGrams" | "servingMl" | "nutritionBasis"> {
+  const servingSize = numberOrUndefined(food?.servingSize);
+  const rawUnit = normalizeLookup(String(food?.servingSizeUnit || ""));
+  const metricUnit = /^(?:g|gram|grams|grm)$/.test(rawUnit)
+    ? "g"
+    : /^(?:ml|milliliter|milliliters|mlt)$/.test(rawUnit)
+      ? "ml"
+      : null;
+  const metricAmount = servingSize && metricUnit ? saneMetricServingAmount(servingSize, metricUnit) : undefined;
+  if (!metricAmount || !metricUnit) {
+    return {
+      servingAmount: 100,
+      servingUnit: "g",
+      servingGrams: 100,
+      nutritionBasis: "per-100g",
+    };
+  }
+  const household = householdServingFromText(String(food?.householdServingFullText || ""));
+  return {
+    servingAmount: household?.amount || 1,
+    servingUnit: household?.unit || "serving",
+    servingGrams: metricUnit === "g" ? metricAmount : undefined,
+    servingMl: metricUnit === "ml" ? metricAmount : undefined,
+    nutritionBasis: "labeled-serving",
+  };
+}
+
 function usdaFoodAliases(food: any, primaryBrand: string | undefined): string[] | undefined {
   const aliases = new Map<string, string>();
   const primaryName = normalizeLookup(String(food?.description || ""));
@@ -12823,6 +13375,14 @@ function metricServingForFood(item: FoodItem): { amount: number; unit: "g" | "ml
   if (servingGrams) return { amount: servingGrams, unit: "g" };
   if (servingMl) return { amount: servingMl, unit: "ml" };
   return parseMetricServing(item.servingAmount || 1, item.servingUnit || "");
+}
+
+function isPer100NutritionBasis(item: FoodItem): boolean {
+  return item.nutritionBasis === "per-100g" || item.nutritionBasis === "per-100ml";
+}
+
+function hasLabeledServingBasis(item: FoodItem): boolean {
+  return !isPer100NutritionBasis(item);
 }
 
 function resolveFoodLogServing(item: FoodItem, quantity: number, unit: string): ResolvedFoodLogServing {
@@ -12937,6 +13497,8 @@ function foodLogUnitOptionLabel(item: FoodItem, unit: string): string {
 }
 
 function foodServingLabel(item: FoodItem): string {
+  if (item.nutritionBasis === "per-100g") return "per 100 g";
+  if (item.nutritionBasis === "per-100ml") return "per 100 ml";
   const servingUnit = normalizeServingUnit(item.servingUnit || "serving");
   const servingAmount = item.servingAmount || 1;
   const metric = metricServingForFood(item);
@@ -12948,9 +13510,19 @@ function foodServingLabel(item: FoodItem): string {
 }
 
 function preferredFoodLogUnit(item: FoodItem): string {
+  if (item.nutritionBasis === "per-100g") return "g";
+  if (item.nutritionBasis === "per-100ml") return "ml";
   const servingUnit = normalizeServingUnit(item.servingUnit || "serving");
   if (servingUnit && servingUnit !== "serving" && !metricAmountFromUnit(item.servingAmount || 1, servingUnit)) return singularUnitName(servingUnit);
   return "serving";
+}
+
+function defaultFoodLogQuantity(item: FoodItem): number {
+  if (isPer100NutritionBasis(item)) return 100;
+  const preferredUnit = preferredFoodLogUnit(item);
+  if (preferredUnit === "serving") return 1;
+  const servingAmount = numberOrUndefined(item.servingAmount);
+  return servingAmount != null && servingAmount > 0 ? servingAmount : 1;
 }
 
 function metricAmountFromUnit(quantity: number, unit: string): { amount: number; unit: "g" | "ml" } | null {
@@ -12985,8 +13557,8 @@ function shouldTreatNutritionAsPer100ml(item: FoodItem, servingMl: number): bool
 
 function parseMetricServing(servingAmount: number, servingUnit: string): { amount: number; unit: "g" | "ml" } | null {
   const unit = servingUnit.toLowerCase().trim();
-  const embedded = unit.match(/(\d+(?:\.\d+)?)\s*(fl oz|fluid ounce|g|gram|grams|ml|milliliter|milliliters|oz|ounce|ounces|cup|cups)/);
-  const amount = embedded ? Number(embedded[1]) : servingAmount;
+  const embedded = unit.match(/(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:\.\d+)?|half)\s*(fl oz|fluid ounce|g|gram|grams|ml|milliliter|milliliters|oz|ounce|ounces|cup|cups)/);
+  const amount = embedded ? parseFractionNumber(embedded[1]) : servingAmount;
   const rawUnit = embedded ? embedded[2] : unit;
   if (!Number.isFinite(amount) || amount <= 0) return null;
   if (["g", "gram", "grams"].includes(rawUnit)) return saneMetricServing(amount, "g");
@@ -13013,7 +13585,7 @@ function saneMetricServingAmount(value: unknown, unit: "g" | "ml"): number | und
 }
 
 function hasMetricServingText(servingUnit: string): boolean {
-  return /(\d+(?:\.\d+)?)\s*(g|gram|grams|ml|milliliter|milliliters|oz|ounce|ounces|fl oz|fluid ounce|cup|cups)\b/i.test(servingUnit);
+  return /(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:\.\d+)?|half)\s*(g|gram|grams|ml|milliliter|milliliters|oz|ounce|ounces|fl oz|fluid ounce|cup|cups)\b/i.test(servingUnit);
 }
 
 function parseLeadingServingPortion(servingUnit: string): { amount: number; unit: string } | null {
@@ -13028,6 +13600,7 @@ function parseLeadingServingPortion(servingUnit: string): { amount: number; unit
 
 function parseFractionNumber(value: string): number {
   const trimmed = String(value || "").trim();
+  if (/^half$/i.test(trimmed)) return 0.5;
   const mixed = trimmed.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
   if (mixed) {
     const whole = Number(mixed[1]);
@@ -13363,9 +13936,55 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
     .filter((item) => item.name && item.nutrition && hasSearchableMacroData(item.nutrition))
     .filter((item) => isRelevantFoodResult(query, foodSearchFields(item)))
     .filter((item) => !isUnloggedBroadExternalFoodResult(item, tokens, usageStats))
-    .map((item) => ({ item, score: foodSearchScore(item, normalizedQuery, usageStats) }))
-    .sort((a, b) => b.score - a.score)
+    .map((item) => ({
+      item,
+      score: foodSearchScore(item, normalizedQuery, usageStats),
+      tokenMatch: foodSearchItemTokenMatch(item, tokens),
+    }))
+    .sort((a, b) => closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats) || b.score - a.score)
     .map(({ item }) => item);
+}
+
+interface FoodSearchTokenMatch {
+  exact: number;
+  fuzzy: number;
+  total: number;
+}
+
+function closeProviderServingPreference(
+  left: FoodItem,
+  right: FoodItem,
+  leftMatch: FoodSearchTokenMatch,
+  rightMatch: FoodSearchTokenMatch,
+  usageStats: Map<string, FoodUsageStats>,
+): number {
+  if (!isExternalFoodProviderResult(left) || !isExternalFoodProviderResult(right)) return 0;
+  if (foodUsageForItem(left, usageStats).count || foodUsageForItem(right, usageStats).count) return 0;
+  if (leftMatch.exact !== rightMatch.exact || leftMatch.fuzzy !== rightMatch.fuzzy || leftMatch.total !== rightMatch.total) return 0;
+  if (!providerFoodsAreIdentityClose(left, right)) return 0;
+  const leftHasLabeledMetricServing = left.nutritionBasis === "labeled-serving" && Boolean(metricServingForFood(left));
+  const rightHasLabeledMetricServing = right.nutritionBasis === "labeled-serving" && Boolean(metricServingForFood(right));
+  if (leftHasLabeledMetricServing === rightHasLabeledMetricServing) return 0;
+  return leftHasLabeledMetricServing ? -1 : 1;
+}
+
+function isExternalFoodProviderResult(item: FoodItem): boolean {
+  return item.source === "usda" || item.source === "open-food-facts";
+}
+
+function providerFoodsAreIdentityClose(left: FoodItem, right: FoodItem): boolean {
+  const leftBarcode = left.barcode ? openFoodFactsBarcodeCacheKey(left.barcode) : "";
+  const rightBarcode = right.barcode ? openFoodFactsBarcodeCacheKey(right.barcode) : "";
+  if (leftBarcode && rightBarcode && leftBarcode === rightBarcode) return true;
+  const leftNameTokens = new Set(foodSearchTokens(left.name));
+  const rightNameTokens = new Set(foodSearchTokens(right.name));
+  const sharedNameTokens = Array.from(leftNameTokens).filter((token) => rightNameTokens.has(token)).length;
+  const smallerNameTokenCount = Math.min(leftNameTokens.size, rightNameTokens.size);
+  if (sharedNameTokens >= 3 && sharedNameTokens / smallerNameTokenCount >= 0.6) return true;
+  const leftBrand = normalizeLookup(left.brand || "");
+  const rightBrand = normalizeLookup(right.brand || "");
+  if (!leftBrand || leftBrand !== rightBrand) return false;
+  return sharedNameTokens > 0;
 }
 
 function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = new Map<string, FoodUsageStats>()): number {
@@ -13402,8 +14021,8 @@ function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = n
   if (item.source === "usda" && item.brand) score -= 24;
   if (tokens.length === 1 && item.source === "open-food-facts" && !usage.count) score -= 55;
   const metricServing = metricServingForFood(item);
-  if (metricServing) score += metricServing.unit === "g" ? 36 : 10;
-  else if (item.source === "open-food-facts") score -= 12;
+  if (metricServing && hasLabeledServingBasis(item)) score += metricServing.unit === "g" ? 8 : 4;
+  else if (item.source === "open-food-facts" && !isPer100NutritionBasis(item)) score -= 2;
   const nutrition = item.nutrition || {};
   for (const value of [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG]) {
     if (Number.isFinite(value)) score += 1;
@@ -13411,7 +14030,7 @@ function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = n
   return score;
 }
 
-function foodSearchTokenMatchScore(tokens: string[], haystack: string, haystackTokens: Set<string>): { exact: number; fuzzy: number; total: number } {
+function foodSearchTokenMatchScore(tokens: string[], haystack: string, haystackTokens: Set<string>): FoodSearchTokenMatch {
   let exact = 0;
   let fuzzy = 0;
   for (const token of tokens) {
@@ -13437,7 +14056,7 @@ function isUnloggedBroadExternalFoodResult(item: FoodItem, tokens: string[], usa
   return match.total < tokens.length;
 }
 
-function foodSearchItemTokenMatch(item: FoodItem, tokens: string[]): { exact: number; fuzzy: number; total: number } {
+function foodSearchItemTokenMatch(item: FoodItem, tokens: string[]): FoodSearchTokenMatch {
   const haystack = normalizeLookup(foodSearchFields(item).join(" "));
   const haystackTokens = foodSearchHaystackTokens(haystack);
   return foodSearchTokenMatchScore(tokens, haystack, haystackTokens);
@@ -13485,17 +14104,40 @@ function sodiumGramsToMg(value: unknown, multiplier = 1): number | undefined {
   return sodiumG == null ? undefined : Math.round(sodiumG * multiplier * 1000 * 10) / 10;
 }
 
-function foodFactsServing(product: any): { unit: string; grams?: number; ml?: number } {
+interface FoodFactsServing {
+  amount: number;
+  unit: string;
+  grams?: number;
+  ml?: number;
+  labeled: boolean;
+}
+
+function foodFactsServing(product: any): FoodFactsServing {
   const servingSize = String(product?.serving_size || "").trim();
   const servingQuantityUnit = normalizeLookup(String(product?.serving_quantity_unit || ""));
-  const servingQuantityGrams = servingQuantityUnit === "ml" ? undefined : saneMetricServingAmount(product?.serving_quantity, "g");
-  const servingQuantityMl = servingQuantityUnit === "ml" ? saneMetricServingAmount(product?.serving_quantity, "ml") : undefined;
-  const metric = parseMetricServing(1, servingSize);
-  const grams = metric ? (metric.unit === "g" ? metric.amount : undefined) : servingQuantityGrams;
-  const inferredDrinkServing = !metric && servingQuantityGrams == null && servingQuantityMl == null ? inferredFoodFactsDrinkServing(product) : null;
-  const ml = metric ? (metric.unit === "ml" ? metric.amount : undefined) : servingQuantityMl ?? inferredDrinkServing?.ml;
-  const unit = servingUnitFromFoodFactsServingSize(servingSize) || inferredDrinkServing?.unit || "serving";
-  return { unit, grams, ml };
+  const servingQuantityMetricUnit = /^(?:g|gram|grams)$/.test(servingQuantityUnit)
+    ? "g"
+    : /^(?:ml|milliliter|milliliters)$/.test(servingQuantityUnit)
+      ? "ml"
+      : null;
+  const servingQuantityMetric = servingQuantityMetricUnit
+    ? saneMetricServingAmount(product?.serving_quantity, servingQuantityMetricUnit)
+    : undefined;
+  const textMetric = parseMetricServing(1, servingSize);
+  const metric = servingQuantityMetric && servingQuantityMetricUnit
+    ? { amount: servingQuantityMetric, unit: servingQuantityMetricUnit }
+    : textMetric;
+  const grams = metric?.unit === "g" ? metric.amount : undefined;
+  const ml = metric?.unit === "ml" ? metric.amount : undefined;
+  const household = householdServingFromText(servingSize);
+  const unit = household?.unit || servingUnitFromFoodFactsServingSize(servingSize) || "serving";
+  return {
+    amount: household?.amount || 1,
+    unit,
+    grams,
+    ml,
+    labeled: Boolean(servingSize || servingQuantityMetric),
+  };
 }
 
 function servingUnitFromFoodFactsServingSize(servingSize: string): string {
@@ -13507,38 +14149,57 @@ function servingUnitFromFoodFactsServingSize(servingSize: string): string {
   return servingSize;
 }
 
-function inferredFoodFactsDrinkServing(product: any): { unit: string; ml: number } | null {
-  const text = normalizeLookup([
-    product?.product_name,
-    product?.product_name_en,
-    product?.brands,
-    product?.categories,
-    Array.isArray(product?.categories_tags) ? product.categories_tags.join(" ") : "",
-  ].filter(Boolean).join(" "));
-  if (!text) return null;
-  if (/\b(beer|lager|ale|ipa|cider|seltzer|hard seltzer|michelob|budweiser|bud light|coors|miller|corona|heineken)\b/.test(text)) {
-    return { unit: "can", ml: 355 };
-  }
-  if (/\b(drink|beverage|juice|milk|smoothie|shake|soda|water|tea|coffee|latte|liquid)\b/.test(text)) {
-    return { unit: "serving", ml: 240 };
-  }
-  return null;
+function householdServingFromText(value: string): { amount: number; unit: string } | null {
+  const withoutMetric = String(value || "")
+    .replace(/\(?\s*(?:\d+(?:[.,]\d+)?|\d+\s*\/\s*\d+)\s*(?:g|grams?|ml|milliliters?|oz|ounces?|fl\s*oz|fluid\s*ounces?)\b\s*\)?/gi, " ")
+    .replace(/[(),]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const parsed = parseLeadingServingPortion(withoutMetric);
+  if (!parsed) return null;
+  const unit = normalizeServingUnit(parsed.unit.replace(/^of\s+/i, "").trim());
+  const metric = metricAmountFromUnit(parsed.amount, unit);
+  if (!unit || (metric && unit !== "cup" && unit !== "cups")) return null;
+  return { amount: parsed.amount, unit: singularUnitName(unit) };
 }
 
-function foodFactsNutrition(product: any, serving: { grams?: number; ml?: number }): Nutrition {
+function foodFactsNutritionBasis(product: any, serving: FoodFactsServing): NonNullable<FoodItem["nutritionBasis"]> {
+  if (serving.labeled && (serving.grams || serving.ml || foodFactsHasServingNutrition(product?.nutriments))) return "labeled-serving";
+  return "per-100g";
+}
+
+function foodFactsHasServingNutrition(nutrients: any): boolean {
+  return ["energy-kcal", "proteins", "carbohydrates", "fat", "fiber", "sugars", "sodium"]
+    .some((key) => numberOrUndefined(nutrients?.[`${key}_serving`]) != null);
+}
+
+function foodFactsItemServing(serving: FoodFactsServing, basis: NonNullable<FoodItem["nutritionBasis"]>): Pick<FoodItem, "servingAmount" | "servingUnit" | "servingGrams" | "servingMl"> {
+  if (basis === "labeled-serving") {
+    return {
+      servingAmount: serving.amount,
+      servingUnit: serving.unit,
+      servingGrams: serving.grams,
+      servingMl: serving.ml,
+    };
+  }
+  return { servingAmount: 100, servingUnit: "g", servingGrams: 100 };
+}
+
+function foodFactsNutrition(product: any, serving: FoodFactsServing, basis: NonNullable<FoodItem["nutritionBasis"]>): Nutrition {
   const n = product?.nutriments || {};
   const multiplier = serving.grams ? serving.grams / 100 : serving.ml ? serving.ml / 100 : 1;
   const hasMetricServing = Boolean(serving.grams || serving.ml);
+  const useLabeledServingValues = basis === "labeled-serving";
   const nutrition: Nutrition = {
-    calories: foodFactsServingValue(n, "energy-kcal", multiplier, hasMetricServing),
-    proteinG: foodFactsServingValue(n, "proteins", multiplier, hasMetricServing),
-    carbsG: foodFactsServingValue(n, "carbohydrates", multiplier, hasMetricServing),
-    fatG: foodFactsServingValue(n, "fat", multiplier, hasMetricServing),
-    fiberG: foodFactsServingValue(n, "fiber", multiplier, hasMetricServing),
-    sugarG: foodFactsServingValue(n, "sugars", multiplier, hasMetricServing),
-    sugarAlcoholG: foodFactsSugarAlcoholG(n, product, multiplier, hasMetricServing),
-    alcoholG: foodFactsServingValue(n, "alcohol", multiplier, hasMetricServing),
-    sodiumMg: foodFactsSodiumMg(n, multiplier, hasMetricServing),
+    calories: foodFactsServingValue(n, "energy-kcal", multiplier, useLabeledServingValues, hasMetricServing),
+    proteinG: foodFactsServingValue(n, "proteins", multiplier, useLabeledServingValues, hasMetricServing),
+    carbsG: foodFactsServingValue(n, "carbohydrates", multiplier, useLabeledServingValues, hasMetricServing),
+    fatG: foodFactsServingValue(n, "fat", multiplier, useLabeledServingValues, hasMetricServing),
+    fiberG: foodFactsServingValue(n, "fiber", multiplier, useLabeledServingValues, hasMetricServing),
+    sugarG: foodFactsServingValue(n, "sugars", multiplier, useLabeledServingValues, hasMetricServing),
+    sugarAlcoholG: foodFactsSugarAlcoholG(n, product, multiplier, useLabeledServingValues, hasMetricServing),
+    alcoholG: foodFactsServingValue(n, "alcohol", multiplier, useLabeledServingValues, hasMetricServing),
+    sodiumMg: foodFactsSodiumMg(n, multiplier, useLabeledServingValues, hasMetricServing),
   };
   if (nutrition.sugarAlcoholG != null) nutrition.sugarAlcoholCaloriesPerG = foodFactsSugarAlcoholCaloriesPerGram(product);
   const macroCalories = caloriesFromMacros(nutrition);
@@ -13551,19 +14212,27 @@ function foodFactsNutrition(product: any, serving: { grams?: number; ml?: number
   return nutrition;
 }
 
-function foodFactsSugarAlcoholG(nutrients: any, product: any, multiplier: number, hasMetricServing: boolean): number | undefined {
+function foodFactsSugarAlcoholG(
+  nutrients: any,
+  product: any,
+  multiplier: number,
+  useLabeledServingValue: boolean,
+  canScalePer100: boolean,
+): number | undefined {
   const values = [
-    foodFactsServingValue(nutrients, "polyols", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "sugar-alcohol", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "sugar-alcohols", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "erythritol", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "xylitol", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "maltitol", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "sorbitol", multiplier, hasMetricServing),
-    foodFactsServingValue(nutrients, "mannitol", multiplier, hasMetricServing),
+    foodFactsServingValue(nutrients, "polyols", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "sugar-alcohol", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "sugar-alcohols", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "erythritol", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "xylitol", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "maltitol", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "sorbitol", multiplier, useLabeledServingValue, canScalePer100),
+    foodFactsServingValue(nutrients, "mannitol", multiplier, useLabeledServingValue, canScalePer100),
   ].filter((value): value is number => value != null);
   if (values.length) return Math.max(...values);
-  return foodFactsLooksLikePureSugarAlcohol(product) ? foodFactsServingValue(nutrients, "carbohydrates", multiplier, hasMetricServing) : undefined;
+  return foodFactsLooksLikePureSugarAlcohol(product)
+    ? foodFactsServingValue(nutrients, "carbohydrates", multiplier, useLabeledServingValue, canScalePer100)
+    : undefined;
 }
 
 function foodFactsSugarAlcoholCaloriesPerGram(product: any): number {
@@ -13597,10 +14266,16 @@ function foodFactsLooksLikePureSugarAlcohol(product: any): boolean {
   return /\b(erythritol|xylitol|maltitol|sorbitol|mannitol|isomalt|lactitol|polyols?|sugar alcohols?)\b/.test(text);
 }
 
-function foodFactsServingValue(nutrients: any, key: string, multiplier: number, hasMetricServing: boolean): number | undefined {
+function foodFactsServingValue(
+  nutrients: any,
+  key: string,
+  multiplier: number,
+  useLabeledServingValue: boolean,
+  canScalePer100: boolean,
+): number | undefined {
   const serving = numberOrUndefined(nutrients?.[`${key}_serving`]);
   const scaled = foodFactsScaledValue(nutrients, key, multiplier);
-  return foodFactsChooseServingValue(serving, scaled, hasMetricServing);
+  return foodFactsChooseServingValue(serving, scaled, useLabeledServingValue, canScalePer100);
 }
 
 function foodFactsScaledValue(nutrients: any, key: string, multiplier: number): number | undefined {
@@ -13608,17 +14283,23 @@ function foodFactsScaledValue(nutrients: any, key: string, multiplier: number): 
   return per100 == null ? undefined : round(per100 * multiplier);
 }
 
-function foodFactsSodiumMg(nutrients: any, multiplier: number, hasMetricServing: boolean): number | undefined {
+function foodFactsSodiumMg(nutrients: any, multiplier: number, useLabeledServingValue: boolean, canScalePer100: boolean): number | undefined {
   return foodFactsChooseServingValue(
     sodiumGramsToMg(nutrients?.sodium_serving),
     sodiumGramsToMg(nutrients?.sodium_100g, multiplier),
-    hasMetricServing,
+    useLabeledServingValue,
+    canScalePer100,
   );
 }
 
-function foodFactsChooseServingValue(serving: number | undefined, scaled: number | undefined, hasMetricServing: boolean): number | undefined {
-  if (serving == null) return scaled;
-  if (!hasMetricServing) return serving;
+function foodFactsChooseServingValue(
+  serving: number | undefined,
+  scaled: number | undefined,
+  useLabeledServingValue: boolean,
+  canScalePer100: boolean,
+): number | undefined {
+  if (!useLabeledServingValue) return scaled;
+  if (serving == null) return canScalePer100 ? scaled : undefined;
   // Open Food Facts' explicit *_serving fields describe the product's labeled
   // serving. They can legitimately differ from *_100g (rounding, recipe data,
   // or a package label), so never replace a present serving value merely
@@ -13663,8 +14344,15 @@ function dedupeFoods(items: FoodItem[]): FoodItem[] {
       });
     const key = matchingNutritionKey || foodDedupeKey(item);
     const existing = byKey.get(key);
-    if (!existing || foodCandidateCompletenessScore(item) > foodCandidateCompletenessScore(existing)) {
-      byKey.set(key, item);
+    if (!existing) byKey.set(key, item);
+    else {
+      const itemIsPreferred = foodCandidateCompletenessScore(item) > foodCandidateCompletenessScore(existing);
+      const preferred = itemIsPreferred ? item : existing;
+      const supplemental = itemIsPreferred ? existing : item;
+      const preferredServingQuality = foodServingPairQuality(preferred);
+      const supplementalServingQuality = foodServingPairQuality(supplemental);
+      const servingSource = supplementalServingQuality > preferredServingQuality ? supplemental : preferred;
+      byKey.set(key, mergeFoodServingPair(mergeFoodCandidateMetadata(preferred, supplemental), servingSource));
     }
     if (!existing) {
       const nameKeys = keysByName.get(normalizedName) || [];
@@ -13681,6 +14369,67 @@ function foodDedupeKey(item: FoodItem): string {
   const name = normalizeLookup(item.name);
   const brand = normalizeLookup(item.brand || "");
   return brand ? `name-brand:${name}|${brand}` : `name:${name}`;
+}
+
+function mergeEnrichedFoodSearchItem(searchItem: FoodItem, detailItem: FoodItem): FoodItem {
+  const useDetailServing = foodServingPairQuality(detailItem) > foodServingPairQuality(searchItem);
+  const merged = mergeFoodCandidateMetadata(searchItem, detailItem);
+  return mergeFoodServingPair({
+    ...merged,
+    id: searchItem.id || detailItem.id,
+    name: /^barcode\s+\d+$/i.test(searchItem.name) ? detailItem.name : searchItem.name,
+    source: searchItem.source,
+  }, useDetailServing ? detailItem : searchItem);
+}
+
+function mergeFoodServingPair(identity: FoodItem, servingSource: FoodItem): FoodItem {
+  return normalizeFoodMetricServing({
+    ...identity,
+    servingAmount: servingSource.servingAmount,
+    servingUnit: servingSource.servingUnit,
+    servingGrams: servingSource.servingGrams,
+    servingMl: servingSource.servingMl,
+    nutritionBasis: servingSource.nutritionBasis,
+    nutrition: servingSource.nutrition,
+  });
+}
+
+function foodServingPairQuality(item: FoodItem): number {
+  const hasMetric = Boolean(metricServingForFood(item));
+  if (item.nutritionBasis === "labeled-serving") return hasMetric ? 4 : 3;
+  if (item.nutritionBasis === "estimated-serving") return hasMetric ? 3 : 2;
+  if (hasMetric && !isPer100NutritionBasis(item)) return 3;
+  if (isPer100NutritionBasis(item)) return 2;
+  return 1;
+}
+
+function foodNeedsProviderServingEnrichment(item: FoodItem): boolean {
+  if (isPer100NutritionBasis(item)) return true;
+  const servingUnit = normalizeServingUnit(item.servingUnit || "serving");
+  return servingUnit === "serving" && !metricServingForFood(item);
+}
+
+function mergeFoodCandidateMetadata(preferred: FoodItem, supplemental: FoodItem): FoodItem {
+  const aliases = new Map<string, string>();
+  const addAlias = (value: unknown) => {
+    const alias = String(value || "").trim();
+    const normalized = normalizeLookup(alias);
+    if (!normalized || normalized === normalizeLookup(preferred.name) || aliases.has(normalized)) return;
+    aliases.set(normalized, alias);
+  };
+  for (const alias of preferred.aliases || []) addAlias(alias);
+  for (const alias of supplemental.aliases || []) addAlias(alias);
+  if (normalizeLookup(supplemental.name) !== normalizeLookup(preferred.name)) addAlias(supplemental.name);
+  return {
+    ...preferred,
+    brand: preferred.brand || supplemental.brand,
+    aliases: aliases.size ? Array.from(aliases.values()) : undefined,
+    barcode: preferred.barcode || supplemental.barcode,
+    imageUrl: preferred.imageUrl || supplemental.imageUrl,
+    sourceImagePath: preferred.sourceImagePath || supplemental.sourceImagePath,
+    ingredients: preferred.ingredients || supplemental.ingredients,
+    notes: preferred.notes || supplemental.notes,
+  };
 }
 
 function sameNamedEquivalentMetricFood(a: FoodItem, b: FoodItem): boolean {
@@ -13739,7 +14488,7 @@ function foodCandidateCompletenessScore(item: FoodItem): number {
   if (item.sourcePath) score += 30;
   if (item.barcode) score += 10;
   if (item.brand) score += 6;
-  if (metricServingForFood(item)) score += 12;
+  if (metricServingForFood(item) && hasLabeledServingBasis(item)) score += 12;
   if (item.imageUrl) score += 2;
   if (item.ingredients) score += 2;
   const nutrition = item.nutrition || {};
@@ -14006,11 +14755,11 @@ export function barcodeCandidates(raw: string): string[] {
     const expanded = expandUpce(digits);
     if (expanded) candidates.add(expanded);
   }
-  if (digits.length === 13) {
-    for (let length = 12; length >= 9; length -= 1) {
-      const removedPrefix = digits.slice(0, 13 - length);
+  if (canonical.length === 14) {
+    for (let length = 13; length >= 9; length -= 1) {
+      const removedPrefix = canonical.slice(0, 14 - length);
       if (!/^0+$/.test(removedPrefix)) break;
-      candidates.add(digits.slice(13 - length));
+      candidates.add(canonical.slice(14 - length));
     }
   }
   return [...candidates];
@@ -14018,7 +14767,7 @@ export function barcodeCandidates(raw: string): string[] {
 
 function openFoodFactsBarcodeCacheKey(raw: string): string {
   const digits = raw.replace(/\D/g, "");
-  return digits.length >= 9 && digits.length <= 12 ? digits.padStart(13, "0") : digits;
+  return digits.length >= 9 && digits.length <= 14 ? digits.padStart(14, "0") : digits;
 }
 
 function expandUpce(upce: string): string | null {
@@ -14664,8 +15413,7 @@ function renderMacroPills(container: HTMLElement, nutrition: Nutrition): void {
 }
 
 function foodResultMeta(item: FoodItem): string {
-  const serving = [item.servingAmount ? round(item.servingAmount) : "", item.servingUnit || "serving"].filter(Boolean).join(" ");
-  const metric = item.servingGrams ? `${round(item.servingGrams)} g` : item.servingMl ? `${round(item.servingMl)} ml` : "";
+  const serving = foodServingLabel(item) || [item.servingAmount ? round(item.servingAmount) : "", item.servingUnit || "serving"].filter(Boolean).join(" ");
   const source = {
     "custom-note": "Saved",
     "custom-inline": "Inline",
@@ -14674,7 +15422,7 @@ function foodResultMeta(item: FoodItem): string {
     "open-food-facts": "Open Food Facts",
     manual: "Manual",
   }[item.source] || item.source;
-  return [item.brand, source, metric ? `${serving} = ${metric}` : serving].filter(Boolean).join(" • ");
+  return [item.brand, source, serving].filter(Boolean).join(" • ");
 }
 
 function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext: FoodLogDateContext | null): boolean {

@@ -1,4 +1,4 @@
-import { ActivityLogEntry, ActivitySource, ExerciseItem, FoodItem, FoodLogEntry, FoodNoteType, HealthGoalKind, Nutrition, TPSHealthSettings, WorkoutLogTarget, WorkoutPlanItem, WorkoutSet } from "./types";
+import { ActivityLogEntry, ActivitySource, ExerciseItem, FoodItem, FoodLogEntry, FoodNoteType, HealthGoalKind, Nutrition, NutritionBasis, TPSHealthSettings, WorkoutLogTarget, WorkoutPlanItem, WorkoutSet } from "./types";
 import type { TPSHealthHomeActionProvider } from "./home-actions";
 
 export interface LogFoodInput {
@@ -26,6 +26,7 @@ export interface CreateFoodInput {
   servingUnit?: string;
   servingGrams?: number;
   servingMl?: number;
+  nutritionBasis?: NutritionBasis;
   recipeServings?: number;
   nutrition?: Nutrition;
   sourceImagePath?: string;

@@ -69,7 +69,11 @@ async function importPluginWithObsidianStub() {
       loadData() { return Promise.resolve(this.__pluginData == null ? null : JSON.parse(JSON.stringify(this.__pluginData))); }
       saveData(value) { this.__pluginData = JSON.parse(JSON.stringify(value)); return Promise.resolve(); }
     }
-    export class Modal { constructor(app) { this.app = app; } open() {} close() {} }
+    export class Modal {
+      constructor(app) { this.app = app; }
+      open() { globalThis.__TPSHealthTestOpenedModals?.push(this); }
+      close() { this.__closed = true; globalThis.__TPSHealthTestClosedModals?.push(this); }
+    }
     export class Menu {
       addItem(callback) {
         callback?.({ setTitle() { return this; }, setIcon() { return this; }, onClick() { return this; } });
@@ -123,7 +127,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { FoodSearchModal };`,
+            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -292,8 +296,15 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /Restored \$\{this\.selectionItems\.length\} unlogged food/);
   assert.match(mainSource, /private async persistDraft\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-empty"/);
+  assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-suppressed-active"/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:create-recipe-empty"/);
-  assert.match(mainSource, /const loggedCount = this\.selectionItems\.length;[\s\S]+await this\.plugin\.clearPendingFoodLogDraft\(\);[\s\S]+this\.selectionItems = \[\];[\s\S]+new Notice\(`Logged \$\{loggedCount\} foods\.`\);/);
+  const foodSearchModalSource = mainSource.slice(
+    mainSource.indexOf("class FoodSearchModal extends Modal"),
+    mainSource.indexOf("interface BatchFoodSelection"),
+  );
+  assert.doesNotMatch(foodSearchModalSource, /clearPendingFoodLogDraft\(/);
+  assert.match(foodSearchModalSource, /const snapshot = this\.selectionItems\.map/);
+  assert.match(foodSearchModalSource, /await this\.persistDraftIfOwned\(\)/);
   assert.match(mainSource, /Added \$\{addedName\}\. Search for another food or log selected\./);
   assert.match(mainSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);\s+this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);/);
@@ -343,7 +354,7 @@ test("food search ranks messy out-of-order branded queries and gram servings", (
   assert.match(mainSource, /score \+= tokenMatch\.exact \* 16 \+ tokenMatch\.fuzzy \* 7/);
   assert.match(mainSource, /exactNameTokenMatch\.total \+ brandTokenMatch\.total >= tokens\.length/);
   assert.match(mainSource, /item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
-  assert.match(mainSource, /metricServing\.unit === "g" \? 36 : 10/);
+  assert.match(mainSource, /metricServing\.unit === "g" \? 8 : 4/);
   assert.match(mainSource, /replace\(\/\[’'\]\/g, ""\)/);
   assert.match(mainSource, /function hasSearchableMacroData\(nutrition: Nutrition \| undefined\): boolean/);
   assert.match(mainSource, /const macros = \[nutrition\.proteinG, nutrition\.carbsG, nutrition\.fatG, nutrition\.sugarAlcoholG, nutrition\.alcoholG\]\.map\(numberOrUndefined\);/);
@@ -369,6 +380,328 @@ test("meal creation keeps the name input visible above mobile keyboards", () => 
   assert.doesNotMatch(mainSource, /setupKeyboardAwareHealthModal/);
   assert.match(sharedMobileOverlaySource, /target\.scrollIntoView\(\{ block: 'center'/);
   assert.match(stylesSource, /var\(--tps-visible-viewport-height, 100dvh\)/);
+});
+
+test("creating and successfully logging a meal consumes its captured tray ingredients", async () => {
+  installDeterministicBrowserGlobals();
+  globalThis.__TPSHealthTestOpenedModals = [];
+  globalThis.__TPSHealthTestClosedModals = [];
+  const {
+    default: TPSHealthPlugin,
+    BatchFoodRecipeModal,
+    FoodLogModal,
+    FoodSearchModal,
+  } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const ingredient = {
+    item: {
+      id: "food-yogurt",
+      name: "Greek Yogurt",
+      source: "custom",
+      sourcePath: "Health/Foods/Greek Yogurt.md",
+      servingAmount: 1,
+      servingUnit: "cup",
+      servingGrams: 170,
+      nutrition: { calories: 120, proteinG: 20, carbsG: 8, fatG: 0 },
+    },
+    quantity: 1,
+    unit: "cup",
+  };
+  plugin.settings = {
+    ...plugin.settings,
+    pendingFoodLogDraft: {
+      id: "tray-before-meal",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+      activeTab: "mine",
+      searchInput: "",
+      consumedDateInput: "",
+      dateContext: null,
+      selectionItems: [ingredient],
+    },
+  };
+  plugin.saveSettings = async () => {};
+  const createdInputs = [];
+  const savedMeal = {
+    id: "meal-yogurt",
+    name: "Greek Yogurt Meal",
+    source: "custom",
+    sourcePath: "Health/Recipes/Greek Yogurt Meal.md",
+    servingAmount: 1,
+    servingUnit: "meal",
+    recipeServings: 1,
+    nutrition: { calories: 120, proteinG: 20, carbsG: 8, fatG: 0 },
+  };
+  plugin.createFoodFromInput = async (input) => {
+    createdInputs.push(input);
+    return savedMeal;
+  };
+
+  try {
+    const tray = new FoodSearchModal(fake.app, plugin);
+    tray.renderSelection = () => {};
+    await tray.createRecipeFromSelection();
+    const createModal = globalThis.__TPSHealthTestOpenedModals.at(-1);
+    assert.ok(createModal instanceof BatchFoodRecipeModal);
+    assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems[0]?.item.name, "Greek Yogurt");
+
+    await createModal.createRecipe();
+    assert.equal(createdInputs.length, 1, "the guarded create action must write one meal note");
+    assert.match(createdInputs[0].ingredients, /\[\[Health\/Foods\/Greek Yogurt\|Greek Yogurt\]\]/);
+    assert.equal(tray.selectionItems.length, 1);
+    assert.equal(tray.selectionItems[0].item.name, "Greek Yogurt Meal");
+    assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems[0]?.item.name, "Greek Yogurt Meal");
+    assert.equal(tray.__closed, undefined, "opening or cancelling the log step must keep the queued meal available");
+
+    const logModal = globalThis.__TPSHealthTestOpenedModals.at(-1);
+    assert.ok(logModal instanceof FoodLogModal);
+    assert.equal(typeof logModal.onLogged, "function");
+    await logModal.onLogged({ id: "food-log-meal-1" });
+
+    assert.deepEqual(tray.selectionItems, []);
+    assert.equal(plugin.settings.pendingFoodLogDraft, null);
+    assert.equal(tray.__closed, true);
+    await createModal.createRecipe();
+    assert.equal(createdInputs.length, 1, "a repeated create submission must not duplicate the meal note");
+
+    const foodLogModalSource = mainSource.slice(
+      mainSource.indexOf("class FoodLogModal extends Modal"),
+      mainSource.indexOf("class ActivityLogModal extends Modal"),
+    );
+    assert.ok(
+      foodLogModalSource.indexOf("loggedEntry = await this.plugin.logFood") < foodLogModalSource.indexOf("if (this.onLogged)"),
+      "tray cleanup must run only after the food log commit succeeds",
+    );
+  } finally {
+    delete globalThis.__TPSHealthTestOpenedModals;
+    delete globalThis.__TPSHealthTestClosedModals;
+  }
+});
+
+test("a committed food log still resolves when rollup and focus follow-up work fails", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const dailyFile = new globalThis.__TPSHealthTestTFile("Daily/2026-08-14.md");
+  const food = {
+    id: "food-committed",
+    name: "Committed Yogurt",
+    source: "manual",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 120, proteinG: 20, carbsG: 8, fatG: 0 },
+  };
+  let inserted = 0;
+  let rollupAttempts = 0;
+  let focusAttempts = 0;
+  plugin.settings = {
+    ...plugin.settings,
+    foodLogTarget: "daily-note",
+    defaultFoodLogSection: "",
+    automaticDailyRollups: true,
+  };
+  plugin.findOrCreateFoodNote = async (item) => item;
+  plugin.getOrCreateDailyNoteForDate = async () => dailyFile;
+  plugin.insertIntoDailyNote = async () => {
+    inserted += 1;
+    return dailyFile;
+  };
+  plugin.updateDailyRollupForFile = async () => {
+    rollupAttempts += 1;
+    throw new Error("synthetic rollup failure");
+  };
+  plugin.focusLineBeforeInsertedDailyLog = async () => {
+    focusAttempts += 1;
+    throw new Error("synthetic focus failure");
+  };
+
+  const logged = await plugin.logFood(food, 1, "serving");
+
+  assert.match(logged.id, /^food-/);
+  assert.equal(inserted, 1, "the durable insertion must happen exactly once");
+  assert.equal(rollupAttempts, 1);
+  assert.equal(focusAttempts, 1);
+  assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("could not refresh the daily rollup")));
+  assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("could not focus the new entry")));
+});
+
+test("batch logging consumes each committed snapshot item and preserves the uncommitted and newer tray entries", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const selection = (id, name) => ({
+    item: {
+      id,
+      name,
+      source: "manual",
+      servingAmount: 1,
+      servingUnit: "serving",
+      nutrition: { calories: 100, proteinG: 5, carbsG: 10, fatG: 4 },
+    },
+    quantity: 1,
+    unit: "serving",
+  });
+  const first = selection("food-first", "First food");
+  const failed = selection("food-failed", "Failed food");
+  const later = selection("food-later", "Later food");
+  const addedWhileLogging = selection("food-new", "Newer tray food");
+  plugin.settings = {
+    ...plugin.settings,
+    pendingFoodLogDraft: {
+      id: "batch-origin",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+      activeTab: "mine",
+      searchInput: "",
+      consumedDateInput: "",
+      dateContext: null,
+      selectionItems: [first, failed, later],
+    },
+  };
+  plugin.saveSettings = async () => {};
+  const loggedNames = [];
+  const tray = new FoodSearchModal(fake.app, plugin);
+  tray.renderSelection = () => {};
+  plugin.logFood = async (item) => {
+    loggedNames.push(item.name);
+    if (item.name === "First food") {
+      tray.selectionItems.push(addedWhileLogging);
+      return { id: "food-log-first" };
+    }
+    throw new Error("synthetic durable write failure");
+  };
+
+  await tray.logSelected();
+
+  assert.deepEqual(loggedNames, ["First food", "Failed food"]);
+  assert.deepEqual(tray.selectionItems.map((entry) => entry.item.name), ["Failed food", "Later food", "Newer tray food"]);
+  assert.deepEqual(
+    plugin.settings.pendingFoodLogDraft?.selectionItems.map((entry) => entry.item.name),
+    ["Failed food", "Later food", "Newer tray food"],
+  );
+  assert.equal(tray.selectionSubmitting, false);
+  assert.equal(tray.__closed, undefined, "a partial failure must keep the remaining tray open for retry");
+});
+
+test("batch logging is one-shot and cannot clear a different pending draft", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const queued = {
+    item: {
+      id: "food-once",
+      name: "One-shot food",
+      source: "manual",
+      servingAmount: 1,
+      servingUnit: "serving",
+      nutrition: { calories: 90, proteinG: 4, carbsG: 12, fatG: 3 },
+    },
+    quantity: 1,
+    unit: "serving",
+  };
+  plugin.settings = {
+    ...plugin.settings,
+    pendingFoodLogDraft: {
+      id: "one-shot-origin",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+      activeTab: "mine",
+      searchInput: "",
+      consumedDateInput: "",
+      dateContext: null,
+      selectionItems: [queued],
+    },
+  };
+  plugin.saveSettings = async () => {};
+  const tray = new FoodSearchModal(fake.app, plugin);
+  tray.renderSelection = () => {};
+  let logCalls = 0;
+  let releaseLog;
+  plugin.logFood = async () => {
+    logCalls += 1;
+    return new Promise((resolve) => {
+      releaseLog = resolve;
+    });
+  };
+
+  const firstSubmission = tray.logSelected();
+  const duplicateSubmission = tray.logSelected();
+  while (!releaseLog) await Promise.resolve();
+  const newerDraft = {
+    id: "different-newer-draft",
+    updatedAt: "2026-08-14T12:01:00.000Z",
+    activeTab: "search",
+    searchInput: "new",
+    consumedDateInput: "",
+    dateContext: null,
+    selectionItems: [{ ...queued, item: { ...queued.item, id: "food-newer", name: "Different draft food" } }],
+  };
+  plugin.settings.pendingFoodLogDraft = structuredClone(newerDraft);
+  releaseLog({ id: "food-log-once" });
+  await Promise.all([firstSubmission, duplicateSubmission]);
+
+  assert.equal(logCalls, 1, "a second submission while the first is active must be ignored");
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft, newerDraft, "the origin cleanup must use compare-and-swap ownership");
+  assert.deepEqual(tray.selectionItems, []);
+  assert.equal(tray.__closed, true);
+});
+
+test("a fresh logger cannot replace a pending draft from a different date context", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const selection = (id, name) => ({
+    item: {
+      id,
+      name,
+      source: "manual",
+      servingAmount: 1,
+      servingUnit: "serving",
+      nutrition: { calories: 100, proteinG: 5, carbsG: 10, fatG: 4 },
+    },
+    quantity: 1,
+    unit: "serving",
+  });
+  const unrelatedDraft = {
+    id: "different-date-draft",
+    updatedAt: "2026-08-13T12:00:00.000Z",
+    activeTab: "mine",
+    searchInput: "",
+    consumedDateInput: "2026-08-13T12:00",
+    dateContext: {
+      dateIso: "2026-08-13",
+      label: "August 13, 2026",
+      isToday: false,
+      foodLogTarget: "daily-note",
+    },
+    selectionItems: [selection("food-unrelated", "Unrelated draft food")],
+  };
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: structuredClone(unrelatedDraft) };
+  plugin.saveSettings = async () => {};
+  const tray = new FoodSearchModal(fake.app, plugin, null, {
+    dateIso: "2026-08-14",
+    label: "August 14, 2026",
+    isToday: true,
+    foodLogTarget: "daily-note",
+  });
+  tray.renderSelection = () => {};
+  tray.selectionItems = [selection("food-fresh", "Fresh tray food")];
+
+  await tray.persistDraft();
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft, unrelatedDraft, "a context-mismatched draft must not be claimed by the fresh tray");
+
+  let logCalls = 0;
+  plugin.logFood = async () => {
+    logCalls += 1;
+    return { id: "food-log-fresh" };
+  };
+  await tray.logSelected();
+
+  assert.equal(logCalls, 1);
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft, unrelatedDraft, "successful logging must not clear the unrelated draft");
+  assert.equal(tray.__closed, true);
 });
 
 test("meal reads and writes enforce the single-serving recipe contract", () => {
@@ -1458,6 +1791,558 @@ test("Open Food Facts preserves alternate product identity fields as searchable 
   }
 });
 
+test("provider search keeps per-100g rows honest and enriches Joseph's lavash to its labeled 32g serving", async () => {
+  installDeterministicBrowserGlobals();
+  const deterministicSetTimeout = window.setTimeout;
+  const deterministicClearTimeout = window.clearTimeout;
+  window.setTimeout = globalThis.setTimeout;
+  window.clearTimeout = globalThis.clearTimeout;
+  const {
+    default: TPSHealthPlugin,
+    defaultFoodLogQuantity,
+    foodResultMeta,
+    foodServingLabel,
+    householdServingFromText,
+    rankFoodSearchResults,
+    resolveFoodLogServing,
+  } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  const searchProduct = {
+    code: "74117000734",
+    product_name: "Joseph's Flax Oat Bran Whole Wheat Lavash Bread",
+    brands: "Joseph's",
+    nutriments: {
+      "energy-kcal_100g": 188,
+      proteins_100g: 18.8,
+      carbohydrates_100g: 25,
+      fat_100g: 4.69,
+    },
+  };
+  const detailProduct = {
+    code: "0074117000734",
+    product_name: "Lavash Bread",
+    brands: "Joseph's",
+    serving_size: "32 g (0.5 LAVASH)",
+    serving_quantity: 32,
+    serving_quantity_unit: "g",
+    nutriments: {
+      "energy-kcal_serving": 60,
+      proteins_serving: 6,
+      carbohydrates_serving: 8,
+      fat_serving: 1.5,
+      "energy-kcal_100g": 188,
+      proteins_100g: 18.8,
+      carbohydrates_100g: 25,
+      fat_100g: 4.69,
+    },
+  };
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    if (options.url.startsWith("https://search.openfoodfacts.org/")) {
+      return { status: 200, headers: {}, json: { hits: [searchProduct] } };
+    }
+    return { status: 200, headers: {}, json: { status: 1, product: detailProduct } };
+  };
+  try {
+    const [searchItem] = await plugin.searchOpenFoodFacts("joseph lavash");
+    assert.equal(searchItem?.nutritionBasis, "per-100g");
+    assert.equal(searchItem?.servingAmount, 100);
+    assert.equal(searchItem?.servingUnit, "g");
+    assert.equal(searchItem?.servingGrams, 100);
+    assert.equal(searchItem?.nutrition?.calories, 188);
+    assert.equal(foodServingLabel(searchItem), "per 100 g");
+    assert.match(foodResultMeta(searchItem), /per 100 g/);
+    assert.doesNotMatch(foodResultMeta(searchItem), /1 serving/);
+
+    assert.deepEqual(householdServingFromText("32 g (0.5 LAVASH)"), { amount: 0.5, unit: "lavash" });
+    const enriched = await plugin.enrichFoodSearchItem(searchItem);
+    assert.equal(requests.length, 2, JSON.stringify(requests.map((request) => request.url)));
+    assert.equal(enriched.name, searchItem.name, "detail enrichment must retain the more descriptive search name");
+    assert.ok(enriched.aliases?.includes("Lavash Bread"), JSON.stringify(enriched));
+    assert.equal(enriched.nutritionBasis, "labeled-serving");
+    assert.equal(enriched.servingAmount, 0.5);
+    assert.equal(enriched.servingUnit, "lavash");
+    assert.equal(enriched.servingGrams, 32);
+    assert.deepEqual(
+      {
+        calories: enriched.nutrition?.calories,
+        proteinG: enriched.nutrition?.proteinG,
+        carbsG: enriched.nutrition?.carbsG,
+        fatG: enriched.nutrition?.fatG,
+      },
+      { calories: 60, proteinG: 6, carbsG: 8, fatG: 1.5 },
+    );
+    assert.equal(foodServingLabel(enriched), "0.5 lavash / 32 g");
+    assert.equal(defaultFoodLogQuantity(enriched), 0.5);
+    assert.equal(resolveFoodLogServing(enriched, defaultFoodLogQuantity(enriched), enriched.servingUnit).servings, 1);
+    assert.equal(rankFoodSearchResults("joseph lavash", [searchItem, enriched])[0]?.nutritionBasis, "labeled-serving");
+
+    await plugin.enrichFoodSearchItem(searchItem);
+    assert.equal(requests.filter((request) => request.url.includes("/api/v2/product/")).length, 1, "repeated selection should reuse the exact-product cache");
+
+    globalThis.__TPSHealthTestRequestUrl = async () => ({
+      status: 200,
+      headers: {},
+      json: {
+        foods: [{
+          fdcId: 2409521,
+          description: "FLAX OAT BRAN WHOLE WHEAT LAVASH BREAD",
+          brandName: "JOSEPH'S",
+          gtinUpc: "074117000734",
+          servingSize: 32,
+          servingSizeUnit: "g",
+          householdServingFullText: "0.5 LAVASH",
+          foodNutrients: [
+            { nutrientId: 1008, value: 188.125 },
+            { nutrientId: 1003, value: 15.625 },
+            { nutrientId: 1005, value: 28.125 },
+            { nutrientId: 1004, value: 4.6875 },
+          ],
+        }],
+      },
+    });
+    const [usda] = await plugin.searchUsdaFoods("joseph lavash", true);
+    assert.equal(usda?.nutritionBasis, "labeled-serving");
+    assert.equal(usda?.servingAmount, 0.5);
+    assert.equal(usda?.servingUnit, "lavash");
+    assert.equal(usda?.servingGrams, 32);
+    assert.deepEqual(
+      { calories: usda?.nutrition?.calories, proteinG: usda?.nutrition?.proteinG, carbsG: usda?.nutrition?.carbsG, fatG: usda?.nutrition?.fatG },
+      { calories: 60.2, proteinG: 5, carbsG: 9, fatG: 1.5 },
+    );
+  } finally {
+    window.setTimeout = deterministicSetTimeout;
+    window.clearTimeout = deterministicClearTimeout;
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("per-100 nutrition basis defaults to metric quantities and survives default and custom-template food notes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, defaultFoodLogQuantity, resolveFoodLogServing } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodsFolder: "Health/Foods", foodTemplatePath: "" };
+
+  const saved = await plugin.createFoodFromInput({
+    name: "Per 100 Gram Test",
+    servingAmount: 100,
+    servingUnit: "g",
+    servingGrams: 100,
+    nutritionBasis: "per-100g",
+    nutrition: { proteinG: 10, carbsG: 20, fatG: 5 },
+  });
+  const savedFile = fake.app.vault.getAbstractFileByPath(saved.sourcePath);
+  const savedContent = fake.files.get(saved.sourcePath);
+  assert.match(savedContent, /nutritionBasis: per-100g/);
+  const reloaded = plugin.foodFromFrontmatter(savedFile, parseFrontmatter(savedContent));
+  assert.equal(reloaded.nutritionBasis, "per-100g");
+  assert.equal(defaultFoodLogQuantity(reloaded), 100);
+  assert.equal(resolveFoodLogServing(reloaded, defaultFoodLogQuantity(reloaded), "g").servings, 1);
+
+  fake.files.set("Templates/Food.md", [
+    "---",
+    "kind: food",
+    'name: "{{name}}"',
+    "servingAmount: {{servingAmount}}",
+    'servingUnit: "{{servingUnit}}"',
+    "servingMl: {{servingMl}}",
+    "proteinG: {{proteinG}}",
+    "carbsG: {{carbsG}}",
+    "fatG: {{fatG}}",
+    "---",
+    "# {{name}}",
+  ].join("\n"));
+  plugin.settings.foodTemplatePath = "Templates/Food.md";
+  const templated = await plugin.createFoodFromInput({
+    name: "Per 100 Milliliter Test",
+    servingAmount: 100,
+    servingUnit: "ml",
+    servingMl: 100,
+    nutritionBasis: "per-100ml",
+    nutrition: { proteinG: 2, carbsG: 9, fatG: 1 },
+  });
+  const templatedContent = fake.files.get(templated.sourcePath);
+  assert.match(templatedContent, /nutritionBasis: "per-100ml"/);
+  const templatedFile = fake.app.vault.getAbstractFileByPath(templated.sourcePath);
+  const templatedReloaded = plugin.foodFromFrontmatter(templatedFile, parseFrontmatter(templatedContent));
+  assert.equal(templatedReloaded.nutritionBasis, "per-100ml");
+  assert.equal(defaultFoodLogQuantity(templatedReloaded), 100);
+  assert.equal(resolveFoodLogServing(templatedReloaded, 100, "ml").servings, 1);
+});
+
+test("custom food edits replace stale provider serving metadata with the manual serving definition", async () => {
+  installDeterministicBrowserGlobals();
+  const { customFoodServingMetadataForSave } = await importPluginWithObsidianStub();
+  const per100Grams = {
+    id: "provider-per-100g",
+    name: "Provider Bread",
+    source: "open-food-facts",
+    servingAmount: 100,
+    servingUnit: "g",
+    servingGrams: 100,
+    nutritionBasis: "per-100g",
+    nutrition: { calories: 188, proteinG: 18.8, carbsG: 25, fatG: 4.7 },
+  };
+  assert.deepEqual(
+    customFoodServingMetadataForSave(per100Grams, 100, "g", { ...per100Grams.nutrition }),
+    { servingGrams: 100, servingMl: undefined, nutritionBasis: "per-100g" },
+    "an untouched provider result should retain its coherent per-100 basis",
+  );
+  assert.deepEqual(
+    customFoodServingMetadataForSave(per100Grams, 0.5, "flatbread", { calories: 60, proteinG: 6, carbsG: 8, fatG: 1.5 }),
+    { servingGrams: undefined, servingMl: undefined, nutritionBasis: "labeled-serving" },
+    "a manual nonmetric serving must not inherit the provider's stale 100 g mapping",
+  );
+  assert.deepEqual(
+    customFoodServingMetadataForSave(per100Grams, 32, "g", { calories: 60, proteinG: 6, carbsG: 8, fatG: 1.5 }),
+    { servingGrams: 32, servingMl: undefined, nutritionBasis: "labeled-serving" },
+    "a manual metric serving should derive its new gram mapping from the edited fields",
+  );
+
+  const per100Ml = {
+    ...per100Grams,
+    id: "provider-per-100ml",
+    name: "Provider Drink",
+    servingUnit: "ml",
+    servingGrams: undefined,
+    servingMl: 100,
+    nutritionBasis: "per-100ml",
+  };
+  assert.deepEqual(
+    customFoodServingMetadataForSave(per100Ml, 1, "can", { calories: 120, proteinG: 8, carbsG: 12, fatG: 4 }),
+    { servingGrams: undefined, servingMl: undefined, nutritionBasis: "labeled-serving" },
+    "a manual household serving must not inherit the provider's stale 100 ml mapping",
+  );
+  assert.match(mainSource, /const servingMetadata = this\.type === "food"[\s\S]*customFoodServingMetadataForSave\(this\.baseFood, servingAmount, servingUnit, nutrition\)/);
+  assert.match(mainSource, /recipeServings,\s+\.\.\.servingMetadata,/);
+});
+
+test("upserting an explicit labeled can keeps manual macros and skips legacy drink inference", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodsFolder: "Health/Foods", foodTemplatePath: "" };
+
+  const saved = await plugin.upsertFoodFromInput({
+    name: "Edited Provider Beer",
+    brand: "Provider Brand",
+    servingAmount: 1,
+    servingUnit: "can",
+    nutritionBasis: "labeled-serving",
+    nutrition: { proteinG: 5, carbsG: 10, fatG: 2 },
+  });
+
+  assert.equal(saved.servingAmount, 1);
+  assert.equal(saved.servingUnit, "can");
+  assert.equal(saved.servingMl, undefined);
+  assert.equal(saved.nutritionBasis, "labeled-serving");
+  assert.deepEqual(
+    { proteinG: saved.nutrition?.proteinG, carbsG: saved.nutrition?.carbsG, fatG: saved.nutrition?.fatG },
+    { proteinG: 5, carbsG: 10, fatG: 2 },
+    "the legacy 355 ml heuristic must not scale explicitly labeled nutrition",
+  );
+  const content = fake.files.get(saved.sourcePath);
+  assert.match(content, /nutritionBasis: labeled-serving/);
+  assert.doesNotMatch(content, /servingMl:/);
+  assert.match(mainSource, /!metric && serving\.nutritionBasis == null/);
+});
+
+test("Open Food Facts trusts normalized serving quantity, parses fractional cups, and does not mix unscalable per-100 nutrients", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    const partial = decodeURIComponent(options.url).includes("partial+cookie");
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        hits: [partial ? {
+          code: "012345678905",
+          product_name: "Partial Cookie",
+          brands: "Test Brand",
+          serving_size: "1 cookie",
+          nutriments: {
+            "energy-kcal_serving": 100,
+            proteins_serving: 4,
+            carbohydrates_100g: 50,
+            fat_100g: 20,
+          },
+        } : {
+          code: "012345678912",
+          product_name: "Fraction Cup Juice",
+          brands: "Test Brand",
+          serving_size: "1/2 cup (120 ml)",
+          serving_quantity: 120,
+          serving_quantity_unit: "ml",
+          nutriments: {
+            "energy-kcal_100g": 40,
+            proteins_100g: 2,
+            carbohydrates_100g: 8,
+            fat_100g: 1,
+          },
+        }],
+      },
+    };
+  };
+  try {
+    const [fraction] = await plugin.searchOpenFoodFacts("fraction cup juice");
+    assert.equal(fraction?.nutritionBasis, "labeled-serving");
+    assert.equal(fraction?.servingAmount, 0.5);
+    assert.equal(fraction?.servingUnit, "cup");
+    assert.equal(fraction?.servingMl, 120);
+    assert.deepEqual(
+      { calories: fraction?.nutrition?.calories, proteinG: fraction?.nutrition?.proteinG, carbsG: fraction?.nutrition?.carbsG, fatG: fraction?.nutrition?.fatG },
+      { calories: 48, proteinG: 2.4, carbsG: 9.6, fatG: 1.2 },
+    );
+
+    const [partial] = await plugin.searchOpenFoodFacts("partial cookie");
+    assert.equal(partial?.nutritionBasis, "labeled-serving");
+    assert.equal(partial?.servingAmount, 1);
+    assert.equal(partial?.servingUnit, "cookie");
+    assert.equal(partial?.servingGrams, undefined);
+    assert.equal(partial?.nutrition?.calories, 100);
+    assert.equal(partial?.nutrition?.proteinG, 4);
+    assert.equal(partial?.nutrition?.carbsG, undefined);
+    assert.equal(partial?.nutrition?.fatG, undefined);
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("dedupe keeps the best coherent serving pair while ranking textual relevance ahead of serving completeness", async () => {
+  installDeterministicBrowserGlobals();
+  const { dedupeFoods, rankFoodSearchResults } = await importPluginWithObsidianStub();
+  const labeled = {
+    id: "usda-2409521",
+    name: "Flax Oat Bran Whole Wheat Lavash Bread",
+    brand: "Joseph's",
+    barcode: "074117000734",
+    source: "usda",
+    servingAmount: 0.5,
+    servingUnit: "lavash",
+    servingGrams: 32,
+    nutritionBasis: "labeled-serving",
+    nutrition: { calories: 60.2, proteinG: 5, carbsG: 9, fatG: 1.5 },
+  };
+  const richPer100 = {
+    id: "74117000734",
+    name: "Joseph's Flax Oat Bran Whole Wheat Lavash Bread",
+    brand: "Joseph's",
+    barcode: "74117000734",
+    imageUrl: "https://example.test/lavash.jpg",
+    ingredients: "whole wheat flour, flax, oat bran",
+    source: "open-food-facts",
+    servingAmount: 100,
+    servingUnit: "g",
+    servingGrams: 100,
+    nutritionBasis: "per-100g",
+    nutrition: { calories: 188, proteinG: 18.8, carbsG: 25, fatG: 4.69, fiberG: 2, sugarG: 1, sugarAlcoholG: 0, sodiumMg: 875 },
+  };
+  const [merged] = dedupeFoods([labeled, richPer100]);
+  assert.equal(merged.source, "open-food-facts", "identity metadata may still come from the richer candidate");
+  assert.equal(merged.nutritionBasis, "labeled-serving");
+  assert.equal(merged.servingAmount, 0.5);
+  assert.equal(merged.servingUnit, "lavash");
+  assert.equal(merged.servingGrams, 32);
+  assert.equal(merged.nutrition?.calories, 60.2);
+
+  const liveOffPer100 = {
+    ...richPer100,
+    id: "off-live-lavash",
+    name: "Joseph's, Flax, Oat Bran & Whole Wheat Lavash Bread",
+    brand: "Middle East Bakery Inc",
+    barcode: "0074117882026",
+  };
+  const liveUsdaLabeled = {
+    ...labeled,
+    id: "usda-live-lavash",
+    name: "Flax Oat Bran & Whole Wheat Lavash Bread",
+    brand: "JOSEPH'S",
+    barcode: "074117000734",
+  };
+  assert.equal(
+    rankFoodSearchResults("joseph lavash", [liveOffPer100, liveUsdaLabeled])[0]?.id,
+    "usda-live-lavash",
+    "the live identity-close USDA result should expose its labeled 0.5 lavash / 32 g serving first",
+  );
+
+  const exactPer100 = { ...richPer100, id: "exact", barcode: "000000000001", name: "Josephs Lavash Bread" };
+  const fuzzyLabeled = { ...labeled, id: "fuzzy", barcode: "000000000002", name: "Josephs Lavish Bread", source: "open-food-facts" };
+  assert.equal(rankFoodSearchResults("josephs lavash bread", [fuzzyLabeled, exactPer100])[0]?.id, "exact");
+  const equalLabeled = { ...fuzzyLabeled, id: "equal-labeled", barcode: "000000000003", name: exactPer100.name };
+  assert.equal(rankFoodSearchResults("josephs lavash bread", [exactPer100, equalLabeled])[0]?.id, "equal-labeled");
+});
+
+test("stale local barcode foods are enriched once and persist the labeled serving pair without replacing local identity", async () => {
+  installDeterministicBrowserGlobals();
+  const deterministicSetTimeout = window.setTimeout;
+  const deterministicClearTimeout = window.clearTimeout;
+  window.setTimeout = globalThis.setTimeout;
+  window.clearTimeout = globalThis.clearTimeout;
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  const path = "Health/Foods/My Josephs Lavash.md";
+  fake.files.set(path, [
+    "---",
+    "kind: food",
+    'name: "My Josephs Lavash"',
+    'brand: "Josephs"',
+    'aliases: "wrap bread, favorite lavash"',
+    'barcode: "074117000734"',
+    "servingAmount: 1",
+    'servingUnit: "serving"',
+    "calories: 188",
+    "proteinG: 18.8",
+    "carbsG: 25",
+    "fatG: 4.69",
+    'notes: "Keep local note"',
+    "---",
+    "Local body stays here.",
+  ].join("\n"));
+  const detailProduct = {
+    code: "0074117000734",
+    product_name: "Lavash Bread",
+    brands: "Joseph's",
+    serving_size: "32 g (0.5 LAVASH)",
+    serving_quantity: 32,
+    serving_quantity_unit: "g",
+    nutriments: {
+      "energy-kcal_serving": 60,
+      proteins_serving: 6,
+      carbohydrates_serving: 8,
+      fat_serving: 1.5,
+      "energy-kcal_100g": 188,
+      proteins_100g: 18.8,
+      carbohydrates_100g: 25,
+      fat_100g: 4.69,
+    },
+  };
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return { status: 200, headers: {}, json: { status: 1, product: detailProduct } };
+  };
+  try {
+    const enriched = await plugin.lookupFoodByBarcode("074117000734");
+    assert.equal(enriched?.source, "custom-note");
+    assert.equal(enriched?.sourcePath, path);
+    assert.equal(enriched?.name, "My Josephs Lavash");
+    assert.deepEqual(enriched?.aliases, ["wrap bread", "favorite lavash"]);
+    assert.equal(enriched?.notes, "Keep local note");
+    assert.equal(enriched?.nutritionBasis, "labeled-serving");
+    assert.equal(enriched?.servingAmount, 0.5);
+    assert.equal(enriched?.servingUnit, "lavash");
+    assert.equal(enriched?.servingGrams, 32);
+    assert.equal(enriched?.nutrition?.calories, 60);
+    assert.equal(requests.length, 1);
+
+    const persisted = parseFrontmatter(fake.files.get(path));
+    assert.equal(persisted.name, "My Josephs Lavash");
+    assert.equal(persisted.aliases, "wrap bread, favorite lavash");
+    assert.equal(persisted.notes, "Keep local note");
+    assert.equal(persisted.nutritionBasis, "labeled-serving");
+    assert.equal(persisted.servingAmount, 0.5);
+    assert.equal(persisted.servingUnit, "lavash");
+    assert.equal(persisted.servingGrams, 32);
+    assert.equal(persisted.calories, 60);
+    assert.match(fake.files.get(path), /Local body stays here\./);
+
+    const reloaded = await plugin.lookupFoodByBarcode("0074117000734");
+    assert.equal(reloaded?.nutritionBasis, "labeled-serving");
+    assert.equal(reloaded?.nutrition?.calories, 60);
+    assert.equal(requests.length, 1, "a persisted labeled local note must not repeat exact-product enrichment");
+    const resolved = await plugin.findOrCreateFoodNote(enriched);
+    assert.equal(resolved.nutritionBasis, "labeled-serving");
+    assert.equal(resolved.nutrition?.calories, 60);
+  } finally {
+    window.setTimeout = deterministicSetTimeout;
+    window.clearTimeout = deterministicClearTimeout;
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("repeated Add uses the food's fractional default quantity", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const tray = new FoodSearchModal(fake.app, plugin);
+  tray.renderSelection = () => {};
+  tray.resetSearchForNextFood = () => {};
+  tray.persistDraft = async () => {};
+  plugin.enrichFoodSearchItem = async (item) => item;
+  const lavash = {
+    id: "lavash",
+    name: "Josephs Lavash",
+    source: "open-food-facts",
+    barcode: "0074117000734",
+    servingAmount: 0.5,
+    servingUnit: "lavash",
+    servingGrams: 32,
+    nutritionBasis: "labeled-serving",
+    nutrition: { calories: 60, proteinG: 6, carbsG: 8, fatG: 1.5 },
+  };
+  await tray.addSelection(lavash);
+  await tray.addSelection(lavash);
+  assert.equal(tray.selectionItems.length, 1);
+  assert.equal(tray.selectionItems[0].quantity, 1);
+  assert.equal(tray.selectionItems[0].unit, "lavash");
+});
+
+test("Open Food Facts exact-product 429 opens the shared circuit while cached successes remain usable", async () => {
+  installDeterministicBrowserGlobals();
+  const deterministicSetTimeout = window.setTimeout;
+  const deterministicClearTimeout = window.clearTimeout;
+  window.setTimeout = globalThis.setTimeout;
+  window.clearTimeout = globalThis.clearTimeout;
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    if (options.url.includes("000000000002")) return { status: 429, headers: { "Retry-After": "120" }, json: {} };
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        status: 1,
+        product: {
+          code: "000000000001",
+          product_name: "Cached Product",
+          serving_size: "30 g",
+          serving_quantity: 30,
+          serving_quantity_unit: "g",
+          nutriments: { proteins_100g: 10, carbohydrates_100g: 20, fat_100g: 5 },
+        },
+      },
+    };
+  };
+  try {
+    const cached = await plugin.lookupOpenFoodFactsBarcode("000000000001");
+    assert.equal(cached?.name, "Cached Product");
+    await assert.rejects(plugin.lookupOpenFoodFactsBarcode("000000000002"));
+    assert.equal(requests.length, 2);
+    assert.equal(await plugin.lookupOpenFoodFactsBarcode("000000000003"), null);
+    assert.deepEqual(await plugin.searchOpenFoodFacts("circuit probe"), []);
+    assert.equal(requests.length, 2, "the shared circuit must suppress new product and search requests");
+    assert.equal((await plugin.lookupOpenFoodFactsBarcode("000000000001"))?.name, "Cached Product");
+    assert.equal(requests.length, 2, "a successful cache entry must remain readable while the circuit is open");
+  } finally {
+    window.setTimeout = deterministicSetTimeout;
+    window.clearTimeout = deterministicClearTimeout;
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
 test("provider brand canonicalization is typo-tolerant for long brands, order-independent, and safe for ordinary food words", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -1536,7 +2421,7 @@ test("non-numeric barcode placeholders never collapse unrelated foods", async ()
 
 test("barcode lookup resolves local UPC aliases and coalesces equivalent remote lookups", async () => {
   installDeterministicBrowserGlobals();
-  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const { default: TPSHealthPlugin, dedupeFoods } = await importPluginWithObsidianStub();
   const localFake = createFakeHealthApp();
   const localPlugin = new TPSHealthPlugin(localFake.app);
   localPlugin.settings = {
@@ -1580,11 +2465,15 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   };
   const localAlias = await localPlugin.lookupFoodByBarcode("0012345678905");
   assert.equal(localAlias?.name, "Alias Bar");
+  const gtin14LocalAlias = await localPlugin.lookupFoodByBarcode("00012345678905");
+  assert.equal(gtin14LocalAlias?.name, "Alias Bar");
   const elevenDigitAlias = await localPlugin.lookupFoodByBarcode("0098100100324");
   assert.equal(elevenDigitAlias?.name, "Eleven Digit Alias");
+  const gtin14ElevenDigitAlias = await localPlugin.lookupFoodByBarcode("00098100100324");
+  assert.equal(gtin14ElevenDigitAlias?.name, "Eleven Digit Alias");
   const mergedAlias = await localPlugin.upsertFoodFromInput({
     name: "Eleven Digit Alias",
-    barcode: "0098100100324",
+    barcode: "00098100100324",
     servingAmount: 1,
     servingUnit: "bar",
     nutrition: { calories: 195, proteinG: 19, carbsG: 22, fatG: 6 },
@@ -1621,12 +2510,18 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   };
   const first = remotePlugin.lookupOpenFoodFactsBarcode("0012345678905");
   const joined = remotePlugin.lookupOpenFoodFactsBarcode("012345678905");
+  const joinedGtin14 = remotePlugin.lookupOpenFoodFactsBarcode("00012345678905");
   assert.equal(candidateCalls, 1, "equivalent UPC/EAN lookups should join one request");
   releaseCandidate(remoteItem);
   assert.equal((await first)?.name, "Remote Alias Bar");
   assert.equal((await joined)?.name, "Remote Alias Bar");
+  assert.equal((await joinedGtin14)?.name, "Remote Alias Bar");
   assert.equal((await remotePlugin.lookupOpenFoodFactsBarcode("012345678905"))?.name, "Remote Alias Bar");
   assert.equal(candidateCalls, 1, "a successful barcode lookup should be served from cache");
+  assert.equal(dedupeFoods([
+    remoteItem,
+    { ...remoteItem, id: "gtin-14-alias", barcode: "00012345678905" },
+  ]).length, 1, "equivalent UPC/EAN/GTIN-14 results should deduplicate");
 
   remotePlugin.lookupOpenFoodFactsBarcodeCandidate = async () => {
     candidateCalls += 1;
@@ -2236,13 +3131,12 @@ test("health API exposes deterministic agent food logging entry points", () => {
   assert.match(pathMethod, /logger\.flowWarn\("Food", "log-by-path:missing"/);
   assert.doesNotMatch(pathMethod, /searchFoods/);
   assert.match(mainSource, /logger\.flow\("Food", "resolve-input:item"/);
-  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:barcode-local"/);
-  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:barcode-remote"/);
+  assert.match(mainSource, /logger\.flow\("Food", "resolve-input:barcode-hit"/);
   assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:barcode-miss"/);
   assert.match(mainSource, /logger\.flow\("Food", "resolve-input:query-hit"/);
   assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:query-miss"/);
   assert.match(mainSource, /logger\.flowWarn\("Food", "resolve-input:failed"/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "lookup:local-hit"/);
+  assert.match(mainSource, /logger\.flow\("Barcode", enriched === existing \? "lookup:local-hit" : "lookup:local-enriched"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "lookup:remote-hit"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "lookup:no-match"/);
 });
@@ -2252,7 +3146,7 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(mainSource, /tps-health-selection-copy/);
   assert.match(mainSource, /tps-health-selection-line-macros/);
   assert.match(mainSource, /foodLogQuantityStep\(entry\.unit\)/);
-  assert.match(mainSource, /existing\.quantity = roundFoodLogQuantity\(existing\.quantity \+ \(draft\?\.quantity \|\| 1\)\)/);
+  assert.match(mainSource, /existing\.quantity = roundFoodLogQuantity\(existing\.quantity \+ \(draft\?\.quantity \?\? defaultFoodLogQuantity\(enriched\)\)\)/);
   assert.match(mainSource, /Decrease amount for \$\{entry\.item\.name\}/);
   assert.match(mainSource, /Increase amount for \$\{entry\.item\.name\}/);
   assert.match(mainSource, /Math\.max\(step, roundFoodLogQuantity\(entry\.quantity \+ delta\)\)/);
@@ -2469,14 +3363,17 @@ test("Open Food Facts barcode lookup returns a packaged product with macro data"
 
 test("Open Food Facts serving nutrition validates provider serving fields against metric serving math", () => {
   assert.match(mainSource, /const hasMetricServing = Boolean\(serving\.grams \|\| serving\.ml\)/);
-  assert.match(mainSource, /function foodFactsServingValue\(nutrients: any, key: string, multiplier: number, hasMetricServing: boolean\)/);
-  assert.match(mainSource, /foodFactsChooseServingValue\(serving, scaled, hasMetricServing\)/);
+  assert.match(mainSource, /function foodFactsServingValue\([\s\S]*canScalePer100: boolean,[\s\S]*\): number \| undefined/);
+  assert.match(mainSource, /foodFactsChooseServingValue\(serving, scaled, useLabeledServingValue, canScalePer100\)/);
   assert.match(mainSource, /function foodFactsValuesAgree\(left: number, right: number, toleranceRatio: number, absoluteTolerance: number\)/);
-  assert.match(mainSource, /if \(!hasMetricServing\) return serving;/);
-  assert.match(mainSource, /if \(serving == null\) return scaled;/);
+  assert.match(mainSource, /if \(!useLabeledServingValue\) return scaled;/);
+  assert.match(mainSource, /if \(serving == null\) return canScalePer100 \? scaled : undefined;/);
   assert.match(mainSource, /return serving;/);
   assert.match(mainSource, /foodFactsScaledValue\(n, "energy-kcal", multiplier\)/);
   assert.match(mainSource, /caloriesFromMacros\(nutrition\)/);
+  assert.match(mainSource, /function foodFactsNutritionBasis\(product: any, serving: FoodFactsServing\)/);
+  assert.match(mainSource, /return "per-100g";/);
+  assert.match(mainSource, /function householdServingFromText\(value: string\)/);
   assert.match(mainSource, /unitMatch = lower\.match\(\/\\b\(bag\|bags\|bar\|bars/);
 });
 
@@ -2691,7 +3588,9 @@ test("health source keeps session-note workouts and fast rollup paths available"
   assert.match(mainSource, /completedDate: consumedAt/);
   assert.match(mainSource, /await this\.insertIntoDailyNote\(foodEntryLine\(entry\), section \|\| this\.settings\.defaultFoodLogSection, dailyFile\)/);
   assert.match(mainSource, /logger\.flow\("FoodLog", "write:inserted", \{/);
-  assert.match(mainSource, /if \(this\.settings\.automaticDailyRollups\) await this\.updateDailyRollupForFile\(dailyFile\)/);
+  assert.match(mainSource, /if \(this\.settings\.automaticDailyRollups\) \{[\s\S]+await this\.updateDailyRollupForFile\(dailyFile\);[\s\S]+rollupUpdated = true;/);
+  assert.match(mainSource, /logger\.flowError\("FoodLog", "post-write:rollup-failed"/);
+  assert.match(mainSource, /logger\.flowError\("FoodLog", "post-write:focus-failed"/);
   assert.match(mainSource, /logger\.flow\("FoodLog", "focus:skipped"/);
   assert.match(mainSource, /logger\.flow\("Rollup", "update:start"/);
   assert.match(mainSource, /logger\.flow\("Rollup", "legacy-block:removed"/);
@@ -3857,11 +4756,12 @@ test("complete inline food log command only targets the cursor line", async () =
   assert.doesNotMatch(mainSource, /const finalParsed = parsed \|\|/);
 });
 
-test("barcode normalization keeps valid UPC-E plus equivalent 11-, 12-, and 13-digit provider forms", async () => {
+test("barcode normalization keeps valid UPC-E plus equivalent 11-, 12-, 13-, and 14-digit provider forms", async () => {
   const { barcodeCandidates } = await importPluginWithObsidianStub();
-  assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "012345678905", "12345678905"]);
-  assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905", "0012345678905"]);
-  assert.deepEqual(barcodeCandidates("12345678905"), ["12345678905", "0012345678905"]);
+  assert.deepEqual(barcodeCandidates("00012345678905"), ["00012345678905", "0012345678905", "012345678905", "12345678905"]);
+  assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "00012345678905", "012345678905", "12345678905"]);
+  assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905", "00012345678905", "0012345678905", "12345678905"]);
+  assert.deepEqual(barcodeCandidates("12345678905"), ["12345678905", "00012345678905", "0012345678905", "012345678905"]);
   assert.deepEqual(barcodeCandidates("04252614"), ["04252614", "042100005264"]);
   assert.deepEqual(barcodeCandidates("24252614"), ["24252614"], "UPC-E expansion must reject unsupported number systems");
   assert.deepEqual(barcodeCandidates("04252615"), ["04252615"], "UPC-E expansion must reject an invalid check digit");
@@ -3923,7 +4823,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private consumedDateInput: string;/);
   assert.doesNotMatch(mainSource, /private recipeNameInput/);
   assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
-  assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, \[\.\.\.this\.selectionItems\], this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, snapshot, this\.dateContext/);
   assert.match(mainSource, /export function initialFoodLogConsumedDateInput/);
   assert.match(mainSource, /export function restoredFoodLogDraftConsumedDateInput/);
   assert.match(mainSource, /this\.consumedDateInput = restoredFoodLogDraftConsumedDateInput\(dateContext, pendingDraft\);/);
@@ -3935,7 +4835,8 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
   assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
-  assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item, null, \{ enrich: false \}\);[\s\S]+row\.addEventListener\("click", \(\) => void add\(\)\);/);
+  assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+row\.addEventListener\("click", \(\) => void add\(\)\);/);
+  assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.close\(\);\s+new FoodLogModal/);
   assert.match(mainSource, /setButtonText\("Choose amount"\)/);
   assert.match(mainSource, /if \(!item\.sourcePath\) actions\.addButton/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
@@ -4080,7 +4981,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(readmeSource, /Scan QR or Barcode/);
   assert.match(readmeSource, /obsidian:\/\/new\?vault=TishOS%20v0\.1&file=TPS%20Health%20Barcode%20Scan\.md&content=<Shortcut Scanned Code>&overwrite=true/);
   assert.match(readmeSource, /obsidian:\/\/advanced-uri\?vault=TishOS%20v0\.1&filepath=TPS%20Health%20Barcode%20Scan\.md&data=<Shortcut Scanned Code>&mode=overwrite/);
-  assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \|\| 1;/);
+  assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \?\? defaultFoodLogQuantity\(this\.item\);/);
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
 });
 
@@ -5680,7 +6581,6 @@ test("food log unit options are scoped to the food serving type", async () => {
   assert.match(mainSource, /unsupportedUnit: true/);
   assert.match(mainSource, /function foodLogUnitOptionLabel\(item: FoodItem, unit: string\): string/);
   assert.match(mainSource, /`serving \(\$\{label\}\)`/);
-  assert.match(mainSource, /function inferredFoodFactsDrinkServing\(product: any\): \{ unit: string; ml: number \} \| null/);
   assert.match(mainSource, /function inferredDrinkServingForFood\(item: FoodItem\): \{ unit: string; ml: number \} \| null/);
   assert.match(mainSource, /function shouldTreatNutritionAsPer100ml\(item: FoodItem, servingMl: number\): boolean/);
   assert.match(mainSource, /nutrition: inferredMultiplier !== 1 \? multiplyNutrition\(serving\.nutrition \|\| \{\}, inferredMultiplier\) : serving\.nutrition/);
@@ -5689,7 +6589,9 @@ test("food log unit options are scoped to the food serving type", async () => {
   assert.match(mainSource, /const MAX_REASONABLE_SERVING_ML = 3000/);
   assert.match(mainSource, /function sanitizeFoodServingMetrics\(item: FoodItem\): FoodItem/);
   assert.match(mainSource, /servingMl: saneMetricServingAmount\(item\.servingMl, "ml"\)/);
-  assert.match(mainSource, /parseMetricServing\(1, servingSize\) \|\| hasMetricServingText\(servingSize\)/);
+  assert.match(mainSource, /const servingQuantityMetric = servingQuantityMetricUnit[\s\S]*saneMetricServingAmount\(product\?\.serving_quantity, servingQuantityMetricUnit\)/);
+  assert.match(mainSource, /const metric = servingQuantityMetric && servingQuantityMetricUnit[\s\S]*: textMetric;/);
+  assert.match(mainSource, /const household = householdServingFromText\(servingSize\)/);
   assert.match(mainSource, /const OPEN_FOOD_FACTS_SEARCH_FIELDS = \[/);
   assert.match(mainSource, /"generic_name"/);
   assert.match(mainSource, /"abbreviated_product_name"/);
