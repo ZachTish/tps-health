@@ -128,6 +128,31 @@ const USDA_RATE_LIMIT_FALLBACK_MS = 60 * 60 * 1000;
 const USDA_RATE_LIMIT_MAX_MS = 24 * 60 * 60 * 1000;
 const OPEN_FOOD_FACTS_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const OPEN_FOOD_FACTS_SEARCH_CACHE_MAX_ENTRIES = 100;
+const OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE = 40;
+const OPEN_FOOD_FACTS_RATE_LIMIT_FALLBACK_MS = 60 * 1000;
+const OPEN_FOOD_FACTS_RATE_LIMIT_MAX_MS = 60 * 60 * 1000;
+const OPEN_FOOD_FACTS_SEARCH_FIELDS = [
+  "code",
+  "product_name",
+  "product_name_en",
+  "generic_name",
+  "generic_name_en",
+  "abbreviated_product_name",
+  "abbreviated_product_name_en",
+  "brands",
+  "brands_tags",
+  "categories",
+  "categories_tags",
+  "stores",
+  "stores_tags",
+  "serving_quantity",
+  "serving_quantity_unit",
+  "serving_size",
+  "nutriments",
+  "image_small_url",
+  "image_thumb_url",
+  "ingredients_text",
+].join(",");
 const FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100;
 const BARCODE_IMAGE_MAX_DIMENSION = 1600;
 const BARCODE_LIVE_SCAN_INTERVAL_MS = 120;
@@ -242,15 +267,25 @@ function responseHeader(headers: Record<string, string> | undefined, name: strin
 }
 
 export function retryAfterMs(headers: Record<string, string> | undefined, now = Date.now()): number {
+  return boundedRetryAfterMs(headers, USDA_RATE_LIMIT_FALLBACK_MS, USDA_RATE_LIMIT_MAX_MS, now);
+}
+
+function boundedRetryAfterMs(headers: Record<string, string> | undefined, fallbackMs: number, maxMs: number, now = Date.now()): number {
   const value = responseHeader(headers, "retry-after");
-  if (!value) return USDA_RATE_LIMIT_FALLBACK_MS;
+  if (!value) return fallbackMs;
   const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds > 0) return Math.min(USDA_RATE_LIMIT_MAX_MS, Math.max(1000, Math.round(seconds * 1000)));
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(maxMs, Math.max(1000, Math.round(seconds * 1000)));
   const retryAt = Date.parse(value);
   const delayMs = retryAt - now;
   return Number.isFinite(delayMs) && delayMs > 0
-    ? Math.min(USDA_RATE_LIMIT_MAX_MS, Math.max(1000, delayMs))
-    : USDA_RATE_LIMIT_FALLBACK_MS;
+    ? Math.min(maxMs, Math.max(1000, delayMs))
+    : fallbackMs;
+}
+
+class OpenFoodFactsRateLimitError extends Error {
+  constructor(readonly delayMs: number) {
+    super("Open Food Facts search rate limited");
+  }
 }
 
 function usdaCredentialIdentity(reference: string, apiKey: string): string {
@@ -265,8 +300,8 @@ function usdaCredentialIdentity(reference: string, apiKey: string): string {
   return `secret:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}:${value.length}`;
 }
 
-function usdaSearchCacheKey(query: string, dataTypes: string[], pageSize: number, credentialIdentity: string): string {
-  return [normalizeLookup(query), [...dataTypes].map((value) => value.trim()).filter(Boolean).sort().join(","), pageSize, credentialIdentity].join("|");
+function usdaSearchCacheKey(query: string, dataTypes: string[], pageSize: number, credentialIdentity: string, requireAllWords: boolean): string {
+  return [normalizeLookup(query), [...dataTypes].map((value) => value.trim()).filter(Boolean).sort().join(","), pageSize, requireAllWords ? "all" : "any", credentialIdentity].join("|");
 }
 
 export function initialFoodLogConsumedDateInput(dateContext: Pick<FoodLogDateContext, "dateIso" | "isToday"> | null | undefined): string {
@@ -328,6 +363,7 @@ export default class TPSHealthPlugin extends Plugin {
   private usdaRequestQueue: Promise<void> = Promise.resolve();
   private openFoodFactsSearchCache = new Map<string, FoodItemsCacheEntry>();
   private openFoodFactsSearchInFlight = new Map<string, Promise<FoodItem[]>>();
+  private openFoodFactsRateLimitedUntil = 0;
   private barcodeResultCache = new Map<string, BarcodeResultCacheEntry>();
   private barcodeLookupInFlight = new Map<string, Promise<FoodItem | null>>();
 
@@ -2351,12 +2387,13 @@ export default class TPSHealthPlugin extends Plugin {
     new Notice(`Created ${type}`);
   }
 
-  async createFoodNoteFromItem(item: FoodItem, type: FoodNoteType = "food"): Promise<FoodItem> {
+  async createFoodNoteFromItem(item: FoodItem, type: FoodNoteType = "food", replaceAliases = false): Promise<FoodItem> {
     const folder = isRecipeLikeFoodType(type) ? this.settings.recipesFolder : this.settings.foodsFolder;
     await this.ensureFolder(folder);
     const path = await this.uniquePath(`${folder}/${sanitizeFileName(item.name)}.md`);
     const tag = isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag;
     const normalizedItem = this.prepareFoodNoteItem(item, type);
+    if (replaceAliases) normalizedItem.aliases = aliasesFromFrontmatter(item.aliases);
     const template = type === "food" ? await this.readFoodTemplate() : "";
     const body = template
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
@@ -2374,7 +2411,7 @@ export default class TPSHealthPlugin extends Plugin {
       `kind: ${type}`,
       `name: "${item.name.replace(/"/g, '\\"')}"`,
       item.brand ? `brand: "${item.brand.replace(/"/g, '\\"')}"` : "",
-      yamlStringList("aliases", foodAliasesForItem(item)),
+      yamlStringList("aliases", aliasesFromFrontmatter(item.aliases) || []),
       item.barcode ? `barcode: "${item.barcode}"` : "",
       item.imageUrl ? `imageUrl: "${item.imageUrl.replace(/"/g, '\\"')}"` : "",
       item.sourceImagePath ? `sourceImagePath: "${item.sourceImagePath.replace(/"/g, '\\"')}"` : "",
@@ -2408,7 +2445,7 @@ export default class TPSHealthPlugin extends Plugin {
     const replacements: Record<string, string> = {
       name: item.name,
       brand: item.brand || "",
-      aliases: foodAliasesForItem(item).join(", "),
+      aliases: (aliasesFromFrontmatter(item.aliases) || []).join(", "),
       barcode: item.barcode || "",
       imageUrl: item.imageUrl || "",
       sourceImagePath: item.sourceImagePath || "",
@@ -2688,10 +2725,16 @@ export default class TPSHealthPlugin extends Plugin {
     return null;
   }
 
-  private async updateFoodNote(file: TFile, item: FoodItem, type: FoodNoteType): Promise<void> {
+  private async updateFoodNote(file: TFile, item: FoodItem, type: FoodNoteType, replaceAliases = false): Promise<void> {
     const normalized = this.prepareFoodNoteItem(item, type);
+    const explicitAliases = aliasesFromFrontmatter(item.aliases);
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      Object.assign(frontmatter, foodFrontmatter(normalized, type));
+      const updated = foodFrontmatter(normalized, type);
+      if (!replaceAliases) delete updated.aliases;
+      else if (explicitAliases?.length) updated.aliases = explicitAliases;
+      else delete updated.aliases;
+      Object.assign(frontmatter, updated);
+      if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
     });
     this.localFoodIndexDirty = true;
     logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name });
@@ -2822,7 +2865,7 @@ export default class TPSHealthPlugin extends Plugin {
       const usdaSearch = usdaSearchActive
         ? this.withTimeout(
           this.searchUsdaFoods(query, providerBrandedSearch, () => usdaSearchActive && shouldContinue()),
-          1500,
+          3000,
           [],
           { scope: "FoodSearch", event: "usda", data: { query, branded: providerBrandedSearch } },
           () => { usdaSearchActive = false; },
@@ -2971,10 +3014,11 @@ export default class TPSHealthPlugin extends Plugin {
       source: "manual",
       confidence: input.confidence,
       recipeServings: input.recipeServings,
-    }, type);
+    }, type, Object.prototype.hasOwnProperty.call(input, "aliases"));
   }
 
   async upsertFoodFromInput(input: UpsertFoodInput): Promise<FoodItem> {
+    const replaceAliases = Object.prototype.hasOwnProperty.call(input, "aliases");
     const item = foodItemFromInput(input);
     const type = input.type || "food";
     const file = this.resolveExistingFoodFile(input.path, item);
@@ -2982,15 +3026,22 @@ export default class TPSHealthPlugin extends Plugin {
     const openReason = openRequested ? "requested" : input.openFile === false ? "openFile=false" : "not requested";
     if (!file || input.merge === false) {
       logger.flow("Food", "upsert:create", { name: item.name, requestedPath: input.path || "", merge: input.merge !== false, openRequested, openReason });
-      const created = await this.createFoodNoteFromItem(item, type);
+      const created = await this.createFoodNoteFromItem(item, type, replaceAliases);
       if (openRequested) await this.openPath(created.sourcePath);
       return created;
     }
-    await this.updateFoodNote(file, item, type);
-    const updated = this.foodFromFrontmatter(file, {
+    await this.updateFoodNote(file, item, type, replaceAliases);
+    const itemFrontmatter = foodFrontmatter(item, type);
+    const explicitAliases = aliasesFromFrontmatter(item.aliases);
+    if (!replaceAliases) delete itemFrontmatter.aliases;
+    else if (explicitAliases?.length) itemFrontmatter.aliases = explicitAliases;
+    else delete itemFrontmatter.aliases;
+    const updatedFrontmatter = {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
-      ...foodFrontmatter(item, type),
-    });
+      ...itemFrontmatter,
+    };
+    if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
+    const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
     logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, openRequested, openReason });
     if (openRequested) await this.openPath(file.path);
     return updated;
@@ -3350,7 +3401,8 @@ export default class TPSHealthPlugin extends Plugin {
   private async searchOpenFoodFacts(query: string): Promise<FoodItem[]> {
     if (!query.trim()) return [];
     const normalized = normalizeLookup(query);
-    const providerQuery = foodSearchCorrectedQuery(normalized) || normalized;
+    const providerQuery = openFoodFactsProviderQuery(normalized);
+    const legacyProviderQuery = foodSearchProviderQuery(normalized);
     const cacheKey = providerQuery;
     const cached = this.openFoodFactsSearchCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -3363,12 +3415,17 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("FoodSearch", "open-food-facts:join-in-flight", { query });
       return existing;
     }
+    const rateLimitRemainingMs = Math.max(0, this.openFoodFactsRateLimitedUntil - Date.now());
+    if (rateLimitRemainingMs) {
+      logger.flowWarn("FoodSearch", "open-food-facts:rate-limit-skip", { retryAfterMs: rateLimitRemainingMs });
+      return [];
+    }
     const request = (async () => {
       try {
-        const primary = await this.searchOpenFoodFactsRoute(providerQuery, "search", () => this.searchOpenFoodFactsSearch(providerQuery));
-        const fallback = primary.items.length
+        const primary = await this.searchOpenFoodFactsRoute(providerQuery, "search", () => this.searchOpenFoodFactsSearch(providerQuery, normalized));
+        const fallback = primary.items.length || primary.rateLimited
           ? null
-          : await this.searchOpenFoodFactsRoute(providerQuery, "legacy", () => this.searchOpenFoodFactsLegacySearch(providerQuery));
+          : await this.searchOpenFoodFactsRoute(legacyProviderQuery, "legacy", () => this.searchOpenFoodFactsLegacySearch(legacyProviderQuery, normalized));
         const items = dedupeFoods([...primary.items, ...(fallback?.items || [])]);
         const allAttemptedRoutesSucceeded = primary.succeeded && (!fallback || fallback.succeeded);
         if (!items.length && !allAttemptedRoutesSucceeded) {
@@ -3407,56 +3464,72 @@ export default class TPSHealthPlugin extends Plugin {
     query: string,
     route: "search" | "legacy",
     search: () => Promise<FoodItem[]>,
-  ): Promise<{ items: FoodItem[]; succeeded: boolean }> {
+  ): Promise<{ items: FoodItem[]; succeeded: boolean; rateLimited: boolean }> {
     try {
       const items = await search();
       logger.flow("FoodSearch", `open-food-facts:${route}:done`, { query, returned: items.length });
-      return { items, succeeded: true };
+      return { items, succeeded: true, rateLimited: false };
     } catch (error) {
+      const rateLimited = error instanceof OpenFoodFactsRateLimitError;
       logger.flowWarn("FoodSearch", `open-food-facts:${route}:failed`, { query, error: logger.errorSummary(error) });
-      return { items: [], succeeded: false };
+      return { items: [], succeeded: false, rateLimited };
     }
   }
 
-  private async searchOpenFoodFactsSearch(query: string): Promise<FoodItem[]> {
+  private async searchOpenFoodFactsSearch(query: string, matchQuery = query): Promise<FoodItem[]> {
     const params = new URLSearchParams({
       q: query,
-      page_size: "20",
-      fields: "code,product_name,product_name_en,brands,categories,categories_tags,serving_quantity,serving_size,nutriments,image_small_url,image_thumb_url,ingredients_text",
+      boost_phrase: "true",
+      page_size: String(OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE),
+      fields: OPEN_FOOD_FACTS_SEARCH_FIELDS,
     });
     const response = await requestUrl({
       url: `https://search.openfoodfacts.org/search?${params.toString()}`,
       headers: this.foodFactsHeaders(),
+      throw: false,
     });
+    this.assertOpenFoodFactsSearchResponse(response, "search");
     const hits = Array.isArray(response.json?.hits) ? response.json.hits : [];
     return hits
-      .filter((product: any) => product.product_name || product.product_name_en)
+      .filter((product: any) => foodFactsProductName(product))
       .filter((product: any) => hasMacroData(product.nutriments))
-      .filter((product: any) => isRelevantFoodResult(query, foodFactsProductSearchFields(product)))
+      .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
       .map((product: any) => this.foodFactsSearchProductToItem(product))
       .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
   }
 
-  private async searchOpenFoodFactsLegacySearch(query: string): Promise<FoodItem[]> {
+  private async searchOpenFoodFactsLegacySearch(query: string, matchQuery = query): Promise<FoodItem[]> {
     const params = new URLSearchParams({
       search_terms: query,
       search_simple: "1",
       action: "process",
       json: "1",
-      page_size: "20",
-      fields: "code,product_name,product_name_en,brands,categories,categories_tags,serving_quantity,serving_size,nutriments,image_small_url,image_thumb_url,ingredients_text",
+      page_size: String(OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE),
+      fields: OPEN_FOOD_FACTS_SEARCH_FIELDS,
     });
     const response = await requestUrl({
       url: `https://world.openfoodfacts.org/cgi/search.pl?${params.toString()}`,
       headers: this.foodFactsHeaders(),
+      throw: false,
     });
+    this.assertOpenFoodFactsSearchResponse(response, "legacy");
     const products = Array.isArray(response.json?.products) ? response.json.products : [];
     return products
-      .filter((product: any) => product.product_name || product.product_name_en)
+      .filter((product: any) => foodFactsProductName(product))
       .filter((product: any) => hasMacroData(product.nutriments))
-      .filter((product: any) => isRelevantFoodResult(query, foodFactsProductSearchFields(product)))
+      .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
       .map((product: any) => this.foodFactsSearchProductToItem(product))
       .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
+  }
+
+  private assertOpenFoodFactsSearchResponse(response: { status: number; headers?: Record<string, string> }, route: "search" | "legacy"): void {
+    if (response.status === 429) {
+      const delayMs = boundedRetryAfterMs(response.headers, OPEN_FOOD_FACTS_RATE_LIMIT_FALLBACK_MS, OPEN_FOOD_FACTS_RATE_LIMIT_MAX_MS);
+      this.openFoodFactsRateLimitedUntil = Date.now() + delayMs;
+      logger.flowWarn("FoodSearch", `open-food-facts:${route}:rate-limited`, { retryAfterMs: delayMs });
+      throw new OpenFoodFactsRateLimitError(delayMs);
+    }
+    if (response.status < 200 || response.status >= 300) throw new Error(`Open Food Facts ${route} search returned HTTP ${response.status}`);
   }
 
   private foodFactsSearchProductToItem(product: any): FoodItem {
@@ -3464,7 +3537,7 @@ export default class TPSHealthPlugin extends Plugin {
     const serving = foodFactsServing(product);
     return normalizeFoodMetricServing({
       id: String(product.code || id("off")),
-      name: String(product.product_name || product.product_name_en),
+      name: foodFactsProductName(product),
       brand: brands ? String(brands) : undefined,
       aliases: foodFactsProductAliases(product),
       barcode: product.code ? String(product.code) : undefined,
@@ -3483,39 +3556,44 @@ export default class TPSHealthPlugin extends Plugin {
     if (!query.trim() || !shouldContinue()) return [];
     try {
       const normalizedQuery = normalizeLookup(query);
-      const providerQuery = foodSearchCorrectedQuery(normalizedQuery) || normalizedQuery;
+      const providerQuery = foodSearchProviderQuery(normalizedQuery);
       const dataTypes = includeBranded
         ? ["Foundation", "SR Legacy", "Survey (FNDDS)", "Branded"]
         : ["Foundation", "SR Legacy", "Survey (FNDDS)"];
-      const pageSize = includeBranded ? 20 : 12;
-      if (!shouldContinue()) return [];
-      const foods = await this.searchUsdaByDataTypes(providerQuery, dataTypes, pageSize, shouldContinue);
-      const items = foods
+      const pageSize = includeBranded ? 50 : 25;
+      const requireAllWords = foodSearchTokens(providerQuery).length > 1;
+      const mapFoods = (foods: any[]): FoodItem[] => dedupeUsdaSearchFoods(foods)
         .filter((food: any) => food.description)
         .map((food: any) => {
-          const nutrients = Array.isArray(food.foodNutrients) ? food.foodNutrients : [];
+          const brandName = String(food.brandName || "").trim();
+          const brandOwner = String(food.brandOwner || "").trim();
+          const brand = brandName || brandOwner || undefined;
+          const barcode = String(food.gtinUpc || "").replace(/\D/g, "") || undefined;
           return {
             id: `usda-${food.fdcId}`,
             name: titleCase(String(food.description).toLowerCase()),
-            brand: food.brandOwner ? String(food.brandOwner) : undefined,
+            brand,
+            aliases: usdaFoodAliases(food, brand),
+            barcode,
+            ingredients: food.ingredients ? String(food.ingredients) : undefined,
             servingAmount: 1,
             servingUnit: "100 g",
             source: "usda",
-            nutrition: {
-              calories: nutrientValue(nutrients, [1008, 2047, 2048]),
-              proteinG: nutrientValue(nutrients, [1003]),
-              carbsG: nutrientValue(nutrients, [1005]),
-              fatG: nutrientValue(nutrients, [1004]),
-              fiberG: nutrientValue(nutrients, [1079]),
-              sugarG: nutrientValue(nutrients, [2000]),
-              sugarAlcoholG: nutrientValue(nutrients, [1086]),
-              alcoholG: nutrientValue(nutrients, [1018]),
-              sodiumMg: nutrientValue(nutrients, [1093]),
-            },
+            nutrition: usdaFoodNutrition(food),
           } as FoodItem;
         })
-        .filter((item) => hasSearchableMacroData(item.nutrition));
-      logger.flow("FoodSearch", "usda:done", { query, providerQueryChanged: providerQuery !== normalizedQuery, branded: includeBranded, dataTypes: dataTypes.length, raw: foods.length, returned: items.length });
+        .filter((item) => hasSearchableMacroData(item.nutrition))
+        .filter((item) => isRelevantFoodResult(normalizedQuery, [item.name, item.brand, ...(item.aliases || []), item.ingredients]));
+      if (!shouldContinue()) return [];
+      let foods = await this.searchUsdaByDataTypes(providerQuery, dataTypes, pageSize, shouldContinue, requireAllWords);
+      let items = mapFoods(foods);
+      let relaxed = false;
+      if (!items.length && requireAllWords && shouldContinue()) {
+        relaxed = true;
+        foods = await this.searchUsdaByDataTypes(providerQuery, dataTypes, pageSize, shouldContinue, false);
+        items = mapFoods(foods);
+      }
+      logger.flow("FoodSearch", "usda:done", { query, providerQueryChanged: providerQuery !== normalizedQuery, branded: includeBranded, dataTypes: dataTypes.length, relaxed, raw: foods.length, returned: items.length });
       return items;
     } catch (error) {
       logger.flowWarn("FoodSearch", "usda:failed", { query, error: logger.errorSummary(error) });
@@ -3594,18 +3672,19 @@ export default class TPSHealthPlugin extends Plugin {
     return request;
   }
 
-  private async searchUsdaByDataTypes(query: string, dataType: string[], pageSize: number, shouldContinue: () => boolean = () => true): Promise<any[]> {
+  private async searchUsdaByDataTypes(
+    query: string,
+    dataType: string[],
+    pageSize: number,
+    shouldContinue: () => boolean = () => true,
+    requireAllWords = foodSearchTokens(query).length > 1,
+  ): Promise<any[]> {
     const initialCredential = this.availableUsdaCredentials()[0];
     if (!initialCredential) {
       logger.flowWarn("FoodSearch", "usda:credentials-exhausted", { credentialCount: this.settings.usdaApiKeySecrets.length });
       return [];
     }
-    const cacheKey = usdaSearchCacheKey(query, dataType, pageSize, initialCredential.identity);
-    const rateLimitRemainingMs = this.usdaRateLimitRemainingMs(initialCredential.source);
-    if (rateLimitRemainingMs) {
-      logger.flowWarn("FoodSearch", "usda:rate-limit-skip", { ...this.usdaCredentialLogData(initialCredential), retryAfterMs: rateLimitRemainingMs });
-      return [];
-    }
+    const cacheKey = usdaSearchCacheKey(query, dataType, pageSize, initialCredential.identity, requireAllWords);
     const cached = this.readUsdaCache(cacheKey);
     if (cached) {
       logger.flow("FoodSearch", "usda:cache-hit", { ...this.usdaCredentialLogData(initialCredential), dataTypes: dataType.length, pageSize, returned: cached.length });
@@ -3615,6 +3694,11 @@ export default class TPSHealthPlugin extends Plugin {
     if (existing) {
       logger.flow("FoodSearch", "usda:join-in-flight", { ...this.usdaCredentialLogData(initialCredential), dataTypes: dataType.length, pageSize });
       return existing;
+    }
+    const rateLimitRemainingMs = this.usdaRateLimitRemainingMs(initialCredential.source);
+    if (rateLimitRemainingMs) {
+      logger.flowWarn("FoodSearch", "usda:rate-limit-skip", { ...this.usdaCredentialLogData(initialCredential), retryAfterMs: rateLimitRemainingMs });
+      return [];
     }
     logger.flow("FoodSearch", "usda:queued", {
       query,
@@ -3635,16 +3719,16 @@ export default class TPSHealthPlugin extends Plugin {
           return [];
         }
         attempted.add(credential.slotIdentity);
-        const queuedRateLimitRemainingMs = this.usdaRateLimitRemainingMs(credential.source);
-        if (queuedRateLimitRemainingMs) {
-          logger.flowWarn("FoodSearch", "usda:queued-rate-limit-skip", { ...this.usdaCredentialLogData(credential), retryAfterMs: queuedRateLimitRemainingMs });
-          return [];
-        }
-        const activeCacheKey = usdaSearchCacheKey(query, dataType, pageSize, credential.identity);
+        const activeCacheKey = usdaSearchCacheKey(query, dataType, pageSize, credential.identity, requireAllWords);
         const activeCached = this.readUsdaCache(activeCacheKey);
         if (activeCached) {
           logger.flow("FoodSearch", "usda:queued-cache-hit", { ...this.usdaCredentialLogData(credential), dataTypes: dataType.length, pageSize, returned: activeCached.length });
           return activeCached;
+        }
+        const queuedRateLimitRemainingMs = this.usdaRateLimitRemainingMs(credential.source);
+        if (queuedRateLimitRemainingMs) {
+          logger.flowWarn("FoodSearch", "usda:queued-rate-limit-skip", { ...this.usdaCredentialLogData(credential), retryAfterMs: queuedRateLimitRemainingMs });
+          return [];
         }
         logger.flow("FoodSearch", "usda:request", { query, dataType, pageSize, ...this.usdaCredentialLogData(credential), attempt: attempted.size });
         const response = await requestUrl({
@@ -3656,7 +3740,7 @@ export default class TPSHealthPlugin extends Plugin {
             dataType,
             pageSize,
             pageNumber: 1,
-            requireAllWords: false,
+            requireAllWords,
           }),
           throw: false,
         });
@@ -3802,7 +3886,7 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("Barcode", "lookup-candidate:start", { barcode: maskBarcode(code) });
     try {
       const response = await requestUrl({
-        url: `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=code,product_name,brands,categories,categories_tags,serving_quantity,serving_size,nutriments,image_url,ingredients_text`,
+        url: `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=code,product_name,brands,categories,categories_tags,serving_quantity,serving_quantity_unit,serving_size,nutriments,image_url,ingredients_text`,
         headers: this.foodFactsHeaders(),
       });
       if (response.json?.status !== 1 || !response.json?.product) {
@@ -11539,6 +11623,7 @@ class CustomFoodModal extends Modal {
     this.contentEl.createEl("h2", { text: this.editPath ? `Edit ${typeLabel}` : this.type === "recipe" ? "Create recipe" : this.type === "meal" ? "Create meal" : "Create custom food" });
     let name = this.initialName || this.baseFood?.name || "";
     let brand = this.baseFood?.brand || "";
+    let aliases = (this.baseFood?.aliases || []).join(", ");
     let servingAmount = this.baseFood?.servingAmount || 1;
     let servingUnit = this.baseFood?.servingUnit || "serving";
     let recipeServings = recipeServingsForFood(this.baseFood || { id: "", name: "", source: "manual" }, this.type);
@@ -11622,6 +11707,10 @@ class CustomFoodModal extends Modal {
     };
     const formEl = this.contentEl.createDiv({ cls: "tps-health-food-editor-grid" });
     new Setting(formEl).setName("Name").addText((text) => text.setValue(name).onChange((value) => name = value.trim()));
+    new Setting(formEl)
+      .setName("Search aliases")
+      .setDesc("Comma-separated nicknames, store names, or old package names.")
+      .addText((text) => text.setPlaceholder("protein doritos, Costco pretzels").setValue(aliases).onChange((value) => aliases = value));
     if (isRecipeLikeFoodType(this.type)) {
       if (this.type === "recipe") {
         new Setting(formEl).setName("Recipe servings").setDesc("Yield from the full ingredient list.").addText((text) => text.setValue(String(recipeServings)).onChange((value) => {
@@ -11795,6 +11884,7 @@ class CustomFoodModal extends Modal {
           path: createNewVersion ? undefined : this.editPath,
           name,
           brand: brand || undefined,
+          aliases: aliasesFromFrontmatter(aliases) || [],
           imageUrl: this.baseFood?.imageUrl,
           barcode: this.baseFood?.barcode,
           ingredients: ingredientsForSave,
@@ -12529,26 +12619,138 @@ function foodFactsProductSearchFields(product: any): Array<unknown> {
   return [
     product.product_name,
     product.product_name_en,
+    product.generic_name,
+    product.generic_name_en,
+    product.abbreviated_product_name,
+    product.abbreviated_product_name_en,
     product.brands,
+    product.brands_tags,
     product.categories,
     Array.isArray(product.categories_tags) ? product.categories_tags.join(" ") : product.categories_tags,
+    product.stores,
+    product.stores_tags,
     product.ingredients_text,
   ];
 }
 
+function foodFactsProductName(product: any): string {
+  for (const value of [product?.product_name, product?.product_name_en, product?.generic_name, product?.generic_name_en]) {
+    const name = String(value || "").trim();
+    if (name) return name;
+  }
+  return "";
+}
+
 function foodFactsProductAliases(product: any): string[] | undefined {
-  const aliases = new Set<string>();
-  for (const field of [product.categories, product.categories_tags, product.ingredients_text]) {
-    const values = Array.isArray(field) ? field : String(field || "").split(",");
+  const aliases = new Map<string, string>();
+  const primaryName = normalizeLookup(foodFactsProductName(product));
+  const primaryBrand = normalizeLookup(Array.isArray(product.brands) ? product.brands.join(" ") : String(product.brands || ""));
+  const fields = [
+    product.product_name,
+    product.product_name_en,
+    product.generic_name,
+    product.generic_name_en,
+    product.abbreviated_product_name,
+    product.abbreviated_product_name_en,
+    product.brands_tags,
+    product.stores,
+    product.stores_tags,
+    product.categories,
+    product.categories_tags,
+  ];
+  for (const field of fields) {
+    const values = Array.isArray(field) ? field : String(field || "").split(/[,;|]/);
     for (const value of values) {
-      const normalized = String(value || "")
+      const alias = String(value || "")
         .replace(/^en:/i, "")
         .replace(/-/g, " ")
+        .replace(/\s+/g, " ")
         .trim();
-      if (normalized && normalized.length <= 80) aliases.add(normalized);
+      const normalized = normalizeLookup(alias);
+      if (!normalized || alias.length > 80 || normalized === primaryName || normalized === primaryBrand) continue;
+      if (!aliases.has(normalized)) aliases.set(normalized, alias);
+      if (aliases.size >= 24) break;
+    }
+    if (aliases.size >= 24) break;
+  }
+  return aliases.size ? Array.from(aliases.values()) : undefined;
+}
+
+function dedupeUsdaSearchFoods(foods: any[]): any[] {
+  const orderedKeys: string[] = [];
+  const byKey = new Map<string, any>();
+  const duplicateKeys = new Set<string>();
+  for (const food of foods) {
+    const barcode = openFoodFactsBarcodeCacheKey(String(food?.gtinUpc || ""));
+    const key = barcode ? `barcode:${barcode}` : `fdc:${String(food?.fdcId || orderedKeys.length)}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      orderedKeys.push(key);
+      byKey.set(key, food);
+      continue;
+    }
+    duplicateKeys.add(key);
+    const existingPublishedValue = Date.parse(String(existing.publishedDate || existing.publicationDate || ""));
+    const candidatePublishedValue = Date.parse(String(food?.publishedDate || food?.publicationDate || ""));
+    const existingPublished = Number.isFinite(existingPublishedValue) ? existingPublishedValue : 0;
+    const candidatePublished = Number.isFinite(candidatePublishedValue) ? candidatePublishedValue : 0;
+    const existingId = Number(existing.fdcId) || 0;
+    const candidateId = Number(food?.fdcId) || 0;
+    if (candidatePublished > existingPublished
+      || (candidatePublished === existingPublished && candidateId > existingId)) {
+      byKey.set(key, food);
     }
   }
-  return aliases.size ? Array.from(aliases) : undefined;
+  return orderedKeys
+    .map((key) => ({ key, food: byKey.get(key) }))
+    .filter(({ key, food }) => food && (!duplicateKeys.has(key) || hasUsdaCoreMacroFields(food)))
+    .map(({ food }) => food);
+}
+
+function hasUsdaCoreMacroFields(food: any): boolean {
+  const nutrition = usdaFoodNutrition(food);
+  return [nutrition.proteinG, nutrition.carbsG, nutrition.fatG].every((value) => numberOrUndefined(value) != null);
+}
+
+function usdaFoodNutrition(food: any): Nutrition {
+  const nutrients = Array.isArray(food?.foodNutrients) ? food.foodNutrients : [];
+  return {
+    calories: nutrientValue(nutrients, [1008, 2047, 2048]),
+    proteinG: nutrientValue(nutrients, [1003]),
+    carbsG: nutrientValue(nutrients, [1005]),
+    fatG: nutrientValue(nutrients, [1004]),
+    fiberG: nutrientValue(nutrients, [1079]),
+    sugarG: nutrientValue(nutrients, [2000]),
+    sugarAlcoholG: nutrientValue(nutrients, [1086]),
+    alcoholG: nutrientValue(nutrients, [1018]),
+    sodiumMg: nutrientValue(nutrients, [1093]),
+  };
+}
+
+function usdaFoodAliases(food: any, primaryBrand: string | undefined): string[] | undefined {
+  const aliases = new Map<string, string>();
+  const primaryName = normalizeLookup(String(food?.description || ""));
+  const primaryBrandKey = normalizeLookup(primaryBrand || "");
+  const add = (value: unknown) => {
+    const alias = String(value || "").replace(/\s+/g, " ").trim();
+    const normalized = normalizeLookup(alias);
+    if (!normalized || alias.length > 100 || normalized === primaryName || normalized === primaryBrandKey || aliases.has(normalized)) return;
+    aliases.set(normalized, alias);
+  };
+  add(food?.brandName);
+  add(food?.brandOwner);
+  const category = typeof food?.foodCategory === "object" ? food.foodCategory?.description : food?.foodCategory;
+  add(category);
+  const alternateFields = [food?.additionalDescriptions, food?.commonNames];
+  for (const field of alternateFields) {
+    const values = Array.isArray(field) ? field : String(field || "").split(/[;|]/);
+    for (const value of values) {
+      add(value);
+      if (aliases.size >= 16) break;
+    }
+    if (aliases.size >= 16) break;
+  }
+  return aliases.size ? Array.from(aliases.values()) : undefined;
 }
 
 function foodAliasesForItem(item: FoodItem): string[] {
@@ -12864,61 +13066,86 @@ function isRelevantFoodResult(query: string, fields: Array<unknown>): boolean {
   const tokens = foodSearchTokens(query);
   if (!tokens.length) return true;
   const haystack = normalizeLookup(fields.filter(Boolean).join(" "));
-  const haystackTokens = new Set(haystack.split(" ").filter(Boolean).map(singularFoodSearchToken));
+  const haystackTokens = foodSearchHaystackTokens(haystack);
   return tokens.every((token) => foodSearchTokenVariants(token)
     .some((variant) => haystack.includes(variant) || haystackTokens.has(variant) || foodSearchHasFuzzyTokenMatch(variant, haystackTokens)));
 }
 
 function foodSearchTokens(query: string): string[] {
   return Array.from(new Set(normalizeLookup(query).split(" ")
-    .map(singularFoodSearchToken)
     .filter((token) => token.length > 1 && !FOOD_SEARCH_CONNECTOR_WORDS.has(token))));
 }
 
-function singularFoodSearchToken(token: string): string {
-  if (token === "doritos") return "dorito";
-  return singularUnit(token);
+function foodSearchHaystackTokens(value: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const token of value.split(" ").filter(Boolean)) {
+    for (const variant of foodSearchTokenVariants(token)) tokens.add(variant);
+  }
+  return tokens;
 }
 
-function foodSearchQueryVariants(query: string): string[] {
+interface FoodSearchProviderQueryParts {
+  query: string;
+  brand?: string;
+  productTokens: string[];
+}
+
+function foodSearchProviderQueryParts(query: string): FoodSearchProviderQueryParts {
   const normalized = normalizeLookup(query);
-  const corrected = foodSearchCorrectedQuery(normalized);
-  const variants = new Set<string>([query.trim(), normalized]);
-  if (corrected && corrected !== normalized) variants.add(corrected);
-  const tokens = foodSearchTokens(corrected || normalized);
-  if (tokens.length > 1) {
-    variants.add(tokens.join(" "));
-    const brandFirst = likelyBrandFirstFoodQuery(tokens);
-    if (brandFirst) variants.add(brandFirst);
-    for (const brand of COMMON_FOOD_BRANDS) {
-      const brandTokens = brand.split(" ");
-      if (brandTokens.every((token) => tokens.includes(token))) {
-        const productTokens = tokens.filter((token) => !brandTokens.includes(token));
-        if (productTokens.length) {
-          variants.add(`${brand} ${productTokens.join(" ")}`.trim());
-          variants.add(`${productTokens.join(" ")} ${brand}`.trim());
-        }
+  const corrected = foodSearchCorrectedQuery(normalized) || normalized;
+  const tokens = corrected.split(" ").filter(Boolean);
+  if (!tokens.length) return { query: corrected, productTokens: [] };
+  const brandMatch = knownFoodBrandMatch(tokens);
+  if (!brandMatch) return { query: corrected, productTokens: tokens };
+  const productTokens = tokens.filter((_token, index) => !brandMatch.matchedIndexes.has(index));
+  return {
+    query: [brandMatch.brand, ...productTokens].join(" ").trim(),
+    brand: brandMatch.brand,
+    productTokens,
+  };
+}
+
+function foodSearchProviderQuery(query: string): string {
+  return foodSearchProviderQueryParts(query).query;
+}
+
+function openFoodFactsProviderQuery(query: string): string {
+  const parts = foodSearchProviderQueryParts(query);
+  if (!parts.brand) return parts.query;
+  return [`brands:"${parts.brand}"`, ...parts.productTokens].join(" ").trim();
+}
+
+function knownFoodBrandMatch(tokens: string[]): { brand: string; matchedIndexes: Set<number> } | null {
+  let best: { brand: string; matchedIndexes: Set<number>; tokenCount: number; fuzzyCount: number } | null = null;
+  for (const brand of COMMON_FOOD_BRANDS) {
+    const brandTokens = normalizeLookup(brand).split(" ").filter(Boolean);
+    if (!brandTokens.length || brandTokens.length > tokens.length) continue;
+    const matchedIndexes = new Set<number>();
+    let fuzzyCount = 0;
+    let matched = true;
+    for (const brandToken of brandTokens) {
+      let index = tokens.findIndex((token, candidateIndex) => !matchedIndexes.has(candidateIndex) && token === brandToken);
+      if (index < 0 && brandToken.length >= 6) {
+        index = tokens.findIndex((token, candidateIndex) => !matchedIndexes.has(candidateIndex)
+          && token.length >= 6
+          && foodSearchEditDistance(token, brandToken, 1) <= 1);
+        if (index >= 0) fuzzyCount++;
       }
+      if (index < 0) {
+        matched = false;
+        break;
+      }
+      matchedIndexes.add(index);
+    }
+    if (!matched) continue;
+    if (!best
+      || fuzzyCount < best.fuzzyCount
+      || (fuzzyCount === best.fuzzyCount && brandTokens.length > best.tokenCount)
+      || (fuzzyCount === best.fuzzyCount && brandTokens.length === best.tokenCount && brand.length > best.brand.length)) {
+      best = { brand, matchedIndexes, tokenCount: brandTokens.length, fuzzyCount };
     }
   }
-  if (/\bprotein\b/.test(normalized) && /\b(doritos?|nacho|chips?)\b/.test(normalized)) {
-    variants.add("quest protein chips nacho cheese");
-    variants.add("quest tortilla style protein chips nacho");
-    variants.add("protein chips nacho");
-  }
-  if (/\bprotein\b/.test(normalized) && /\bchips?\b/.test(normalized)) {
-    variants.add("quest protein chips");
-    variants.add("wilde protein chips");
-  }
-  return Array.from(variants).filter(Boolean);
-}
-
-function likelyBrandFirstFoodQuery(tokens: string[]): string {
-  for (let size = Math.min(3, tokens.length - 1); size >= 1; size -= 1) {
-    const prefix = tokens.slice(0, size).join(" ");
-    if (COMMON_FOOD_BRANDS.has(prefix)) return `${tokens.slice(size).join(" ")} ${prefix}`.trim();
-  }
-  return "";
+  return best ? { brand: best.brand, matchedIndexes: best.matchedIndexes } : null;
 }
 
 function foodSearchCorrectedQuery(normalizedQuery: string): string {
@@ -12932,6 +13159,18 @@ function foodSearchTokenVariants(token: string): string[] {
   const variants = new Set<string>([token]);
   const corrected = FOOD_SEARCH_TOKEN_CORRECTIONS[token];
   if (corrected) variants.add(corrected);
+  if (token === "breyer") variants.add("breyers");
+  if (token === "breyers") variants.add("breyer");
+  for (const value of Array.from(variants)) {
+    const servingSingular = singularUnit(value);
+    if (servingSingular !== value) variants.add(servingSingular);
+    if (value.endsWith("ies") && value.length > 4) {
+      variants.add(`${value.slice(0, -3)}y`);
+      variants.add(value.slice(0, -1));
+    } else if (value.endsWith("s") && value.length > 4 && !/(ss|us|is)$/.test(value)) {
+      variants.add(value.slice(0, -1));
+    }
+  }
   return Array.from(variants);
 }
 
@@ -12956,28 +13195,29 @@ function foodSearchEditDistanceLimit(token: string): number {
 function foodSearchEditDistance(left: string, right: string, maxDistance: number): number {
   if (left === right) return 0;
   if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+  let previousPrevious: number[] | null = null;
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   for (let i = 1; i <= left.length; i += 1) {
     const current = [i];
-    let rowMin = current[0];
     for (let j = 1; j <= right.length; j += 1) {
       const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-      const value = Math.min(
+      let value = Math.min(
         previous[j] + 1,
         current[j - 1] + 1,
         previous[j - 1] + cost,
       );
+      if (previousPrevious && i > 1 && j > 1 && left[i - 1] === right[j - 2] && left[i - 2] === right[j - 1]) {
+        value = Math.min(value, previousPrevious[j - 2] + 1);
+      }
       current[j] = value;
-      rowMin = Math.min(rowMin, value);
     }
-    if (rowMin > maxDistance) return maxDistance + 1;
+    previousPrevious = previous;
     previous = current;
   }
   return previous[right.length];
 }
 
 const FOOD_SEARCH_TOKEN_CORRECTIONS: Record<string, string> = {
-  breyers: "breyer",
   carmel: "caramel",
   caramal: "caramel",
   carmell: "caramel",
@@ -13026,7 +13266,6 @@ const COMMON_FOOD_BRANDS = new Set([
   "lays",
   "doritos",
   "halo top",
-  "breyer",
   "breyers",
 ]);
 
@@ -13135,15 +13374,15 @@ function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = n
   const normalizedBrand = normalizeLookup(item.brand || "");
   const normalizedAliases = normalizeLookup(foodAliasesForItem(item).join(" "));
   const haystack = [normalizedName, normalizedBrand, normalizedAliases].filter(Boolean).join(" ");
-  const haystackTokens = new Set(haystack.split(" ").filter(Boolean).map(singularFoodSearchToken));
+  const haystackTokens = foodSearchHaystackTokens(haystack);
   const tokens = foodSearchTokens(normalizedQuery);
   const correctedQuery = foodSearchCorrectedQuery(normalizedQuery);
   const scoreQueryVariants = correctedQuery && correctedQuery !== normalizedQuery
     ? [correctedQuery, normalizedQuery].filter(Boolean)
     : [normalizedQuery].filter(Boolean);
   const tokenMatch = foodSearchTokenMatchScore(tokens, haystack, haystackTokens);
-  const exactNameTokenMatch = foodSearchTokenMatchScore(tokens, normalizedName, new Set(normalizedName.split(" ").filter(Boolean).map(singularFoodSearchToken)));
-  const brandTokenMatch = normalizedBrand ? foodSearchTokenMatchScore(tokens, normalizedBrand, new Set(normalizedBrand.split(" ").filter(Boolean).map(singularFoodSearchToken))) : { exact: 0, fuzzy: 0, total: 0 };
+  const exactNameTokenMatch = foodSearchTokenMatchScore(tokens, normalizedName, foodSearchHaystackTokens(normalizedName));
+  const brandTokenMatch = normalizedBrand ? foodSearchTokenMatchScore(tokens, normalizedBrand, foodSearchHaystackTokens(normalizedBrand)) : { exact: 0, fuzzy: 0, total: 0 };
   const usage = foodUsageForItem(item, usageStats);
   if (scoreQueryVariants.some((variant) => normalizedName === variant)) score += 80;
   if (scoreQueryVariants.some((variant) => normalizedName.includes(variant))) score += 40;
@@ -13200,7 +13439,7 @@ function isUnloggedBroadExternalFoodResult(item: FoodItem, tokens: string[], usa
 
 function foodSearchItemTokenMatch(item: FoodItem, tokens: string[]): { exact: number; fuzzy: number; total: number } {
   const haystack = normalizeLookup(foodSearchFields(item).join(" "));
-  const haystackTokens = new Set(haystack.split(" ").filter(Boolean).map(singularFoodSearchToken));
+  const haystackTokens = foodSearchHaystackTokens(haystack);
   return foodSearchTokenMatchScore(tokens, haystack, haystackTokens);
 }
 
@@ -13248,11 +13487,13 @@ function sodiumGramsToMg(value: unknown, multiplier = 1): number | undefined {
 
 function foodFactsServing(product: any): { unit: string; grams?: number; ml?: number } {
   const servingSize = String(product?.serving_size || "").trim();
-  const servingQuantity = saneMetricServingAmount(product?.serving_quantity, "g");
+  const servingQuantityUnit = normalizeLookup(String(product?.serving_quantity_unit || ""));
+  const servingQuantityGrams = servingQuantityUnit === "ml" ? undefined : saneMetricServingAmount(product?.serving_quantity, "g");
+  const servingQuantityMl = servingQuantityUnit === "ml" ? saneMetricServingAmount(product?.serving_quantity, "ml") : undefined;
   const metric = parseMetricServing(1, servingSize);
-  const grams = metric?.unit === "g" ? metric.amount : servingQuantity;
-  const inferredDrinkServing = !metric && servingQuantity == null ? inferredFoodFactsDrinkServing(product) : null;
-  const ml = metric?.unit === "ml" ? metric.amount : inferredDrinkServing?.ml;
+  const grams = metric ? (metric.unit === "g" ? metric.amount : undefined) : servingQuantityGrams;
+  const inferredDrinkServing = !metric && servingQuantityGrams == null && servingQuantityMl == null ? inferredFoodFactsDrinkServing(product) : null;
+  const ml = metric ? (metric.unit === "ml" ? metric.amount : undefined) : servingQuantityMl ?? inferredDrinkServing?.ml;
   const unit = servingUnitFromFoodFactsServingSize(servingSize) || inferredDrinkServing?.unit || "serving";
   return { unit, grams, ml };
 }
@@ -13435,7 +13676,8 @@ function dedupeFoods(items: FoodItem[]): FoodItem[] {
 }
 
 function foodDedupeKey(item: FoodItem): string {
-  if (item.barcode) return `barcode:${normalizeLookup(item.barcode)}`;
+  const barcode = item.barcode ? openFoodFactsBarcodeCacheKey(item.barcode) : "";
+  if (barcode) return `barcode:${barcode}`;
   const name = normalizeLookup(item.name);
   const brand = normalizeLookup(item.brand || "");
   return brand ? `name-brand:${name}|${brand}` : `name:${name}`;
@@ -13757,18 +13999,26 @@ export function barcodeCandidates(raw: string): string[] {
   const digits = raw.replace(/\D/g, "");
   const candidates = new Set<string>();
   if (digits) candidates.add(digits);
+  const canonical = openFoodFactsBarcodeCacheKey(digits);
+  if (canonical) candidates.add(canonical);
   if (digits.length === 7) candidates.add(`0${digits}`);
   if (digits.length === 8) {
     const expanded = expandUpce(digits);
     if (expanded) candidates.add(expanded);
   }
-  if (digits.length === 13 && digits.startsWith("0")) candidates.add(digits.slice(1));
+  if (digits.length === 13) {
+    for (let length = 12; length >= 9; length -= 1) {
+      const removedPrefix = digits.slice(0, 13 - length);
+      if (!/^0+$/.test(removedPrefix)) break;
+      candidates.add(digits.slice(13 - length));
+    }
+  }
   return [...candidates];
 }
 
 function openFoodFactsBarcodeCacheKey(raw: string): string {
   const digits = raw.replace(/\D/g, "");
-  return digits.length === 13 && digits.startsWith("0") ? digits.slice(1) : digits;
+  return digits.length >= 9 && digits.length <= 12 ? digits.padStart(13, "0") : digits;
 }
 
 function expandUpce(upce: string): string | null {

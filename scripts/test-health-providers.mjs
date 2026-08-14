@@ -333,11 +333,13 @@ test("selected food tray edit action keeps the vault-backed pending draft valid"
 
 test("food search ranks messy out-of-order branded queries and gram servings", () => {
   assert.match(mainSource, /function foodSearchTokenMatchScore/);
-  assert.match(mainSource, /likelyBrandFirstFoodQuery\(tokens\)/);
+  assert.match(mainSource, /function foodSearchProviderQueryParts\(query: string\): FoodSearchProviderQueryParts/);
+  assert.match(mainSource, /const brandMatch = knownFoodBrandMatch\(tokens\)/);
+  assert.match(mainSource, /function openFoodFactsProviderQuery\(query: string\): string/);
   assert.match(mainSource, /const COMMON_FOOD_BRANDS = new Set\(\[/);
   assert.match(mainSource, /"great value"/);
-  assert.match(mainSource, /breyers: "breyer"/);
-  assert.match(mainSource, /"breyer"/);
+  assert.match(mainSource, /if \(token === "breyers"\) variants\.add\("breyer"\)/);
+  assert.match(mainSource, /"breyers"/);
   assert.match(mainSource, /score \+= tokenMatch\.exact \* 16 \+ tokenMatch\.fuzzy \* 7/);
   assert.match(mainSource, /exactNameTokenMatch\.total \+ brandTokenMatch\.total >= tokens\.length/);
   assert.match(mainSource, /item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
@@ -641,6 +643,45 @@ test("food search matches tokens across name brand aliases notes and ingredients
     "---",
     "",
   ].join("\n"));
+  fake.files.set("Health/Foods/Mixed Berry Yogurt.md", [
+    "---",
+    "kind: food",
+    "name: \"Mixed Berry Yogurt\"",
+    "servingAmount: 1",
+    "servingUnit: cup",
+    "calories: 120",
+    "proteinG: 12",
+    "carbsG: 14",
+    "fatG: 2",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Cookie Protein Bite.md", [
+    "---",
+    "kind: food",
+    "name: \"Cookie Protein Bite\"",
+    "servingAmount: 1",
+    "servingUnit: piece",
+    "calories: 90",
+    "proteinG: 6",
+    "carbsG: 8",
+    "fatG: 4",
+    "---",
+    "",
+  ].join("\n"));
+  fake.files.set("Health/Foods/Veggies Snack.md", [
+    "---",
+    "kind: food",
+    "name: \"Veggies Snack\"",
+    "servingAmount: 1",
+    "servingUnit: bag",
+    "calories: 130",
+    "proteinG: 3",
+    "carbsG: 20",
+    "fatG: 5",
+    "---",
+    "",
+  ].join("\n"));
 
   const crossFieldResults = await plugin.searchFoods("Barebells peanut butter");
   assert.ok(crossFieldResults.some((item) => item.name === "Peanut Butter Protein Bar"));
@@ -650,8 +691,17 @@ test("food search matches tokens across name brand aliases notes and ingredients
   assert.ok(fuzzyResults.some((item) => item.name === "Peanut Butter Protein Bar"));
   assert.ok(fuzzyResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
 
+  const reorderedTranspositionResults = await plugin.searchFoods("butter peantu Barebells");
+  assert.ok(reorderedTranspositionResults.some((item) => item.name === "Peanut Butter Protein Bar"));
+  assert.ok(reorderedTranspositionResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
+
   const ingredientResults = await plugin.searchFoods("barebells strawberry");
   assert.ok(ingredientResults.some((item) => item.name === "Peanut Butter and Jelly Protein Bar"));
+
+  const pluralResults = await plugin.searchLocalFoods("berries");
+  assert.ok(pluralResults.some((item) => item.name === "Mixed Berry Yogurt"));
+  assert.ok((await plugin.searchLocalFoods("cookies protein")).some((item) => item.name === "Cookie Protein Bite"));
+  assert.ok((await plugin.searchLocalFoods("veggie snack")).some((item) => item.name === "Veggies Snack"));
 });
 
 test("food search keeps specific common foods available after provider filtering", async () => {
@@ -1209,6 +1259,7 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     product_name: "Acme Protein Bar",
     brands: "Acme",
     serving_quantity: 50,
+    serving_quantity_unit: "g",
     serving_size: "50 g",
     nutriments: {
       "energy-kcal_100g": 400,
@@ -1304,9 +1355,183 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     const retryAfterPartialFailure = await plugin.searchOpenFoodFacts("partial outage probe");
     assert.equal(retryAfterPartialFailure[0]?.name, "Partial Outage Probe");
     assert.equal(requests.length, partialFailureRequestCount + 1, "a partially failed empty search must remain retryable");
+
+    globalThis.__TPSHealthTestRequestUrl = async (options) => {
+      requests.push(options);
+      return { status: 429, headers: { "Retry-After": "120" }, json: {} };
+    };
+    const beforeRateLimit = requests.length;
+    assert.deepEqual(await plugin.searchOpenFoodFacts("rate limited probe"), []);
+    assert.equal(requests.length, beforeRateLimit + 1, "a 429 must not trigger a legacy search request");
+    assert.equal((await plugin.searchOpenFoodFacts("acme protein bar"))[0]?.name, "Acme Protein Bar");
+    assert.equal(requests.length, beforeRateLimit + 1, "the shared circuit must still serve a valid cached search");
+    assert.deepEqual(await plugin.searchOpenFoodFacts("second rate limited probe"), []);
+    assert.equal(requests.length, beforeRateLimit + 1, "the shared OFF search circuit should suppress requests during Retry-After");
   } finally {
     delete globalThis.__TPSHealthTestRequestUrl;
   }
+});
+
+test("Open Food Facts preserves alternate product identity fields as searchable aliases", async () => {
+  installDeterministicBrowserGlobals();
+  const deterministicSetTimeout = globalThis.window.setTimeout;
+  const deterministicClearTimeout = globalThis.window.clearTimeout;
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    openFoodFactsUserAgent: USER_AGENT,
+  };
+  const requests = [];
+  const wafer = {
+    code: "012345678929",
+    product_name: "Gaufrette cacao",
+    product_name_en: "English Cocoa Wafer",
+    generic_name: "Chocolate wafer snack",
+    abbreviated_product_name: "Cocoa wafer",
+    brands: ["Acme Foods"],
+    brands_tags: ["acme-foods"],
+    categories_tags: ["en:wafers"],
+    stores_tags: ["target"],
+    serving_quantity: 40,
+    serving_quantity_unit: "g",
+    serving_size: "40 g",
+    ingredients_text: "wheat flour, cocoa",
+    nutriments: {
+      "energy-kcal_100g": 450,
+      proteins_100g: 6,
+      carbohydrates_100g: 70,
+      fat_100g: 16,
+    },
+  };
+  const juice = {
+    code: "012345678936",
+    product_name: "Test Apple Juice",
+    serving_quantity: 250,
+    serving_quantity_unit: "ml",
+    nutriments: {
+      "energy-kcal_100g": 40,
+      proteins_100g: 0,
+      carbohydrates_100g: 10,
+      fat_100g: 0,
+    },
+  };
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        hits: [wafer, juice],
+      },
+    };
+  };
+  try {
+    plugin.searchUsdaFoods = async () => [];
+    plugin.searchCustomFoods = async () => [];
+    plugin.getLoggedFoodStats = async () => new Map();
+    globalThis.window.setTimeout = globalThis.setTimeout;
+    globalThis.window.clearTimeout = globalThis.clearTimeout;
+    const results = await plugin.searchFoods("target english wafer");
+    assert.equal(results[0]?.name, "Gaufrette cacao");
+    assert.ok(results[0]?.aliases?.some((alias) => alias === "English Cocoa Wafer"));
+    assert.ok(results[0]?.aliases?.some((alias) => alias === "Chocolate wafer snack"));
+    assert.ok(results[0]?.aliases?.some((alias) => alias === "target"));
+    assert.equal(results[0]?.aliases?.some((alias) => alias === "wheat flour"), false, "ingredients are searchable context, not identity aliases");
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /page_size=40/);
+    assert.match(requests[0].url, /generic_name/);
+    assert.match(requests[0].url, /abbreviated_product_name/);
+    assert.match(requests[0].url, /stores_tags/);
+    assert.match(requests[0].url, /serving_quantity_unit/);
+
+    const juiceResults = await plugin.searchOpenFoodFacts("test juice");
+    assert.equal(juiceResults[0]?.name, "Test Apple Juice");
+    assert.equal(juiceResults[0]?.servingGrams, undefined);
+    assert.equal(juiceResults[0]?.servingMl, 250);
+    assert.equal(juiceResults[0]?.nutrition?.calories, 100);
+  } finally {
+    globalThis.window.setTimeout = deterministicSetTimeout;
+    globalThis.window.clearTimeout = deterministicClearTimeout;
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("provider brand canonicalization is typo-tolerant for long brands, order-independent, and safe for ordinary food words", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    const decoded = decodeURIComponent(options.url);
+    const isQueso = decoded.includes("q=queso+dip");
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        hits: [{
+          code: isQueso ? "012345678943" : "012345678950",
+          product_name: isQueso ? "Queso Dip" : "Peanut Butter Pretzel Nuggets",
+          brands: isQueso ? "Acme" : "Kirkland Signature",
+          serving_quantity: 30,
+          serving_quantity_unit: "g",
+          nutriments: {
+            "energy-kcal_100g": 400,
+            proteins_100g: 10,
+            carbohydrates_100g: 45,
+            fat_100g: 20,
+          },
+        }],
+      },
+    };
+  };
+  try {
+    assert.equal((await plugin.searchOpenFoodFacts("queso dip"))[0]?.name, "Queso Dip");
+    assert.match(decodeURIComponent(requests[0].url), /q=queso\+dip/);
+    assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:\"quest\"/);
+
+    assert.equal((await plugin.searchOpenFoodFacts("kirklnad pretzel"))[0]?.name, "Peanut Butter Pretzel Nuggets");
+    assert.match(decodeURIComponent(requests[1].url), /q=brands:\"kirkland\"\+pretzel/);
+
+    assert.equal((await plugin.searchOpenFoodFacts("pretzel kirkland"))[0]?.name, "Peanut Butter Pretzel Nuggets");
+    assert.equal(requests.length, 2, "the corrected typo and reordered exact brand should share one provider cache key");
+
+    await plugin.searchOpenFoodFacts("breyers vanilla");
+    assert.match(decodeURIComponent(requests[2].url), /q=brands:\"breyers\"\+vanilla/);
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("non-numeric barcode placeholders never collapse unrelated foods", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, includeBrandedFoodSearch: true };
+  plugin.searchCustomFoods = async () => [];
+  plugin.getLoggedFoodStats = async () => new Map();
+  plugin.searchUsdaFoods = async () => [{
+    id: "usda-mystery",
+    name: "First Mystery Bar",
+    brand: "Acme",
+    barcode: "unknown",
+    source: "usda",
+    nutrition: { proteinG: 10, carbsG: 20, fatG: 5 },
+  }];
+  plugin.searchOpenFoodFacts = async () => [{
+    id: "off-mystery",
+    name: "Second Mystery Bar",
+    brand: "Acme",
+    barcode: "N/A",
+    source: "open-food-facts",
+    nutrition: { proteinG: 9, carbsG: 21, fatG: 6 },
+  }];
+  const results = await plugin.searchFoods("mystery bar");
+  assert.ok(results.some((item) => item.name === "First Mystery Bar"));
+  assert.ok(results.some((item) => item.name === "Second Mystery Bar"));
 });
 
 test("barcode lookup resolves local UPC aliases and coalesces equivalent remote lookups", async () => {
@@ -1334,6 +1559,20 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
     "---",
     "",
   ].join("\n"));
+  localFake.files.set("Health/Foods/Eleven Digit Alias.md", [
+    "---",
+    "kind: food",
+    "name: \"Eleven Digit Alias\"",
+    "barcode: \"98100100324\"",
+    "servingAmount: 1",
+    "servingUnit: bar",
+    "calories: 190",
+    "proteinG: 18",
+    "carbsG: 22",
+    "fatG: 6",
+    "---",
+    "",
+  ].join("\n"));
   let localRemoteCalls = 0;
   localPlugin.lookupOpenFoodFactsBarcode = async () => {
     localRemoteCalls += 1;
@@ -1341,6 +1580,17 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   };
   const localAlias = await localPlugin.lookupFoodByBarcode("0012345678905");
   assert.equal(localAlias?.name, "Alias Bar");
+  const elevenDigitAlias = await localPlugin.lookupFoodByBarcode("0098100100324");
+  assert.equal(elevenDigitAlias?.name, "Eleven Digit Alias");
+  const mergedAlias = await localPlugin.upsertFoodFromInput({
+    name: "Eleven Digit Alias",
+    barcode: "0098100100324",
+    servingAmount: 1,
+    servingUnit: "bar",
+    nutrition: { calories: 195, proteinG: 19, carbsG: 22, fatG: 6 },
+  });
+  assert.equal(mergedAlias.sourcePath, "Health/Foods/Eleven Digit Alias.md");
+  assert.equal(localFake.files.has("Health/Foods/Eleven Digit Alias 2.md"), false);
   assert.equal(localRemoteCalls, 0, "a UPC/EAN alias found in the local index must not hit the network");
 
   const remoteFake = createFakeHealthApp();
@@ -1449,6 +1699,8 @@ test("Describe bounds provider fan-out and reuses one history snapshot", () => {
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {
   installDeterministicBrowserGlobals();
+  const deterministicSetTimeout = globalThis.window.setTimeout;
+  const deterministicClearTimeout = globalThis.window.clearTimeout;
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
   const plugin = new TPSHealthPlugin(fake.app);
@@ -1462,14 +1714,67 @@ test("USDA provider combines data types, parses responses, and dedupes cached re
       status: 200,
       headers: { "x-ratelimit-remaining": "999" },
       json: {
-        foods: [{
-          fdcId: 123,
-          description: "APPLE RAW",
-          foodNutrients: [
-            { nutrientId: 1008, value: 52 },
-            { nutrientId: 1005, value: 13.8 },
-          ],
-        }],
+        foods: [
+          {
+            fdcId: 123,
+            description: "APPLE RAW",
+            foodNutrients: [
+              { nutrientId: 1008, value: 52 },
+              { nutrientId: 1005, value: 13.8 },
+            ],
+          },
+          {
+            fdcId: 124,
+            description: "PEANUT BUTTER PRETZEL NUGGETS",
+            brandName: "KIRKLAND SIGNATURE",
+            brandOwner: "Costco Wholesale Corporation",
+            gtinUpc: "98100100324",
+            publishedDate: "2026-01-01",
+            ingredients: "PRETZELS, PEANUT BUTTER",
+            additionalDescriptions: "Filled pretzels; Costco snack",
+            foodCategory: "Pretzels",
+            foodNutrients: [
+              { nutrientId: 1008, value: 500 },
+              { nutrientId: 1003, value: 12 },
+              { nutrientId: 1005, value: 58 },
+              { nutrientId: 1004, value: 24 },
+            ],
+          },
+          {
+            fdcId: 125,
+            description: "PEANUT BUTTER PRETZEL NUGGETS",
+            brandName: "KIRKLAND SIGNATURE",
+            brandOwner: "Costco Wholesale Corporation",
+            gtinUpc: "0098100100324",
+            publishedDate: "2026-02-01",
+            ingredients: "PRETZELS, PEANUT BUTTER",
+            additionalDescriptions: "Filled pretzels; Costco snack",
+            foodCategory: "Pretzels",
+            foodNutrients: [
+              { nutrientId: 1008, value: 500 },
+              { nutrientId: 1003, value: 12 },
+              { nutrientId: 1005, value: 58 },
+              { nutrientId: 1004, value: 24 },
+            ],
+          },
+          {
+            fdcId: 126,
+            description: "PEANUT BUTTER PRETZEL NUGGETS",
+            brandName: "KIRKLAND SIGNATURE",
+            brandOwner: "Costco Wholesale Corporation",
+            gtinUpc: "98100100324",
+            publishedDate: "2026-03-01",
+            ingredients: "PRETZELS, PEANUT BUTTER",
+            additionalDescriptions: "Filled pretzels; Costco snack",
+            foodCategory: "Pretzels",
+            foodNutrients: [
+              { nutrientId: 1008, value: 500 },
+              { nutrientId: 1003, value: 12 },
+              { nutrientId: 1005, value: 58 },
+              { nutrientId: 1004, value: 24 },
+            ],
+          },
+        ],
       },
     };
   };
@@ -1485,16 +1790,113 @@ test("USDA provider combines data types, parses responses, and dedupes cached re
     const requestBody = JSON.parse(requests[0].body);
     assert.deepEqual(requestBody.dataType, ["Foundation", "SR Legacy", "Survey (FNDDS)", "Branded"]);
     assert.equal(requestBody.query, "apple");
-    assert.equal(requestBody.pageSize, 20);
+    assert.equal(requestBody.pageSize, 50);
+    assert.equal(requestBody.requireAllWords, false);
     assert.equal(requests[0].throw, false);
     assert.match(requests[0].url, /test-only-usda-primary/);
     assert.doesNotMatch(requests[0].url, /test-only-usda-fallback/);
 
     const cached = await plugin.searchUsdaFoods("apple", true);
-    assert.equal(cached.length, 1);
+    assert.equal(cached.length, 1, "post-provider relevance filtering should return only the matching food");
     assert.equal(requests.length, 1, "successful responses should use the TTL cache");
+
+    plugin.searchOpenFoodFacts = async () => [];
+    plugin.searchCustomFoods = async () => [];
+    plugin.getLoggedFoodStats = async () => new Map();
+    const directGroceryResults = await plugin.searchUsdaFoods("nugget kirkland pretzel", true);
+    assert.ok(directGroceryResults.some((item) => item.id === "usda-126"), "the latest FDC revision for equivalent 11- and 13-digit GTINs should win");
+    globalThis.window.setTimeout = globalThis.setTimeout;
+    globalThis.window.clearTimeout = globalThis.clearTimeout;
+    const groceryResults = await plugin.searchFoods("nugget kirkland pretzel");
+    const grocery = groceryResults.find((item) => item.id === "usda-126");
+    assert.equal(grocery?.name, "Peanut Butter Pretzel Nuggets");
+    assert.equal(grocery?.brand, "KIRKLAND SIGNATURE");
+    assert.equal(grocery?.barcode, "98100100324");
+    assert.equal(grocery?.ingredients, "PRETZELS, PEANUT BUTTER");
+    assert.ok(grocery?.aliases?.includes("Costco Wholesale Corporation"));
+    assert.ok(grocery?.aliases?.includes("Filled pretzels"));
+    assert.equal(requests.length, 2, "a differently normalized query should make one additional USDA request");
+    const groceryRequestBody = JSON.parse(requests[1].body);
+    assert.equal(groceryRequestBody.query, "kirkland nugget pretzel");
+    assert.equal(groceryRequestBody.pageSize, 50);
+    assert.equal(groceryRequestBody.requireAllWords, true);
     const internalKeys = [...plugin.usdaSearchCache.keys(), ...plugin.usdaRejectedCredentials, ...plugin.usdaRateLimitedUntil.keys()].join("|");
     assert.doesNotMatch(internalKeys, /test-only-usda|usda-primary-ref|usda-fallback-ref/, "provider state must not contain credential names or values");
+  } finally {
+    globalThis.window.setTimeout = deterministicSetTimeout;
+    globalThis.window.clearTimeout = deterministicClearTimeout;
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("USDA relaxed fallback rescues a typo without serving an older duplicate formulation", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (body.query.includes("preztel")) {
+      return {
+        status: 200,
+        headers: {},
+        json: {
+          foods: body.requireAllWords ? [] : [{
+            fdcId: 220,
+            description: "PEANUT BUTTER PRETZEL NUGGETS",
+            brandName: "KIRKLAND SIGNATURE",
+            gtinUpc: "0098100100324",
+            publishedDate: "2026-04-01",
+            foodNutrients: [
+              { nutrientId: 1003, value: 12 },
+              { nutrientId: 1005, value: 58 },
+              { nutrientId: 1004, value: 24 },
+            ],
+          }],
+        },
+      };
+    }
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        foods: [
+          {
+            fdcId: 230,
+            description: "CHOCOLATE TEST BAR",
+            brandName: "ACME",
+            gtinUpc: "12345678905",
+            publishedDate: "2026-01-01",
+            foodNutrients: [
+              { nutrientId: 1003, value: 20 },
+              { nutrientId: 1005, value: 25 },
+              { nutrientId: 1004, value: 8 },
+            ],
+          },
+          {
+            fdcId: 231,
+            description: "CHOCOLATE TEST BAR",
+            brandName: "ACME",
+            gtinUpc: "0012345678905",
+            publishedDate: "2026-02-01",
+            foodNutrients: [{ nutrientId: 1003, value: 21 }],
+          },
+        ],
+      },
+    };
+  };
+  try {
+    const typoResults = await plugin.searchUsdaFoods("kirklnad preztel nugget", true);
+    assert.equal(typoResults[0]?.id, "usda-220");
+    assert.equal(requests[0].query, "kirkland preztel nugget");
+    assert.equal(requests[0].requireAllWords, true);
+    assert.equal(requests[1].requireAllWords, false, "an empty strict search may spend one relaxed USDA retry");
+
+    const incompleteResults = await plugin.searchUsdaFoods("chocolate test bar", true);
+    assert.deepEqual(incompleteResults, [], "the newest incomplete GTIN revision must not be replaced by older nutrition");
+    assert.equal(requests[2].requireAllWords, true);
+    assert.equal(requests[3].requireAllWords, false);
   } finally {
     delete globalThis.__TPSHealthTestRequestUrl;
   }
@@ -1639,6 +2041,10 @@ test("USDA queue opens a source-scoped 429 circuit without blocking a secret cre
     assert.equal(requests, 2, "the demo circuit must not block a selected secret credential");
     assert.equal(secretResult.length, 1);
     assert.equal(plugin.usdaSearchCache.size, 1, "only the successful response should be cached");
+    plugin.usdaRateLimitedUntil.set("secret", Date.now() + 120_000);
+    assert.equal((await plugin.searchUsdaByDataTypes("pear", dataTypes, 12)).length, 1, "a selected-key circuit must still serve a valid cache entry");
+    assert.equal(requests, 2);
+    plugin.usdaRateLimitedUntil.delete("secret");
 
     fake.secrets.delete(plugin.settings.usdaApiKeySecrets[0]);
     plugin.usdaRateLimitedUntil.set("demo", Date.now() - 1);
@@ -2042,9 +2448,15 @@ test("USDA Foundation search returns generic apple macros per 100g", async (t) =
 });
 
 test("Open Food Facts barcode lookup returns a packaged product with macro data", async (t) => {
-  const response = await fetch("https://world.openfoodfacts.org/api/v2/product/737628064502.json?fields=code,product_name,brands,nutriments", {
-    headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-  });
+  let response;
+  try {
+    response = await fetch("https://world.openfoodfacts.org/api/v2/product/737628064502.json?fields=code,product_name,brands,nutriments", {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+    });
+  } catch (error) {
+    t.skip(`Open Food Facts was unreachable: ${error instanceof Error ? error.name : "request failed"}`);
+    return;
+  }
   if (!response.ok) {
     t.skip(`Open Food Facts returned HTTP ${response.status}`);
     return;
@@ -3445,14 +3857,14 @@ test("complete inline food log command only targets the cursor line", async () =
   assert.doesNotMatch(mainSource, /const finalParsed = parsed \|\|/);
 });
 
-test("barcode normalization keeps valid UPC candidates without creating 11-digit artifacts", async () => {
+test("barcode normalization keeps valid UPC-E plus equivalent 11-, 12-, and 13-digit provider forms", async () => {
   const { barcodeCandidates } = await importPluginWithObsidianStub();
-  assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "012345678905"]);
-  assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905"]);
+  assert.deepEqual(barcodeCandidates("0012345678905"), ["0012345678905", "012345678905", "12345678905"]);
+  assert.deepEqual(barcodeCandidates("012345678905"), ["012345678905", "0012345678905"]);
+  assert.deepEqual(barcodeCandidates("12345678905"), ["12345678905", "0012345678905"]);
   assert.deepEqual(barcodeCandidates("04252614"), ["04252614", "042100005264"]);
   assert.deepEqual(barcodeCandidates("24252614"), ["24252614"], "UPC-E expansion must reject unsupported number systems");
   assert.deepEqual(barcodeCandidates("04252615"), ["04252615"], "UPC-E expansion must reject an invalid check digit");
-  assert.ok(barcodeCandidates("0012345678905").every((candidate) => candidate.length !== 11));
 });
 
 test("log food command seeds search and amount from the active inline food draft", async () => {
@@ -3798,6 +4210,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   const savedFood = await plugin.upsertFoodFromInput({
     name: "Provider Bar",
     brand: "TPS Test",
+    aliases: ["warehouse protein bar"],
     barcode: "123456789012",
     servingAmount: 1,
     servingUnit: "bar",
@@ -3806,6 +4219,11 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   });
   assert.equal(savedFood.sourcePath, "Health/Foods/Provider Bar.md");
   assert.match(fake.files.get("Health/Foods/Provider Bar.md"), /barcode: "123456789012"/);
+  assert.match(fake.files.get("Health/Foods/Provider Bar.md"), /aliases:\n\s+- "warehouse protein bar"/);
+  fake.files.set("Health/Foods/Provider Bar.md", fake.files.get("Health/Foods/Provider Bar.md").replace(
+    /aliases:\n\s+- "warehouse protein bar"/,
+    'aliases: "warehouse protein bar"',
+  ));
 
   const writeCountAfterCreate = fake.writes.length;
   const upsertedFood = await plugin.upsertFoodFromInput({
@@ -3821,6 +4239,55 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.equal(fake.files.has("Health/Foods/Provider Bar 2.md"), false);
   assert.ok(fake.writes.length > writeCountAfterCreate);
   assert.match(fake.files.get("Health/Foods/Provider Bar.md"), /servingGrams: 60/);
+  assert.match(fake.files.get("Health/Foods/Provider Bar.md"), /aliases: "warehouse protein bar"/, "an update that omits aliases should preserve them");
+  assert.ok((await plugin.searchLocalFoods("warehouse protein")).some((item) => item.name === "Provider Bar"));
+
+  await plugin.upsertFoodFromInput({
+    path: "Health/Foods/Provider Bar.md",
+    name: "Provider Bar",
+    brand: "TPS Test",
+    aliases: [],
+    barcode: "123456789012",
+    servingAmount: 1,
+    servingUnit: "bar",
+    servingGrams: 60,
+    nutrition: { calories: 220, proteinG: 21, carbsG: 23, fatG: 8 },
+  });
+  assert.doesNotMatch(fake.files.get("Health/Foods/Provider Bar.md"), /^aliases:/m, "an explicitly cleared alias list should be removed from frontmatter");
+  assert.equal((await plugin.searchLocalFoods("warehouse protein")).some((item) => item.name === "Provider Bar"), false);
+
+  const commaFood = await plugin.upsertFoodFromInput({
+    name: "Protein Bar, Chocolate",
+    brand: "TPS Test",
+    aliases: ["manual candy aisle alias"],
+    barcode: "123456789029",
+    servingAmount: 1,
+    servingUnit: "bar",
+    nutrition: { calories: 200, proteinG: 20, carbsG: 20, fatG: 7 },
+  });
+  const commaPath = commaFood.sourcePath;
+  fake.files.set(commaPath, fake.files.get(commaPath).replace(/aliases:\n(?:\s+- ".*"\n)+/, 'aliases: "manual candy aisle alias"\n'));
+  await plugin.upsertFoodFromInput({
+    path: commaPath,
+    name: "Protein Bar, Chocolate",
+    brand: "TPS Test",
+    barcode: "123456789029",
+    servingAmount: 1,
+    servingUnit: "bar",
+    nutrition: { calories: 205, proteinG: 20, carbsG: 21, fatG: 7 },
+  });
+  assert.match(fake.files.get(commaPath), /aliases: "manual candy aisle alias"/, "an omitted alias field must not be replaced by inferred comma-name aliases");
+  await plugin.upsertFoodFromInput({
+    path: commaPath,
+    name: "Protein Bar, Chocolate",
+    brand: "TPS Test",
+    aliases: [],
+    barcode: "123456789029",
+    servingAmount: 1,
+    servingUnit: "bar",
+    nutrition: { calories: 205, proteinG: 20, carbsG: 21, fatG: 7 },
+  });
+  assert.doesNotMatch(fake.files.get(commaPath), /^aliases:/m, "explicit clearing must win over inferred comma-name aliases");
 
   const singleFileEntry = await plugin.logFoodFromInput({
     item: savedFood,
@@ -3966,6 +4433,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
     "Daily/2026-06-21.md",
     "Daily/2026-06-22.md",
     "Health/Food Log.md",
+    "Health/Foods/Protein Bar, Chocolate.md",
     "Health/Foods/Provider Bar.md",
     "Health/Foods/Search Yogurt.md",
     "Health/Recipes/Four Serving Snack Plate.md",
@@ -3986,7 +4454,8 @@ test("create from food search upserts canonical local foods instead of creating 
   assert.match(mainSource, /logger\.flowError\("CustomFoodModal", "submit:failed"/);
   assert.match(mainSource, /barcode: this\.baseFood\?\.barcode/);
   assert.match(mainSource, /function foodDedupeKey\(item: FoodItem\): string/);
-  assert.match(mainSource, /if \(item\.barcode\) return `barcode:\$\{normalizeLookup\(item\.barcode\)\}`/);
+  assert.match(mainSource, /const barcode = item\.barcode \? openFoodFactsBarcodeCacheKey\(item\.barcode\) : ""/);
+  assert.match(mainSource, /if \(barcode\) return `barcode:\$\{barcode\}`/);
   assert.match(mainSource, /foodCandidateCompletenessScore\(item\) > foodCandidateCompletenessScore\(existing\)/);
   assert.match(mainSource, /function sameNamedEquivalentMetricFood\(a: FoodItem, b: FoodItem\): boolean/);
   assert.match(mainSource, /const multiplier = 100 \/ metric\.amount/);
@@ -3995,6 +4464,9 @@ test("create from food search upserts canonical local foods instead of creating 
 test("food detail editors use a compact responsive field grid", () => {
   assert.match(mainSource, /class BarcodeFoodReviewModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
   assert.match(mainSource, /class CustomFoodModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
+  assert.match(mainSource, /let aliases = \(this\.baseFood\?\.aliases \|\| \[\]\)\.join\(", "\)/);
+  assert.match(mainSource, /setName\("Search aliases"\)[\s\S]+Comma-separated nicknames[\s\S]+aliases = value/);
+  assert.match(mainSource, /aliases: aliasesFromFrontmatter\(aliases\) \|\| \[\]/);
   assert.match(stylesSource, /\.tps-health-food-editor-grid \{[\s\S]+grid-template-columns: repeat\(auto-fit, minmax\(min\(190px, 100%\), 1fr\)\)/);
   assert.match(stylesSource, /\.tps-health-food-editor-grid > \.setting-item \{[\s\S]+flex-direction: column/);
   assert.match(stylesSource, /\.tps-health-food-editor-grid \.setting-item-control input,[\s\S]+font-size: var\(--font-ui-small\)/);
@@ -5218,7 +5690,10 @@ test("food log unit options are scoped to the food serving type", async () => {
   assert.match(mainSource, /function sanitizeFoodServingMetrics\(item: FoodItem\): FoodItem/);
   assert.match(mainSource, /servingMl: saneMetricServingAmount\(item\.servingMl, "ml"\)/);
   assert.match(mainSource, /parseMetricServing\(1, servingSize\) \|\| hasMetricServingText\(servingSize\)/);
-  assert.match(mainSource, /categories,categories_tags,serving_quantity,serving_size,nutriments/);
+  assert.match(mainSource, /const OPEN_FOOD_FACTS_SEARCH_FIELDS = \[/);
+  assert.match(mainSource, /"generic_name"/);
+  assert.match(mainSource, /"abbreviated_product_name"/);
+  assert.match(mainSource, /"stores_tags"/);
   assert.doesNotMatch(mainSource, /for \(const unit of \["slice", "piece", "bar", "cup", "g", "oz", "ml"\]\)/);
 });
 
@@ -5245,9 +5720,10 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /target\?\.closest<HTMLElement>\('\[data-tps-gcm-external-action-id="tps-health:food-log"\]'\)/);
   assert.doesNotMatch(mainSource, /button\[aria-label="Log food"\]/);
   assert.doesNotMatch(mainSource, /button\[title="Log food"\]/);
-  assert.match(mainSource, /const providerQuery = foodSearchCorrectedQuery\(normalized\) \|\| normalized/);
+  assert.match(mainSource, /const providerQuery = openFoodFactsProviderQuery\(normalized\)/);
+  assert.match(mainSource, /const legacyProviderQuery = foodSearchProviderQuery\(normalized\)/);
   assert.match(mainSource, /const primary = await this\.searchOpenFoodFactsRoute\(providerQuery, "search"/);
-  assert.match(mainSource, /const fallback = primary\.items\.length\s+\? null\s+: await this\.searchOpenFoodFactsRoute\(providerQuery, "legacy"/);
+  assert.match(mainSource, /const fallback = primary\.items\.length \|\| primary\.rateLimited\s+\? null\s+: await this\.searchOpenFoodFactsRoute\(legacyProviderQuery, "legacy"/);
   assert.doesNotMatch(mainSource.slice(
     mainSource.indexOf("private async searchOpenFoodFacts(query: string)"),
     mainSource.indexOf("private async searchOpenFoodFactsRoute"),
@@ -5265,7 +5741,7 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /foodSearchTokenVariants\(token\)/);
   assert.match(mainSource, /function foodSearchHasFuzzyTokenMatch\(queryToken: string, haystackTokens: Set<string>\): boolean/);
   assert.match(mainSource, /function foodSearchEditDistance\(left: string, right: string, maxDistance: number\): number/);
-  assert.match(mainSource, /variants\.add\("quest protein chips nacho cheese"\)/);
+  assert.match(mainSource, /left\[i - 1\] === right\[j - 2\] && left\[i - 2\] === right\[j - 1\]/);
   assert.match(mainSource, /tokens\.every\(\(token\) => foodSearchTokenVariants\(token\)/);
   assert.match(mainSource, /aliases: aliasesFromFrontmatter\(fm\.aliases\)/);
   assert.match(mainSource, /aliases: foodAliasesForItem\(item\)\.length \? foodAliasesForItem\(item\) : undefined/);
