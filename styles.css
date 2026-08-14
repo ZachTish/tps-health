@@ -1135,7 +1135,7 @@ body.is-phone .tps-health-selection-controls {
   box-sizing: border-box;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(4.5rem, 0.45fr) minmax(6rem, 0.7fr) minmax(10rem, 1.5fr) minmax(11rem, 1fr);
+  grid-template-columns: minmax(5rem, 0.75fr) minmax(6.5rem, 1fr);
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -1151,6 +1151,33 @@ body.is-phone .tps-health-selection-controls {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.tps-health-recipe-ingredient-field--food {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.tps-health-recipe-ingredient-field--quantity {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.tps-health-recipe-ingredient-field--unit {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.tps-health-recipe-ingredient-field--macros {
+  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  grid-column: 1 / -1;
+  grid-row: 3;
+  padding-top: 5px;
+}
+
+.tps-health-recipe-ingredient-field--actions {
+  grid-column: 1 / -1;
+  grid-row: 4;
 }
 
 .tps-health-recipe-ingredient-label {
@@ -1193,7 +1220,7 @@ body.is-phone .tps-health-selection-controls {
   padding: 0 8px;
   text-align: left;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
   width: 100%;
 }
 
@@ -1207,11 +1234,36 @@ body.is-phone .tps-health-selection-controls {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   font-weight: 600;
-  line-height: 32px;
+  line-height: 1.3;
   min-height: 1.2em;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.tps-health-recipe-ingredient-actions {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tps-health-recipe-ingredient-actions button {
+  border-radius: 6px;
+  font-size: var(--font-ui-smaller);
+  height: 32px;
+  margin: 0;
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.tps-health-recipe-ingredient-actions button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.tps-health-recipe-ingredient-remove {
+  color: var(--text-error);
 }
 
 .tps-health-recipe-add {
@@ -1392,6 +1444,15 @@ body.is-phone .tps-health-selection-controls {
     padding-top: 5px;
   }
 
+  .tps-health-recipe-ingredient-field--actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+
+  .tps-health-recipe-ingredient-actions button {
+    flex: 1 1 0;
+  }
+
   .tps-health-recipe-ingredient-macros {
     line-height: 1.3;
     white-space: normal;
@@ -1412,42 +1473,6 @@ body.is-phone .tps-health-selection-controls {
   .tps-health-recipe-add-macros {
     line-height: 1.35;
     white-space: normal;
-  }
-}
-
-@media (min-width: 700px) {
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient {
-    align-items: center;
-    display: grid !important;
-    gap: 8px;
-    grid-template-columns: minmax(4.5rem, 0.45fr) minmax(6rem, 0.7fr) minmax(10rem, 1.5fr) minmax(11rem, 1fr) !important;
-    width: 100%;
-  }
-
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field {
-    display: grid !important;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--quantity,
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--unit,
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--food,
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-field--macros {
-    border-top: 0;
-    grid-column: auto;
-    grid-row: auto;
-    padding-top: 0;
-  }
-
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-food,
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-ingredient-macros {
-    line-height: 32px;
-    white-space: nowrap;
-  }
-
-  .markdown-source-view.mod-cm6 .cm-content .tps-health-recipe-add-button {
-    width: auto;
   }
 }
 
@@ -2718,7 +2743,7 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-meal-ingredient-row {
   display: grid;
-  grid-template-columns: minmax(72px, 0.7fr) minmax(86px, 0.8fr) minmax(150px, 1.6fr) minmax(180px, 1.4fr) auto;
+  grid-template-columns: minmax(5rem, 0.75fr) minmax(6.5rem, 1fr);
   gap: 8px;
   align-items: center;
   padding: 9px;
@@ -2735,29 +2760,54 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 }
 
 .tps-health-meal-ingredient-food {
+  grid-column: 1 / -1;
+  grid-row: 1;
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.tps-health-meal-ingredient-quantity {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.tps-health-meal-ingredient-unit {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .tps-health-meal-ingredient-macros {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
-  white-space: nowrap;
+  grid-column: 1 / -1;
+  grid-row: 3;
+  white-space: normal;
 }
 
 .tps-health-meal-ingredient-remove {
   width: auto !important;
 }
 
-@media (max-width: 720px) {
-  .tps-health-meal-ingredient-row {
-    grid-template-columns: minmax(76px, 0.8fr) minmax(92px, 1fr) minmax(0, 1.8fr);
-  }
+.tps-health-meal-ingredient-actions {
+  display: flex;
+  gap: 6px;
+  grid-column: 1 / -1;
+  grid-row: 4;
+}
 
-  .tps-health-meal-ingredient-macros {
-    grid-column: 1 / -2;
-    white-space: normal;
+.tps-health-meal-ingredient-actions button {
+  width: auto !important;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .tps-health-recipe-ingredient-actions button,
+  .tps-health-meal-ingredient-actions button {
+    min-height: 44px;
   }
+}
+
+.tps-health-meal-ingredient-actions button {
+  flex: 1 1 0;
 }

@@ -346,6 +346,7 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutFileSnapshots = new Map<string, string>();
   private processingWorkoutFiles = new Set<string>();
   private workoutMutationQueues = new Map<string, Promise<unknown>>();
+  private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
   private workoutActionBarRefreshTimer: number | null = null;
   private foodLogNutritionRepairTimer: number | null = null;
@@ -2447,6 +2448,7 @@ export default class TPSHealthPlugin extends Plugin {
       "---",
       `kind: ${type}`,
       `name: "${item.name.replace(/"/g, '\\"')}"`,
+      yamlStringList("tags", [foodIdentityTagValue(tag)]),
       item.brand ? `brand: "${item.brand.replace(/"/g, '\\"')}"` : "",
       yamlStringList("aliases", aliasesFromFrontmatter(item.aliases) || []),
       item.barcode ? `barcode: "${item.barcode}"` : "",
@@ -2471,8 +2473,6 @@ export default class TPSHealthPlugin extends Plugin {
       `sodiumMg: ${nutrition.sodiumMg || 0}`,
       "---",
       "",
-      tag,
-      "",
       item.ingredients || "",
       item.notes ? `## Notes\n${item.notes}\n` : "",
     ].filter((line) => line !== "").join("\n");
@@ -2490,7 +2490,7 @@ export default class TPSHealthPlugin extends Plugin {
       ingredients: item.ingredients || "",
       notes: item.notes || "",
       kind: type,
-      tag,
+      tag: foodIdentityTagValue(tag) ? `#${foodIdentityTagValue(tag)}` : "",
       servingAmount: String(item.servingAmount || 1),
       servingUnit: item.servingUnit || "serving",
       servingGrams: item.servingGrams == null ? "" : String(round(item.servingGrams)),
@@ -2513,9 +2513,11 @@ export default class TPSHealthPlugin extends Plugin {
       (output, [key, value]) => output.split(`{{${key}}}`).join(value),
       template,
     );
-    return item.nutritionBasis
-      ? updateYamlFrontmatterContent(rendered, { nutritionBasis: item.nutritionBasis })
-      : rendered;
+    const withNutritionBasis = updateYamlFrontmatterContent(rendered, {
+      kind: type,
+      ...(item.nutritionBasis ? { nutritionBasis: item.nutritionBasis } : {}),
+    });
+    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type);
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
@@ -2526,10 +2528,13 @@ export default class TPSHealthPlugin extends Plugin {
         nutrition: shouldDeriveCaloriesForFood(item) ? nutritionWithMacroCalories(item.nutrition || {}) : item.nutrition,
       });
     }
-    const ingredients = (item.ingredients || item.notes || "").trim();
+    const hasExplicitIngredients = item.ingredients !== undefined;
+    const ingredients = trimMarkdownBodyBlankLines(item.ingredients || item.notes || "");
     const normalizedIngredients = this.normalizeRecipeIngredientLines(ingredients);
     const recipeServings = recipeServingsForFood(item, type);
-    const totalNutrition = normalizedIngredients ? this.calculateFoodTotals(normalizedIngredients) : (item.nutrition || {});
+    const totalNutrition = normalizedIngredients
+      ? this.calculateFoodTotals(normalizedIngredients)
+      : hasExplicitIngredients ? zeroNutrition() : (item.nutrition || {});
     return normalizeFoodMetricServing({
       ...item,
       aliases: foodAliasesForItem(item),
@@ -2553,10 +2558,12 @@ export default class TPSHealthPlugin extends Plugin {
       if (!ingredient) return line;
       if (ingredient.foodPath) resolvedCount += 1;
       else unresolvedCount += 1;
+      if (/\[\[[^\]]+\]\]/.test(line)) return line;
       return recipeIngredientMarkdown(ingredient);
-    }).join("\n").trim();
+    }).join("\n");
+    const trimmed = trimMarkdownBodyBlankLines(normalized);
     logger.flow("Recipe", "ingredients:normalize", { resolvedCount, unresolvedCount });
-    return normalized;
+    return trimmed;
   }
 
   private foodIndexSettingsSignature(): string {
@@ -2771,9 +2778,34 @@ export default class TPSHealthPlugin extends Plugin {
     return null;
   }
 
-  private async updateFoodNote(file: TFile, item: FoodItem, type: FoodNoteType, replaceAliases = false): Promise<void> {
+  private async updateFoodNote(
+    file: TFile,
+    item: FoodItem,
+    type: FoodNoteType,
+    replaceAliases = false,
+    replaceRecipeBody = false,
+    expectedRecipeBody?: string,
+  ): Promise<FoodItem> {
     const normalized = this.prepareFoodNoteItem(item, type);
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
+    const tag = isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag;
+    const recipeLike = isRecipeLikeFoodType(type);
+    let recipeContent: string | null = null;
+    let currentRecipeBody = "";
+    if (recipeLike) {
+      const recipeDiskContent = await this.app.vault.read(file);
+      recipeContent = await this.readRecipeMutationContent(file, "food-note-body-preflight");
+      currentRecipeBody = recipeBodyFromContent(recipeContent, this.settings.recipeTag);
+      const normalizedExpectedRecipeBody = expectedRecipeBody == null ? null : trimMarkdownBodyBlankLines(expectedRecipeBody);
+      if (replaceRecipeBody && normalizedExpectedRecipeBody != null && currentRecipeBody !== normalizedExpectedRecipeBody) {
+        logger.flowWarn("Recipe", "body-update:stale", { path: file.path, type, expectedLength: normalizedExpectedRecipeBody.length, currentLength: currentRecipeBody.length });
+        throw new Error(`This ${type} changed after the editor opened. Reopen it before saving ingredient changes.`);
+      }
+      if (recipeContent !== recipeDiskContent) {
+        await this.writeRecipeMutationContent(file, recipeContent, "food-note-editor-sync", recipeContent, recipeDiskContent);
+      }
+    }
+
     await this.processHealthFrontmatter(file, (frontmatter) => {
       const updated = foodFrontmatter(normalized, type);
       if (!replaceAliases) delete updated.aliases;
@@ -2781,9 +2813,37 @@ export default class TPSHealthPlugin extends Plugin {
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
+      frontmatter.tags = mergeFoodIdentityFrontmatterTags(frontmatter.tags, tag);
     });
+
+    if (recipeLike && recipeContent != null) {
+      const processedContent = await this.app.vault.read(file);
+      const processedBody = recipeBodyFromContent(processedContent, this.settings.recipeTag);
+      if (processedBody !== currentRecipeBody) {
+        logger.flowWarn("Recipe", "frontmatter-update:body-changed", { path: file.path, type, expectedLength: currentRecipeBody.length, currentLength: processedBody.length });
+        throw new Error(`This ${type} changed while its frontmatter was being saved. Reopen it and try again.`);
+      }
+      await this.writeRecipeMutationContent(
+        file,
+        processedContent,
+        "food-note-frontmatter-sync",
+        [recipeContent, processedContent],
+        processedContent,
+      );
+      const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(processedContent, tag, type);
+      const bodyContent = replaceRecipeBody
+        ? replaceRecipeBodyContent(withoutBodyTag, item.ingredients ?? normalized.ingredients ?? "")
+        : withoutBodyTag;
+      await this.writeRecipeMutationContent(file, bodyContent, "food-note-body", processedContent, processedContent);
+      this.localFoodIndexDirty = true;
+      logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody });
+      return normalized;
+    }
+
+    await this.app.vault.process(file, (content) => stripStandaloneFoodIdentityTagFromBody(content, tag, type));
     this.localFoodIndexDirty = true;
-    logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name });
+    logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody });
+    return normalized;
   }
 
   private isFoodNoteFile(file: TFile): boolean {
@@ -2794,7 +2854,7 @@ export default class TPSHealthPlugin extends Plugin {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
     const food = this.foodFromFrontmatter(file, fm);
-    if (isRecipeLikeFoodType(type)) food.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file));
+    if (isRecipeLikeFoodType(type)) food.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file), this.settings.recipeTag);
     logger.flow("Food", "editor:open", { path: file.path, type, name: food.name });
     new CustomFoodModal(this.app, this, type, food.name, false, food, null, file.path).open();
   }
@@ -3063,8 +3123,9 @@ export default class TPSHealthPlugin extends Plugin {
     }, type, Object.prototype.hasOwnProperty.call(input, "aliases"));
   }
 
-  async upsertFoodFromInput(input: UpsertFoodInput): Promise<FoodItem> {
+  async upsertFoodFromInput(input: UpsertFoodInput, options: { expectedRecipeBody?: string } = {}): Promise<FoodItem> {
     const replaceAliases = Object.prototype.hasOwnProperty.call(input, "aliases");
+    const replaceRecipeBody = Object.prototype.hasOwnProperty.call(input, "ingredients");
     const item = foodItemFromInput(input);
     const type = input.type || "food";
     const file = this.resolveExistingFoodFile(input.path, item);
@@ -3076,8 +3137,11 @@ export default class TPSHealthPlugin extends Plugin {
       if (openRequested) await this.openPath(created.sourcePath);
       return created;
     }
-    await this.updateFoodNote(file, item, type, replaceAliases);
-    const itemFrontmatter = foodFrontmatter(item, type);
+    const update = () => this.updateFoodNote(file, item, type, replaceAliases, replaceRecipeBody, options.expectedRecipeBody);
+    const normalizedItem = isRecipeLikeFoodType(type)
+      ? await this.serializeRecipeMutation(file.path, "food-note-update", update)
+      : await update();
+    const itemFrontmatter = foodFrontmatter(normalizedItem, type);
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
     if (!replaceAliases) delete itemFrontmatter.aliases;
     else if (explicitAliases?.length) itemFrontmatter.aliases = explicitAliases;
@@ -6369,33 +6433,209 @@ export default class TPSHealthPlugin extends Plugin {
     new Notice(noticeMessage);
   }
 
-  async updateRecipeIngredientLine(source: FoodLogLineSource, ingredient: RecipeIngredientLine): Promise<boolean> {
-    const file = this.app.vault.getAbstractFileByPath(source.filePath);
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("Recipe", "ingredient:update-missing-file", { path: source.filePath, line: source.lineNumber, foodPath: ingredient.foodPath });
-      return false;
+  private async readRecipeMutationContent(file: TFile, operation: string): Promise<string> {
+    const diskContent = await this.app.vault.read(file);
+    const views = this.workoutViewsForFile(file);
+    if (!views.length) return diskContent;
+    const editorContents = Array.from(new Set(views
+      .map((view) => this.workoutViewValue(view))
+      .filter((value): value is string => value != null)));
+    if (!editorContents.length) return diskContent;
+    if (editorContents.length > 1) {
+      logger.flowWarn("Recipe", "mutation:conflicting-editors", { path: file.path, operation, editors: editorContents.length });
+      throw new Error("This recipe is open with conflicting edits. Close the extra copy and try again.");
     }
-    const content = await this.app.vault.read(file);
-    const lines = content.split("\n");
-    if (source.lineNumber < 0 || source.lineNumber >= lines.length) {
-      logger.flowWarn("Recipe", "ingredient:update-out-of-range", { path: file.path, line: source.lineNumber, lineCount: lines.length, foodPath: ingredient.foodPath });
-      return false;
+    const editorContent = editorContents[0];
+    const editorHasBrokenFrontmatter = editorContent.startsWith("---\n") && frontmatterEndIndex(editorContent) === 0;
+    if (editorHasBrokenFrontmatter) {
+      const diskHasCompleteFrontmatter = !diskContent.startsWith("---\n") || frontmatterEndIndex(diskContent) > 0;
+      logger.flowWarn("Recipe", "mutation:incomplete-editor-frontmatter", { path: file.path, operation, diskFallback: diskHasCompleteFrontmatter });
+      if (diskHasCompleteFrontmatter) return diskContent;
+      throw new Error("Recipe frontmatter is still being updated. Try the action again.");
     }
-    lines[source.lineNumber] = recipeIngredientMarkdown(ingredient);
-    logger.flow("Recipe", "ingredient:update", { path: file.path, line: source.lineNumber, foodPath: ingredient.foodPath });
-    await this.app.vault.modify(file, lines.join("\n"));
-    await this.refreshRecipeNutrition(file);
-    logger.flow("Recipe", "ingredient:update-done", { path: file.path, line: source.lineNumber, foodPath: ingredient.foodPath });
-    return true;
+    logger.flow("Recipe", "mutation:editor-source", { path: file.path, operation, views: views.length, differsFromDisk: editorContent !== diskContent });
+    return editorContent;
+  }
+
+  private async writeRecipeMutationContent(
+    file: TFile,
+    content: string,
+    operation: string,
+    expectedContent?: string | string[],
+    expectedDiskContent?: string,
+  ): Promise<void> {
+    const views = this.workoutViewsForFile(file);
+    const diskContent = await this.app.vault.read(file);
+    const currentEditorContents = views
+      .map((view) => this.workoutViewValue(view))
+      .filter((value): value is string => value != null);
+    if (expectedContent != null) {
+      const expectedContents = Array.isArray(expectedContent) ? expectedContent : [expectedContent];
+      const editorChanged = currentEditorContents.some((value) => !expectedContents.includes(value));
+      const diskChangedWithoutEditor = !currentEditorContents.length && !expectedContents.includes(diskContent);
+      const diskChangedBehindEditor = currentEditorContents.length > 0 && expectedDiskContent != null &&
+        diskContent !== expectedDiskContent && !expectedContents.includes(diskContent);
+      if (editorChanged || diskChangedWithoutEditor || diskChangedBehindEditor) {
+        logger.flowWarn("Recipe", "mutation:compare-and-swap-failed", {
+          path: file.path,
+          operation,
+          editorChanged,
+          diskChangedWithoutEditor,
+          diskChangedBehindEditor,
+          views: views.length,
+        });
+        throw new Error("This recipe changed while it was being saved. Reopen it and try again.");
+      }
+    }
+    let updatedEditors = 0;
+    let updatedViews = 0;
+    let failedEditors = 0;
+    for (const view of views) {
+      const current = this.workoutViewValue(view);
+      if (current === content) continue;
+      const route = this.replaceWorkoutViewValue(view, content);
+      if (route === "editor") updatedEditors++;
+      else if (route === "view") updatedViews++;
+      else failedEditors++;
+    }
+    if (failedEditors) throw new Error(`Could not synchronize ${failedEditors} open recipe editor${failedEditors === 1 ? "" : "s"}.`);
+    if (diskContent !== content) await this.app.vault.modify(file, content);
+    const previewViews = views.filter((view) => typeof view.getMode === "function" && view.getMode() === "preview");
+    if (previewViews.length) window.setTimeout(() => {
+      for (const view of previewViews) {
+        try {
+          (view as any).previewMode?.rerender?.(true);
+        } catch (error) {
+          logger.flowWarn("Recipe", "preview-rerender:failed", { path: file.path, operation, error: logger.errorSummary(error) });
+        }
+      }
+    }, 0);
+    logger.flow("Recipe", "mutation:write", { path: file.path, operation, views: views.length, updatedEditors, updatedViews });
+  }
+
+  private async refreshRecipeNutritionAfterCommittedMutation(file: TFile, operation: string): Promise<void> {
+    try {
+      await this.refreshRecipeNutrition(file);
+    } catch (error) {
+      logger.flowError("Recipe", "nutrition:post-commit-failed", error, { path: file.path, operation });
+      new Notice("Ingredient changed, but recipe totals could not refresh yet. TPS Health will retry.", 10000);
+      window.setTimeout(() => {
+        void this.serializeRecipeMutation(file.path, `nutrition-repair-${operation}`, () => this.refreshRecipeNutrition(file)).catch((retryError) => {
+          logger.flowError("Recipe", "nutrition:repair-failed", retryError, { path: file.path, operation });
+        });
+      }, 500);
+    }
+  }
+
+  private async serializeRecipeMutation<T>(filePath: string, operation: string, mutation: () => Promise<T>): Promise<T> {
+    const queuedBehindExisting = this.recipeMutationQueues.has(filePath);
+    const previous = this.recipeMutationQueues.get(filePath) || Promise.resolve();
+    logger.flow("Recipe", "mutation:queued", { path: filePath, operation, queuedBehindExisting });
+    const run = previous.catch(() => undefined).then(mutation);
+    this.recipeMutationQueues.set(filePath, run);
+    try {
+      return await run;
+    } finally {
+      if (this.recipeMutationQueues.get(filePath) === run) this.recipeMutationQueues.delete(filePath);
+    }
+  }
+
+  private resolveRecipeIngredientSourceLine(lines: string[], source: FoodLogLineSource, expected: RecipeIngredientLine, operation: string): number | null {
+    const parse = (line: string) => parseRecipeIngredientLine(line, (name) => this.findRecipeIngredientFoodByName(name));
+    if (source.lineOrigin === "rendered" && source.lineNumber >= 0 && source.lineNumber < lines.length) {
+      const indexedIngredient = parse(lines[source.lineNumber]);
+      if (indexedIngredient && recipeIngredientLinesEqual(indexedIngredient, expected)) return source.lineNumber;
+      if (indexedIngredient) {
+        logger.flowWarn("Recipe", "ingredient:rendered-source-conflict", { path: source.filePath, line: source.lineNumber, operation, foodPath: expected.foodPath || "", foodName: expected.foodName });
+        return null;
+      }
+    }
+    if (source.lineOrigin !== "rendered" && source.line) {
+      const exact = lines.map((line, index) => line === source.line ? index : -1).filter((index) => index >= 0);
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1) {
+        logger.flowWarn("Recipe", "ingredient:ambiguous-source", { path: source.filePath, line: source.lineNumber, operation, matches: exact.length, foodPath: expected.foodPath || "", foodName: expected.foodName });
+        return null;
+      }
+    }
+    const matches = lines
+      .map((line, index) => {
+        const ingredient = parse(line);
+        return ingredient && recipeIngredientLinesEqual(ingredient, expected) ? index : -1;
+      })
+      .filter((index) => index >= 0);
+    logger.flowWarn("Recipe", "ingredient:stale-source", {
+      path: source.filePath,
+      line: source.lineNumber,
+      operation,
+      matches: matches.length,
+      foodPath: expected.foodPath || "",
+      foodName: expected.foodName,
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private async mutateRecipeIngredientLine(
+    source: FoodLogLineSource,
+    expected: RecipeIngredientLine,
+    replacement: RecipeIngredientLine | null,
+    operation: "update" | "replace" | "remove",
+  ): Promise<boolean> {
+    return this.serializeRecipeMutation(source.filePath, `ingredient-${operation}`, async () => {
+      const file = this.app.vault.getAbstractFileByPath(source.filePath);
+      if (!(file instanceof TFile)) {
+        logger.flowWarn("Recipe", `ingredient:${operation}-missing-file`, { path: source.filePath, line: source.lineNumber, foodPath: expected.foodPath || "", foodName: expected.foodName });
+        return false;
+      }
+      const diskContent = await this.app.vault.read(file);
+      const content = await this.readRecipeMutationContent(file, `ingredient-${operation}`);
+      const lines = content.split("\n");
+      const resolvedLine = this.resolveRecipeIngredientSourceLine(lines, source, expected, operation);
+      if (resolvedLine == null) return false;
+      if (replacement) lines[resolvedLine] = recipeIngredientMarkdown(replacement);
+      else lines.splice(resolvedLine, 1);
+      const updatedContent = lines.join("\n");
+      await this.writeRecipeMutationContent(file, updatedContent, `ingredient-${operation}`, content, diskContent);
+      source.lineNumber = resolvedLine;
+      source.line = replacement ? recipeIngredientMarkdown(replacement) : "";
+      logger.flow("Recipe", `ingredient:${operation}`, {
+        path: file.path,
+        line: resolvedLine,
+        foodPath: expected.foodPath || "",
+        foodName: expected.foodName,
+        replacementFoodPath: replacement?.foodPath || "",
+        replacementFoodName: replacement?.foodName || "",
+      });
+      await this.refreshRecipeNutritionAfterCommittedMutation(file, operation);
+      logger.flow("Recipe", `ingredient:${operation}-done`, { path: file.path, line: resolvedLine, foodPath: replacement?.foodPath || expected.foodPath || "" });
+      return true;
+    });
+  }
+
+  async updateRecipeIngredientLine(source: FoodLogLineSource, expected: RecipeIngredientLine, ingredient: RecipeIngredientLine): Promise<boolean> {
+    return this.mutateRecipeIngredientLine(source, expected, ingredient, "update");
+  }
+
+  async replaceRecipeIngredientLine(source: FoodLogLineSource, expected: RecipeIngredientLine, ingredient: RecipeIngredientLine): Promise<boolean> {
+    return this.mutateRecipeIngredientLine(source, expected, ingredient, "replace");
+  }
+
+  async removeRecipeIngredientLine(source: FoodLogLineSource, expected: RecipeIngredientLine): Promise<boolean> {
+    return this.mutateRecipeIngredientLine(source, expected, null, "remove");
   }
 
   async addRecipeIngredientLine(sourcePath: string, ingredient: RecipeIngredientLine): Promise<boolean> {
+    return this.serializeRecipeMutation(sourcePath, "ingredient-add", () => this.addRecipeIngredientLineNow(sourcePath, ingredient));
+  }
+
+  private async addRecipeIngredientLineNow(sourcePath: string, ingredient: RecipeIngredientLine): Promise<boolean> {
     const file = this.app.vault.getAbstractFileByPath(sourcePath);
     if (!(file instanceof TFile)) {
       logger.flowWarn("Recipe", "ingredient:add-missing-file", { path: sourcePath, foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
       return false;
     }
-    const content = await this.app.vault.read(file);
+    const diskContent = await this.app.vault.read(file);
+    const content = await this.readRecipeMutationContent(file, "ingredient-add");
     const lines = content.split("\n");
     let insertIndex = lines.length;
     while (insertIndex > 0 && lines[insertIndex - 1].trim() === "") insertIndex--;
@@ -6403,9 +6643,9 @@ export default class TPSHealthPlugin extends Plugin {
       if (parseRecipeIngredientLine(lines[index], (name) => this.findRecipeIngredientFoodByName(name))) insertIndex = index + 1;
     }
     lines.splice(insertIndex, 0, recipeIngredientMarkdown(ingredient));
+    await this.writeRecipeMutationContent(file, lines.join("\n"), "ingredient-add", content, diskContent);
     logger.flow("Recipe", "ingredient:add", { path: file.path, line: insertIndex, foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
-    await this.app.vault.modify(file, lines.join("\n"));
-    await this.refreshRecipeNutrition(file);
+    await this.refreshRecipeNutritionAfterCommittedMutation(file, "add");
     logger.flow("Recipe", "ingredient:add-done", { path: file.path, line: insertIndex, foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
     new Notice("Added recipe ingredient");
     return true;
@@ -6418,7 +6658,7 @@ export default class TPSHealthPlugin extends Plugin {
     const content = await this.app.vault.cachedRead(file);
     const food = {
       ...this.foodFromFrontmatter(file, fm),
-      ingredients: recipeBodyFromContent(content),
+      ingredients: recipeBodyFromContent(content, this.settings.recipeTag),
     };
     logger.flow("Recipe", "nutrition:refresh", { path: file.path, type, ingredientsLength: food.ingredients?.length || 0 });
     await this.updateFoodNote(file, food, type);
@@ -7909,7 +8149,7 @@ class FoodSearchModal extends Modal {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const type = foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings);
     const refreshed = this.plugin.foodFromFrontmatter(file, fm);
-    if (isRecipeLikeFoodType(type)) refreshed.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file));
+    if (isRecipeLikeFoodType(type)) refreshed.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file), this.plugin.settings.recipeTag);
     return refreshed;
   }
 
@@ -8246,6 +8486,7 @@ interface FoodLogLineSource {
   filePath: string;
   lineNumber: number;
   line: string;
+  lineOrigin?: "source" | "rendered";
 }
 
 interface WorkoutSetLineSource {
@@ -8270,8 +8511,19 @@ interface RecipeIngredientLine {
   foodName: string;
 }
 
+function recipeIngredientLinesEqual(left: RecipeIngredientLine, right: RecipeIngredientLine): boolean {
+  const sameFood = right.foodPath
+    ? normalizePath(left.foodPath || "") === normalizePath(right.foodPath) && normalizeLookup(left.foodName) === normalizeLookup(right.foodName)
+    : normalizeLookup(left.foodName) === normalizeLookup(right.foodName);
+  return sameFood &&
+    Math.abs(left.quantity - right.quantity) < 0.0001 &&
+    normalizeServingUnit(left.unit) === normalizeServingUnit(right.unit);
+}
+
 interface RecipeIngredientDraft extends RecipeIngredientLine {
   food?: FoodItem;
+  sourceLineNumber?: number;
+  sourceLine?: string;
 }
 
 interface RecipeIngredientSelection {
@@ -8580,7 +8832,12 @@ function renderRecipeIngredientChips(root: HTMLElement, plugin: TPSHealthPlugin,
       const ingredient = parseRecipeIngredientRenderedItem(item, (name) => plugin.findRecipeIngredientFoodByName(name)) ||
         parseRecipeIngredientLine(item.textContent || "", (name) => plugin.findRecipeIngredientFoodByName(name));
       if (!ingredient) continue;
-      const element = safeRecipeIngredientElement(plugin, ingredient, { filePath: ctx.sourcePath, lineNumber, line: "" });
+      const element = safeRecipeIngredientElement(plugin, ingredient, {
+        filePath: ctx.sourcePath,
+        lineNumber,
+        line: recipeIngredientMarkdown(ingredient),
+        lineOrigin: "rendered",
+      });
       if (!element) continue;
       item.empty();
       item.addClass("tps-health-recipe-ingredient-row");
@@ -8622,12 +8879,21 @@ function foodLogChipDataFromRenderedItem(item: Element, plugin: TPSHealthPlugin)
   return { food, serving, amount: serving, macros };
 }
 
+function recipeIngredientEntityLabel(plugin: TPSHealthPlugin, sourcePath: string): "recipe" | "meal" {
+  const file = plugin.app.vault.getAbstractFileByPath(sourcePath);
+  if (!(file instanceof TFile)) return "recipe";
+  const type = foodNoteTypeFromFrontmatter(plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}, file, plugin.settings);
+  return type === "meal" ? "meal" : "recipe";
+}
+
 function recipeIngredientElement(plugin: TPSHealthPlugin, ingredient: RecipeIngredientLine, source: FoodLogLineSource): HTMLElement {
   const row = document.createElement("div");
   row.className = "tps-health-recipe-ingredient";
+  const entityLabel = recipeIngredientEntityLabel(plugin, source.filePath);
   const file = ingredient.foodPath ? plugin.app.vault.getAbstractFileByPath(ingredient.foodPath) : null;
   const foodItem = file instanceof TFile ? foodFromFileCache(plugin, file) : plugin.findRecipeIngredientFoodByName(ingredient.foodName);
   let currentUnit = preferredRecipeIngredientUnit(foodItem, ingredient.unit);
+  let suppressRowSaveForAction = false;
   const quantity = document.createElement("input");
   quantity.className = "tps-health-recipe-ingredient-quantity";
   quantity.type = "number";
@@ -8689,6 +8955,10 @@ function recipeIngredientElement(plugin: TPSHealthPlugin, ingredient: RecipeIngr
     macros.textContent = parts.length ? parts.join(" ") : "No macro data";
   };
   const save = async () => {
+    if (suppressRowSaveForAction) {
+      logger.flow("RecipeIngredient", "save:suppressed-for-action", { sourcePath: source.filePath, line: source.lineNumber, foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
+      return;
+    }
     const parsedQuantity = numberOrUndefined(quantity.value);
     if (parsedQuantity == null || parsedQuantity <= 0) {
       logger.flowWarn("RecipeIngredient", "save:invalid-quantity", { sourcePath: source.filePath, line: source.lineNumber, foodPath: ingredient.foodPath || "", foodName: ingredient.foodName, quantity: quantity.value });
@@ -8717,11 +8987,11 @@ function recipeIngredientElement(plugin: TPSHealthPlugin, ingredient: RecipeIngr
       quantity: canonical.quantity,
       unit: canonical.unit,
       foodPath: ingredient.foodPath || resolvedFood?.sourcePath,
-      foodName: resolvedFood?.name || ingredient.foodName,
+      foodName: ingredient.foodName || resolvedFood?.name || "Food",
     };
     logger.flow("RecipeIngredient", "save:submit", { sourcePath: source.filePath, line: source.lineNumber, foodPath: updated.foodPath || "", foodName: updated.foodName, quantity: canonical.quantity, unit: canonical.unit, inputQuantity: parsedQuantity, inputUnit: parsedUnit });
     try {
-      const saved = await plugin.updateRecipeIngredientLine(source, updated);
+      const saved = await plugin.updateRecipeIngredientLine(source, ingredient, updated);
       if (!saved) {
         logger.flowWarn("RecipeIngredient", "save:not-written", { sourcePath: source.filePath, line: source.lineNumber, foodPath: updated.foodPath || "", foodName: updated.foodName });
         currentUnit = preferredRecipeIngredientUnit(foodItem, ingredient.unit);
@@ -8763,11 +9033,96 @@ function recipeIngredientElement(plugin: TPSHealthPlugin, ingredient: RecipeIngr
   });
   quantity.addEventListener("keydown", saveOnEnter);
   unit.addEventListener("keydown", saveOnEnter);
+  const actionWrap = document.createElement("span");
+  actionWrap.className = "tps-health-recipe-ingredient-actions";
+  actionWrap.setAttribute("role", "group");
+  actionWrap.setAttribute("aria-label", `Actions for ${ingredient.foodName}`);
+  const replace = document.createElement("button");
+  replace.className = "tps-health-recipe-ingredient-replace";
+  replace.type = "button";
+  replace.textContent = "Replace";
+  replace.setAttribute("aria-label", `Replace ${ingredient.foodName}`);
+  const remove = document.createElement("button");
+  remove.className = "tps-health-recipe-ingredient-remove mod-warning";
+  remove.type = "button";
+  remove.textContent = "Remove";
+  remove.setAttribute("aria-label", `Remove ${ingredient.foodName}`);
+  const setRowActionBusy = (busy: boolean) => {
+    quantity.disabled = busy;
+    unit.disabled = busy;
+    replace.disabled = busy;
+    remove.disabled = busy;
+    row.setAttribute("aria-busy", busy ? "true" : "false");
+  };
+  for (const action of [replace, remove]) {
+    action.addEventListener("pointerdown", () => suppressRowSaveForAction = true);
+    action.addEventListener("mousedown", () => suppressRowSaveForAction = true);
+    action.addEventListener("touchstart", () => suppressRowSaveForAction = true);
+    action.addEventListener("pointerdown", keepFoodButtonTapLocal);
+    action.addEventListener("mousedown", keepFoodButtonTapLocal);
+    action.addEventListener("touchstart", keepFoodButtonTapLocal);
+  }
+  replace.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const expected = { ...ingredient };
+    const initialQuantity = numberOrUndefined(quantity.value) || ingredient.quantity;
+    const initialUnit = unit.value || ingredient.unit;
+    logger.flow("RecipeIngredient", "replace-picker:open", { sourcePath: source.filePath, line: source.lineNumber, foodPath: expected.foodPath || "", foodName: expected.foodName, entityLabel });
+    new RecipeIngredientModal(plugin.app, plugin, null, async (selection) => {
+      suppressRowSaveForAction = true;
+      setRowActionBusy(true);
+      try {
+        const savedFood = await plugin.findOrCreateFoodNote(selection.food);
+        if (!savedFood.sourcePath) throw new Error("Replacement ingredient could not be saved as a food note.");
+        if (!isFoodLogUnitSupported(savedFood, selection.unit)) throw new Error(`"${selection.unit}" is not available for ${savedFood.name}.`);
+        const canonical = recipeIngredientCanonicalAmount(savedFood, selection.quantity, selection.unit);
+        const replaced = await plugin.replaceRecipeIngredientLine(source, expected, {
+          quantity: canonical.quantity,
+          unit: canonical.unit,
+          foodPath: savedFood.sourcePath,
+          foodName: savedFood.name,
+        });
+        if (!replaced) {
+          new Notice("That ingredient moved or changed. Reopen the note and try again.");
+          return;
+        }
+        new Notice(`Replaced ${expected.foodName} with ${savedFood.name}`);
+      } finally {
+        setRowActionBusy(false);
+        suppressRowSaveForAction = false;
+      }
+    }, entityLabel, "replace", { quantity: initialQuantity, unit: initialUnit }).open();
+    window.setTimeout(() => suppressRowSaveForAction = false, 0);
+  });
+  remove.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressRowSaveForAction = true;
+    if (typeof window.confirm === "function" && !window.confirm(`Remove ${ingredient.foodName} from this ${entityLabel}?`)) {
+      suppressRowSaveForAction = false;
+      return;
+    }
+    setRowActionBusy(true);
+    const expected = { ...ingredient };
+    void plugin.removeRecipeIngredientLine(source, expected).then((removed) => {
+      if (removed) new Notice(`Removed ${expected.foodName}`);
+      else new Notice("That ingredient moved or changed. Reopen the note and try again.");
+    }).catch((error) => {
+      logger.flowError("RecipeIngredient", "remove:failed", error, { sourcePath: source.filePath, line: source.lineNumber, foodPath: expected.foodPath || "", foodName: expected.foodName });
+      new Notice("Could not remove recipe ingredient.");
+    }).finally(() => {
+      setRowActionBusy(false);
+      suppressRowSaveForAction = false;
+    });
+  });
+  actionWrap.append(replace, remove);
   row.append(
     recipeIngredientField("Qty", quantity, "tps-health-recipe-ingredient-field--quantity"),
     recipeIngredientField("Unit", unit, "tps-health-recipe-ingredient-field--unit"),
     recipeIngredientField("Food", food, "tps-health-recipe-ingredient-field--food"),
     recipeIngredientField("Macros", macros, "tps-health-recipe-ingredient-field--macros"),
+    recipeIngredientField("Actions", actionWrap, "tps-health-recipe-ingredient-field--actions"),
   );
   updateMacros();
   return row;
@@ -8793,7 +9148,6 @@ function safeRecipeIngredientElement(plugin: TPSHealthPlugin, ingredient: Recipe
 }
 
 function renderRecipeIngredientAddAction(root: HTMLElement, plugin: TPSHealthPlugin, sourcePath: string, lastRenderedItem: HTMLElement | null): void {
-  if (!lastRenderedItem) return;
   const container = root.closest(".markdown-rendered, .markdown-preview-view") as HTMLElement | null;
   const host = container || root;
   if (host.querySelector(".tps-health-recipe-add")) return;
@@ -8847,6 +9201,8 @@ class RecipeIngredientModal extends Modal {
     private sourcePath: string | null,
     private onIngredientSelected?: (selection: RecipeIngredientSelection) => void | Promise<void>,
     private targetLabel = "recipe",
+    private action: "add" | "replace" = "add",
+    private initialAmount?: { quantity: number; unit: string },
   ) {
     super(app);
   }
@@ -8855,7 +9211,8 @@ class RecipeIngredientModal extends Modal {
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.addClass("tps-health-modal");
-    this.contentEl.createEl("h2", { text: `Add ${this.targetLabel} ingredient` });
+    const actionLabel = this.action === "replace" ? "Replace" : "Add";
+    this.contentEl.createEl("h2", { text: `${actionLabel} ${this.targetLabel} ingredient` });
     this.statusEl = this.contentEl.createDiv({ cls: "tps-health-status", text: "Search for a saved or provider food." });
     this.statusEl.setAttr("role", "status");
     this.statusEl.setAttr("aria-live", "polite");
@@ -8885,7 +9242,17 @@ class RecipeIngredientModal extends Modal {
     const controls = this.contentEl.createDiv({ cls: "tps-health-recipe-add-controls" });
     const quantityLabel = controls.createDiv({ cls: "tps-health-recipe-add-field" });
     quantityLabel.createSpan({ cls: "tps-health-recipe-ingredient-label", text: "Qty" });
-    this.quantityEl = quantityLabel.createEl("input", { type: "number", value: "100", attr: { min: "0", step: "1", "aria-label": "Ingredient quantity" } });
+    const initialUnit = this.action === "replace" && this.initialAmount
+      ? normalizeServingUnit(this.initialAmount.unit)
+      : "";
+    const initialQuantity = this.action === "replace" && this.initialAmount
+      ? this.initialAmount.quantity
+      : 100;
+    this.quantityEl = quantityLabel.createEl("input", {
+      type: "number",
+      value: String(roundFoodLogQuantity(initialQuantity)),
+      attr: { min: "0", step: String(foodLogQuantityStep(initialUnit || "g")), "aria-label": "Ingredient quantity" },
+    });
     const unitLabel = controls.createDiv({ cls: "tps-health-recipe-add-field" });
     unitLabel.createSpan({ cls: "tps-health-recipe-ingredient-label", text: "Unit" });
     this.unitEl = unitLabel.createEl("select", { attr: { "aria-label": "Ingredient unit" } });
@@ -8893,7 +9260,7 @@ class RecipeIngredientModal extends Modal {
     this.quantityEl.addEventListener("input", () => this.updateSelectedMacros());
     this.unitEl.addEventListener("change", () => this.updateSelectedMacros());
     const actions = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
-    this.saveButton = actions.createEl("button", { text: "Add ingredient", cls: "mod-cta" });
+    this.saveButton = actions.createEl("button", { text: `${actionLabel} ingredient`, cls: "mod-cta" });
     this.saveButton.type = "button";
     this.saveButton.disabled = true;
     this.saveButton.addEventListener("click", () => void this.saveIngredient());
@@ -8996,11 +9363,19 @@ class RecipeIngredientModal extends Modal {
     this.statusEl.setText(`Loading labeled serving for ${item.name}…`);
     const enriched = await this.plugin.enrichFoodSearchItem(item);
     this.selectedFood = enriched;
+    const canPreserveInitial = Boolean(this.action === "replace" && this.initialAmount && isFoodLogUnitSupported(enriched, this.initialAmount.unit));
     const metric = metricServingForFood(enriched);
-    const preferredUnit = metric?.unit || preferredRecipeIngredientUnit(enriched, enriched.servingUnit || "serving");
-    this.quantityEl.value = String(roundFoodLogQuantity(metric?.amount || enriched.servingAmount || 1));
+    const preferredUnit = canPreserveInitial
+      ? this.initialAmount!.unit
+      : metric?.unit || preferredRecipeIngredientUnit(enriched, enriched.servingUnit || "serving");
+    const preferredQuantity = canPreserveInitial
+      ? this.initialAmount!.quantity
+      : metric?.amount || enriched.servingAmount || 1;
+    this.quantityEl.value = String(roundFoodLogQuantity(preferredQuantity));
     this.renderUnitOptions(enriched, preferredUnit);
-    this.statusEl.setText(`Selected ${enriched.name}.`);
+    this.statusEl.setText(canPreserveInitial || this.action !== "replace" || !this.initialAmount
+      ? `Selected ${enriched.name}.`
+      : `Selected ${enriched.name}. ${this.initialAmount.quantity} ${this.initialAmount.unit} is not supported, so its labeled amount was selected instead.`);
     this.renderSelectedFood();
   }
 
@@ -9010,6 +9385,13 @@ class RecipeIngredientModal extends Modal {
       this.selectedEl.createDiv({ cls: "tps-health-selection-empty", text: "No food selected." });
       this.saveButton.disabled = true;
       this.unitEl.empty();
+      const initialUnit = this.action === "replace" && this.initialAmount
+        ? normalizeServingUnit(this.initialAmount.unit)
+        : "";
+      if (initialUnit) {
+        this.unitEl.createEl("option", { text: initialUnit, value: initialUnit });
+        this.unitEl.value = initialUnit;
+      }
       this.updateSelectedMacros();
       return;
     }
@@ -9104,8 +9486,9 @@ class RecipeIngredientModal extends Modal {
       if (added) this.close();
       else this.saveButton.disabled = false;
     } catch (error) {
-      logger.flowError("RecipeIngredient", "add:failed", error, { sourcePath: this.sourcePath || "", foodName: this.selectedFood.name, target: this.targetLabel, deferred: !!this.onIngredientSelected });
-      new Notice("Could not add recipe ingredient.");
+      const action = this.action === "replace" ? "replace" : "add";
+      logger.flowError("RecipeIngredient", `${action}:failed`, error, { sourcePath: this.sourcePath || "", foodName: this.selectedFood.name, target: this.targetLabel, deferred: !!this.onIngredientSelected });
+      new Notice(action === "replace" ? "Could not replace recipe ingredient." : "Could not add recipe ingredient.");
       this.saveButton.disabled = false;
     }
   }
@@ -12136,13 +12519,17 @@ class CustomFoodModal extends Modal {
     let servingAmount = this.baseFood?.servingAmount || 1;
     let servingUnit = this.baseFood?.servingUnit || "serving";
     let recipeServings = recipeServingsForFood(this.baseFood || { id: "", name: "", source: "manual" }, this.type);
+    const originalRecipeBody = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.ingredients || "") : "";
     let recipeIngredients: RecipeIngredientDraft[] = isRecipeLikeFoodType(this.type)
-      ? String(this.baseFood?.ingredients || "")
+      ? originalRecipeBody
         .split(/\r?\n/)
-        .map((line) => parseRecipeIngredientLine(line, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName)))
-        .filter((ingredient): ingredient is RecipeIngredientLine => !!ingredient)
+        .map<RecipeIngredientDraft | null>((line, sourceLineNumber) => {
+          const ingredient = parseRecipeIngredientLine(line, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName));
+          return ingredient ? { ...ingredient, sourceLineNumber, sourceLine: line } : null;
+        })
+        .filter((ingredient): ingredient is RecipeIngredientDraft => ingredient !== null)
       : [];
-    let recipeIngredientsText = recipeIngredients.map(recipeIngredientMarkdown).join("\n");
+    let recipeIngredientQuantityControls: Array<{ ingredient: RecipeIngredientDraft; input: HTMLInputElement }> = [];
     const nutrition: Nutrition = { ...this.baseFood?.nutrition };
     const recipeIngredientFoodItem = (ingredient: RecipeIngredientDraft): FoodItem | null => {
       if (ingredient.food) return ingredient.food;
@@ -12163,8 +12550,8 @@ class CustomFoodModal extends Modal {
       for (const ingredient of recipeIngredients) addNutritionTotals(totals, recipeIngredientNutrition(ingredient));
       return totals;
     };
-    const persistDraftIngredients = async (): Promise<RecipeIngredientLine[]> => {
-      const persisted: RecipeIngredientLine[] = [];
+    const persistDraftIngredients = async (): Promise<RecipeIngredientDraft[]> => {
+      const persisted: RecipeIngredientDraft[] = [];
       let draftCount = 0;
       for (const ingredient of recipeIngredients) {
         if (!ingredient.food) {
@@ -12173,6 +12560,8 @@ class CustomFoodModal extends Modal {
             unit: ingredient.unit,
             foodPath: ingredient.foodPath,
             foodName: ingredient.foodName,
+            sourceLineNumber: ingredient.sourceLineNumber,
+            sourceLine: ingredient.sourceLine,
           });
           continue;
         }
@@ -12188,6 +12577,8 @@ class CustomFoodModal extends Modal {
           unit: canonical.unit,
           foodPath: savedFood.sourcePath,
           foodName: savedFood.name,
+          sourceLineNumber: ingredient.sourceLineNumber,
+          sourceLine: ingredient.sourceLine,
         });
       }
       if (draftCount) {
@@ -12205,9 +12596,7 @@ class CustomFoodModal extends Modal {
       if (isRecipeLikeFoodType(this.type)) {
         const ingredientTotals = recipeIngredients.length
           ? recipeIngredientTotals()
-          : recipeIngredientsText
-            ? this.plugin.calculateFoodTotals(recipeIngredientsText)
-            : nutrition;
+          : zeroNutrition();
         const perServing = multiplyNutrition(ingredientTotals, 1 / recipeServingsForFood({ ...this.baseFood, recipeServings } as FoodItem, this.type));
         caloriePreview.setText(`Recipe yield: ${round(recipeServings)} ${this.type === "meal" ? "meal" : "servings"}; per serving: ${round(perServing.calories)} kcal`);
         return;
@@ -12267,16 +12656,16 @@ class CustomFoodModal extends Modal {
     if (isRecipeLikeFoodType(this.type)) {
       const section = this.contentEl.createDiv({ cls: "tps-health-meal-ingredient-editor" });
       section.createEl("h3", { text: "Ingredients" });
-      section.createDiv({ cls: "tps-health-status", text: "Adjust the amount or unit, or add an ingredient. Changes to this meal apply only after Save and the linked-instance choice." });
+      section.createDiv({ cls: "tps-health-status", text: `Adjust amounts, replace or remove foods, or add another ingredient. Changes to this ${typeLabel} apply only after Save and the linked-instance choice.` });
       const list = section.createDiv({ cls: "tps-health-meal-ingredient-list" });
       const syncIngredients = () => {
-        recipeIngredientsText = recipeIngredients.map(recipeIngredientMarkdown).join("\n");
         updateCaloriePreview();
       };
       const renderIngredients = () => {
         list.empty();
+        recipeIngredientQuantityControls = [];
         if (!recipeIngredients.length) {
-          list.createDiv({ cls: "tps-health-status", text: "No editable ingredient lines were found in this meal." });
+          list.createDiv({ cls: "tps-health-status", text: `No editable ingredient lines were found in this ${typeLabel}.` });
           return;
         }
         recipeIngredients.forEach((ingredient, index) => {
@@ -12290,6 +12679,7 @@ class CustomFoodModal extends Modal {
             cls: "tps-health-meal-ingredient-quantity",
             attr: { min: "0.01", step: "0.01", value: String(roundFoodLogQuantity(ingredient.quantity)), "aria-label": `Quantity for ${ingredient.foodName}` },
           });
+          recipeIngredientQuantityControls.push({ ingredient, input: quantity });
           const unit = row.createEl("select", { cls: "tps-health-meal-ingredient-unit", attr: { "aria-label": `Unit for ${ingredient.foodName}` } });
           for (const option of recipeIngredientUnitOptions(foodItem, ingredient.unit)) unit.createEl("option", { value: option, text: option });
           unit.value = ingredient.unit;
@@ -12302,8 +12692,11 @@ class CustomFoodModal extends Modal {
             macros.setText(`${round(totals.calories)} kcal · P ${round(totals.proteinG)} · C ${round(totals.carbsG)} · F ${round(totals.fatG)}`);
           };
           quantity.addEventListener("input", () => {
+            const rawValue = quantity.value.trim();
             const value = Number(quantity.value);
-            if (!Number.isFinite(value) || value <= 0) return;
+            const valid = rawValue !== "" && Number.isFinite(value) && value > 0;
+            quantity.setAttribute("aria-invalid", valid ? "false" : "true");
+            if (!valid) return;
             ingredient.quantity = value;
             syncIngredients();
             updateMacros();
@@ -12317,7 +12710,39 @@ class CustomFoodModal extends Modal {
             syncIngredients();
             updateMacros();
           });
-          const remove = row.createEl("button", { text: "Remove", cls: "mod-muted tps-health-meal-ingredient-remove", attr: { type: "button", "aria-label": `Remove ${ingredient.foodName}` } });
+          const actions = row.createDiv({ cls: "tps-health-meal-ingredient-actions" });
+          const replace = actions.createEl("button", { text: "Replace", cls: "tps-health-meal-ingredient-replace", attr: { type: "button", "aria-label": `Replace ${ingredient.foodName}` } });
+          replace.addEventListener("click", () => {
+            logger.flow("CustomFoodModal", "ingredient-replace-picker:open", {
+              type: this.type,
+              editPath: this.editPath || "",
+              ingredientIndex: index,
+              foodPath: ingredient.foodPath || "",
+              foodName: ingredient.foodName,
+            });
+            new RecipeIngredientModal(this.app, this.plugin, null, async (selection) => {
+              recipeIngredients[index] = {
+                quantity: selection.quantity,
+                unit: selection.unit,
+                foodPath: selection.food.sourcePath,
+                foodName: selection.food.name,
+                food: selection.food,
+                sourceLineNumber: ingredient.sourceLineNumber,
+                sourceLine: ingredient.sourceLine,
+              };
+              syncIngredients();
+              renderIngredients();
+              logger.flow("CustomFoodModal", "ingredient:draft-replaced", {
+                type: this.type,
+                editPath: this.editPath || "",
+                ingredientIndex: index,
+                quantity: selection.quantity,
+                unit: selection.unit,
+                hasSourcePath: !!selection.food.sourcePath,
+              });
+            }, typeLabel, "replace", { quantity: ingredient.quantity, unit: ingredient.unit }).open();
+          });
+          const remove = actions.createEl("button", { text: "Remove", cls: "mod-muted tps-health-meal-ingredient-remove", attr: { type: "button", "aria-label": `Remove ${ingredient.foodName}` } });
           remove.addEventListener("click", () => {
             recipeIngredients = recipeIngredients.filter((_, candidateIndex) => candidateIndex !== index);
             syncIngredients();
@@ -12372,6 +12797,29 @@ class CustomFoodModal extends Modal {
         new Notice("Serving size is required");
         return;
       }
+      if (isRecipeLikeFoodType(this.type)) {
+        const invalidQuantity = recipeIngredientQuantityControls.find(({ input }) => {
+          const rawValue = input.value.trim();
+          const value = Number(rawValue);
+          return rawValue === "" || !Number.isFinite(value) || value <= 0;
+        });
+        if (invalidQuantity) {
+          invalidQuantity.input.setAttribute("aria-invalid", "true");
+          logger.flowWarn("CustomFoodModal", "submit:invalid-ingredient-quantity", {
+            type: this.type,
+            name,
+            editPath: this.editPath || "",
+            foodPath: invalidQuantity.ingredient.foodPath || "",
+            foodName: invalidQuantity.ingredient.foodName,
+            quantity: invalidQuantity.input.value,
+          });
+          new Notice("Every ingredient quantity must be greater than 0.");
+          invalidQuantity.input.focus();
+          scrollHealthModalInputIntoView(invalidQuantity.input);
+          return;
+        }
+        for (const { ingredient, input } of recipeIngredientQuantityControls) ingredient.quantity = Number(input.value);
+      }
       logger.flow("CustomFoodModal", "submit", {
         type: this.type,
         name,
@@ -12386,7 +12834,7 @@ class CustomFoodModal extends Modal {
         const createNewVersion = linkScope === "new-version";
         const savedIngredients = isRecipeLikeFoodType(this.type) ? await persistDraftIngredients() : [];
         const ingredientsForSave = isRecipeLikeFoodType(this.type)
-          ? savedIngredients.map(recipeIngredientMarkdown).join("\n")
+          ? recipeBodyWithIngredientDrafts(originalRecipeBody, savedIngredients, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName))
           : this.baseFood?.ingredients;
         const servingMetadata = this.type === "food"
           ? customFoodServingMetadataForSave(this.baseFood, servingAmount, servingUnit, nutrition)
@@ -12412,7 +12860,7 @@ class CustomFoodModal extends Modal {
           notes: this.baseFood?.notes,
           nutrition,
           merge: !createNewVersion,
-        });
+        }, createNewVersion || !isRecipeLikeFoodType(this.type) ? {} : { expectedRecipeBody: originalRecipeBody });
         logger.flow("CustomFoodModal", "submit:done", {
           type: this.type,
           name: saved.name,
@@ -13088,6 +13536,181 @@ function frontmatterTags(value: unknown): string[] {
   return [];
 }
 
+function foodIdentityTagValue(value: string): string {
+  return value.trim().replace(/^#+/, "").trim();
+}
+
+function defaultFoodIdentityTag(type: FoodNoteType): string {
+  return isRecipeLikeFoodType(type) ? DEFAULT_SETTINGS.recipeTag : DEFAULT_SETTINGS.customFoodTag;
+}
+
+function mergeFoodIdentityFrontmatterTags(value: unknown, configuredTag: string): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [...frontmatterTags(value), foodIdentityTagValue(configuredTag)]) {
+    const tag = foodIdentityTagValue(candidate);
+    const normalized = normalizeHealthTag(tag);
+    if (!tag || !normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function yamlValueAndComment(value: string): { value: string; comment: string } {
+  let quote = "";
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (quote === "\"") {
+      if (character === "\\") index++;
+      else if (character === "\"") quote = "";
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'" && value[index + 1] === "'") index++;
+      else if (character === "'") quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && (index === 0 || /\s/.test(value[index - 1]))) {
+      return { value: value.slice(0, index).trimEnd(), comment: value.slice(index).trimEnd() };
+    }
+  }
+  return { value: value.trimEnd(), comment: "" };
+}
+
+function unquoteYamlTagValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1).replace(/''/g, "'");
+  return trimmed;
+}
+
+function splitYamlFlowTagValues(value: string): string[] {
+  const values: string[] = [];
+  let start = 0;
+  let quote = "";
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (quote === "\"") {
+      if (character === "\\") index++;
+      else if (character === "\"") quote = "";
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'" && value[index + 1] === "'") index++;
+      else if (character === "'") quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") quote = character;
+    else if (character === ",") {
+      values.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  values.push(value.slice(start));
+  return values;
+}
+
+function yamlTagValuesFromValue(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const flow = trimmed.startsWith("[");
+  const body = flow
+    ? trimmed.slice(1, trimmed.endsWith("]") ? -1 : undefined)
+    : trimmed;
+  const candidates = flow ? splitYamlFlowTagValues(body) : [body];
+  return candidates
+    .flatMap((candidate) => frontmatterTags(unquoteYamlTagValue(candidate)))
+    .filter(Boolean);
+}
+
+function yamlCommentIsFoodIdentityPlaceholder(comment: string, configuredTag: string): boolean {
+  const candidate = comment.trim().replace(/^#\s*/, "").replace(/[\],}]+\s*$/, "").trim();
+  return Boolean(candidate && normalizeHealthTag(candidate) === normalizeHealthTag(configuredTag));
+}
+
+function yamlTagValuesFromLines(
+  lines: string[],
+  tagsIndex: number,
+  frontmatterEnd: number,
+  configuredTag: string,
+): { values: string[]; end: number; preservedLines: string[] } {
+  const inline = lines[tagsIndex].replace(/^tags\s*:\s*/i, "");
+  const parsedInline = yamlValueAndComment(inline);
+  if (parsedInline.value.trim() || parsedInline.comment) {
+    const preservedLines = parsedInline.comment && !yamlCommentIsFoodIdentityPlaceholder(parsedInline.comment, configuredTag)
+      ? [parsedInline.comment.trimStart()]
+      : [];
+    return { values: yamlTagValuesFromValue(parsedInline.value), end: tagsIndex + 1, preservedLines };
+  }
+  const values: string[] = [];
+  const preservedLines: string[] = [];
+  let end = tagsIndex + 1;
+  while (end < frontmatterEnd) {
+    const line = lines[end];
+    if (!line.trim() || line.trimStart().startsWith("#")) {
+      preservedLines.push(line);
+      end++;
+      continue;
+    }
+    const match = line.match(/^(\s*)-\s*(.*?)\s*$/);
+    if (!match) break;
+    const parsed = yamlValueAndComment(match[2] || "");
+    values.push(...yamlTagValuesFromValue(parsed.value));
+    if (parsed.comment && !yamlCommentIsFoodIdentityPlaceholder(parsed.comment, configuredTag)) {
+      preservedLines.push(`${match[1]}${parsed.comment.trimStart()}`);
+    }
+    end++;
+  }
+  return { values, end, preservedLines };
+}
+
+function standaloneFoodIdentityTagLine(line: string, configuredTags: string[]): boolean {
+  const candidate = line.trim().replace(/^[-*]\s+/, "").trim();
+  if (!candidate.startsWith("#") || /\s/.test(candidate)) return false;
+  const normalized = normalizeHealthTag(candidate);
+  return Boolean(normalized && configuredTags.some((tag) => normalizeHealthTag(tag) === normalized));
+}
+
+function stripStandaloneFoodIdentityTagFromBody(content: string, configuredTag: string, type: FoodNoteType): string {
+  const lines = content.split("\n");
+  const bodyStart = frontmatterLineEnd(lines);
+  const tags = [configuredTag, defaultFoodIdentityTag(type)].filter(Boolean);
+  return lines.filter((line, index) => index < bodyStart || !standaloneFoodIdentityTagLine(line, tags)).join("\n");
+}
+
+function ensureFoodIdentityTagInContent(content: string, configuredTag: string, type: FoodNoteType): string {
+  const tag = foodIdentityTagValue(configuredTag);
+  const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(content, configuredTag, type);
+  if (!tag) return withoutBodyTag;
+  const lines = withoutBodyTag.split("\n");
+  let frontmatterEnd = frontmatterLineEnd(lines);
+  if (!frontmatterEnd) {
+    return ["---", yamlStringList("tags", [tag]), "---", ...lines].join("\n");
+  }
+  const tagsIndex = lines.findIndex((line, index) => index > 0 && index < frontmatterEnd - 1 && /^tags\s*:/i.test(line));
+  if (tagsIndex < 0) {
+    lines.splice(frontmatterEnd - 1, 0, yamlStringList("tags", [tag]));
+    return lines.join("\n");
+  }
+  const existing = yamlTagValuesFromLines(lines, tagsIndex, frontmatterEnd - 1, configuredTag);
+  const tags = mergeFoodIdentityFrontmatterTags(existing.values, tag);
+  const replacement = yamlStringList("tags", tags).split("\n");
+  lines.splice(tagsIndex, existing.end - tagsIndex, ...replacement, ...existing.preservedLines);
+  return lines.join("\n");
+}
+
 function normalizeHealthTag(value: string): string {
   return value.trim().replace(/^#/, "").toLowerCase();
 }
@@ -13109,13 +13732,82 @@ function foodNoteTypeFromFrontmatter(fm: any, file: TFile, settings: TPSHealthSe
   return "food";
 }
 
-function recipeBodyFromContent(content: string): string {
+function recipeBodyWithIngredientDrafts(
+  originalBody: string,
+  ingredients: RecipeIngredientDraft[],
+  resolveFoodByName?: (name: string) => FoodItem | null,
+): string {
+  const lines = originalBody ? originalBody.split(/\r?\n/) : [];
+  const sourceDrafts = new Map(ingredients
+    .filter((ingredient) => ingredient.sourceLineNumber != null)
+    .map((ingredient) => [ingredient.sourceLineNumber as number, ingredient]));
+  const additions = ingredients.filter((ingredient) => ingredient.sourceLineNumber == null);
+  const originalIngredientIndexes = lines
+    .map((line, index) => parseRecipeIngredientLine(line, resolveFoodByName) ? index : -1)
+    .filter((index) => index >= 0);
+  const lastOriginalIngredient = originalIngredientIndexes.length
+    ? originalIngredientIndexes[originalIngredientIndexes.length - 1]
+    : undefined;
+  const next: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const original = parseRecipeIngredientLine(lines[index], resolveFoodByName);
+    if (!original) {
+      next.push(lines[index]);
+      continue;
+    }
+    const draft = sourceDrafts.get(index);
+    if (draft) {
+      next.push(draft.sourceLine === lines[index] && recipeIngredientLinesEqual(original, draft)
+        ? lines[index]
+        : recipeIngredientMarkdown(draft));
+    }
+    if (index === lastOriginalIngredient) next.push(...additions.map(recipeIngredientMarkdown));
+  }
+  if (lastOriginalIngredient == null && additions.length) {
+    const notesIndex = next.findIndex((line) => /^##\s+Notes\s*$/i.test(line.trim()));
+    const insertionIndex = notesIndex >= 0 ? notesIndex : next.length;
+    next.splice(insertionIndex, 0, ...additions.map(recipeIngredientMarkdown));
+  }
+  return trimMarkdownBodyBlankLines(next.join("\n"));
+}
+
+function replaceRecipeBodyContent(content: string, body: string): string {
+  const lines = content.split("\n");
+  const bodyStart = frontmatterLineEnd(lines);
+  const frontmatter = bodyStart ? lines.slice(0, bodyStart) : [];
+  while (frontmatter.length && !frontmatter[frontmatter.length - 1].trim()) frontmatter.pop();
+  const trimmedBody = trimMarkdownBodyBlankLines(body);
+  const bodyLines = trimmedBody ? trimmedBody.split(/\r?\n/) : [];
+  return [...frontmatter, "", ...bodyLines].join("\n").replace(/\n+$/, "") + "\n";
+}
+
+function mergeMarkdownFrontmatterAndBody(frontmatterSource: string, bodySource: string): string {
+  const frontmatterLines = frontmatterSource.split("\n");
+  const frontmatterEnd = frontmatterLineEnd(frontmatterLines);
+  if (!frontmatterEnd) return bodySource;
+  const bodyLines = bodySource.split("\n");
+  const bodyStart = frontmatterLineEnd(bodyLines);
+  const frontmatter = frontmatterLines.slice(0, frontmatterEnd);
+  const body = bodyLines.slice(bodyStart);
+  while (body.length && !body[0].trim()) body.shift();
+  return [...frontmatter, "", ...body].join("\n").replace(/\n+$/, "") + "\n";
+}
+
+function recipeBodyFromContent(content: string, configuredRecipeTag = DEFAULT_SETTINGS.recipeTag): string {
   const lines = content.split("\n");
   const start = frontmatterLineEnd(lines);
-  return lines.slice(start)
-    .filter((line) => !/^#tps\/recipe\b/.test(line.trim()))
-    .join("\n")
-    .trim();
+  return trimMarkdownBodyBlankLines(lines.slice(start)
+    .filter((line) => !standaloneFoodIdentityTagLine(line, [configuredRecipeTag, DEFAULT_SETTINGS.recipeTag]))
+    .join("\n"));
+}
+
+function trimMarkdownBodyBlankLines(value: string): string {
+  const lines = value.split(/\r?\n/);
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start].trim()) start++;
+  while (end > start && !lines[end - 1].trim()) end--;
+  return lines.slice(start, end).join("\n");
 }
 
 function aliasesFromFrontmatter(value: unknown): string[] | undefined {

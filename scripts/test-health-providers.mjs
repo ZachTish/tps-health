@@ -127,7 +127,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -187,6 +187,14 @@ function createFakeHealthApp() {
       files.set(file.path, content);
       writes.push({ op: "modify", path: file.path, content });
     },
+    async process(file, updater) {
+      const current = files.get(file.path) || "";
+      const updated = updater(current);
+      if (updated !== current) {
+        files.set(file.path, updated);
+        writes.push({ op: "process", path: file.path, content: updated });
+      }
+    },
     async append(file, content) {
       files.set(file.path, `${files.get(file.path) || ""}${content}`);
       writes.push({ op: "append", path: file.path, content });
@@ -235,10 +243,25 @@ function parseFrontmatter(content) {
   const end = content.indexOf("\n---", 4);
   if (end < 0) return {};
   const frontmatter = {};
-  for (const line of content.slice(4, end).split("\n")) {
+  const lines = content.slice(4, end).split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const match = line.match(/^([^:]+):\s*(.*)$/);
     if (!match) continue;
     let value = match[2].trim();
+    if (!value) {
+      const items = [];
+      while (index + 1 < lines.length) {
+        const item = lines[index + 1].match(/^\s+-\s*(.*?)\s*$/);
+        if (!item) break;
+        index += 1;
+        items.push(item[1].replace(/^"|"$/g, ""));
+      }
+      if (items.length) {
+        frontmatter[match[1].trim()] = items;
+        continue;
+      }
+    }
     if (/^".*"$/.test(value)) value = value.slice(1, -1).replace(/\\"/g, '"');
     else if (/^-?\d+(?:\.\d+)?$/.test(value)) value = Number(value);
     else if (value === "true" || value === "false") value = value === "true";
@@ -257,6 +280,10 @@ function frontmatterToYaml(frontmatter) {
   const lines = ["---"];
   for (const [key, value] of Object.entries(frontmatter)) {
     if (value == null) continue;
+    if (Array.isArray(value)) {
+      lines.push(`${key}:`, ...value.map((item) => `  - ${JSON.stringify(String(item))}`));
+      continue;
+    }
     lines.push(`${key}: ${typeof value === "number" || typeof value === "boolean" ? value : JSON.stringify(String(value))}`);
   }
   lines.push("---", "");
@@ -729,20 +756,25 @@ test("food and recipe edits require an explicit linked-instance versioning choic
 
 test("logged meal editing exposes draft ingredient amounts before linked-instance save", () => {
   assert.match(mainSource, /tps-health-meal-ingredient-editor/);
-  assert.match(mainSource, /Adjust the amount or unit, or add an ingredient/);
+  assert.match(mainSource, /Adjust amounts, replace or remove foods, or add another ingredient/);
   assert.match(mainSource, /parseRecipeIngredientLine\(line, \(foodName\) => this\.plugin\.findRecipeIngredientFoodByName\(foodName\)\)/);
   assert.match(mainSource, /tps-health-meal-ingredient-quantity/);
   assert.match(mainSource, /tps-health-meal-ingredient-unit/);
   assert.match(mainSource, /tps-health-meal-ingredient-food/);
   assert.match(mainSource, /tps-health-meal-ingredient-macros/);
   assert.match(mainSource, /interface RecipeIngredientDraft extends RecipeIngredientLine/);
+  assert.match(mainSource, /text: "Replace", cls: "tps-health-meal-ingredient-replace"/);
+  assert.match(mainSource, /text: "Remove", cls: "mod-muted tps-health-meal-ingredient-remove"/);
   assert.match(mainSource, /text: "\+ Add ingredient"/);
   assert.match(mainSource, /new RecipeIngredientModal\(this\.app, this\.plugin, null, async \(selection\) => \{/);
   assert.match(mainSource, /recipeIngredients\.push\(\{\s+quantity: selection\.quantity,\s+unit: selection\.unit,\s+foodPath: selection\.food\.sourcePath,\s+foodName: selection\.food\.name,\s+food: selection\.food,/);
-  assert.match(mainSource, /const persistDraftIngredients = async \(\): Promise<RecipeIngredientLine\[\]> => \{[\s\S]+?await this\.plugin\.findOrCreateFoodNote\(ingredient\.food\)/);
+  assert.match(mainSource, /const persistDraftIngredients = async \(\): Promise<RecipeIngredientDraft\[\]> => \{[\s\S]+?await this\.plugin\.findOrCreateFoodNote\(ingredient\.food\)/);
+  assert.match(mainSource, /let recipeIngredientQuantityControls: Array<\{ ingredient: RecipeIngredientDraft; input: HTMLInputElement \}> = \[\]/);
+  assert.match(mainSource, /const invalidQuantity = recipeIngredientQuantityControls\.find[\s\S]+?new Notice\("Every ingredient quantity must be greater than 0\."\);[\s\S]+?invalidQuantity\.input\.focus\(\);/);
   assert.match(mainSource, /if \(linkScope === "cancel"\) return;\s+const createNewVersion = linkScope === "new-version";\s+const savedIngredients = isRecipeLikeFoodType\(this\.type\) \? await persistDraftIngredients\(\) : \[\];/);
-  assert.match(mainSource, /const ingredientsForSave = isRecipeLikeFoodType\(this\.type\)\s+\? savedIngredients\.map\(recipeIngredientMarkdown\)\.join\("\\n"\)/);
+  assert.match(mainSource, /const ingredientsForSave = isRecipeLikeFoodType\(this\.type\)\s+\? recipeBodyWithIngredientDrafts\(originalRecipeBody, savedIngredients/);
   assert.match(mainSource, /ingredients: ingredientsForSave/);
+  assert.match(mainSource, /expectedRecipeBody: originalRecipeBody/);
   assert.match(mainSource, /const linkScope = this\.editPath \? await chooseFoodEditLinkScope/);
   assert.match(stylesSource, /\.tps-health-meal-ingredient-row/);
 });
@@ -758,6 +790,157 @@ test("meal ingredient picker returns a local draft without directly mutating the
     pickerSource.indexOf("if (this.onIngredientSelected)") < pickerSource.indexOf("await this.plugin.findOrCreateFoodNote(this.selectedFood)"),
     "the callback route must run before the direct recipe-note persistence route",
   );
+});
+
+test("recipe draft replacement preserves sections, prose, custom links, and in-place ingredient order", async () => {
+  const { recipeBodyWithIngredientDrafts } = await importPluginWithObsidianStub();
+  const fillingLine = "  * 1 serving - [[Health/Foods/Filling|My filling label]]";
+  const sauceLine = "- 2 serving - [[Health/Foods/Sauce|Sauce]]";
+  const original = [
+    "## Filling",
+    fillingLine,
+    "Keep the filling note here.",
+    "## Sauce",
+    sauceLine,
+    "## Method",
+    "Bake until crisp.",
+  ].join("\n");
+  const updated = recipeBodyWithIngredientDrafts(original, [
+    {
+      quantity: 1,
+      unit: "serving",
+      foodPath: "Health/Foods/Filling.md",
+      foodName: "My filling label",
+      sourceLineNumber: 1,
+      sourceLine: fillingLine,
+    },
+    {
+      quantity: 3,
+      unit: "serving",
+      foodPath: "Health/Foods/Sauce.md",
+      foodName: "Sauce",
+      sourceLineNumber: 4,
+      sourceLine: sauceLine,
+    },
+    {
+      quantity: 1,
+      unit: "serving",
+      foodPath: "Health/Foods/Garnish.md",
+      foodName: "Garnish",
+    },
+  ]);
+
+  assert.match(updated, /^## Filling\n  \* 1 serving - \[\[Health\/Foods\/Filling\|My filling label\]\]/);
+  assert.match(updated, /Keep the filling note here\.\n## Sauce\n- 3 serving - \[\[Health\/Foods\/Sauce\|Sauce\]\]\n- 1 serving - \[\[Health\/Foods\/Garnish\|Garnish\]\]\n## Method/);
+  assert.match(updated, /## Method\nBake until crisp\.$/);
+  const emptied = recipeBodyWithIngredientDrafts(original, []);
+  assert.equal(emptied, ["## Filling", "Keep the filling note here.", "## Sauce", "## Method", "Bake until crisp."].join("\n"));
+});
+
+test("recipe upserts and new versions preserve unchanged linked-row Markdown while recalculating nutrition", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, recipeBodyWithIngredientDrafts } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const filling = await plugin.createFoodFromInput({
+    name: "Formatting Filling",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { proteinG: 10 },
+  });
+  const sauce = await plugin.createFoodFromInput({
+    name: "Formatting Sauce",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { proteinG: 20 },
+  });
+  const fillingPath = filling.sourcePath.replace(/\.md$/i, "");
+  const saucePath = sauce.sourcePath.replace(/\.md$/i, "");
+  const fillingLine = `  * 1 serving - [[${fillingPath}|Keep my custom label]] <!-- preserve this comment -->`;
+  const sauceLine = `- 1 serving - [[${saucePath}|Formatting Sauce]]`;
+  const originalBody = [
+    fillingLine,
+    "Keep this filling note.",
+    "## Sauce",
+    sauceLine,
+    "## Method",
+    "Keep this instruction.",
+  ].join("\n");
+  const editedBody = recipeBodyWithIngredientDrafts(originalBody, [
+    {
+      quantity: 1,
+      unit: "serving",
+      foodPath: filling.sourcePath,
+      foodName: "Keep my custom label",
+      sourceLineNumber: 0,
+      sourceLine: fillingLine,
+    },
+    {
+      quantity: 2,
+      unit: "serving",
+      foodPath: sauce.sourcePath,
+      foodName: "Formatting Sauce",
+      sourceLineNumber: 3,
+      sourceLine: sauceLine,
+    },
+  ]);
+  const path = "Health/Recipes/Formatting Recipe.md";
+  fake.files.set(path, [
+    "---",
+    "kind: recipe",
+    'name: "Formatting Recipe"',
+    "servingAmount: 1",
+    'servingUnit: "serving"',
+    "recipeServings: 1",
+    "calories: 120",
+    "proteinG: 30",
+    "carbsG: 0",
+    "fatG: 0",
+    "---",
+    originalBody,
+  ].join("\n"));
+
+  const updated = await plugin.upsertFoodFromInput({
+    type: "recipe",
+    path,
+    name: "Formatting Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    recipeServings: 1,
+    ingredients: editedBody,
+  }, { expectedRecipeBody: originalBody });
+  const updatedContent = fake.files.get(path);
+  assert.ok(stripFrontmatter(updatedContent).startsWith(fillingLine));
+  assert.match(updatedContent, /Keep this filling note\./);
+  assert.match(updatedContent, /## Sauce\n- 2 serving - \[\[Health\/Foods\/Formatting Sauce\|Formatting Sauce\]\]/);
+  assert.match(updatedContent, /## Method\nKeep this instruction\./);
+  assert.equal(updated.nutrition.proteinG, 50);
+  assert.equal(parseFrontmatter(updatedContent).proteinG, 50);
+
+  const versioned = await plugin.upsertFoodFromInput({
+    type: "recipe",
+    path,
+    name: "Formatting Recipe New Version",
+    servingAmount: 1,
+    servingUnit: "serving",
+    recipeServings: 1,
+    ingredients: editedBody,
+    merge: false,
+  });
+  const versionedContent = fake.files.get(versioned.sourcePath);
+  assert.notEqual(versioned.sourcePath, path);
+  assert.ok(stripFrontmatter(versionedContent).startsWith(fillingLine));
+  assert.match(versionedContent, /## Method\nKeep this instruction\./);
+  assert.equal(versioned.nutrition.proteinG, 50);
+  assert.equal(parseFrontmatter(versionedContent).proteinG, 50);
 });
 
 test("recipe notes keep ingredient lines editable and food buttons open linked notes safely", () => {
@@ -795,11 +978,18 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /function recipeIngredientConvertQuantity\(food: FoodItem, quantity: number, fromUnit: string, toUnit: string\): number/);
   assert.match(mainSource, /function recipeIngredientCanonicalAmount\(food: FoodItem \| null, quantity: number, unit: string\): \{ quantity: number; unit: string \}/);
   assert.match(mainSource, /function quantityFromMetricAmount\(amount: number, amountUnit: "g" \| "ml", targetUnit: string\): number \| null/);
-  assert.match(mainSource, /await plugin\.updateRecipeIngredientLine\(source, updated\)/);
-  assert.match(mainSource, /async updateRecipeIngredientLine\(source: FoodLogLineSource, ingredient: RecipeIngredientLine\): Promise<boolean>/);
+  assert.match(mainSource, /await plugin\.updateRecipeIngredientLine\(source, ingredient, updated\)/);
+  assert.match(mainSource, /async updateRecipeIngredientLine\(source: FoodLogLineSource, expected: RecipeIngredientLine, ingredient: RecipeIngredientLine\): Promise<boolean>/);
+  assert.match(mainSource, /async replaceRecipeIngredientLine\(source: FoodLogLineSource, expected: RecipeIngredientLine, ingredient: RecipeIngredientLine\): Promise<boolean>/);
+  assert.match(mainSource, /async removeRecipeIngredientLine\(source: FoodLogLineSource, expected: RecipeIngredientLine\): Promise<boolean>/);
   assert.match(mainSource, /async addRecipeIngredientLine\(sourcePath: string, ingredient: RecipeIngredientLine\): Promise<boolean>/);
   assert.match(mainSource, /logger\.flow\("Recipe", "ingredient:add-done"/);
   assert.match(mainSource, /class RecipeIngredientModal extends Modal/);
+  assert.match(mainSource, /private action: "add" \| "replace" = "add"/);
+  assert.match(mainSource, /private initialAmount\?: \{ quantity: number; unit: string \}/);
+  assert.match(mainSource, /const initialQuantity = this\.action === "replace" && this\.initialAmount[\s\S]+?this\.initialAmount\.quantity[\s\S]+?: 100;/);
+  assert.match(mainSource, /if \(initialUnit\) \{\s+this\.unitEl\.createEl\("option", \{ text: initialUnit, value: initialUnit \}\);/);
+  assert.match(mainSource, /const canPreserveInitial = Boolean\(this\.action === "replace" && this\.initialAmount && isFoodLogUnitSupported\(enriched, this\.initialAmount\.unit\)\)/);
   assert.match(mainSource, /new RecipeIngredientModal\(plugin\.app, plugin, sourcePath\)\.open\(\)/);
   assert.match(mainSource, /this\.plugin\.searchLocalFoods\(trimmed\)/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
@@ -809,7 +999,11 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /const savedFood = await this\.plugin\.findOrCreateFoodNote\(this\.selectedFood\)/);
   assert.match(mainSource, /await this\.plugin\.addRecipeIngredientLine\(this\.sourcePath, \{/);
   assert.match(mainSource, /await this\.refreshRecipeNutrition\(file\)/);
-  assert.match(mainSource, /logger\.flow\("Recipe", "ingredient:update-done"/);
+  assert.match(mainSource, /this\.serializeRecipeMutation\(file\.path, `nutrition-repair-\$\{operation\}`, \(\) => this\.refreshRecipeNutrition\(file\)\)/);
+  assert.match(mainSource, /const setRowActionBusy = \(busy: boolean\) => \{\s+quantity\.disabled = busy;\s+unit\.disabled = busy;/);
+  assert.match(mainSource, /!window\.confirm\(`Remove \$\{ingredient\.foodName\} from this \$\{entityLabel\}\?`\)\) \{\s+suppressRowSaveForAction = false;\s+return;/);
+  assert.match(mainSource, /setRowActionBusy\(true\);[\s\S]+?removeRecipeIngredientLine[\s\S]+?\.finally\(\(\) => \{\s+setRowActionBusy\(false\);\s+suppressRowSaveForAction = false;/);
+  assert.match(mainSource, /logger\.flow\("Recipe", `ingredient:\$\{operation\}-done`/);
   assert.match(mainSource, /async refreshRecipeNutrition\(file: TFile\): Promise<void>/);
   assert.match(mainSource, /function parseRecipeIngredientLine\(line: string, resolveFoodByName\?: \(name: string\) => FoodItem \| null\): RecipeIngredientLine \| null/);
   assert.match(mainSource, /findRecipeIngredientFoodByName\(name: string\): FoodItem \| null/);
@@ -819,16 +1013,22 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /await plugin\.findOrCreateFoodNote\(entry\.item\)/);
   assert.match(mainSource, /function parseRecipeIngredientRenderedItem\(item: Element, resolveFoodByName\?: \(name: string\) => FoodItem \| null\): RecipeIngredientLine \| null/);
   assert.match(mainSource, /parseRecipeIngredientRenderedItem\(item, \(name\) => plugin\.findRecipeIngredientFoodByName\(name\)\)/);
+  assert.match(mainSource, /lineOrigin: "rendered"/);
   assert.match(mainSource, /const rawPath = link\.getAttribute\("data-href"\) \|\| link\.getAttribute\("href"\) \|\| ""/);
   assert.match(mainSource, /parseQuantity\(match\[1\]\)/);
   assert.doesNotMatch(mainSource, /line\.text\.matchAll\(\/<!--\[\\s\\S\]\*\?-->/);
   assert.match(mainSource, /renderRecipeIngredientChips\(root, plugin, ctx\)/);
   assert.match(mainSource, /renderRecipeIngredientAddAction\(root, plugin, ctx\.sourcePath, lastRenderedItem\)/);
-  assert.match(mainSource, /if \(!lastRenderedItem\) return/);
+  assert.doesNotMatch(mainSource, /function renderRecipeIngredientAddAction[\s\S]{0,500}if \(!lastRenderedItem\) return/);
   assert.match(mainSource, /function recipeIngredientAddElement\(plugin: TPSHealthPlugin, sourcePath: string\): HTMLElement/);
-  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient \{\s+align-items: center;\s+display: grid !important;/);
-  assert.match(stylesSource, /grid-template-columns: minmax\(4\.5rem, 0\.45fr\) minmax\(6rem, 0\.7fr\) minmax\(10rem, 1\.5fr\) minmax\(11rem, 1fr\) !important;/);
-  assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient-field--food,\s+\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-recipe-ingredient-field--macros \{\s+border-top: 0;\s+grid-column: auto;/);
+  assert.match(mainSource, /Could not replace recipe ingredient\./);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient \{[\s\S]+?grid-template-columns: minmax\(5rem, 0\.75fr\) minmax\(6\.5rem, 1fr\);/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--food \{\s+grid-column: 1 \/ -1;\s+grid-row: 1;/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--macros \{[\s\S]+?grid-column: 1 \/ -1;\s+grid-row: 3;/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--actions \{\s+grid-column: 1 \/ -1;\s+grid-row: 4;/);
+  assert.doesNotMatch(stylesSource, /@media \(min-width: 700px\)[\s\S]+?\.tps-health-recipe-ingredient/);
+  assert.match(stylesSource, /\.tps-health-meal-ingredient-row \{[\s\S]+?grid-template-columns: minmax\(5rem, 0\.75fr\) minmax\(6\.5rem, 1fr\);/);
+  assert.match(stylesSource, /\.tps-health-meal-ingredient-actions \{[\s\S]+?grid-column: 1 \/ -1;\s+grid-row: 4;/);
   assert.match(mainSource, /function isRecipeLikeMarkdownFile\(plugin: TPSHealthPlugin, path: string \| null \| undefined\): boolean/);
   assert.match(mainSource, /fileIsInConfiguredFolder\(file\.path, plugin\.settings\.recipesFolder\)/);
   assert.match(mainSource, /function recipeIngredientLine\(item: FoodItem, quantity: number, unit: string\): string/);
@@ -859,6 +1059,8 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(stylesSource, /\.tps-health-recipe-ingredient-row::marker/);
   assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--quantity/);
   assert.match(stylesSource, /\.tps-health-recipe-ingredient-label/);
+  assert.match(stylesSource, /\.tps-health-recipe-ingredient-actions button:focus-visible/);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]+?min-height: 44px/);
   assert.match(stylesSource, /\.tps-health-recipe-ingredient select/);
   assert.match(stylesSource, /button\.tps-health-recipe-ingredient-food|\.tps-health-recipe-ingredient-food \{/);
 });
@@ -3284,7 +3486,8 @@ test("custom food creation validates manual input and writes deterministic food 
   assert.match(content, /servingUnit: "g"/);
   assert.match(content, /calories: 204/);
   assert.match(content, /proteinG: 30/);
-  assert.match(content, /#tps\/food/);
+  assert.match(content, /tags:\n\s+- "tps\/food"/);
+  assert.doesNotMatch(stripFrontmatter(content), /^#tps\/food\s*$/m);
 
   await assert.rejects(
     () => plugin.createFoodFromInput({ name: "   ", servingAmount: 1, servingUnit: "serving" }),
@@ -3295,6 +3498,139 @@ test("custom food creation validates manual input and writes deterministic food 
     /Serving amount must be greater than 0/,
   );
   assert.equal(writes.filter((write) => write.op === "create" && write.path.endsWith("Untitled food.md")).length, 0);
+});
+
+test("food, recipe, meal, and log-created notes keep identity tags in frontmatter instead of the body", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    dailyNoteFormat: "YYYY-MM-DD",
+    dailyNoteFolder: "Daily",
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+    foodLogTarget: "daily-note",
+    defaultFoodLogSection: "",
+    automaticDailyRollups: false,
+  };
+
+  const food = await plugin.createFoodFromInput({
+    name: "Tagged Food",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { proteinG: 5, carbsG: 10, fatG: 2 },
+  });
+  const recipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Tagged Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${food.sourcePath.replace(/\.md$/i, "")}|Tagged Food]]`,
+  });
+  const meal = await plugin.createFoodFromInput({
+    type: "meal",
+    name: "Tagged Meal",
+    servingAmount: 1,
+    servingUnit: "meal",
+    ingredients: `- 1 serving - [[${food.sourcePath.replace(/\.md$/i, "")}|Tagged Food]]`,
+  });
+  const logged = await plugin.logFoodFromInput({
+    item: {
+      id: "logged-provider-food",
+      name: "Logged Provider Food",
+      source: "manual",
+      servingAmount: 1,
+      servingUnit: "serving",
+      nutrition: { calories: 90, proteinG: 9, carbsG: 8, fatG: 2 },
+    },
+    quantity: 1,
+    unit: "serving",
+    completedDate: "2026-08-14T12:00:00.000Z",
+  });
+
+  for (const [item, kind, tag] of [
+    [food, "food", "food"],
+    [recipe, "recipe", "recipe"],
+    [meal, "meal", "recipe"],
+    [logged.item, "food", "food"],
+  ]) {
+    const content = fake.files.get(item.sourcePath);
+    const frontmatter = parseFrontmatter(content);
+    assert.equal(frontmatter.kind, kind);
+    assert.ok(frontmatter.tags.includes(tag), `${item.name} should carry ${tag} in frontmatter`);
+    assert.doesNotMatch(stripFrontmatter(content), new RegExp(`^#${tag}\\s*$`, "m"));
+  }
+
+  const dailyContent = fake.files.get("Daily/2026-08-14.md");
+  assert.equal(parseFrontmatter(dailyContent).tags, undefined, "a daily note must not be classified as a reusable food note");
+  assert.match(dailyContent, /\[type:: foodLog\]/, "the per-entry discriminator belongs on the food-log line");
+});
+
+test("linked meal edits migrate a legacy body tag, preserve prose, and return recalculated nutrition", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const ingredient = await plugin.createFoodFromInput({
+    name: "Meal Ingredient",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 100, proteinG: 10, carbsG: 12, fatG: 2 },
+  });
+  const ingredientLine = `- 1 serving - [[${ingredient.sourcePath.replace(/\.md$/i, "")}|My ingredient label]]`;
+  const legacyBody = ["## Filling", ingredientLine, "", "## Method", "Keep this instruction."].join("\n");
+  const path = "Health/Recipes/Legacy Tagged Meal.md";
+  fake.files.set(path, [
+    "---",
+    "kind: meal",
+    'name: "Legacy Tagged Meal"',
+    "tags:",
+    "  - user/favorite",
+    "servingAmount: 1",
+    'servingUnit: "meal"',
+    "calories: 100",
+    "proteinG: 10",
+    "carbsG: 12",
+    "fatG: 2",
+    "---",
+    "#recipe",
+    legacyBody,
+  ].join("\n"));
+  const updatedBody = legacyBody.replace("- 1 serving", "- 2 serving");
+
+  const saved = await plugin.upsertFoodFromInput({
+    type: "meal",
+    path,
+    name: "Legacy Tagged Meal",
+    servingAmount: 1,
+    servingUnit: "meal",
+    ingredients: updatedBody,
+    nutrition: { calories: 100, proteinG: 10, carbsG: 12, fatG: 2 },
+  }, { expectedRecipeBody: legacyBody });
+
+  const content = fake.files.get(path);
+  const frontmatter = parseFrontmatter(content);
+  assert.deepEqual(frontmatter.tags, ["user/favorite", "recipe"]);
+  assert.doesNotMatch(stripFrontmatter(content), /^#recipe\s*$/m);
+  assert.match(content, /## Filling\n- 2 serving - \[\[Health\/Foods\/Meal Ingredient\|My ingredient label\]\]/);
+  assert.match(content, /## Method\nKeep this instruction\./);
+  assert.equal(frontmatter.calories, 212);
+  assert.equal(frontmatter.proteinG, 20);
+  assert.equal(saved.nutrition.calories, 212);
+  assert.equal(saved.nutrition.proteinG, 20);
 });
 
 function createFakeMoment(value) {
@@ -5261,14 +5597,15 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.equal(recipe.sourcePath, "Health/Recipes/Provider Snack Plate.md");
   const recipeContent = fake.files.get("Health/Recipes/Provider Snack Plate.md");
   assert.match(recipeContent, /kind: recipe/);
-  assert.match(recipeContent, /#tps\/recipe/);
+  assert.match(recipeContent, /tags:\n\s+- "tps\/recipe"/);
   assert.match(recipeContent, /servingUnit: "serving"/);
   assert.match(recipeContent, /recipeServings: 1/);
   assert.match(recipeContent, /calories: 316/);
   assert.match(recipeContent, /proteinG: 34\.5/);
   assert.match(recipeContent, /carbsG: 25\.9/);
   assert.match(recipeContent, /fatG: 7\.2/);
-  assert.match(recipeContent, /#tps\/recipe\n- 0\.5 bar - \[\[Health\/Foods\/Provider Bar\|Provider Bar\]\]/);
+  assert.match(stripFrontmatter(recipeContent), /^- 0\.5 bar - \[\[Health\/Foods\/Provider Bar\|Provider Bar\]\]/);
+  assert.doesNotMatch(stripFrontmatter(recipeContent), /^#tps\/recipe\s*$/m);
   assert.match(recipeContent, /- 1 cup - \[\[Health\/Foods\/Search Yogurt\|Search Yogurt\]\]/);
   assert.doesNotMatch(recipeContent, /<!--/);
   assert.doesNotMatch(recipeContent, /\[foodPath:: Health\/Foods\/Search Yogurt\.md\]/);
@@ -5342,6 +5679,451 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
     "Health/Recipes/Provider Snack Plate.md",
     "Health/Recipes/Single Serving Snack Plate.md",
   ]);
+});
+
+test("recipe replace and remove mutations rebase safely, fail closed on duplicates, and zero the last ingredient", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const foodA = await plugin.createFoodFromInput({
+    name: "Mutation Food A",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 100, proteinG: 10, carbsG: 10, fatG: 2 },
+  });
+  const foodB = await plugin.createFoodFromInput({
+    name: "Mutation Food B",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 180, proteinG: 18, carbsG: 20, fatG: 4 },
+  });
+  const foodAPath = foodA.sourcePath.replace(/\.md$/i, "");
+  const foodBPath = foodB.sourcePath.replace(/\.md$/i, "");
+
+  const recipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Mutation Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: [
+      "## Filling",
+      `- 1 serving - [[${foodAPath}|Custom A label]]`,
+      "",
+      "## Method",
+      "Keep this unsaved instruction.",
+    ].join("\n"),
+  });
+  const originalContent = fake.files.get(recipe.sourcePath);
+  const originalLine = originalContent.split("\n").find((line) => line.includes("Custom A label"));
+  const originalLineNumber = originalContent.split("\n").indexOf(originalLine);
+  fake.files.set(recipe.sourcePath, originalContent.replace("## Filling", "Intro inserted after render\n## Filling"));
+  const source = { filePath: recipe.sourcePath, lineNumber: originalLineNumber, line: originalLine };
+  const replaced = await plugin.replaceRecipeIngredientLine(source, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Custom A label",
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodB.sourcePath,
+    foodName: "Mutation Food B",
+  });
+  assert.equal(replaced, true);
+  const replacedContent = fake.files.get(recipe.sourcePath);
+  assert.match(replacedContent, /Intro inserted after render/);
+  assert.match(replacedContent, new RegExp(`- 1 serving - \\[\\[${foodBPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\|Mutation Food B\\]\\]`));
+  assert.doesNotMatch(replacedContent, /Custom A label/);
+  assert.match(replacedContent, /## Method\nKeep this unsaved instruction\./);
+  assert.equal(parseFrontmatter(replacedContent).calories, 188);
+
+  const labelRecipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Custom Label Mutation Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${foodAPath}|Keep my custom label]]`,
+  });
+  const labelBefore = fake.files.get(labelRecipe.sourcePath);
+  const labelLine = labelBefore.split("\n").find((line) => line.includes("Keep my custom label"));
+  assert.equal(await plugin.updateRecipeIngredientLine({
+    filePath: labelRecipe.sourcePath,
+    lineNumber: labelBefore.split("\n").indexOf(labelLine),
+    line: labelLine,
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Keep my custom label",
+  }, {
+    quantity: 2,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Keep my custom label",
+  }), true);
+  assert.match(fake.files.get(labelRecipe.sourcePath), /- 2 serving - \[\[Health\/Foods\/Mutation Food A\|Keep my custom label\]\]/);
+  assert.equal(parseFrontmatter(fake.files.get(labelRecipe.sourcePath)).calories, 196);
+
+  const duplicate = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Duplicate Mutation Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: [
+      `- 1 serving - [[${foodAPath}|Same label]]`,
+      `- 1 serving - [[${foodAPath}|Same label]]`,
+    ].join("\n"),
+  });
+  const duplicateBefore = fake.files.get(duplicate.sourcePath);
+  const duplicateLine = duplicateBefore.split("\n").find((line) => line.includes("Same label"));
+  const duplicateRemoved = await plugin.removeRecipeIngredientLine({
+    filePath: duplicate.sourcePath,
+    lineNumber: duplicateBefore.split("\n").indexOf(duplicateLine),
+    line: duplicateLine,
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Same label",
+  });
+  assert.equal(duplicateRemoved, false, "an ambiguous duplicate must not be guessed");
+  assert.equal(fake.files.get(duplicate.sourcePath), duplicateBefore);
+
+  const renderedDuplicate = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Rendered Duplicate Mutation Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: [
+      `* 1 serving - [[${foodAPath}|Rendered same label]]`,
+      `- 1 serving - [[${foodAPath}|Rendered same label]]`,
+    ].join("\n"),
+  });
+  const renderedDuplicateBefore = fake.files.get(renderedDuplicate.sourcePath);
+  const renderedDuplicateLines = renderedDuplicateBefore.split("\n");
+  const renderedTargetLineNumber = renderedDuplicateLines.findIndex((line) => line.startsWith("* ") && line.includes("Rendered same label"));
+  const renderedCanonicalLine = renderedDuplicateLines.find((line) => line.startsWith("- ") && line.includes("Rendered same label"));
+  assert.ok(renderedTargetLineNumber >= 0);
+  assert.ok(renderedCanonicalLine);
+  assert.equal(await plugin.removeRecipeIngredientLine({
+    filePath: renderedDuplicate.sourcePath,
+    lineNumber: renderedTargetLineNumber,
+    line: renderedCanonicalLine,
+    lineOrigin: "rendered",
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Rendered same label",
+  }), true);
+  const renderedDuplicateAfter = fake.files.get(renderedDuplicate.sourcePath);
+  assert.doesNotMatch(renderedDuplicateAfter, /^\* 1 serving - .*Rendered same label/m, "Reading mode must mutate the clicked source row");
+  assert.match(renderedDuplicateAfter, /^- 1 serving - .*Rendered same label/m, "Reading mode must not redirect to the canonical-looking duplicate");
+
+  const last = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Last Ingredient Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${foodAPath}|Only ingredient]]`,
+  });
+  const lastBefore = fake.files.get(last.sourcePath);
+  const lastLine = lastBefore.split("\n").find((line) => line.includes("Only ingredient"));
+  assert.equal(await plugin.removeRecipeIngredientLine({
+    filePath: last.sourcePath,
+    lineNumber: lastBefore.split("\n").indexOf(lastLine),
+    line: lastLine,
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: foodA.sourcePath,
+    foodName: "Only ingredient",
+  }), true);
+  const lastContent = fake.files.get(last.sourcePath);
+  assert.doesNotMatch(lastContent, /Only ingredient/);
+  const lastFrontmatter = parseFrontmatter(lastContent);
+  assert.equal(lastFrontmatter.calories, 0);
+  assert.equal(lastFrontmatter.proteinG, 0);
+  assert.equal(lastFrontmatter.carbsG, 0);
+  assert.equal(lastFrontmatter.fatG, 0);
+  assert.deepEqual(lastFrontmatter.tags, ["recipe"]);
+});
+
+test("recipe mutations preserve the active editor buffer and treat nutrition refresh failures as post-commit repair work", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const food = await plugin.createFoodFromInput({
+    name: "Editor Mutation Food",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 75, proteinG: 8, carbsG: 7, fatG: 2 },
+  });
+  const foodPath = food.sourcePath.replace(/\.md$/i, "");
+  const recipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Editor Mutation Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${foodPath}|Editor food label]]`,
+  });
+  const diskBefore = fake.files.get(recipe.sourcePath);
+  const ingredientLine = diskBefore.split("\n").find((line) => line.includes("Editor food label"));
+  let editorValue = diskBefore.replace(ingredientLine, `Unsaved editor instruction.\n${ingredientLine}`);
+  const MarkdownView = globalThis.__TPSHealthTestMarkdownView;
+  const view = new MarkdownView();
+  view.file = new globalThis.__TPSHealthTestTFile(recipe.sourcePath);
+  view.getMode = () => "source";
+  view.editor = {
+    getValue: () => editorValue,
+    setValue: (value) => { editorValue = value; },
+  };
+  fake.app.workspace.iterateAllLeaves = (callback) => callback({ view });
+
+  assert.equal(await plugin.removeRecipeIngredientLine({
+    filePath: recipe.sourcePath,
+    lineNumber: diskBefore.split("\n").indexOf(ingredientLine),
+    line: ingredientLine,
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: food.sourcePath,
+    foodName: "Editor food label",
+  }), true);
+  assert.equal(editorValue, fake.files.get(recipe.sourcePath));
+  assert.match(editorValue, /Unsaved editor instruction\./);
+  assert.doesNotMatch(editorValue, /Editor food label/);
+  assert.equal(parseFrontmatter(editorValue).calories, 0);
+  assert.deepEqual(parseFrontmatter(editorValue).tags, ["recipe"]);
+
+  const repairRecipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Repair Pending Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${foodPath}|Repair ingredient]]`,
+  });
+  fake.app.workspace.iterateAllLeaves = () => {};
+  const repairBefore = fake.files.get(repairRecipe.sourcePath);
+  const repairLine = repairBefore.split("\n").find((line) => line.includes("Repair ingredient"));
+  plugin.refreshRecipeNutrition = async () => { throw new Error("synthetic nutrition refresh failure"); };
+  const repairSource = {
+    filePath: repairRecipe.sourcePath,
+    lineNumber: repairBefore.split("\n").indexOf(repairLine),
+    line: repairLine,
+  };
+  assert.equal(await plugin.removeRecipeIngredientLine(repairSource, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: food.sourcePath,
+    foodName: "Repair ingredient",
+  }), true, "the ingredient body is committed even when follow-up totals fail");
+  const committed = fake.files.get(repairRecipe.sourcePath);
+  assert.doesNotMatch(committed, /Repair ingredient/);
+  assert.equal(await plugin.removeRecipeIngredientLine(repairSource, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: food.sourcePath,
+    foodName: "Repair ingredient",
+  }), false, "retrying the stale action must not duplicate a committed mutation");
+  assert.equal(fake.files.get(repairRecipe.sourcePath), committed);
+});
+
+test("existing recipe upserts hold the mutation queue and preserve unsaved editor frontmatter through GCM", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const primary = await plugin.createFoodFromInput({
+    name: "Queued Primary Food",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 100, proteinG: 10, carbsG: 15, fatG: 2 },
+  });
+  const secondary = await plugin.createFoodFromInput({
+    name: "Queued Secondary Food",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 50, proteinG: 5, carbsG: 5, fatG: 1 },
+  });
+  const recipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "Queued Recipe Upsert",
+    servingAmount: 1,
+    servingUnit: "serving",
+    recipeServings: 1,
+    ingredients: `- 1 serving - [[${primary.sourcePath.replace(/\.md$/i, "")}|Queued primary]]`,
+  });
+  const diskBefore = fake.files.get(recipe.sourcePath);
+  const originalBody = stripFrontmatter(diskBefore).trim();
+  let editorValue = diskBefore.replace(/^(name:.*)$/m, '$1\ncustomOwner: "unsaved editor"');
+  const MarkdownView = globalThis.__TPSHealthTestMarkdownView;
+  const view = new MarkdownView();
+  view.file = new globalThis.__TPSHealthTestTFile(recipe.sourcePath);
+  view.getMode = () => "source";
+  view.editor = {
+    getValue: () => editorValue,
+    setValue: (value) => { editorValue = value; },
+  };
+  fake.app.workspace.iterateAllLeaves = (callback) => callback({ view });
+
+  let releaseFirstGcm;
+  const firstGcmGate = new Promise((resolve) => { releaseFirstGcm = resolve; });
+  let markFirstGcmStarted;
+  const firstGcmStarted = new Promise((resolve) => { markFirstGcmStarted = resolve; });
+  let gcmCalls = 0;
+  let nativeCalls = 0;
+  fake.app.fileManager.processFrontMatter = async () => { nativeCalls += 1; };
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      frontmatter: {
+        async process(file, mutator) {
+          gcmCalls += 1;
+          const current = parseFrontmatter(fake.files.get(file.path) || "");
+          await mutator(current);
+          if (gcmCalls === 1) {
+            markFirstGcmStarted();
+            await firstGcmGate;
+          }
+          const body = stripFrontmatter(fake.files.get(file.path) || "");
+          fake.files.set(file.path, `${frontmatterToYaml(current)}${body}`);
+          fake.writes.push({ op: "gcm-frontmatter", path: file.path });
+          return true;
+        },
+      },
+    },
+  };
+
+  const updatedBody = originalBody.replace("- 1 serving", "- 2 serving");
+  const upsert = plugin.upsertFoodFromInput({
+    type: "recipe",
+    path: recipe.sourcePath,
+    name: "Queued Recipe Upsert",
+    servingAmount: 1,
+    servingUnit: "serving",
+    recipeServings: 1,
+    ingredients: updatedBody,
+  }, { expectedRecipeBody: originalBody });
+  await firstGcmStarted;
+  const add = plugin.addRecipeIngredientLine(recipe.sourcePath, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: secondary.sourcePath,
+    foodName: "Queued secondary",
+  });
+  assert.doesNotMatch(fake.files.get(recipe.sourcePath), /Queued secondary/, "the row add must remain queued behind the full-note update");
+  releaseFirstGcm();
+  await Promise.all([upsert, add]);
+
+  const finalContent = fake.files.get(recipe.sourcePath);
+  const finalFrontmatter = parseFrontmatter(finalContent);
+  assert.equal(editorValue, finalContent);
+  assert.equal(finalFrontmatter.customOwner, "unsaved editor", "the active editor frontmatter must be the authoritative save base");
+  assert.equal(finalFrontmatter.proteinG, 25);
+  assert.match(finalContent, /- 2 serving - .*Queued primary/);
+  assert.match(finalContent, /- 1 serving - .*Queued secondary/);
+  assert.equal(gcmCalls, 2, "the upsert and queued nutrition refresh must each use the supported GCM route once");
+  assert.equal(nativeCalls, 0);
+});
+
+test("direct recipe mutations fail closed when the active editor changes during the final write", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#food",
+    recipeTag: "#recipe",
+    foodTemplatePath: "",
+  };
+  const food = await plugin.createFoodFromInput({
+    name: "CAS Ingredient",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 90, proteinG: 9, carbsG: 9, fatG: 2 },
+  });
+  const recipe = await plugin.createFoodFromInput({
+    type: "recipe",
+    name: "CAS Recipe",
+    servingAmount: 1,
+    servingUnit: "serving",
+    ingredients: `- 1 serving - [[${food.sourcePath.replace(/\.md$/i, "")}|CAS ingredient]]`,
+  });
+  const diskBefore = fake.files.get(recipe.sourcePath);
+  const ingredientLine = diskBefore.split("\n").find((line) => line.includes("CAS ingredient"));
+  let editorValue = diskBefore;
+  const MarkdownView = globalThis.__TPSHealthTestMarkdownView;
+  const view = new MarkdownView();
+  view.file = new globalThis.__TPSHealthTestTFile(recipe.sourcePath);
+  view.getMode = () => "source";
+  view.editor = {
+    getValue: () => editorValue,
+    setValue: (value) => { editorValue = value; },
+  };
+  fake.app.workspace.iterateAllLeaves = (callback) => callback({ view });
+
+  const normalRead = fake.app.vault.read.bind(fake.app.vault);
+  let recipeReads = 0;
+  let releaseFinalRead;
+  const finalReadGate = new Promise((resolve) => { releaseFinalRead = resolve; });
+  let markFinalReadStarted;
+  const finalReadStarted = new Promise((resolve) => { markFinalReadStarted = resolve; });
+  fake.app.vault.read = async (file) => {
+    const content = await normalRead(file);
+    if (file.path === recipe.sourcePath && ++recipeReads === 3) {
+      markFinalReadStarted();
+      await finalReadGate;
+    }
+    return content;
+  };
+
+  const removal = plugin.removeRecipeIngredientLine({
+    filePath: recipe.sourcePath,
+    lineNumber: diskBefore.split("\n").indexOf(ingredientLine),
+    line: ingredientLine,
+  }, {
+    quantity: 1,
+    unit: "serving",
+    foodPath: food.sourcePath,
+    foodName: "CAS ingredient",
+  });
+  await finalReadStarted;
+  editorValue = `${editorValue.trimEnd()}\n\nUnsaved while removing.\n`;
+  releaseFinalRead();
+  await assert.rejects(removal, /changed while it was being saved/);
+  fake.app.vault.read = normalRead;
+  assert.equal(fake.files.get(recipe.sourcePath), diskBefore, "a stale action must not modify the disk note");
+  assert.match(editorValue, /CAS ingredient/);
+  assert.match(editorValue, /Unsaved while removing\./, "the newer editor buffer must remain untouched");
 });
 
 test("create from food search upserts canonical local foods instead of creating duplicate copies", async () => {
@@ -6528,27 +7310,101 @@ test("exact exercise lookup reuses one coherent metadata snapshot per scanned fi
   assert.match(findExerciseMethod, /const tags = cache\?\.tags\?\.map/);
 });
 
-test("food note template placeholders render source-of-truth fields", () => {
-  const template = [
+test("configured food templates merge identity tags into frontmatter and remove legacy body placeholders", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    customFoodTag: "#tps/food",
+    foodTemplatePath: "Templates/Food.md",
+  };
+  fake.files.set("Templates/Food.md", [
     "---",
-    "kind: {{kind}}",
+    "tags:",
+    "  - user/cooking",
     "name: \"{{name}}\"",
-    "brand: \"{{brand}}\"",
     "servingGrams: {{servingGrams}}",
     "proteinG: {{proteinG}}",
     "---",
     "{{tag}}",
-  ].join("\n");
-  const rendered = renderFoodTemplate(template, {
+    "## Notes",
+    "Template note",
+  ].join("\n"));
+
+  const created = await plugin.createFoodFromInput({
     name: "Barebells Cookies & Cream Protein Bar",
     brand: "Barebells",
+    servingAmount: 1,
+    servingUnit: "bar",
     servingGrams: 55,
-    nutrition: { proteinG: 20 },
-  }, "food", "#tps/food");
-  assert.match(rendered, /kind: food/);
+    nutrition: { proteinG: 20, carbsG: 18, fatG: 7 },
+  });
+  const rendered = fake.files.get(created.sourcePath);
+  const frontmatter = parseFrontmatter(rendered);
+  assert.equal(frontmatter.kind, "food");
+  assert.deepEqual(frontmatter.tags, ["user/cooking", "tps/food"]);
   assert.match(rendered, /servingGrams: 55/);
   assert.match(rendered, /proteinG: 20/);
-  assert.match(rendered, /#tps\/food/);
+  assert.doesNotMatch(stripFrontmatter(rendered), /^(?:#)?tps\/food\s*$/m);
+  assert.match(stripFrontmatter(rendered), /## Notes\nTemplate note/);
+});
+
+test("identity tag migration preserves YAML comments and only removes actual body hashtags", async () => {
+  const { ensureFoodIdentityTagInContent } = await importPluginWithObsidianStub();
+  const cases = [
+    {
+      label: "scalar",
+      source: ["---", "tags: user/cooking # keep scalar comment", "name: Test", "---", "Body"].join("\n"),
+      expectedTags: ["user/cooking", "tps/food"],
+      comments: ["# keep scalar comment"],
+    },
+    {
+      label: "flow",
+      source: ["---", "tags: [user/cooking, \"user/favorite\"] # keep flow comment", "name: Test", "---", "Body"].join("\n"),
+      expectedTags: ["user/cooking", "user/favorite", "tps/food"],
+      comments: ["# keep flow comment"],
+    },
+    {
+      label: "block",
+      source: [
+        "---",
+        "tags:",
+        "  # keep block lead",
+        "  - user/cooking # keep item comment",
+        "  - 'user/favorite'",
+        "  # keep block tail",
+        "name: Test",
+        "---",
+        "Body",
+      ].join("\n"),
+      expectedTags: ["user/cooking", "user/favorite", "tps/food"],
+      comments: ["# keep block lead", "# keep item comment", "# keep block tail"],
+    },
+  ];
+  for (const scenario of cases) {
+    const output = ensureFoodIdentityTagInContent(scenario.source, "#tps/food", "food");
+    assert.deepEqual(parseFrontmatter(output).tags, scenario.expectedTags, `${scenario.label} tags should merge without comment text`);
+    for (const comment of scenario.comments) assert.ok(output.includes(comment), `${scenario.label} comment should be preserved`);
+  }
+
+  const placeholder = ensureFoodIdentityTagInContent([
+    "---",
+    "tags: #tps/food",
+    "kind: food",
+    "---",
+    "#tps/food",
+    "tps/food",
+    "- tps/food",
+    "- #tps/food",
+  ].join("\n"), "#tps/food", "food");
+  assert.deepEqual(parseFrontmatter(placeholder).tags, ["tps/food"]);
+  const placeholderBody = stripFrontmatter(placeholder);
+  assert.doesNotMatch(placeholderBody, /^\s*(?:[-*]\s+)?#tps\/food\s*$/m);
+  assert.match(placeholderBody, /^tps\/food$/m, "a bare body value is content, not a legacy hashtag");
+  assert.match(placeholderBody, /^- tps\/food$/m, "a bare list value is content, not a legacy hashtag");
 });
 
 test("sodium from Open Food Facts grams converts to milligrams", () => {
@@ -7224,33 +8080,6 @@ function normalizeNutrientKey(key) {
   if (normalized === "alcohol" || normalized === "alcoholg" || normalized === "alc") return "alcohol";
   if (normalized === "sodium" || normalized === "salt") return "sodium";
   return null;
-}
-
-function renderFoodTemplate(template, item, type, tag) {
-  const nutrition = item.nutrition || {};
-  const replacements = {
-    name: item.name,
-    brand: item.brand || "",
-    barcode: item.barcode || "",
-    imageUrl: item.imageUrl || "",
-    ingredients: item.ingredients || "",
-    kind: type,
-    tag,
-    servingAmount: String(item.servingAmount || 1),
-    servingUnit: item.servingUnit || "serving",
-    servingGrams: item.servingGrams == null ? "" : String(round(item.servingGrams)),
-    servingMl: item.servingMl == null ? "" : String(round(item.servingMl)),
-    calories: String(nutrition.calories || 0),
-    proteinG: String(nutrition.proteinG || 0),
-    carbsG: String(nutrition.carbsG || 0),
-    fatG: String(nutrition.fatG || 0),
-    fiberG: String(nutrition.fiberG || 0),
-    sugarG: String(nutrition.sugarG || 0),
-    sugarAlcoholG: String(nutrition.sugarAlcoholG || 0),
-    alcoholG: String(nutrition.alcoholG || 0),
-    sodiumMg: String(nutrition.sodiumMg || 0),
-  };
-  return Object.entries(replacements).reduce((output, [key, value]) => output.split(`{{${key}}}`).join(value), template);
 }
 
 function round(value) {
