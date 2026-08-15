@@ -49,10 +49,8 @@ test("Health settings keep only the three intentional optional disclosures", () 
   assert.match(settingsSource, /"Provider credentials"/);
 });
 
-test("Every user preference remains bound and exerciseTag is now editable", () => {
+test("Every active user preference remains bound and exerciseTag is editable", () => {
   const preferenceKeys = [
-    "dailyNoteFormat",
-    "dailyNoteFolder",
     "foodLogTarget",
     "foodLogFilePath",
     "defaultFoodLogSection",
@@ -63,7 +61,7 @@ test("Every user preference remains bound and exerciseTag is now editable", () =
     "activityGoalMinutes",
     "healthGoals",
     "workoutLogTarget",
-    "appendWorkoutSummaryToDailyNote",
+    "workoutDailyNotePlacement",
     "restTimerMode",
     "defaultRestSeconds",
     "defaultWorkoutCooldownDays",
@@ -92,7 +90,17 @@ test("Every user preference remains bound and exerciseTag is now editable", () =
     assert.match(settingsSource, new RegExp(`this\\.plugin\\.settings\\.${key}\\b`), `${key} must remain connected to the settings UI`);
   }
   assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag[\s\S]+?DEFAULT_SETTINGS\.exerciseTag/);
+  assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(dailyNoteFormat|dailyNoteFolder)/);
+  assert.match(settingsSource, /\.setName\("Daily Notes source"\)/);
+  assert.match(settingsSource, /Obsidian → Core plugins → Daily notes/);
+  assert.match(settingsSource, /setButtonText\("Open Daily Notes settings"\)/);
+  assert.match(settingsSource, /openTabById\?\.\("daily-notes"\)/);
   assert.match(settingsSource, /setButtonText\("Open AI Gateway settings"\)/);
+  assert.match(settingsSource, /\.setName\("Also create a dedicated workout note"\)/);
+  assert.match(settingsSource, /\.setName\("Workout position in Daily Note"\)/);
+  assert.match(settingsSource, /\.addOption\("after-frontmatter", "Top, after properties"\)/);
+  assert.match(settingsSource, /\.addOption\("before-first-h2", "Above the first level-2 heading"\)/);
+  assert.match(settingsSource, /\.addOption\("bottom", "Bottom of note"\)/);
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);

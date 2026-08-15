@@ -22,6 +22,7 @@ export interface CreateFoodInput {
   barcode?: string;
   imageUrl?: string;
   ingredients?: string;
+  recipeBody?: string;
   servingAmount?: number;
   servingUnit?: string;
   servingGrams?: number;

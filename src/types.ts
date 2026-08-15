@@ -4,6 +4,7 @@ export type FoodNoteType = "food" | "recipe" | "meal";
 export type HealthGoalKind = "min" | "max" | "range" | "counter";
 export type FoodLogTarget = "daily-note" | "single-file";
 export type WorkoutLogTarget = "session-note" | "daily-note" | "both";
+export type WorkoutDailyNotePlacement = "after-frontmatter" | "before-first-h2" | "bottom";
 export type ActivitySource = "manual" | "workout" | "apple-health";
 export type WorkoutSetNotation = "compact" | "verbose";
 export type HealthEntityIdentificationMode = "metadata-folder-tag" | "folder" | "tag" | "metadata";
@@ -15,7 +16,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 1;
+export const TPS_HEALTH_SCHEMA_VERSION = 3;
 
 export interface HealthGoal {
   propertyKey: string;
@@ -29,8 +30,6 @@ export interface HealthGoal {
 
 export interface TPSHealthSettings {
   settingsVersion: number;
-  dailyNoteFormat: string;
-  dailyNoteFolder: string;
   workoutsFolder: string;
   workoutPlansFolder: string;
   exercisesFolder: string;
@@ -48,6 +47,7 @@ export interface TPSHealthSettings {
   defaultFoodLogSection: string;
   foodLogFilePath: string;
   workoutLogTarget: WorkoutLogTarget;
+  workoutDailyNotePlacement: WorkoutDailyNotePlacement;
   foodIdentificationMode: HealthEntityIdentificationMode;
   workoutIdentificationMode: HealthEntityIdentificationMode;
   workoutTag: string;
@@ -103,6 +103,8 @@ export interface FoodItem {
   imageUrl?: string;
   sourceImagePath?: string;
   ingredients?: string;
+  recipeBody?: string;
+  recipeSourceBody?: string;
   servingAmount?: number;
   servingUnit?: string;
   servingGrams?: number;
@@ -257,8 +259,6 @@ export interface WorkoutSession {
 
 export const DEFAULT_SETTINGS: TPSHealthSettings = {
   settingsVersion: TPS_HEALTH_SCHEMA_VERSION,
-  dailyNoteFormat: "ddd, MMM DD YYYY",
-  dailyNoteFolder: "",
   workoutsFolder: "Health/Workouts",
   workoutPlansFolder: "Health/Workout Plans",
   exercisesFolder: "Health/Exercises",
@@ -275,7 +275,8 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   appendWorkoutSummaryToDailyNote: true,
   defaultFoodLogSection: "",
   foodLogFilePath: "Health/Food Log.md",
-  workoutLogTarget: "session-note",
+  workoutLogTarget: "both",
+  workoutDailyNotePlacement: "after-frontmatter",
   foodIdentificationMode: "metadata-folder-tag",
   workoutIdentificationMode: "metadata-folder-tag",
   workoutTag: "#tps/workout",

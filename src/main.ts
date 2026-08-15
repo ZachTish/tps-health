@@ -1,10 +1,10 @@
-import { RangeSetBuilder, StateField, type EditorState } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
-import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine, workoutSummaryLine } from "./format";
+import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine } from "./format";
 import { resolveFoodLogDateKey } from "./food-log-date";
 import { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { assessFoodPlausibility, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodPlan, parseFoodDescription, type DescribeFoodPlan } from "./describe-food";
@@ -24,6 +24,7 @@ import {
   PendingFoodLogDraft,
   TPSHealthSettings,
   WorkoutLogTarget,
+  WorkoutDailyNotePlacement,
   WorkoutPlanItem,
   WorkoutSet,
   USDA_DEMO_API_KEY,
@@ -35,6 +36,11 @@ interface FoodLogDateContext {
   isToday: boolean;
   foodLogTarget?: FoodLogTarget;
   focusAfterLog?: boolean;
+}
+
+interface CoreDailyNoteSettings {
+  format: string;
+  folder: string;
 }
 
 interface LogFoodOptions {
@@ -332,6 +338,7 @@ export function restoredFoodLogDraftConsumedDateInput(
 
 export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
+  private dailyNoteSettingsSnapshot: CoreDailyNoteSettings = { format: "YYYY-MM-DD", folder: "" };
   private settingsSavePromise: Promise<void> | null = null;
   private settingsSavePending = false;
   private readonly uncertainSettingsSaveKeys = new Set<string>();
@@ -421,6 +428,7 @@ export default class TPSHealthPlugin extends Plugin {
         await this.saveData(settingsPersistencePayload(this.settings));
       }
     }
+    await this.getDailyNoteSettings();
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.api = this.createApi();
     this.api.homeActions = createTPSHealthHomeActionProvider(this);
@@ -444,8 +452,7 @@ export default class TPSHealthPlugin extends Plugin {
       id: "start-blank-workout",
       name: "Start blank workout",
       callback: () => this.traceCommand("start-blank-workout", async () => {
-        const path = await this.startWorkout({ openFile: false });
-        if (path) new WorkoutExercisePickerModal(this.app, this, path).open();
+        await this.startWorkout({ openFile: true });
       }),
     });
     this.addCommand({
@@ -533,6 +540,8 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.registerEditorSuggest(new FoodLogEditorSuggest(this.app, this));
     this.registerEditorExtension(createRecipeIngredientEditorExtension(this));
+    this.registerEditorExtension(createWorkoutDailyMarkerProtectionExtension());
+    this.registerEditorExtension(createWorkoutDailyHeaderExtension(this));
     this.registerEditorExtension(createWorkoutSetChipExtension(this));
     this.registerEditorExtension(createFoodLogChipExtension(this));
     this.registerMarkdownPostProcessor((root, ctx) => {
@@ -712,7 +721,8 @@ export default class TPSHealthPlugin extends Plugin {
         icon: "apple",
         label: "Log food",
         title: "Log food",
-        isVisible: async ({ file }: { file: TFile }) => Boolean(await this.getDailyNoteDateContext(file)),
+        isVisible: async ({ file }: { file: TFile }) => this.settings.showFoodLogButtonInGcm
+          && Boolean(await this.getDailyNoteDateContext(file)),
         onClick: async ({ file }: { file: TFile }) => {
           const dateContext = await this.getDailyNoteDateContext(file);
           if (!dateContext) {
@@ -792,16 +802,17 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async ensureFoodLogBase(): Promise<TFile> {
+    const { folder: dailyFolder } = await this.getDailyNoteSettings();
     let file = this.app.vault.getAbstractFileByPath(DEFAULT_FOOD_LOG_BASE_PATH);
     if (!file) {
       logger.flow("Base", "food-log:create", { path: DEFAULT_FOOD_LOG_BASE_PATH });
-      file = await this.app.vault.create(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent(this.settings));
+      file = await this.app.vault.create(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent(this.settings, dailyFolder));
     }
     if (!(file instanceof TFile)) {
       logger.flowWarn("Base", "food-log:path-not-file", { path: DEFAULT_FOOD_LOG_BASE_PATH });
       throw new Error("Food Log base path is not a file.");
     }
-    const repaired = repairFoodLogBaseContent(await this.app.vault.cachedRead(file), this.settings);
+    const repaired = repairFoodLogBaseContent(await this.app.vault.cachedRead(file), this.settings, dailyFolder);
     if (repaired) {
       logger.flow("Base", "food-log:repair", { path: file.path });
       await this.app.vault.modify(file, repaired);
@@ -1148,7 +1159,7 @@ export default class TPSHealthPlugin extends Plugin {
     const handler = async (event: PointerEvent | MouseEvent) => {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const button = target?.closest<HTMLElement>('[data-tps-gcm-external-action-id="tps-health:food-log"]');
-      if (!button || button.hasClass("tps-health-gcm-hidden")) return;
+      if (!this.settings.showFoodLogButtonInGcm || !button || button.hasClass("tps-health-gcm-hidden")) return;
       const dateContext = await this.getActiveDailyNoteDateContext();
       if (!dateContext) {
         logger.flowWarn("GCM", "food-log-action:fallback-not-daily-note", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
@@ -1222,7 +1233,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async repairFoodLogNutritionFieldsInVault(): Promise<void> {
-    const files = this.foodLogRepairSourceFiles();
+    const files = await this.foodLogRepairSourceFiles();
     let changedFiles = 0;
     let changedLines = 0;
     let failedFiles = 0;
@@ -1250,8 +1261,8 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("FoodLogEntry", "nutrition-repair:scheduled", { reason, delayMs });
   }
 
-  private foodLogRepairSourceFiles(): TFile[] {
-    const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "");
+  private async foodLogRepairSourceFiles(): Promise<TFile[]> {
+    const { folder: dailyFolder } = await this.getDailyNoteSettings();
     const foodLogFilePath = normalizePath(this.settings.foodLogFilePath || "");
     return this.app.vault.getMarkdownFiles()
       .filter((file) => file.path === foodLogFilePath || isFoodLogBaseDailyNoteFile(file.path, dailyFolder) || /^Dailynotes\//i.test(file.path));
@@ -1373,7 +1384,8 @@ export default class TPSHealthPlugin extends Plugin {
     const plan = await this.resolveWorkoutPlanForStart(input);
     const title = input.title || `${plan?.name || "Workout"} ${window.moment(startedAt).format("YYYY-MM-DD HH.mm")}`;
     const cooldownDays = input.cooldownDays ?? plan?.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
-    const logTarget = normalizeWorkoutLogTarget(input.logTarget || this.settings.workoutLogTarget);
+    const requestedLogTarget = normalizeWorkoutLogTarget(input.logTarget || this.settings.workoutLogTarget);
+    const logTarget: WorkoutLogTarget = requestedLogTarget === "daily-note" ? "daily-note" : "both";
     const workoutId = id("workout");
     logger.flow("Workout", "start:resolved", {
       title,
@@ -1384,7 +1396,7 @@ export default class TPSHealthPlugin extends Plugin {
     });
     let path = "";
     let dailyNotePath = "";
-    if (logTarget === "session-note" || logTarget === "both") {
+    if (logTarget === "both") {
       path = await this.uniquePath(`${this.settings.workoutsFolder}/${title}.md`);
       await this.ensureFolder(this.settings.workoutsFolder);
       const template = await this.readWorkoutTemplate();
@@ -1401,7 +1413,7 @@ export default class TPSHealthPlugin extends Plugin {
       });
       if (plan?.sourcePath) await this.applyWorkoutPlanToSession(path, plan.sourcePath);
     }
-    if (logTarget === "daily-note" || logTarget === "both") {
+    {
       const dailyFile = await this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
         id: workoutId,
         title,
@@ -1410,13 +1422,11 @@ export default class TPSHealthPlugin extends Plugin {
         plan,
         cooldownDays,
         status: "active",
-      }), dailyNoteDate);
+      }), title, dailyNoteDate);
       dailyNotePath = dailyFile.path;
-      if (logTarget === "daily-note" && plan?.sourcePath) {
+      if (plan?.sourcePath) {
         await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
       }
-    } else if (this.settings.appendWorkoutSummaryToDailyNote && path) {
-      await this.insertIntoDailyNote(workoutSummaryLine(path, startedAt), undefined, await this.getOrCreateDailyNoteForDate(dailyNoteDate));
     }
     this.settings.activeWorkoutPath = path;
     this.settings.activeWorkoutId = workoutId;
@@ -1437,15 +1447,16 @@ export default class TPSHealthPlugin extends Plugin {
       planPath: plan?.sourcePath || "",
     });
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    const dailyFile = dailyNotePath ? this.app.vault.getAbstractFileByPath(dailyNotePath) : null;
     let openResult: WorkoutOpenResult = {
       requested: input.openFile !== false,
       opened: false,
       route: input.openFile === false ? "skipped" : "missing-file",
-      reason: input.openFile === false ? "openFile=false" : path ? "created file was not found in vault" : "no workout note path was created",
+      reason: input.openFile === false ? "openFile=false" : dailyNotePath ? "daily note was not found in vault" : "no daily workout path was created",
     };
     await this.startGcmWorkoutTimer(file instanceof TFile ? file : dailyNotePath);
     if (file instanceof TFile) await this.cacheWorkoutFile(file);
-    if (input.openFile !== false && file instanceof TFile) openResult = await this.openWorkoutFile(file);
+    if (input.openFile !== false && dailyFile instanceof TFile) openResult = await this.openWorkoutFile(dailyFile);
     logger.flow("Workout", "start:done", {
       workoutId,
       path,
@@ -1457,6 +1468,8 @@ export default class TPSHealthPlugin extends Plugin {
       openReason: openResult.reason || "",
     });
     new Notice("Started workout");
+    // Preserve the public API's existing return value when a dedicated workout
+    // note was requested, while the UI always opens the canonical Daily Note.
     return path || dailyNotePath;
   }
 
@@ -1586,12 +1599,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async addSetForExerciseToActiveWorkout(exercise: string, after?: WorkoutSetLineSource): Promise<void> {
-    if (this.getActiveWorkoutState()?.target === "daily-note") {
+    const active = this.getActiveWorkoutState();
+    if (active?.target === "daily-note") {
       if (!exercise.trim() || exercise.trim() === "Exercise") {
-        new WorkoutExercisePickerModal(this.app, this, this.settings.activeWorkoutDailyNotePath).open();
+        new WorkoutExercisePickerModal(this.app, this, active.dailyNotePath, active.id).open();
         return;
       }
-      await this.logSet({ exercise: exercise.trim(), createExerciseNote: true });
+      await this.addExercisePlaceholderToDailyWorkout(active.dailyNotePath, active.id, exercise);
       return;
     }
     let file = this.activeWorkoutFile();
@@ -1615,6 +1629,29 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     await this.addSetForExerciseToWorkoutFile(file.path, exercise, after);
+    const refreshedActive = this.getActiveWorkoutState();
+    if (refreshedActive?.dailyNotePath && refreshedActive.id) {
+      await this.addExercisePlaceholderToDailyWorkout(refreshedActive.dailyNotePath, refreshedActive.id, exercise);
+    }
+  }
+
+  async addExercisePlaceholderToDailyWorkout(filePath: string, workoutId: string, exercise: string): Promise<void> {
+    const exerciseName = exercise.trim();
+    if (!exerciseName) throw new Error("Exercise is required");
+    await this.serializeWorkoutMutation(filePath, "add-daily-workout-exercise", async () => {
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof TFile)) throw new Error("Daily Note was not found");
+      const content = await this.readWorkoutMutationContent(file, "add-daily-workout-exercise");
+      const lines = content.split("\n");
+      const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
+      if (anchorIndex < 0 || !isWorkoutDailyMarkerLine(lines[anchorIndex])) {
+        throw new Error("Workout section was moved or removed");
+      }
+      const insertIndex = dailyWorkoutBlockEnd(lines, anchorIndex);
+      lines.splice(insertIndex, 0, workoutSetPlaceholderLine(exerciseName));
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "add-daily-workout-exercise");
+      logger.flow("WorkoutSet", "daily-placeholder:add", { path: file.path, workoutId, exercise: exerciseName, line: insertIndex });
+    });
   }
 
   async addSetForExerciseToWorkoutFile(filePath: string, exercise: string, after?: WorkoutSetLineSource, options: { focusAfter?: boolean } = {}): Promise<void> {
@@ -1636,7 +1673,8 @@ export default class TPSHealthPlugin extends Plugin {
     const exerciseName = exercise.trim();
     if (!exerciseName || exerciseName === "Exercise") {
       logger.flow("WorkoutSet", "placeholder:open-modal", { path: file.path, exercise: exerciseName });
-      new WorkoutExercisePickerModal(this.app, this, file.path).open();
+      const dailyWorkoutId = file.path === this.settings.activeWorkoutDailyNotePath ? this.settings.activeWorkoutId : "";
+      new WorkoutExercisePickerModal(this.app, this, file.path, dailyWorkoutId).open();
       return;
     }
     const line = workoutSetPlaceholderLine(exerciseName);
@@ -2245,7 +2283,7 @@ export default class TPSHealthPlugin extends Plugin {
       await this.appendLoggedSetToWorkoutNote(file, savedSet, sessionSetLine, setCount, timeSincePreviousSetSeconds);
     }
     if ((logTarget === "daily-note" || logTarget === "both") && dailyNotePath && this.settings.activeWorkoutId) {
-      await this.appendNestedToDailyWorkout(dailyNotePath, this.settings.activeWorkoutId, workoutSetLine(savedSet));
+      await this.appendNestedToDailyWorkout(dailyNotePath, this.settings.activeWorkoutId, workoutSetLine(savedSet), logTarget === "daily-note");
     }
     this.settings.lastSetEndedAt = endedAt;
     this.settings.activeWorkoutSetCount = setCount;
@@ -2438,19 +2476,29 @@ export default class TPSHealthPlugin extends Plugin {
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
     await this.app.vault.create(path, body);
     this.localFoodIndexDirty = true;
-    logger.flow("Food", "note:create", { path, type, name: normalizedItem.name, template: Boolean(template), source: item.source });
+    logger.flow("Food", "note:create", {
+      path,
+      type,
+      name: normalizedItem.name,
+      template: Boolean(template),
+      source: item.source,
+      identificationMode: this.settings.foodIdentificationMode,
+    });
     return { ...normalizedItem, id: path, source: "custom-note", sourcePath: path };
   }
 
   private defaultFoodNoteTemplate(item: FoodItem, type: FoodNoteType, tag: string): string {
     const nutrition = item.nutrition || {};
+    const writesMetadata = foodIdentificationWritesMetadata(this.settings.foodIdentificationMode);
+    const writesTag = foodIdentificationWritesTag(this.settings.foodIdentificationMode);
     return [
       "---",
-      `kind: ${type}`,
+      writesMetadata ? `kind: ${type}` : "",
       `name: "${item.name.replace(/"/g, '\\"')}"`,
-      yamlStringList("tags", [foodIdentityTagValue(tag)]),
+      writesTag ? yamlStringList("tags", [foodIdentityTagValue(tag)]) : "",
       item.brand ? `brand: "${item.brand.replace(/"/g, '\\"')}"` : "",
       yamlStringList("aliases", aliasesFromFrontmatter(item.aliases) || []),
+      !isRecipeLikeFoodType(type) && item.ingredients ? yamlScalarLine("ingredientStatement", item.ingredients) : "",
       item.barcode ? `barcode: "${item.barcode}"` : "",
       item.imageUrl ? `imageUrl: "${item.imageUrl.replace(/"/g, '\\"')}"` : "",
       item.sourceImagePath ? `sourceImagePath: "${item.sourceImagePath.replace(/"/g, '\\"')}"` : "",
@@ -2460,6 +2508,7 @@ export default class TPSHealthPlugin extends Plugin {
       item.servingMl ? `servingMl: ${round(item.servingMl)}` : "",
       item.nutritionBasis ? `nutritionBasis: ${item.nutritionBasis}` : "",
       isRecipeLikeFoodType(type) ? `recipeServings: ${recipeServingsForFood(item, type)}` : "",
+      isRecipeLikeFoodType(type) ? yamlStringList("ingredients", recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")) : "",
       item.confidence != null ? `confidence: ${item.confidence}` : "",
       `calories: ${nutrition.calories || 0}`,
       `proteinG: ${nutrition.proteinG || 0}`,
@@ -2473,7 +2522,7 @@ export default class TPSHealthPlugin extends Plugin {
       `sodiumMg: ${nutrition.sodiumMg || 0}`,
       "---",
       "",
-      item.ingredients || "",
+      isRecipeLikeFoodType(type) ? item.recipeBody || "" : "",
       item.notes ? `## Notes\n${item.notes}\n` : "",
     ].filter((line) => line !== "").join("\n");
   }
@@ -2513,11 +2562,20 @@ export default class TPSHealthPlugin extends Plugin {
       (output, [key, value]) => output.split(`{{${key}}}`).join(value),
       template,
     );
-    const withNutritionBasis = updateYamlFrontmatterContent(rendered, {
-      kind: type,
+    const templateUpdates: Record<string, string> = {
       ...(item.nutritionBasis ? { nutritionBasis: item.nutritionBasis } : {}),
-    });
-    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type);
+      ...(item.ingredients ? { ingredientStatement: item.ingredients } : {}),
+    };
+    const withCanonicalIngredients = item.ingredients
+      ? stripStandaloneFoodIngredientStatementFromBody(
+        removeYamlFrontmatterProperty(rendered, "ingredients"),
+        item.ingredients,
+      )
+      : rendered;
+    const withNutritionBasis = Object.keys(templateUpdates).length
+      ? updateYamlFrontmatterContent(withCanonicalIngredients, templateUpdates)
+      : withCanonicalIngredients;
+    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type, this.settings.foodIdentificationMode);
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
@@ -2529,8 +2587,19 @@ export default class TPSHealthPlugin extends Plugin {
       });
     }
     const hasExplicitIngredients = item.ingredients !== undefined;
-    const ingredients = trimMarkdownBodyBlankLines(item.ingredients || item.notes || "");
-    const normalizedIngredients = this.normalizeRecipeIngredientLines(ingredients);
+    const ingredientSource = trimMarkdownBodyBlankLines(item.ingredients || "");
+    const hasSeparatedRecipeBody = item.recipeBody !== undefined;
+    const ingredientLines = hasSeparatedRecipeBody
+      ? ingredientSource
+      : ingredientSource.split(/\r?\n/)
+        .filter((line) => parseRecipeIngredientLine(line, (name) => this.findRecipeIngredientFoodByName(name)))
+        .join("\n");
+    const recipeBody = hasSeparatedRecipeBody
+      ? item.recipeBody
+      : trimMarkdownBodyBlankLines(ingredientSource.split(/\r?\n/)
+        .filter((line) => !parseRecipeIngredientLine(line, (name) => this.findRecipeIngredientFoodByName(name)))
+        .join("\n"));
+    const normalizedIngredients = this.normalizeRecipeIngredientLines(ingredientLines);
     const recipeServings = recipeServingsForFood(item, type);
     const totalNutrition = normalizedIngredients
       ? this.calculateFoodTotals(normalizedIngredients)
@@ -2538,8 +2607,9 @@ export default class TPSHealthPlugin extends Plugin {
     return normalizeFoodMetricServing({
       ...item,
       aliases: foodAliasesForItem(item),
-      ingredients: normalizedIngredients || ingredients || item.ingredients,
-      notes: item.ingredients ? item.notes : undefined,
+      ingredients: normalizedIngredients || ingredientLines || item.ingredients,
+      recipeBody,
+      notes: item.notes,
       recipeServings,
       servingAmount: 1,
       servingUnit: type === "meal" ? "meal" : "serving",
@@ -2576,10 +2646,10 @@ export default class TPSHealthPlugin extends Plugin {
     ]);
   }
 
-  private foodUsageSettingsSignature(): string {
+  private foodUsageSettingsSignature(dailyFolder = this.dailyNoteSettingsSnapshot.folder): string {
     return JSON.stringify([
       normalizePath(this.settings.foodLogFilePath || ""),
-      normalizePath(this.settings.dailyNoteFolder || ""),
+      normalizePath(dailyFolder || ""),
     ]);
   }
 
@@ -2600,7 +2670,7 @@ export default class TPSHealthPlugin extends Plugin {
   private foodUsagePathCouldChange(path: string): boolean {
     const normalized = normalizePath(path || "");
     if (!normalized) return false;
-    const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "");
+    const dailyFolder = normalizePath(this.dailyNoteSettingsSnapshot.folder || "");
     return normalized === normalizePath(this.settings.foodLogFilePath || "")
       || isFoodLogBaseDailyNoteFile(normalized, dailyFolder)
       || /^Dailynotes\//i.test(normalized);
@@ -2807,13 +2877,20 @@ export default class TPSHealthPlugin extends Plugin {
     }
 
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      const updated = foodFrontmatter(normalized, type);
+      const updated = foodFrontmatter(normalized, type, this.settings.foodIdentificationMode);
       if (!replaceAliases) delete updated.aliases;
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
-      frontmatter.tags = mergeFoodIdentityFrontmatterTags(frontmatter.tags, tag);
+      if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
+        delete frontmatter.ingredients;
+      }
+      if (!recipeLike && normalized.ingredients !== undefined) {
+        delete frontmatter.ingredients;
+        if (!normalized.ingredients.trim()) delete frontmatter.ingredientStatement;
+      }
+      applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings.foodIdentificationMode);
     });
 
     if (recipeLike && recipeContent != null) {
@@ -2831,18 +2908,24 @@ export default class TPSHealthPlugin extends Plugin {
         processedContent,
       );
       const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(processedContent, tag, type);
-      const bodyContent = replaceRecipeBody
-        ? replaceRecipeBodyContent(withoutBodyTag, item.ingredients ?? normalized.ingredients ?? "")
-        : withoutBodyTag;
+      const currentNonIngredientBody = recipeNonIngredientBodyFromContent(
+        withoutBodyTag,
+        this.settings.recipeTag,
+        (name) => this.findRecipeIngredientFoodByName(name),
+      );
+      const bodyContent = replaceRecipeBodyContent(
+        withoutBodyTag,
+        replaceRecipeBody ? item.recipeBody ?? currentNonIngredientBody : currentNonIngredientBody,
+      );
       await this.writeRecipeMutationContent(file, bodyContent, "food-note-body", processedContent, processedContent);
       this.localFoodIndexDirty = true;
-      logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody });
+      logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
       return normalized;
     }
 
     await this.app.vault.process(file, (content) => stripStandaloneFoodIdentityTagFromBody(content, tag, type));
     this.localFoodIndexDirty = true;
-    logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody });
+    logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
     return normalized;
   }
 
@@ -2854,7 +2937,12 @@ export default class TPSHealthPlugin extends Plugin {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
     const food = this.foodFromFrontmatter(file, fm);
-    if (isRecipeLikeFoodType(type)) food.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file), this.settings.recipeTag);
+    if (isRecipeLikeFoodType(type)) {
+      const content = await this.app.vault.cachedRead(file);
+      food.ingredients = recipeIngredientsFromContent(content, fm, this.settings.recipeTag, (name) => this.findRecipeIngredientFoodByName(name));
+      food.recipeBody = recipeNonIngredientBodyFromContent(content, this.settings.recipeTag, (name) => this.findRecipeIngredientFoodByName(name));
+      food.recipeSourceBody = recipeBodyFromContent(content, this.settings.recipeTag);
+    }
     logger.flow("Food", "editor:open", { path: file.path, type, name: food.name });
     new CustomFoodModal(this.app, this, type, food.name, false, food, null, file.path).open();
   }
@@ -3005,7 +3093,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async getLoggedFoodStats(query: string): Promise<Map<string, FoodUsageStats>> {
-    const signature = this.foodUsageSettingsSignature();
+    const { folder: dailyFolder } = await this.getDailyNoteSettings();
+    const signature = this.foodUsageSettingsSignature(dailyFolder);
     if (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === signature) {
       logger.flow("FoodSearch", "usage:cache-hit", {
         query,
@@ -3020,7 +3109,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("FoodSearch", "usage:join-in-flight", { query, generation });
       return (await inFlight.promise).stats;
     }
-    const promise = this.buildFoodUsageIndex(signature);
+    const promise = this.buildFoodUsageIndex(signature, dailyFolder);
     this.foodUsageIndexInFlight = { signature, generation, promise };
     try {
       const built = await promise;
@@ -3051,11 +3140,11 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async buildFoodUsageIndex(signature: string): Promise<FoodUsageIndex> {
+  private async buildFoodUsageIndex(signature: string, dailyFolder: string): Promise<FoodUsageIndex> {
     const stats = new Map<string, FoodUsageStats>();
-    const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "");
+    const normalizedDailyFolder = normalizePath(dailyFolder || "");
     const files = this.app.vault.getMarkdownFiles()
-      .filter((file) => file.path === normalizePath(this.settings.foodLogFilePath || "") || isFoodLogBaseDailyNoteFile(file.path, dailyFolder) || /^Dailynotes\//i.test(file.path));
+      .filter((file) => file.path === normalizePath(this.settings.foodLogFilePath || "") || isFoodLogBaseDailyNoteFile(file.path, normalizedDailyFolder) || /^Dailynotes\//i.test(file.path));
     let readFailures = 0;
     const batchSize = 8;
     for (let start = 0; start < files.length; start += batchSize) {
@@ -3141,7 +3230,7 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedItem = isRecipeLikeFoodType(type)
       ? await this.serializeRecipeMutation(file.path, "food-note-update", update)
       : await update();
-    const itemFrontmatter = foodFrontmatter(normalizedItem, type);
+    const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings.foodIdentificationMode);
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
     if (!replaceAliases) delete itemFrontmatter.aliases;
     else if (explicitAliases?.length) itemFrontmatter.aliases = explicitAliases;
@@ -3151,6 +3240,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...itemFrontmatter,
     };
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
+    applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings.foodIdentificationMode);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
     logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, openRequested, openReason });
     if (openRequested) await this.openPath(file.path);
@@ -3483,7 +3573,9 @@ export default class TPSHealthPlugin extends Plugin {
       barcode: fm.barcode ? String(fm.barcode) : undefined,
       imageUrl: fm.imageUrl ? String(fm.imageUrl) : undefined,
       sourceImagePath: fm.sourceImagePath ? String(fm.sourceImagePath) : undefined,
-      ingredients: fm.ingredients ? String(fm.ingredients) : undefined,
+      ingredients: isRecipeLikeFoodType(type)
+        ? recipeIngredientMarkdownFromFrontmatter(fm.ingredients) || undefined
+        : foodIngredientStatementFromFrontmatter(fm),
       servingAmount: isMeal ? 1 : Number(fm.servingAmount || 1),
       servingUnit: isMeal ? "meal" : String(fm.servingUnit || "serving"),
       servingGrams: isMeal ? undefined : numberOrUndefined(fm.servingGrams),
@@ -4297,36 +4389,40 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string): Promise<TFile> {
-    logger.flow("NoteWrite", "workout-session:daily-note", { dateValue: dateValue || "" });
-    return this.insertIntoDailyNote(line, undefined, await this.getOrCreateDailyNoteForDate(dateValue));
+  private async insertWorkoutSessionIntoDailyNote(line: string, title: string, dateValue?: string): Promise<TFile> {
+    const file = await this.getOrCreateDailyNoteForDate(dateValue);
+    const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+    const block = workoutDailyNoteBlock(title, line);
+    logger.flow("NoteWrite", "workout-session:daily-note", { dateValue: dateValue || "", path: file.path, placement });
+    await this.serializeWorkoutMutation(file.path, "start-daily-workout", async () => {
+      const content = await this.readWorkoutMutationContent(file, "start-daily-workout");
+      await this.writeWorkoutMutationContent(file, insertWorkoutBlockIntoContent(content, block, placement), "start-daily-workout");
+    });
+    return file;
   }
 
-  private async appendNestedToDailyWorkout(dailyNotePath: string, workoutId: string, line: string): Promise<void> {
+  private async appendNestedToDailyWorkout(dailyNotePath: string, workoutId: string, line: string, alreadySerialized = false): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(dailyNotePath);
     if (!(file instanceof TFile)) {
       logger.flowWarn("NoteWrite", "workout-set:daily-note-missing", { dailyNotePath, workoutId });
       throw new Error(`Daily note not found: ${dailyNotePath}`);
     }
-    const content = await this.app.vault.read(file);
-    const lines = content.split("\n");
-    const parentIndex = lines.findIndex((candidate) => candidate.includes(`[workoutId:: ${workoutId}]`));
-    if (parentIndex < 0) {
-      logger.flowWarn("NoteWrite", "workout-set:daily-parent-missing", { dailyNotePath, workoutId });
-      await this.app.vault.append(file, `\n${line}\n`);
-      logger.flow("NoteWrite", "workout-set:daily-fallback-append", { dailyNotePath: file.path, workoutId });
-      return;
-    }
-    const parentIndent = leadingSpaces(lines[parentIndex]);
-    let insertIndex = parentIndex + 1;
-    while (insertIndex < lines.length) {
-      const candidate = lines[insertIndex];
-      if (candidate.trim() && leadingSpaces(candidate) <= parentIndent && candidate.trimStart().startsWith("- ")) break;
-      insertIndex++;
-    }
-    lines.splice(insertIndex, 0, `  ${line}`);
-    logger.flow("NoteWrite", "workout-set:daily-nested", { dailyNotePath, workoutId });
-    await this.app.vault.modify(file, lines.join("\n"));
+    const append = async () => {
+      const content = await this.readWorkoutMutationContent(file, "append-daily-workout-set");
+      const lines = content.split("\n");
+      const parentIndex = dailyWorkoutAnchorIndex(lines, workoutId);
+      if (parentIndex < 0) {
+        logger.flowWarn("NoteWrite", "workout-set:daily-parent-missing", { dailyNotePath, workoutId });
+        throw new Error("The active workout section was not found in the Daily Note.");
+      }
+      const insertIndex = dailyWorkoutBlockEnd(lines, parentIndex);
+      const prefix = isWorkoutDailyMarkerLine(lines[parentIndex]) ? "" : "  ";
+      lines.splice(insertIndex, 0, `${prefix}${line}`);
+      logger.flow("NoteWrite", "workout-set:daily-nested", { dailyNotePath, workoutId, line: insertIndex });
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "append-daily-workout-set");
+    };
+    if (alreadySerialized) await append();
+    else await this.serializeWorkoutMutation(file.path, "append-daily-workout-set", append);
   }
 
   private async applyWorkoutPlanToDailyNote(dailyNotePath: string, workoutId: string, planPath: string): Promise<void> {
@@ -4335,19 +4431,17 @@ export default class TPSHealthPlugin extends Plugin {
     if (!(file instanceof TFile) || !(planFile instanceof TFile)) return;
     const exercises = this.extractWorkoutExerciseListFromPlan(await this.app.vault.read(planFile));
     if (!exercises.length) return;
-    const lines = (await this.app.vault.read(file)).split("\n");
-    const parentIndex = lines.findIndex((candidate) => candidate.includes(`[workoutId:: ${workoutId}]`));
-    if (parentIndex < 0) return;
-    const parentIndent = leadingSpaces(lines[parentIndex]);
-    let insertIndex = parentIndex + 1;
-    while (insertIndex < lines.length) {
-      const candidate = lines[insertIndex];
-      if (candidate.trim() && leadingSpaces(candidate) <= parentIndent && candidate.trimStart().startsWith("- ")) break;
-      insertIndex++;
-    }
-    lines.splice(insertIndex, 0, ...exercises.map((exercise) => `  ${workoutSetPlaceholderLine(exercise.trim())}`));
-    await this.app.vault.modify(file, lines.join("\n"));
-    logger.flow("WorkoutPlan", "apply:daily-note", { dailyNotePath, workoutId, planPath, exercises: exercises.length });
+    await this.serializeWorkoutMutation(file.path, "apply-daily-workout-template", async () => {
+      const content = await this.readWorkoutMutationContent(file, "apply-daily-workout-template");
+      const lines = content.split("\n");
+      const parentIndex = dailyWorkoutAnchorIndex(lines, workoutId);
+      if (parentIndex < 0) return;
+      const insertIndex = dailyWorkoutBlockEnd(lines, parentIndex);
+      const prefix = isWorkoutDailyMarkerLine(lines[parentIndex]) ? "" : "  ";
+      lines.splice(insertIndex, 0, ...exercises.map((exercise) => `${prefix}${workoutSetPlaceholderLine(exercise.trim())}`));
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "apply-daily-workout-template");
+      logger.flow("WorkoutPlan", "apply:daily-note", { dailyNotePath, workoutId, planPath, exercises: exercises.length });
+    });
   }
 
   private async appendLoggedSetToWorkoutNote(file: TFile, set: WorkoutSet, line: string, setCount: number, timeSincePreviousSetSeconds?: number): Promise<void> {
@@ -4495,6 +4589,9 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     const original = lines[targetLineNumber];
+    const dailyWorkoutId = dailyWorkoutIdForLine(lines, targetLineNumber);
+    const dailyAnchorIndex = dailyWorkoutId ? dailyWorkoutAnchorIndex(lines, dailyWorkoutId) : -1;
+    const dailyMarker = dailyAnchorIndex >= 0 ? lines[dailyAnchorIndex] : "";
     const wasUnchecked = isUncheckedWorkoutTaskLine(original);
     const performsSet = draft.performed === true;
     const startsRest = performsSet || (draft.completed && wasUnchecked);
@@ -4516,7 +4613,10 @@ export default class TPSHealthPlugin extends Plugin {
       nextLine = upsertDataviewField(nextLine, "type", "workoutSet");
       nextLine = upsertDataviewField(nextLine, "setId", readStringField(nextLine, "setId") || id("set"));
       nextLine = upsertDataviewField(nextLine, "workoutPath", file.path);
-      if (typeof fm.workoutPlanPath === "string" && fm.workoutPlanPath) nextLine = upsertDataviewField(nextLine, "workoutPlanPath", fm.workoutPlanPath);
+      const workoutPlanPath = typeof fm.workoutPlanPath === "string" && fm.workoutPlanPath
+        ? fm.workoutPlanPath
+        : readStringField(dailyMarker, "workoutPlanPath");
+      if (workoutPlanPath) nextLine = upsertDataviewField(nextLine, "workoutPlanPath", workoutPlanPath);
       nextLine = upsertDataviewField(nextLine, "createdDate", readStringField(nextLine, "createdDate") || performedAt);
       nextLine = upsertDataviewField(nextLine, "completedDate", performedAt);
       nextLine = upsertDataviewField(nextLine, "startedAt", performedAt);
@@ -4526,9 +4626,15 @@ export default class TPSHealthPlugin extends Plugin {
       if (timeSincePreviousSetSeconds != null) nextLine = upsertDataviewField(nextLine, "timeSincePreviousSet", timeSincePreviousSetSeconds);
     }
     lines[targetLineNumber] = nextLine;
-    performedSetCount = lines.filter((line) => isPerformedWorkoutSetLine(line)).length;
-    const completedLastPlannedSet = performsSet && this.settings.activeWorkoutPath === file.path &&
-      !lines.some((line) => isWorkoutSetLine(line) && !isPerformedWorkoutSetLine(line));
+    const relevantSetLines = dailyAnchorIndex >= 0
+      ? lines.slice(dailyAnchorIndex + 1, dailyWorkoutBlockEnd(lines, dailyAnchorIndex))
+      : lines;
+    performedSetCount = relevantSetLines.filter((line) => isPerformedWorkoutSetLine(line)).length;
+    const activeForFile = dailyWorkoutId
+      ? this.settings.activeWorkoutId === dailyWorkoutId && this.settings.activeWorkoutDailyNotePath === file.path
+      : this.settings.activeWorkoutPath === file.path;
+    const completedLastPlannedSet = performsSet && activeForFile &&
+      !relevantSetLines.some((line) => isWorkoutSetLine(line) && !isPerformedWorkoutSetLine(line));
     logger.flow("WorkoutSet", performsSet ? "line:perform" : "line:update", {
       path: file.path,
       line: targetLineNumber,
@@ -4548,10 +4654,18 @@ export default class TPSHealthPlugin extends Plugin {
     }
     await this.writeWorkoutMutationContent(file, updatedContent, performsSet ? "perform-set" : "update-set");
     if (performsSet) {
-      await this.updateWorkoutTaskCompletionFrontmatter(file, performedAt, performedSetCount, restSeconds);
+      if (dailyWorkoutId) {
+        if (this.settings.activeWorkoutId === dailyWorkoutId) {
+          this.settings.lastSetEndedAt = performedAt;
+          this.settings.activeWorkoutSetCount = Math.max(this.settings.activeWorkoutSetCount || 0, performedSetCount);
+          await this.saveSettings();
+        }
+      } else {
+        await this.updateWorkoutTaskCompletionFrontmatter(file, performedAt, performedSetCount, restSeconds);
+      }
       if (completedLastPlannedSet) this.promptFinishWorkoutAfterLastSet(file);
     }
-    else if (draft.completed && wasUnchecked) await this.handleWorkoutFileModify(file);
+    else if (draft.completed && wasUnchecked && !dailyWorkoutId) await this.handleWorkoutFileModify(file);
   }
 
   private async completeDailyWorkoutLine(dailyNotePath: string, workoutId: string, endedAt: string, nextEligibleDate?: string): Promise<void> {
@@ -4560,24 +4674,26 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("Workout", "daily-complete:missing-file", { dailyNotePath, workoutId });
       return;
     }
-    const content = await this.app.vault.read(file);
-    const lines = content.split("\n");
-    const index = lines.findIndex((candidate) => candidate.includes(`[workoutId:: ${workoutId}]`));
-    if (index < 0) {
-      logger.flowWarn("Workout", "daily-complete:missing-row", { path: file.path, workoutId, lines: lines.length });
-      return;
-    }
-    let line = lines[index];
-    line = replaceDataviewField(line, "status", "complete");
-    line = upsertDataviewField(line, "completedDate", endedAt);
-    line = upsertDataviewField(line, "endedAt", endedAt);
-    const startedAt = readStringField(line, "startedAt");
-    const durationMinutes = startedAt ? Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 60_000)) : NaN;
-    if (Number.isFinite(durationMinutes)) line = upsertDataviewField(line, "durationMinutes", String(durationMinutes));
-    if (nextEligibleDate) line = upsertDataviewField(line, "nextEligibleDate", nextEligibleDate);
-    lines[index] = line;
-    await this.app.vault.modify(file, lines.join("\n"));
-    logger.flow("Workout", "daily-complete:done", { path: file.path, workoutId, line: index, nextEligibleDate: nextEligibleDate || "" });
+    await this.serializeWorkoutMutation(file.path, "complete-daily-workout", async () => {
+      const content = await this.readWorkoutMutationContent(file, "complete-daily-workout");
+      const lines = content.split("\n");
+      const index = dailyWorkoutAnchorIndex(lines, workoutId);
+      if (index < 0) {
+        logger.flowWarn("Workout", "daily-complete:missing-row", { path: file.path, workoutId, lines: lines.length });
+        return;
+      }
+      let line = lines[index];
+      line = upsertWorkoutDailyMarkerField(line, "status", "complete");
+      line = upsertWorkoutDailyMarkerField(line, "completedDate", endedAt);
+      line = upsertWorkoutDailyMarkerField(line, "endedAt", endedAt);
+      const startedAt = readStringField(line, "startedAt");
+      const durationMinutes = startedAt ? Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 60_000)) : NaN;
+      if (Number.isFinite(durationMinutes)) line = upsertWorkoutDailyMarkerField(line, "durationMinutes", String(durationMinutes));
+      if (nextEligibleDate) line = upsertWorkoutDailyMarkerField(line, "nextEligibleDate", nextEligibleDate);
+      lines[index] = line;
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "complete-daily-workout");
+      logger.flow("Workout", "daily-complete:done", { path: file.path, workoutId, line: index, nextEligibleDate: nextEligibleDate || "" });
+    });
   }
 
   private async ensureWorkoutSessionFrontmatter(path: string, title: string, startedAt: string, plan: WorkoutPlanItem | null, cooldownDays: number, workoutId: string): Promise<void> {
@@ -4826,7 +4942,8 @@ export default class TPSHealthPlugin extends Plugin {
     }, () => {
       this.finishPromptWorkoutFiles.delete(file.path);
       logger.flow("WorkoutTask", "finish-prompt:add-set", { path: file.path });
-      new WorkoutExercisePickerModal(this.app, this, file.path).open();
+      const dailyWorkoutId = file.path === this.settings.activeWorkoutDailyNotePath ? this.settings.activeWorkoutId : "";
+      new WorkoutExercisePickerModal(this.app, this, file.path, dailyWorkoutId).open();
     }, () => {
       this.finishPromptWorkoutFiles.delete(file.path);
       logger.flow("WorkoutTask", "finish-prompt:dismiss", { path: file.path });
@@ -4899,7 +5016,8 @@ export default class TPSHealthPlugin extends Plugin {
     const path = normalizePath(folder ? `${folder}/${fileName}` : fileName);
     const existing = this.app.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) return existing;
-    if (folder) await this.ensureFolder(folder);
+    const parentFolder = path.split("/").slice(0, -1).join("/");
+    if (parentFolder) await this.ensureFolder(parentFolder);
     const created = await this.app.vault.create(path, "");
     logger.flow("DailyNote", "create", { path, dateValue: dateValue || "", format, folder });
     return created;
@@ -4920,15 +5038,15 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const { format, folder } = await this.getDailyNoteSettings();
     const normalizedFolder = normalizePath(folder).replace(/^\/+|\/+$/g, "");
-    if (normalizedFolder) {
-      const parent = normalizePath(file.parent?.path || "").replace(/^\/+|\/+$/g, "");
-      if (parent !== normalizedFolder) {
-        return { hasDateContext: false, path: file.path, reason: "folder-mismatch", expectedFolder: normalizedFolder, parent };
-      }
+    const normalizedPath = normalizePath(file.path).replace(/^\/+/, "").replace(/\.md$/i, "");
+    const folderPrefix = normalizedFolder ? `${normalizedFolder}/` : "";
+    if (folderPrefix && !normalizedPath.startsWith(folderPrefix)) {
+      return { hasDateContext: false, path: file.path, reason: "folder-mismatch", expectedFolder: normalizedFolder, parent: file.parent?.path || "" };
     }
-    const parsed = window.moment(file.basename, format, true);
-    if (!parsed.isValid()) {
-      return { hasDateContext: false, path: file.path, reason: "date-format-mismatch", format, basename: file.basename };
+    const dateValue = folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath;
+    const parsed = window.moment(dateValue, format, true);
+    if (!parsed.isValid() || parsed.format(format) !== dateValue) {
+      return { hasDateContext: false, path: file.path, reason: "date-format-mismatch", format, dateValue };
     }
     return {
       hasDateContext: !!dateContext,
@@ -4943,12 +5061,12 @@ export default class TPSHealthPlugin extends Plugin {
     if (!(file instanceof TFile)) return null;
     const { format, folder } = await this.getDailyNoteSettings();
     const normalizedFolder = normalizePath(folder).replace(/^\/+|\/+$/g, "");
-    if (normalizedFolder) {
-      const parent = normalizePath(file.parent?.path || "").replace(/^\/+|\/+$/g, "");
-      if (parent !== normalizedFolder) return null;
-    }
-    const parsed = window.moment(file.basename, format, true);
-    if (!parsed.isValid()) return null;
+    const normalizedPath = normalizePath(file.path).replace(/^\/+/, "").replace(/\.md$/i, "");
+    const folderPrefix = normalizedFolder ? `${normalizedFolder}/` : "";
+    if (folderPrefix && !normalizedPath.startsWith(folderPrefix)) return null;
+    const dateValue = folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath;
+    const parsed = window.moment(dateValue, format, true);
+    if (!parsed.isValid() || parsed.format(format) !== dateValue) return null;
     const today = window.moment();
     return {
       dateIso: parsed.format("YYYY-MM-DD"),
@@ -5252,7 +5370,7 @@ export default class TPSHealthPlugin extends Plugin {
     const actions = bar.createDiv({ cls: "tps-health-workout-action-buttons" });
     this.createWorkoutActionButton(actions, "+ Exercise", "Add exercise", () => {
       logger.flow("WorkoutActionBar", "exercise-picker:open", { path: file.path });
-      new WorkoutExercisePickerModal(this.app, this, file.path).open();
+      new WorkoutExercisePickerModal(this.app, this, file.path, activeForFile ? this.settings.activeWorkoutId : "").open();
     });
     const finish = this.createWorkoutActionButton(actions, "Finish", activeForFile ? "Finish active workout" : "Only available for the active workout", async () => {
       if (!activeForFile) {
@@ -5331,7 +5449,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async updateGcmFoodLogButtonVisibility(): Promise<void> {
     const dateContext = await this.getActiveDailyNoteDateContext();
-    const visible = Boolean(dateContext);
+    const visible = this.settings.showFoodLogButtonInGcm && Boolean(dateContext);
     const candidates = Array.from(document.querySelectorAll<HTMLElement>(
       '[data-tps-gcm-external-action-id="tps-health:food-log"]',
     ));
@@ -5347,21 +5465,25 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async getDailyNoteSettings(): Promise<{ format: string; folder: string }> {
-    let format = this.settings.dailyNoteFormat || "YYYY-MM-DD";
-    let folder = this.settings.dailyNoteFolder || "";
-    let formatSource = "tps-health-settings";
-    let folderSource = "tps-health-settings";
+    let format = "YYYY-MM-DD";
+    let folder = "";
+    let formatSource = "daily-notes-default";
+    let folderSource = "daily-notes-default";
+    let hasRuntimeFormat = false;
+    let hasRuntimeFolder = false;
 
     try {
       const dailyNotesPlugin = (this.app as any).internalPlugins?.getPluginById?.("daily-notes")
         || (this.app as any).internalPlugins?.plugins?.["daily-notes"];
-      const options = dailyNotesPlugin?.instance?.options;
+      const options = dailyNotesPlugin?.enabled === false ? null : dailyNotesPlugin?.instance?.options;
       if (typeof options?.format === "string" && options.format.trim()) {
         format = options.format.trim();
+        hasRuntimeFormat = true;
         formatSource = "daily-notes-plugin";
       }
-      if (typeof options?.folder === "string" && options.folder.trim()) {
+      if (typeof options?.folder === "string") {
         folder = options.folder.trim();
+        hasRuntimeFolder = true;
         folderSource = "daily-notes-plugin";
       }
     } catch (error) {
@@ -5373,11 +5495,11 @@ export default class TPSHealthPlugin extends Plugin {
       const configDir = (this.app.vault as any)?.configDir || ".obsidian";
       const raw = await this.app.vault.adapter.read(normalizePath(`${configDir}/daily-notes.json`));
       const parsed = JSON.parse(raw);
-      if (typeof parsed?.format === "string" && parsed.format.trim()) {
+      if (!hasRuntimeFormat && typeof parsed?.format === "string" && parsed.format.trim()) {
         format = parsed.format.trim();
         formatSource = "daily-notes-config";
       }
-      if (typeof parsed?.folder === "string" && parsed.folder.trim()) {
+      if (!hasRuntimeFolder && typeof parsed?.folder === "string") {
         folder = parsed.folder.trim();
         folderSource = "daily-notes-config";
       }
@@ -5386,10 +5508,11 @@ export default class TPSHealthPlugin extends Plugin {
       // Daily Notes may not have a persisted config yet.
     }
 
-    const resolved = {
+    const resolved: CoreDailyNoteSettings = {
       format,
       folder: normalizePath(folder).replace(/^\/+|\/+$/g, ""),
     };
+    this.dailyNoteSettingsSnapshot = resolved;
     logger.flow("DailyNote", "settings:resolved", { ...resolved, formatSource, folderSource });
     return resolved;
   }
@@ -5597,7 +5720,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const content = await this.app.vault.read(file);
     const lines = content.split("\n");
-    const parentIndex = lines.findIndex((candidate) => candidate.includes(`[workoutId:: ${workoutId}]`));
+    const parentIndex = dailyWorkoutAnchorIndex(lines, workoutId);
     if (parentIndex < 0) {
       logger.flowWarn("WorkoutPlan", "layout-extract:missing-daily-parent", { dailyNotePath: file.path, workoutId });
       return [];
@@ -5657,15 +5780,7 @@ export default class TPSHealthPlugin extends Plugin {
       return [];
     }
 
-    const parentIndent = leadingSpaces(lines[parentIndex]);
-    const nestedLines: string[] = [];
-    let index = parentIndex + 1;
-    while (index < lines.length) {
-      const candidate = lines[index];
-      if (candidate.trim() && leadingSpaces(candidate) <= parentIndent && candidate.trimStart().startsWith("- ")) break;
-      nestedLines.push(candidate);
-      index++;
-    }
+    const nestedLines = lines.slice(parentIndex + 1, dailyWorkoutBlockEnd(lines, parentIndex));
 
     const names = this.extractTaskExerciseNames(nestedLines.join("\n"));
     logger.flow("WorkoutPlan", "task-extract:daily-note", { dailyNotePath: file.path, workoutId, entries: names.length });
@@ -6002,7 +6117,7 @@ export default class TPSHealthPlugin extends Plugin {
       configuredFoodLogPath,
       configuredFoodLogPath && !/\.md$/i.test(configuredFoodLogPath) ? `${configuredFoodLogPath}.md` : "",
     ].filter(Boolean));
-    const dailyFolder = normalizePath(this.settings.dailyNoteFolder || "").replace(/^\/+|\/+$/g, "");
+    const { folder: dailyFolder } = await this.getDailyNoteSettings();
     const sourceFiles = this.app.vault.getMarkdownFiles().filter((file) => (
       configuredFoodLogPaths.has(file.path)
       || isFoodLogBaseDailyNoteFile(file.path, dailyFolder)
@@ -6592,12 +6707,15 @@ export default class TPSHealthPlugin extends Plugin {
       const lines = content.split("\n");
       const resolvedLine = this.resolveRecipeIngredientSourceLine(lines, source, expected, operation);
       if (resolvedLine == null) return false;
-      if (replacement) lines[resolvedLine] = recipeIngredientMarkdown(replacement);
+      const propertyLine = recipeIngredientFrontmatterLineIndexes(lines).includes(resolvedLine);
+      if (replacement) lines[resolvedLine] = propertyLine
+        ? recipeIngredientYamlListLine(replacement)
+        : recipeIngredientMarkdown(replacement);
       else lines.splice(resolvedLine, 1);
       const updatedContent = lines.join("\n");
       await this.writeRecipeMutationContent(file, updatedContent, `ingredient-${operation}`, content, diskContent);
       source.lineNumber = resolvedLine;
-      source.line = replacement ? recipeIngredientMarkdown(replacement) : "";
+      source.line = replacement ? propertyLine ? recipeIngredientYamlListLine(replacement) : recipeIngredientMarkdown(replacement) : "";
       logger.flow("Recipe", `ingredient:${operation}`, {
         path: file.path,
         line: resolvedLine,
@@ -6637,6 +6755,18 @@ export default class TPSHealthPlugin extends Plugin {
     const diskContent = await this.app.vault.read(file);
     const content = await this.readRecipeMutationContent(file, "ingredient-add");
     const lines = content.split("\n");
+    const propertyIndexes = recipeIngredientFrontmatterLineIndexes(lines);
+    const propertyKeyIndex = recipeIngredientFrontmatterKeyIndex(lines);
+    if (propertyKeyIndex >= 0) {
+      const insertIndex = propertyIndexes.length ? propertyIndexes[propertyIndexes.length - 1] + 1 : propertyKeyIndex + 1;
+      lines.splice(insertIndex, 0, recipeIngredientYamlListLine(ingredient));
+      await this.writeRecipeMutationContent(file, lines.join("\n"), "ingredient-add", content, diskContent);
+      logger.flow("Recipe", "ingredient:add", { path: file.path, line: insertIndex, storage: "property", foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
+      await this.refreshRecipeNutritionAfterCommittedMutation(file, "add");
+      logger.flow("Recipe", "ingredient:add-done", { path: file.path, line: insertIndex, storage: "property", foodPath: ingredient.foodPath || "", foodName: ingredient.foodName });
+      new Notice("Added recipe ingredient");
+      return true;
+    }
     let insertIndex = lines.length;
     while (insertIndex > 0 && lines[insertIndex - 1].trim() === "") insertIndex--;
     for (let index = 0; index < lines.length; index++) {
@@ -6658,7 +6788,9 @@ export default class TPSHealthPlugin extends Plugin {
     const content = await this.app.vault.cachedRead(file);
     const food = {
       ...this.foodFromFrontmatter(file, fm),
-      ingredients: recipeBodyFromContent(content, this.settings.recipeTag),
+      ingredients: recipeIngredientsFromContent(content, fm, this.settings.recipeTag, (name) => this.findRecipeIngredientFoodByName(name)),
+      recipeBody: recipeNonIngredientBodyFromContent(content, this.settings.recipeTag, (name) => this.findRecipeIngredientFoodByName(name)),
+      recipeSourceBody: recipeBodyFromContent(content, this.settings.recipeTag),
     };
     logger.flow("Recipe", "nutrition:refresh", { path: file.path, type, ingredientsLength: food.ingredients?.length || 0 });
     await this.updateFoodNote(file, food, type);
@@ -8149,7 +8281,12 @@ class FoodSearchModal extends Modal {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const type = foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings);
     const refreshed = this.plugin.foodFromFrontmatter(file, fm);
-    if (isRecipeLikeFoodType(type)) refreshed.ingredients = recipeBodyFromContent(await this.app.vault.cachedRead(file), this.plugin.settings.recipeTag);
+    if (isRecipeLikeFoodType(type)) {
+      const content = await this.app.vault.cachedRead(file);
+      refreshed.ingredients = recipeIngredientsFromContent(content, fm, this.plugin.settings.recipeTag, (name) => this.plugin.findRecipeIngredientFoodByName(name));
+      refreshed.recipeBody = recipeNonIngredientBodyFromContent(content, this.plugin.settings.recipeTag, (name) => this.plugin.findRecipeIngredientFoodByName(name));
+      refreshed.recipeSourceBody = recipeBodyFromContent(content, this.plugin.settings.recipeTag);
+    }
     return refreshed;
   }
 
@@ -8786,32 +8923,72 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
 
   onload(): void {
     try {
-      renderFoodLogChips(this.containerEl, this.plugin, this.ctx);
+      void renderFoodLogChips(this.containerEl, this.plugin, this.ctx).catch((error) => {
+        logger.flowError("RenderedControls", "food-log:failed", error, { sourcePath: this.ctx.sourcePath });
+      });
       renderWorkoutSetChips(this.containerEl, this.plugin, this.ctx);
+      void renderDailyWorkoutHeaders(this.containerEl, this.plugin, this.ctx).catch((error) => {
+        logger.flowError("RenderedControls", "daily-workout:failed", error, { sourcePath: this.ctx.sourcePath });
+      });
     } catch (error) {
       logger.flowError("RenderedControls", "postprocessor:failed", error, { sourcePath: this.ctx.sourcePath });
     }
   }
 }
 
-function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): void {
+async function renderDailyWorkoutHeaders(
+  root: HTMLElement,
+  plugin: TPSHealthPlugin,
+  ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null },
+): Promise<void> {
+  const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
+  if (!(file instanceof TFile)) return;
+  const lines = (await plugin.app.vault.cachedRead(file)).split("\n");
+  for (const heading of Array.from(root.querySelectorAll<HTMLElement>("h2"))) {
+    if (heading.nextElementSibling?.classList.contains("tps-health-daily-workout-header")) continue;
+    const section = ctx.getSectionInfo?.(heading);
+    let markerIndex = (section?.lineStart ?? -1) + 1;
+    while (markerIndex > 0 && markerIndex < lines.length && !lines[markerIndex].trim()) markerIndex++;
+    if (markerIndex <= 0 || !isWorkoutDailyMarkerLine(lines[markerIndex])) continue;
+    const data = workoutDailyHeaderDataFromLines(lines, markerIndex);
+    if (!data) continue;
+    heading.insertAdjacentElement("afterend", workoutDailyHeaderElement(plugin, data, file.path));
+  }
+}
+
+async function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): Promise<void> {
   if (isRecipeLikeMarkdownFile(plugin, ctx.sourcePath)) {
     renderRecipeIngredientChips(root, plugin, ctx);
     return;
   }
+  const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
+  const sourceLines = file instanceof TFile ? (await plugin.app.vault.cachedRead(file)).split("\n") : [];
+  let sourceCursor = 0;
   for (const item of Array.from(root.querySelectorAll("li"))) {
     const text = item.textContent || "";
     const section = ctx.getSectionInfo?.(item as HTMLElement);
-    const lineNumber = section?.lineStart ?? -1;
+    const sectionLineNumber = section?.lineStart ?? -1;
+    const visibleText = foodLogVisibleText(text);
+    const resolvedLineNumber = findFoodLogSourceLineIndex(sourceLines, visibleText, sectionLineNumber, sourceCursor);
+    const lineNumber = resolvedLineNumber >= 0 ? resolvedLineNumber : sectionLineNumber;
+    if (resolvedLineNumber >= 0) sourceCursor = resolvedLineNumber + 1;
+    const sourceLine = lineNumber >= 0 ? sourceLines[lineNumber] || "" : "";
+    const sourceChip = isFoodLogLine(sourceLine) ? foodLogChipDataFromLine(sourceLine, plugin) : null;
     if (!isFoodLogLine(text)) {
-      const visibleText = foodLogVisibleText(text);
       if (looksLikeFoodLogVisibleLine(visibleText)) {
+        const renderedChip = sourceChip || foodLogChipDataFromRenderedItem(item, plugin);
+        if (renderedChip) {
+          item.empty();
+          item.appendChild(foodLogChipElement(renderedChip, {
+            onMenu: (event) => void plugin.openFoodLogEntryMenuFromLine(event, ctx.sourcePath, lineNumber, sourceLine || visibleText),
+          }));
+        }
         item.addClass("tps-health-food-entry-row");
-        item.addEventListener("contextmenu", (event) => void plugin.openFoodLogEntryMenuFromLine(event, ctx.sourcePath, lineNumber, visibleText));
+        if (!renderedChip) item.addEventListener("contextmenu", (event) => void plugin.openFoodLogEntryMenuFromLine(event, ctx.sourcePath, lineNumber, sourceLine || visibleText));
       }
       continue;
     }
-    const rawChip = foodLogChipDataFromLine(text, plugin);
+    const rawChip = sourceChip || foodLogChipDataFromLine(text, plugin);
     const renderedChip = rawChip?.macros.length ? rawChip : foodLogChipDataFromRenderedItem(item, plugin);
     const chip = renderedChip || rawChip;
     if (!chip) continue;
@@ -8821,6 +8998,30 @@ function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { s
       onMenu: (event) => void plugin.openFoodLogEntryMenuFromLine(event, ctx.sourcePath, lineNumber, text),
     }));
   }
+}
+
+export function findFoodLogSourceLineIndex(
+  lines: readonly string[],
+  visibleText: string,
+  preferredLine = -1,
+  afterLine = 0,
+): number {
+  const normalizedVisible = normalizeFoodLogVisibleText(visibleText);
+  if (!normalizedVisible) return -1;
+  const matches = (index: number): boolean => {
+    const line = lines[index] || "";
+    if (!isFoodLogLine(line)) return false;
+    const normalizedLine = normalizeFoodLogVisibleText(foodLogVisibleSummary(line));
+    return Boolean(normalizedLine && (normalizedVisible.includes(normalizedLine) || normalizedLine.includes(normalizedVisible)));
+  };
+  if (preferredLine >= afterLine && preferredLine < lines.length && matches(preferredLine)) return preferredLine;
+  for (let index = Math.max(0, afterLine); index < lines.length; index += 1) {
+    if (matches(index)) return index;
+  }
+  for (let index = 0; index < Math.min(afterLine, lines.length); index += 1) {
+    if (matches(index)) return index;
+  }
+  return -1;
 }
 
 function renderRecipeIngredientChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): void {
@@ -9558,10 +9759,19 @@ function quantityFromMetricAmount(amount: number, amountUnit: "g" | "ml", target
 }
 
 function parseRecipeIngredientLine(line: string, resolveFoodByName?: (name: string) => FoodItem | null): RecipeIngredientLine | null {
-  const clean = line
+  let clean = line
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/^\s*[-*]\s+/, "")
     .trim();
+  if (clean.startsWith("\"") && clean.endsWith("\"")) {
+    try {
+      clean = JSON.parse(clean);
+    } catch {
+      clean = clean.slice(1, -1).replace(/\\"/g, "\"");
+    }
+  } else if (clean.startsWith("'") && clean.endsWith("'")) {
+    clean = clean.slice(1, -1).replace(/''/g, "'");
+  }
   const match = clean.match(/^(\d+(?:\.\d+)?|\d+\s*\/\s*\d+|half)\s+(.+?)\s+-\s+\[\[([^\]|]+)(?:\|([^\]]+))?\]\]\s*$/i);
   if (!match) {
     const plain = clean.match(/^(\d+(?:\.\d+)?|\d+\s*\/\s*\d+|half)\s+(.+?)\s+-\s+(.+?)\s*$/i);
@@ -9614,6 +9824,28 @@ function recipeIngredientMarkdown(ingredient: RecipeIngredientLine): string {
   }, ingredient.quantity, ingredient.unit);
 }
 
+function recipeIngredientYamlListLine(ingredient: RecipeIngredientLine): string {
+  return `  - ${JSON.stringify(recipeIngredientMarkdown(ingredient).replace(/^\s*[-*]\s+/, ""))}`;
+}
+
+function recipeIngredientFrontmatterKeyIndex(lines: string[]): number {
+  const frontmatterEnd = frontmatterLineEnd(lines);
+  if (!frontmatterEnd) return -1;
+  return lines.findIndex((line, index) => index > 0 && index < frontmatterEnd - 1 && /^ingredients\s*:\s*$/i.test(line));
+}
+
+function recipeIngredientFrontmatterLineIndexes(lines: string[]): number[] {
+  const keyIndex = recipeIngredientFrontmatterKeyIndex(lines);
+  if (keyIndex < 0) return [];
+  const frontmatterEnd = frontmatterLineEnd(lines);
+  const indexes: number[] = [];
+  for (let index = keyIndex + 1; index < frontmatterEnd - 1; index++) {
+    if (!/^\s+-\s+/.test(lines[index])) break;
+    indexes.push(index);
+  }
+  return indexes;
+}
+
 function isRecipeLikeMarkdownFile(plugin: TPSHealthPlugin, path: string | null | undefined): boolean {
   if (!path) return false;
   const file = plugin.app.vault.getAbstractFileByPath(path);
@@ -9658,6 +9890,176 @@ interface WorkoutSetChipData {
   exerciseEnd?: boolean;
   setOrdinal?: number;
   previous?: { details: string; weight?: number; reps?: number; unit?: string };
+}
+
+interface WorkoutDailyHeaderData {
+  workoutId: string;
+  title: string;
+  startedAt: string;
+  status: "active" | "complete";
+  performedSets: number;
+  totalSets: number;
+}
+
+class WorkoutDailyHeaderWidget extends WidgetType {
+  constructor(private plugin: TPSHealthPlugin, private data: WorkoutDailyHeaderData, private filePath: string) {
+    super();
+  }
+
+  eq(other: WorkoutDailyHeaderWidget): boolean {
+    return this.filePath === other.filePath &&
+      this.data.workoutId === other.data.workoutId &&
+      this.data.title === other.data.title &&
+      this.data.startedAt === other.data.startedAt &&
+      this.data.status === other.data.status &&
+      this.data.performedSets === other.data.performedSets &&
+      this.data.totalSets === other.data.totalSets;
+  }
+
+  toDOM(): HTMLElement {
+    return workoutDailyHeaderElement(this.plugin, this.data, this.filePath);
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+function createWorkoutDailyHeaderExtension(plugin: TPSHealthPlugin) {
+  return StateField.define<DecorationSet>({
+    create(state) {
+      return buildWorkoutDailyHeaderDecorations(plugin, state);
+    },
+    update(decorations, transaction) {
+      if (transaction.docChanged || transaction.selection) return buildWorkoutDailyHeaderDecorations(plugin, transaction.state);
+      return decorations;
+    },
+    provide: (field) => [
+      EditorView.decorations.from(field),
+      EditorView.atomicRanges.of((view) => view.state.field(field)),
+    ],
+  });
+}
+
+function createWorkoutDailyMarkerProtectionExtension() {
+  return EditorState.transactionFilter.of((transaction) => {
+    if (!transaction.docChanged || (!transaction.isUserEvent("input") && !transaction.isUserEvent("delete"))) return transaction;
+    const before = transaction.startState.doc.toString();
+    const after = transaction.newDoc.toString();
+    return workoutDailyMarkerEditIsSafe(before, after) ? transaction : [];
+  });
+}
+
+export function workoutDailyMarkerEditIsSafe(before: string, after: string): boolean {
+  const required = new Map<string, number>();
+  for (const line of before.split("\n")) {
+    if (!isWorkoutDailyMarkerLine(line)) continue;
+    required.set(line, (required.get(line) || 0) + 1);
+  }
+  if (!required.size) return true;
+  const retained = new Map<string, number>();
+  for (const line of after.split("\n")) {
+    if (!required.has(line)) continue;
+    retained.set(line, (retained.get(line) || 0) + 1);
+  }
+  return Array.from(required).every(([line, count]) => (retained.get(line) || 0) >= count);
+}
+
+function buildWorkoutDailyHeaderDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
+  if (!state.field(editorLivePreviewField, false)) return Decoration.none;
+  const filePath = plugin.app.workspace.getActiveFile()?.path || "";
+  if (!filePath) return Decoration.none;
+  const lines = state.doc.toString().split("\n");
+  const builder = new RangeSetBuilder<Decoration>();
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
+    const line = state.doc.line(lineNumber);
+    if (!isWorkoutDailyMarkerLine(line.text)) continue;
+    const data = workoutDailyHeaderDataFromLines(lines, lineNumber - 1);
+    if (!data) continue;
+    const protectedTo = line.to < state.doc.length ? line.to + 1 : line.to;
+    builder.add(line.from, protectedTo, Decoration.replace({
+      widget: new WorkoutDailyHeaderWidget(plugin, data, filePath),
+      block: true,
+    }));
+  }
+  return builder.finish();
+}
+
+function workoutDailyHeaderDataFromLines(lines: readonly string[], markerIndex: number): WorkoutDailyHeaderData | null {
+  const marker = lines[markerIndex] || "";
+  if (!isWorkoutDailyMarkerLine(marker)) return null;
+  const workoutId = readStringField(marker, "workoutId");
+  if (!workoutId) return null;
+  const end = dailyWorkoutBlockEnd(lines, markerIndex);
+  const sets = lines.slice(markerIndex + 1, end).filter((line) => isWorkoutSetLine(line));
+  const heading = markerIndex > 0 ? lines[markerIndex - 1].match(/^\s*##\s+Workout\s*[—:-]?\s*(.*)$/i)?.[1]?.trim() : "";
+  return {
+    workoutId,
+    title: heading || readStringField(marker, "activity") || "Workout",
+    startedAt: readStringField(marker, "startedAt") || "",
+    status: (readStringField(marker, "status") || "").toLowerCase() === "complete" ? "complete" : "active",
+    performedSets: sets.filter((line) => isPerformedWorkoutSetLine(line)).length,
+    totalSets: sets.length,
+  };
+}
+
+function workoutDailyHeaderElement(plugin: TPSHealthPlugin, data: WorkoutDailyHeaderData, filePath: string): HTMLElement {
+  const card = document.createElement("div");
+  card.className = `tps-health-daily-workout-header is-${data.status}`;
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", `${data.title} workout controls`);
+  card.dataset.workoutId = data.workoutId;
+  for (const eventName of ["pointerdown", "mousedown", "touchstart", "click"]) {
+    card.addEventListener(eventName, (event) => event.stopPropagation());
+  }
+  const summary = document.createElement("div");
+  summary.className = "tps-health-daily-workout-summary";
+  const lock = document.createElement("span");
+  lock.className = "tps-health-daily-workout-lock";
+  lock.setAttribute("aria-label", "Protected workout identifier");
+  lock.setAttribute("title", "Workout identifier is protected in Live Preview");
+  setIcon(lock, "lock-keyhole");
+  const status = document.createElement("span");
+  status.className = "tps-health-daily-workout-status";
+  const updateStatus = () => {
+    const started = Date.parse(data.startedAt);
+    const elapsed = Number.isFinite(started) && data.status === "active"
+      ? formatRestDuration(Math.max(0, Math.floor((Date.now() - started) / 1000)))
+      : data.status === "complete" ? "Complete" : "--:--";
+    status.textContent = `${elapsed} • ${data.performedSets}/${data.totalSets} sets`;
+  };
+  updateStatus();
+  const timer = window.setInterval(() => {
+    if (!card.isConnected) window.clearInterval(timer);
+    else updateStatus();
+  }, 30000);
+  summary.append(lock, status);
+  const actions = document.createElement("div");
+  actions.className = "tps-health-daily-workout-actions";
+  const active = data.status === "active" && plugin.settings.activeWorkoutId === data.workoutId;
+  const action = (text: string, className: string, handler: () => void | Promise<void>): HTMLButtonElement => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `tps-health-daily-workout-action ${className}`;
+    button.textContent = text;
+    button.disabled = !active;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!button.disabled) void handler();
+    });
+    return button;
+  };
+  actions.append(
+    action("+ Exercise", "is-add-exercise", () => new WorkoutExercisePickerModal(plugin.app, plugin, filePath, data.workoutId).open()),
+    action("+ Set", "is-add-set", () => new SetModal(plugin.app, plugin).open()),
+    action("End workout", "is-end", async () => {
+      actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = true);
+      await plugin.finishWorkout();
+    }),
+  );
+  card.append(summary, actions);
+  return card;
 }
 
 class WorkoutSetChipWidget extends WidgetType {
@@ -9722,9 +10124,11 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
       if (!view.state.field(editorLivePreviewField, false)) return Decoration.none;
       const builder = new RangeSetBuilder<Decoration>();
       const filePath = workoutFilePathForEditorView(plugin, view);
-      if (!filePath || !isWorkoutLikeMarkdownPath(plugin, filePath)) return Decoration.none;
-      const hasWorkoutSets = docHasWorkoutSetLine(view.state.doc.toString());
-      const documentLines = view.state.doc.toString().split("\n");
+      const documentContent = view.state.doc.toString();
+      const dailyWorkoutDocument = documentContent.split("\n").some(isWorkoutDailyMarkerLine);
+      if (!filePath || (!isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
+      const hasWorkoutSets = docHasWorkoutSetLine(documentContent);
+      const documentLines = documentContent.split("\n");
       for (const { from, to } of view.visibleRanges) {
         let position = from;
         while (position <= to) {
@@ -9742,6 +10146,7 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
           if (line.from === line.to || selectionTouchesLine(view, line.from, line.to)) continue;
           const chip = workoutSetChipDataFromLine(line.text);
           if (!chip) continue;
+          if (dailyWorkoutDocument && !dailyWorkoutIdForLine(documentLines, line.number - 1)) continue;
           Object.assign(chip, workoutSetPresentation(documentLines, line.number - 1, chip));
           builder.add(line.to, line.to, Decoration.widget({
             widget: new WorkoutSetChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: line.text }),
@@ -9850,7 +10255,8 @@ function emptyWorkoutSetActionElement(plugin: TPSHealthPlugin, sourcePath: strin
   add.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    new WorkoutExercisePickerModal(plugin.app, plugin, sourcePath).open();
+    const workoutId = sourcePath === plugin.settings.activeWorkoutPath ? plugin.settings.activeWorkoutId : "";
+    new WorkoutExercisePickerModal(plugin.app, plugin, sourcePath, workoutId).open();
   });
   empty.append(label, add);
   return empty;
@@ -11643,13 +12049,13 @@ class StartWorkoutModal extends Modal {
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Start workout" });
     this.contentEl.createEl("p", {
-      text: "Choose a saved plan, or start empty and add exercises as you go.",
+      text: "Choose a saved workout template, or start with a clean empty workout.",
       cls: "tps-health-status",
     });
 
     let title = "";
     let plan = "";
-    let logTarget = normalizeWorkoutLogTarget(this.plugin.settings.workoutLogTarget);
+    let createWorkoutNote = normalizeWorkoutLogTarget(this.plugin.settings.workoutLogTarget) !== "daily-note";
     let cooldownDays = this.plugin.settings.defaultWorkoutCooldownDays;
     let openFile = true;
     let workoutDate = this.selectedWorkoutDate || "";
@@ -11693,8 +12099,8 @@ class StartWorkoutModal extends Modal {
 
     let startWithPlanButton: HTMLButtonElement | null = null;
     const planSetting = new Setting(this.contentEl)
-      .setName("Workout plan")
-      .setDesc("Pick an existing plan to preload its exercises.")
+      .setName("Workout template")
+      .setDesc("Pick an existing template to preload its exercises and sets.")
       .addText((text) => {
         text.inputEl.setAttr("list", workoutPlanList.id);
         text
@@ -11712,7 +12118,7 @@ class StartWorkoutModal extends Modal {
       const selected = matches.find((item) => normalizeLookup(item.name) === normalizeLookup(plan));
       if (selected?.sourcePath) return selected.sourcePath;
       logger.flowWarn("WorkoutModal", "start:plan-not-selected", { plan, matches: matches.length });
-      new Notice("Choose an existing workout plan or start empty.");
+      new Notice("Choose an existing workout template or start empty.");
       return undefined;
     };
 
@@ -11726,14 +12132,11 @@ class StartWorkoutModal extends Modal {
         .onChange((value) => title = value.trim()));
 
     new Setting(options)
-      .setName("Store workout")
-      .setDesc("Choose where this workout instance is stored. Daily-note-only mode keeps the workout history in the selected daily note.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("session-note", "Workout note")
-        .addOption("daily-note", "Daily note only")
-        .addOption("both", "Workout note + daily receipt")
-        .setValue(logTarget)
-        .onChange((value) => logTarget = value as typeof logTarget));
+      .setName("Also create a workout note")
+      .setDesc("The live workout always appears in the Daily Note.")
+      .addToggle((toggle) => toggle
+        .setValue(createWorkoutNote)
+        .onChange((value) => createWorkoutNote = value));
 
     new Setting(options)
       .setName("Cooldown days")
@@ -11746,7 +12149,7 @@ class StartWorkoutModal extends Modal {
         }));
 
     new Setting(options)
-      .setName("Open workout note")
+      .setName("Open Daily Note")
       .addToggle((toggle) => toggle
         .setValue(openFile)
         .onChange((value) => openFile = value));
@@ -11755,6 +12158,7 @@ class StartWorkoutModal extends Modal {
       .addButton((button) => button
         .setButtonText("Start empty")
         .onClick(async () => {
+          const logTarget: WorkoutLogTarget = createWorkoutNote ? "both" : "daily-note";
           logger.flow("WorkoutModal", "start-blank:submit", { title, cooldownDays, logTarget, workoutDate, openFile });
           try {
             const path = await this.plugin.startWorkout({
@@ -11769,10 +12173,9 @@ class StartWorkoutModal extends Modal {
               path: path || "",
               logTarget,
               workoutDate,
-              openedExercisePicker: !!path,
+              openedExercisePicker: false,
             });
             this.close();
-            if (path) new WorkoutExercisePickerModal(this.app, this.plugin, path).open();
           } catch (error) {
             logger.flowError("WorkoutModal", "start-blank:failed", error, { title, cooldownDays, logTarget, workoutDate, openFile });
             throw error;
@@ -11786,6 +12189,7 @@ class StartWorkoutModal extends Modal {
           .onClick(async () => {
           const planPath = await resolveSelectedPlanPath();
           if (plan && !planPath) return;
+          const logTarget: WorkoutLogTarget = createWorkoutNote ? "both" : "daily-note";
           logger.flow("WorkoutModal", "start:submit", { title, plan, cooldownDays, logTarget, workoutDate, openFile });
           try {
             const path = await this.plugin.startWorkout({
@@ -11836,9 +12240,12 @@ class SetModal extends Modal {
             logger.flow("WorkoutSetModal", "start-blank:submit");
             try {
               const path = await this.plugin.startWorkout({ openFile: false });
-              logger.flow("WorkoutSetModal", "start-blank:done", { path: path || "" });
+              const activeWorkout = this.plugin.getActiveWorkoutState();
+              logger.flow("WorkoutSetModal", "start-blank:done", { path: path || "", dailyNotePath: activeWorkout?.dailyNotePath || "" });
               this.close();
-              if (path) new WorkoutExercisePickerModal(this.app, this.plugin, path).open();
+              if (activeWorkout?.dailyNotePath) {
+                new WorkoutExercisePickerModal(this.app, this.plugin, activeWorkout.dailyNotePath, activeWorkout.id).open();
+              }
             } catch (error) {
               logger.flowError("WorkoutSetModal", "start-blank:failed", error);
               throw error;
@@ -12039,7 +12446,7 @@ class SetModal extends Modal {
 class WorkoutExercisePickerModal extends Modal {
   private token = 0;
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string) {
+  constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string, private workoutId = "") {
     super(app);
   }
 
@@ -12065,7 +12472,9 @@ class WorkoutExercisePickerModal extends Modal {
       try {
         if (!exercise) throw new Error("Exercise name was empty.");
         logger.flow("WorkoutExercisePicker", "choose:start", { path: this.filePath, exercise });
-        if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
+        if (this.workoutId) {
+          await this.plugin.addSetForExerciseToActiveWorkout(exercise);
+        } else if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
           await this.plugin.logSet({ exercise, createExerciseNote: true });
         } else {
           await this.plugin.addSetForExerciseToWorkoutFile(this.filePath, exercise, undefined, { focusAfter: false });
@@ -12073,7 +12482,7 @@ class WorkoutExercisePickerModal extends Modal {
         status.setText(`Added ${exercise}`);
         logger.flow("WorkoutExercisePicker", "choose:done", { path: this.filePath, exercise });
         this.close();
-        if (this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
+        if (!this.workoutId && this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
           window.setTimeout(() => void this.plugin.focusLatestWorkoutSetAfterPicker(this.filePath), 0);
         }
       } catch (error) {
@@ -12519,9 +12928,13 @@ class CustomFoodModal extends Modal {
     let servingAmount = this.baseFood?.servingAmount || 1;
     let servingUnit = this.baseFood?.servingUnit || "serving";
     let recipeServings = recipeServingsForFood(this.baseFood || { id: "", name: "", source: "manual" }, this.type);
-    const originalRecipeBody = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.ingredients || "") : "";
+    const originalRecipeIngredients = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.ingredients || "") : "";
+    const originalRecipeBody = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.recipeBody || "") : "";
+    const originalRecipeSourceBody = isRecipeLikeFoodType(this.type)
+      ? String(this.baseFood?.recipeSourceBody ?? originalRecipeBody)
+      : "";
     let recipeIngredients: RecipeIngredientDraft[] = isRecipeLikeFoodType(this.type)
-      ? originalRecipeBody
+      ? originalRecipeIngredients
         .split(/\r?\n/)
         .map<RecipeIngredientDraft | null>((line, sourceLineNumber) => {
           const ingredient = parseRecipeIngredientLine(line, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName));
@@ -12834,7 +13247,7 @@ class CustomFoodModal extends Modal {
         const createNewVersion = linkScope === "new-version";
         const savedIngredients = isRecipeLikeFoodType(this.type) ? await persistDraftIngredients() : [];
         const ingredientsForSave = isRecipeLikeFoodType(this.type)
-          ? recipeBodyWithIngredientDrafts(originalRecipeBody, savedIngredients, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName))
+          ? recipeBodyWithIngredientDrafts(originalRecipeIngredients, savedIngredients, (foodName) => this.plugin.findRecipeIngredientFoodByName(foodName))
           : this.baseFood?.ingredients;
         const servingMetadata = this.type === "food"
           ? customFoodServingMetadataForSave(this.baseFood, servingAmount, servingUnit, nutrition)
@@ -12852,6 +13265,7 @@ class CustomFoodModal extends Modal {
           imageUrl: this.baseFood?.imageUrl,
           barcode: this.baseFood?.barcode,
           ingredients: ingredientsForSave,
+          recipeBody: isRecipeLikeFoodType(this.type) ? originalRecipeBody : undefined,
           servingAmount,
           servingUnit,
           recipeServings,
@@ -12860,7 +13274,7 @@ class CustomFoodModal extends Modal {
           notes: this.baseFood?.notes,
           nutrition,
           merge: !createNewVersion,
-        }, createNewVersion || !isRecipeLikeFoodType(this.type) ? {} : { expectedRecipeBody: originalRecipeBody });
+        }, createNewVersion || !isRecipeLikeFoodType(this.type) ? {} : { expectedRecipeBody: originalRecipeSourceBody });
         logger.flow("CustomFoodModal", "submit:done", {
           type: this.type,
           name: saved.name,
@@ -13232,6 +13646,27 @@ function updateYamlFrontmatterContent(content: string, updates: Record<string, s
   return lines.join("\n");
 }
 
+function removeYamlFrontmatterProperty(content: string, key: string): string {
+  const lines = content.split("\n");
+  const frontmatterEnd = frontmatterLineEnd(lines);
+  if (!frontmatterEnd) return content;
+  const pattern = new RegExp(`^${escapeRegExp(key)}\\s*:`);
+  const index = lines.findIndex((line, lineIndex) => lineIndex > 0 && lineIndex < frontmatterEnd - 1 && pattern.test(line));
+  if (index < 0) return content;
+  let end = index + 1;
+  while (end < frontmatterEnd - 1 && (/^\s+/.test(lines[end]) || !lines[end].trim())) end++;
+  lines.splice(index, end - index);
+  return lines.join("\n");
+}
+
+function stripStandaloneFoodIngredientStatementFromBody(content: string, ingredientStatement: string): string {
+  const normalizedStatement = ingredientStatement.replace(/\s+/g, " ").trim();
+  if (!normalizedStatement) return content;
+  const lines = content.split("\n");
+  const bodyStart = frontmatterLineEnd(lines);
+  return lines.filter((line, index) => index < bodyStart || line.replace(/\s+/g, " ").trim() !== normalizedStatement).join("\n");
+}
+
 function upsertYamlScalarLine(lines: string[], endIndex: number, key: string, value: string | number | boolean): number {
   const pattern = new RegExp(`^${escapeRegExp(key)}\\s*:`);
   const index = lines.findIndex((line, lineIndex) => lineIndex > 0 && lineIndex < endIndex && pattern.test(line));
@@ -13303,6 +13738,13 @@ function replaceDataviewField(line: string, key: string, value: string | number)
 
 function upsertDataviewField(line: string, key: string, value: string | number): string {
   return replaceDataviewField(line, key, value);
+}
+
+export function upsertWorkoutDailyMarkerField(line: string, key: string, value: string | number): string {
+  const marker = line.match(/^(\s*<!--\s*tps-health:workout\b[\s\S]*?)-->\s*(.*)$/i);
+  if (!marker) return upsertDataviewField(line, key, value);
+  const body = [marker[1].trimEnd(), marker[2].trim()].filter(Boolean).join(" ");
+  return `${upsertDataviewField(body, key, value)} -->`;
 }
 
 function escapeRegExp(value: string): string {
@@ -13391,6 +13833,7 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
     imageUrl: input.imageUrl,
     sourceImagePath: input.sourceImagePath,
     ingredients: input.ingredients,
+    recipeBody: input.recipeBody,
     servingAmount,
     servingUnit,
     servingGrams: input.servingGrams,
@@ -13404,17 +13847,25 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
   });
 }
 
-function foodFrontmatter(item: FoodItem, type: FoodNoteType): Record<string, unknown> {
+function foodFrontmatter(
+  item: FoodItem,
+  type: FoodNoteType,
+  identificationMode: HealthEntityIdentificationMode = "metadata-folder-tag",
+): Record<string, unknown> {
   const nutrition = item.nutrition || {};
+  const recipeIngredients = isRecipeLikeFoodType(type)
+    ? recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")
+    : [];
   return compactObject({
-    kind: type,
+    kind: foodIdentificationWritesMetadata(identificationMode) ? type : undefined,
     name: item.name,
     brand: item.brand,
     aliases: foodAliasesForItem(item).length ? foodAliasesForItem(item) : undefined,
     barcode: item.barcode,
     imageUrl: item.imageUrl,
     sourceImagePath: item.sourceImagePath,
-    ingredients: isRecipeLikeFoodType(type) ? undefined : item.ingredients,
+    ingredients: isRecipeLikeFoodType(type) ? recipeIngredients.length ? recipeIngredients : undefined : undefined,
+    ingredientStatement: !isRecipeLikeFoodType(type) ? item.ingredients : undefined,
     servingAmount: item.servingAmount || 1,
     servingUnit: item.servingUnit || "serving",
     servingGrams: item.servingGrams == null ? undefined : round(item.servingGrams),
@@ -13442,6 +13893,18 @@ function isRecipeLikeFoodType(type: FoodNoteType): boolean {
 
 function isFoodFrontmatterKind(value: unknown): value is FoodNoteType {
   return value === "food" || value === "recipe" || value === "meal";
+}
+
+function isLegacyFoodFrontmatterType(value: unknown): boolean {
+  return value === "health-food" || value === "health-recipe" || value === "health-meal";
+}
+
+function foodIdentificationWritesMetadata(mode: HealthEntityIdentificationMode | undefined): boolean {
+  return mode !== "folder" && mode !== "tag";
+}
+
+function foodIdentificationWritesTag(mode: HealthEntityIdentificationMode | undefined): boolean {
+  return mode !== "folder" && mode !== "metadata";
 }
 
 function hasFoodIdentitySignal(settings: TPSHealthSettings, file: TFile, fm: any, tags: string[] = []): boolean {
@@ -13555,6 +14018,36 @@ function mergeFoodIdentityFrontmatterTags(value: unknown, configuredTag: string)
     tags.push(tag);
   }
   return tags;
+}
+
+function removeFoodIdentityFrontmatterTags(value: unknown, configuredTag: string, type: FoodNoteType): string[] {
+  const identityTags = new Set(
+    [configuredTag, defaultFoodIdentityTag(type)]
+      .map((tag) => normalizeHealthTag(tag))
+      .filter(Boolean),
+  );
+  return frontmatterTags(value).filter((tag) => !identityTags.has(normalizeHealthTag(tag)));
+}
+
+function applyFoodIdentityFrontmatterMode(
+  frontmatter: Record<string, any>,
+  configuredTag: string,
+  type: FoodNoteType,
+  mode: HealthEntityIdentificationMode,
+): void {
+  if (foodIdentificationWritesMetadata(mode)) {
+    frontmatter.kind = type;
+  } else {
+    if (isFoodFrontmatterKind(frontmatter.kind)) delete frontmatter.kind;
+    if (isLegacyFoodFrontmatterType(frontmatter.tpsType)) delete frontmatter.tpsType;
+  }
+  if (foodIdentificationWritesTag(mode)) {
+    frontmatter.tags = mergeFoodIdentityFrontmatterTags(frontmatter.tags, configuredTag);
+  } else {
+    const tags = removeFoodIdentityFrontmatterTags(frontmatter.tags, configuredTag, type);
+    if (tags.length) frontmatter.tags = tags;
+    else delete frontmatter.tags;
+  }
 }
 
 function yamlValueAndComment(value: string): { value: string; comment: string } {
@@ -13690,25 +14183,53 @@ function stripStandaloneFoodIdentityTagFromBody(content: string, configuredTag: 
   return lines.filter((line, index) => index < bodyStart || !standaloneFoodIdentityTagLine(line, tags)).join("\n");
 }
 
-function ensureFoodIdentityTagInContent(content: string, configuredTag: string, type: FoodNoteType): string {
+function removeFoodIdentityMetadataFromContent(content: string): string {
+  const lines = content.split("\n");
+  const frontmatterEnd = frontmatterLineEnd(lines);
+  if (!frontmatterEnd) return content;
+  return lines.filter((line, index) => {
+    if (index <= 0 || index >= frontmatterEnd - 1) return true;
+    const match = line.match(/^(kind|tpsType)\s*:\s*(.*?)\s*$/i);
+    if (!match) return true;
+    const parsed = yamlValueAndComment(match[2] || "");
+    const value = unquoteYamlTagValue(parsed.value);
+    return match[1].toLowerCase() === "kind"
+      ? !isFoodFrontmatterKind(value as FoodNoteType)
+      : !isLegacyFoodFrontmatterType(value);
+  }).join("\n");
+}
+
+function updateFoodIdentityTagsInContent(content: string, configuredTag: string, type: FoodNoteType, includeTag: boolean): string {
   const tag = foodIdentityTagValue(configuredTag);
-  const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(content, configuredTag, type);
-  if (!tag) return withoutBodyTag;
-  const lines = withoutBodyTag.split("\n");
+  const lines = content.split("\n");
   let frontmatterEnd = frontmatterLineEnd(lines);
   if (!frontmatterEnd) {
-    return ["---", yamlStringList("tags", [tag]), "---", ...lines].join("\n");
+    return includeTag && tag ? ["---", yamlStringList("tags", [tag]), "---", ...lines].join("\n") : content;
   }
   const tagsIndex = lines.findIndex((line, index) => index > 0 && index < frontmatterEnd - 1 && /^tags\s*:/i.test(line));
   if (tagsIndex < 0) {
-    lines.splice(frontmatterEnd - 1, 0, yamlStringList("tags", [tag]));
+    if (includeTag && tag) lines.splice(frontmatterEnd - 1, 0, yamlStringList("tags", [tag]));
     return lines.join("\n");
   }
   const existing = yamlTagValuesFromLines(lines, tagsIndex, frontmatterEnd - 1, configuredTag);
-  const tags = mergeFoodIdentityFrontmatterTags(existing.values, tag);
-  const replacement = yamlStringList("tags", tags).split("\n");
+  const retained = removeFoodIdentityFrontmatterTags(existing.values, configuredTag, type);
+  const tags = includeTag && tag ? mergeFoodIdentityFrontmatterTags(retained, tag) : retained;
+  const replacement = tags.length ? yamlStringList("tags", tags).split("\n") : [];
   lines.splice(tagsIndex, existing.end - tagsIndex, ...replacement, ...existing.preservedLines);
   return lines.join("\n");
+}
+
+function ensureFoodIdentityTagInContent(
+  content: string,
+  configuredTag: string,
+  type: FoodNoteType,
+  mode: HealthEntityIdentificationMode = "metadata-folder-tag",
+): string {
+  const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(content, configuredTag, type);
+  const withMetadata = foodIdentificationWritesMetadata(mode)
+    ? updateYamlFrontmatterContent(withoutBodyTag, { kind: type })
+    : removeFoodIdentityMetadataFromContent(withoutBodyTag);
+  return updateFoodIdentityTagsInContent(withMetadata, configuredTag, type, foodIdentificationWritesTag(mode));
 }
 
 function normalizeHealthTag(value: string): string {
@@ -13728,8 +14249,80 @@ function foodNoteTypeFromFrontmatter(fm: any, file: TFile, settings: TPSHealthSe
   if (isFoodFrontmatterKind(fm.kind)) return fm.kind;
   if (fm.tpsType === "health-recipe") return "recipe";
   if (fm.tpsType === "health-meal") return "meal";
-  if (normalizePath(file.path).startsWith(`${normalizePath(settings.recipesFolder)}/`)) return "recipe";
+  const recipeIdentity = normalizePath(file.path).startsWith(`${normalizePath(settings.recipesFolder)}/`) ||
+    frontmatterTags(fm.tags).some((tag) => normalizeHealthTag(tag) === normalizeHealthTag(settings.recipeTag));
+  if (recipeIdentity && String(fm.servingUnit || "").trim().toLowerCase() === "meal") return "meal";
+  if (recipeIdentity) return "recipe";
   return "food";
+}
+
+function recipeIngredientPropertyValues(value: unknown): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/\r?\n/)
+      : [];
+  return values
+    .map((entry) => String(entry || "").trim().replace(/^[-*]\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function foodIngredientStatementFromFrontmatter(frontmatter: any): string | undefined {
+  const value = frontmatter?.ingredientStatement ?? frontmatter?.ingredients;
+  if (Array.isArray(value)) {
+    const parts = value.map((entry) => String(entry || "").trim()).filter(Boolean);
+    return parts.length ? parts.join("; ") : undefined;
+  }
+  const statement = value == null ? "" : String(value).trim();
+  return statement || undefined;
+}
+
+function recipeIngredientPropertyValuesFromMarkdown(markdown: string): string[] {
+  return recipeIngredientPropertyValues(markdown);
+}
+
+function recipeIngredientMarkdownFromFrontmatter(value: unknown): string {
+  return recipeIngredientPropertyValues(value).map((ingredient) => `- ${ingredient}`).join("\n");
+}
+
+function recipeIngredientMarkdownFromContent(content: string, cachedValue: unknown): string {
+  const lines = content.split(/\r?\n/);
+  const keyIndex = recipeIngredientFrontmatterKeyIndex(lines);
+  if (keyIndex < 0) return recipeIngredientMarkdownFromFrontmatter(cachedValue);
+  return recipeIngredientFrontmatterLineIndexes(lines)
+    .map((index) => {
+      const raw = lines[index].replace(/^\s*-\s+/, "");
+      const parsed = yamlValueAndComment(raw);
+      return unquoteYamlTagValue(parsed.value);
+    })
+    .filter(Boolean)
+    .map((ingredient) => `- ${ingredient}`)
+    .join("\n");
+}
+
+function recipeIngredientsFromContent(
+  content: string,
+  frontmatter: any,
+  configuredRecipeTag = DEFAULT_SETTINGS.recipeTag,
+  resolveFoodByName?: (name: string) => FoodItem | null,
+): string {
+  const propertyIngredients = recipeIngredientMarkdownFromContent(content, frontmatter?.ingredients);
+  const legacyBodyIngredients = recipeBodyFromContent(content, configuredRecipeTag)
+    .split(/\r?\n/)
+    .filter((line) => parseRecipeIngredientLine(line, resolveFoodByName))
+    .join("\n");
+  return trimMarkdownBodyBlankLines([propertyIngredients, legacyBodyIngredients].filter(Boolean).join("\n"));
+}
+
+function recipeNonIngredientBodyFromContent(
+  content: string,
+  configuredRecipeTag = DEFAULT_SETTINGS.recipeTag,
+  resolveFoodByName?: (name: string) => FoodItem | null,
+): string {
+  return trimMarkdownBodyBlankLines(recipeBodyFromContent(content, configuredRecipeTag)
+    .split(/\r?\n/)
+    .filter((line) => !parseRecipeIngredientLine(line, resolveFoodByName))
+    .join("\n"));
 }
 
 function recipeBodyWithIngredientDrafts(
@@ -15497,8 +16090,8 @@ function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
-function defaultFoodLogBaseContent(settings: TPSHealthSettings): string {
-  const filters = foodLogBaseDefaultFilters(settings);
+function defaultFoodLogBaseContent(settings: TPSHealthSettings, dailyFolder: string): string {
+  const filters = foodLogBaseDefaultFilters(settings, dailyFolder);
   return [
     "model:",
     "  version: 1",
@@ -15601,10 +16194,10 @@ function legacyBroadFoodLogBaseContent(): string {
   ].join("\n");
 }
 
-function repairFoodLogBaseContent(content: string, settings: TPSHealthSettings): string | null {
+function repairFoodLogBaseContent(content: string, settings: TPSHealthSettings, dailyFolder: string): string | null {
   const normalized = content.trimEnd();
-  if (normalized === legacyBroadFoodLogBaseContent().trimEnd()) return defaultFoodLogBaseContent(settings);
-  if (!normalized) return defaultFoodLogBaseContent(settings);
+  if (normalized === legacyBroadFoodLogBaseContent().trimEnd()) return defaultFoodLogBaseContent(settings, dailyFolder);
+  if (!normalized) return defaultFoodLogBaseContent(settings, dailyFolder);
   if (content.includes(`type: ${LEGACY_FOOD_LOG_BASE_VIEW_TYPE}`)) {
     const migrated = replaceLegacyFoodLogBaseViewConfig(normalized);
     return migrated === normalized ? null : `${migrated}\n`;
@@ -15727,15 +16320,15 @@ function repairLogBaseViewConfig(content: string): string {
   });
 }
 
-function foodLogBaseDefaultFilters(settings: TPSHealthSettings): string[] {
+function foodLogBaseDefaultFilters(settings: TPSHealthSettings, dailyFolder: string): string[] {
   const filters = new Set<string>();
   const foodLogPath = normalizePath(settings.foodLogFilePath || DEFAULT_SETTINGS.foodLogFilePath).replace(/^\/+/, "");
   if (foodLogPath) {
     filters.add(`file.path == ${baseString(foodLogPath)}`);
     if (/\.md$/i.test(foodLogPath)) filters.add(`file.path == ${baseString(foodLogPath.replace(/\.md$/i, ""))}`);
   }
-  const dailyFolder = normalizePath(settings.dailyNoteFolder || "").replace(/^\/+/, "").replace(/\/+$/, "");
-  if (dailyFolder) filters.add(`file.folder == ${baseString(dailyFolder)}`);
+  const normalizedDailyFolder = normalizePath(dailyFolder || "").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (normalizedDailyFolder) filters.add(`file.folder == ${baseString(normalizedDailyFolder)}`);
   else filters.add(`file.name != ${baseString("")}`);
   filters.add(`file.folder == ${baseString("Dailynotes")}`);
   return [...filters];
@@ -15746,7 +16339,101 @@ function baseString(value: string): string {
 }
 
 function normalizeWorkoutLogTarget(target: WorkoutLogTarget): WorkoutLogTarget {
-  return target === "session-note" || target === "daily-note" || target === "both" ? target : "session-note";
+  return target === "session-note" || target === "daily-note" || target === "both" ? target : "both";
+}
+
+function workoutDailyNoteBlock(title: string, sessionLine: string): string {
+  const safeTitle = String(title || "Workout").replace(/[\r\n]+/g, " ").trim() || "Workout";
+  const record = sessionLine.replace(/^\s*-\s*/, "").trim();
+  return `## Workout — ${safeTitle}\n<!-- tps-health:workout ${record} -->`;
+}
+
+function isWorkoutDailyMarkerLine(line: string): boolean {
+  return /^\s*<!--\s*tps-health:workout\b[\s\S]*-->\s*$/i.test(line);
+}
+
+function dailyWorkoutAnchorIndex(lines: readonly string[], workoutId: string): number {
+  return lines.findIndex((candidate) => candidate.includes(`[workoutId:: ${workoutId}]`));
+}
+
+function dailyWorkoutBlockEnd(lines: readonly string[], anchorIndex: number): number {
+  if (anchorIndex < 0) return lines.length;
+  if (isWorkoutDailyMarkerLine(lines[anchorIndex] || "")) {
+    let index = anchorIndex + 1;
+    while (index < lines.length) {
+      const candidate = lines[index];
+      if (isWorkoutDailyMarkerLine(candidate) || /^\s*#{1,2}(?:\s+|$)/.test(candidate)) break;
+      index++;
+    }
+    return index;
+  }
+  const parentIndent = leadingSpaces(lines[anchorIndex] || "");
+  let index = anchorIndex + 1;
+  while (index < lines.length) {
+    const candidate = lines[index];
+    if (candidate.trim() && leadingSpaces(candidate) <= parentIndent && (/^\s*-\s+/.test(candidate) || /^\s*#{1,6}(?:\s+|$)/.test(candidate))) break;
+    index++;
+  }
+  return index;
+}
+
+function dailyWorkoutIdForLine(lines: readonly string[], lineIndex: number): string {
+  for (let index = Math.min(lineIndex, lines.length - 1); index >= 0; index--) {
+    if (/^\s*#{1,2}(?:\s+|$)/.test(lines[index])) {
+      const markerIndex = index + 1;
+      let candidateIndex = markerIndex;
+      while (candidateIndex < lines.length && !lines[candidateIndex].trim()) candidateIndex++;
+      if (!isWorkoutDailyMarkerLine(lines[candidateIndex] || "")) return "";
+      if (lineIndex >= dailyWorkoutBlockEnd(lines, candidateIndex)) return "";
+      return readStringField(lines[candidateIndex], "workoutId") || "";
+    }
+  }
+  return "";
+}
+
+export function insertWorkoutBlockIntoContent(content: string, block: string, placement: WorkoutDailyNotePlacement): string {
+  const lines = content.split("\n");
+  const blockLines = block.split("\n");
+  const bodyStart = frontmatterLineEnd(lines);
+  let insertIndex = bodyStart;
+  if (placement === "bottom") {
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    insertIndex = lines.length;
+  } else if (placement === "before-first-h2") {
+    let fenced = false;
+    let fenceMarker = "";
+    insertIndex = -1;
+    for (let index = bodyStart; index < lines.length; index++) {
+      const fence = lines[index].match(/^\s*(```+|~~~+)/);
+      if (fence) {
+        const marker = fence[1][0];
+        if (!fenced) {
+          fenced = true;
+          fenceMarker = marker;
+        } else if (marker === fenceMarker) {
+          fenced = false;
+          fenceMarker = "";
+        }
+        continue;
+      }
+      if (!fenced && /^\s*##(?:\s+|$)/.test(lines[index]) && !/^\s*###/.test(lines[index])) {
+        insertIndex = index;
+        break;
+      }
+    }
+    if (insertIndex < 0) {
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      insertIndex = lines.length;
+    }
+  }
+  const insertion: string[] = [];
+  if (insertIndex > 0 && lines[insertIndex - 1]?.trim()) insertion.push("");
+  insertion.push(...blockLines);
+  if (insertIndex < lines.length && lines[insertIndex]?.trim()) insertion.push("");
+  lines.splice(insertIndex, 0, ...insertion);
+  while (lines.length > 1 && !lines[lines.length - 1].trim() && !lines[lines.length - 2].trim()) lines.pop();
+  if (placement === "bottom" || content.endsWith("\n")) lines.push("");
+  return lines.join("\n");
 }
 
 function createFoodLogBaseEntry(plugin: TPSHealthPlugin, file: TFile, lineIndex: number, line: string): FoodLogBaseEntry {

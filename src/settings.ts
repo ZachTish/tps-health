@@ -2,7 +2,7 @@ import { App, PluginSettingTab, SecretComponent, Setting } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutLogTarget, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutSetNotation } from "./types";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
 type OptionalDisclosureId = "custom-goals" | "templates" | "provider-credentials";
@@ -230,27 +230,17 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const dailyNotes = createSettingsGroup(
       page,
       "Daily notes",
-      "How TPS Health finds or creates the note for a selected day.",
+      "TPS Health follows Obsidian's Core Daily Notes location and filename format.",
     );
     new Setting(dailyNotes)
-      .setName("Daily note format")
-      .setDesc("Moment format used to find or create the daily note.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.dailyNoteFormat)
-        .setValue(this.plugin.settings.dailyNoteFormat)
-        .onChange(async (value) => {
-          this.plugin.settings.dailyNoteFormat = value.trim() || DEFAULT_SETTINGS.dailyNoteFormat;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(dailyNotes)
-      .setName("Daily note folder")
-      .setDesc("Leave blank when daily notes live at the vault root.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.dailyNoteFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.dailyNoteFolder = value.trim();
-          await this.plugin.saveSettings();
+      .setName("Daily Notes source")
+      .setDesc("Folder and date format come from Obsidian → Core plugins → Daily notes. Change them there and TPS Health will use the new values automatically.")
+      .addButton((button) => button
+        .setButtonText("Open Daily Notes settings")
+        .onClick(() => {
+          const setting = (this.app as any).setting;
+          setting?.open?.();
+          setting?.openTabById?.("daily-notes");
         }));
 
     const foodLogging = createSettingsGroup(
@@ -392,29 +382,29 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   private renderWorkoutsPage(page: HTMLElement): void {
     const storage = createSettingsGroup(
       page,
-      "Workout storage",
-      "Choose the canonical workout location and whether session-note workouts also receive a daily-note link.",
+      "Workout placement",
+      "Every workout gets a live section in its Core Daily Note. A dedicated workout note is optional.",
     );
     new Setting(storage)
-      .setName("Workout log target")
-      .setDesc("Choose whether the workout note is canonical, the daily note is canonical, or both are written.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("session-note", "Workout note")
-        .addOption("daily-note", "Daily note only")
-        .addOption("both", "Workout note + daily receipt")
-        .setValue(this.plugin.settings.workoutLogTarget)
+      .setName("Also create a dedicated workout note")
+      .setDesc("Keeps a separate workout file in addition to the live Daily Note section.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.workoutLogTarget !== "daily-note")
         .onChange(async (value) => {
-          this.plugin.settings.workoutLogTarget = value as WorkoutLogTarget;
+          this.plugin.settings.workoutLogTarget = value ? "both" : "daily-note";
           await this.plugin.saveSettings();
         }));
 
     new Setting(storage)
-      .setName("Append workout summary to daily note")
-      .setDesc("When Workout note is the target, add a compact link to the selected daily note.")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.appendWorkoutSummaryToDailyNote)
+      .setName("Workout position in Daily Note")
+      .setDesc("Choose where a new workout heading and its live controls are inserted.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("after-frontmatter", "Top, after properties")
+        .addOption("before-first-h2", "Above the first level-2 heading")
+        .addOption("bottom", "Bottom of note")
+        .setValue(this.plugin.settings.workoutDailyNotePlacement)
         .onChange(async (value) => {
-          this.plugin.settings.appendWorkoutSummaryToDailyNote = value;
+          this.plugin.settings.workoutDailyNotePlacement = value as typeof this.plugin.settings.workoutDailyNotePlacement;
           await this.plugin.saveSettings();
         }));
 
@@ -533,7 +523,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     new Setting(identification)
       .setName("Food note identification")
-      .setDesc("Controls which notes are treated as foods, meals, or recipes in search/rendering.")
+      .setDesc("Controls both how foods, meals, and recipes are recognized and which identity fields TPS Health writes.")
       .addDropdown((dropdown) => dropdown
         .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
         .addOption("folder", "Folders only")
@@ -654,7 +644,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     new Setting(gcm)
       .setName("Show food log button in GCM")
-      .setDesc("Adds a Food button to the GCM note controls. The button shows today's logged food count and opens quick food logging.")
+      .setDesc("Adds the Log food action to TPS Global Context Menu only when the active note exactly matches the Core Daily Notes folder and filename format.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.showFoodLogButtonInGcm)
         .onChange(async (value) => {
@@ -828,10 +818,4 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 function positiveNumber(value: string, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function workoutTargetLabel(value: WorkoutLogTarget): string {
-  if (value === "daily-note") return "Daily note only";
-  if (value === "both") return "Workout note + daily receipt";
-  return "Workout note";
 }

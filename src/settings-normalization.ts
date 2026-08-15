@@ -4,9 +4,10 @@ export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "work
 
 type SettingsRecord = Record<string, unknown>;
 
-const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "usdaApiKeySecret", "usdaApiKey"] as const;
+const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "dailyNoteFormat", "dailyNoteFolder", "usdaApiKeySecret", "usdaApiKey"] as const;
 
 const WORKOUT_LOG_TARGETS = ["session-note", "daily-note", "both"];
+const WORKOUT_DAILY_NOTE_PLACEMENTS = ["after-frontmatter", "before-first-h2", "bottom"];
 const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
 const REST_TIMER_MODES = ["count-up", "count-down"];
 const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
@@ -21,8 +22,6 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
     return normalized;
   }, {} as SettingsRecord) as unknown as TPSHealthSettings;
 
-  settings.dailyNoteFormat = stringSetting(settings.dailyNoteFormat, DEFAULT_SETTINGS.dailyNoteFormat);
-  settings.dailyNoteFolder = optionalStringSetting(settings.dailyNoteFolder);
   settings.workoutsFolder = stringSetting(settings.workoutsFolder, DEFAULT_SETTINGS.workoutsFolder);
   settings.workoutPlansFolder = stringSetting(settings.workoutPlansFolder, DEFAULT_SETTINGS.workoutPlansFolder);
   settings.exercisesFolder = stringSetting(settings.exercisesFolder, DEFAULT_SETTINGS.exercisesFolder);
@@ -56,6 +55,8 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.lastSetEndedAt = optionalStringSetting(settings.lastSetEndedAt);
 
   if (!WORKOUT_LOG_TARGETS.includes(settings.workoutLogTarget)) settings.workoutLogTarget = DEFAULT_SETTINGS.workoutLogTarget;
+  if (settings.workoutLogTarget === "session-note") settings.workoutLogTarget = "both";
+  if (!WORKOUT_DAILY_NOTE_PLACEMENTS.includes(settings.workoutDailyNotePlacement)) settings.workoutDailyNotePlacement = DEFAULT_SETTINGS.workoutDailyNotePlacement;
   if (!FOOD_LOG_TARGETS.includes(settings.foodLogTarget)) settings.foodLogTarget = DEFAULT_SETTINGS.foodLogTarget;
   if (!REST_TIMER_MODES.includes(settings.restTimerMode)) settings.restTimerMode = DEFAULT_SETTINGS.restTimerMode;
   if (!WORKOUT_SET_NOTATIONS.includes(settings.workoutSetNotation)) settings.workoutSetNotation = DEFAULT_SETTINGS.workoutSetNotation;
