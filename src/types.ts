@@ -1,5 +1,5 @@
 export type RestTimerMode = "count-up" | "count-down";
-export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label";
+export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label" | "ai-research";
 export type FoodNoteType = "food" | "recipe" | "meal";
 export type HealthGoalKind = "min" | "max" | "range" | "counter";
 export type FoodLogTarget = "daily-note" | "single-file";

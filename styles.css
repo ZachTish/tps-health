@@ -364,6 +364,30 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
   min-height: 40px;
 }
 
+.tps-health-food-research-sources {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.tps-health-food-research-sources summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tps-health-food-research-sources ul {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+
+.tps-health-food-research-sources a {
+  overflow-wrap: anywhere;
+}
+
 .modal.tps-health-modal-frame {
   max-height: min(720px, calc(100vh - 32px));
 }

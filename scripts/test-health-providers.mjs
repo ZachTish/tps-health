@@ -127,7 +127,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -2774,13 +2774,13 @@ test("barcode misses default to Nutrition Facts scanning and still return review
   assert.match(labelScanModal, /\.setButtonText\("Create manually"\)/);
   assert.match(labelScanModal, /setAttr\("capture", "environment"\)/);
   assert.match(labelScanModal, /foodLabelInlineImage\(file\)/);
-  assert.match(labelScanModal, /extractFoodFromLabelImage\(image, this\.barcode\)/);
+  assert.match(labelScanModal, /extractFoodFromLabelImage\(image, this\.barcode, this\.seedIdentity\)/);
   assert.doesNotMatch(mainSource, /canvas\.toDataURL/);
   assert.match(stylesSource, /\.tps-health-label-scan-actions \.setting-item-control \{[\s\S]+width: 100%/);
   assert.match(stylesSource, /\.tps-health-label-scan-actions button \{[\s\S]+min-height: 40px/);
   assert.match(stylesSource, /@media \(max-width: 600px\), \(hover: none\) and \(pointer: coarse\) \{[\s\S]+\.tps-health-label-scan-actions button[\s\S]+min-height: 44px/);
   assert.match(reviewModal, /private onSaved\?: \(item: FoodItem\) => Promise<void> \| void/);
-  assert.match(reviewModal, /const preserveLabelCalories = this\.item\.source === "nutrition-label"/);
+  assert.match(reviewModal, /const preserveLabelCalories = this\.item\.source === "nutrition-label" \|\| this\.item\.source === "ai-research"/);
   assert.match(reviewModal, /nutrition: preserveLabelCalories \? \{ \.\.\.nutrition \} : nutritionWithMacroCalories\(nutrition\)/);
   assert.match(reviewModal, /\.setButtonText\(this\.onSaved \? "Create and add" : "Create food"\)/);
   assert.match(reviewModal, /if \(this\.onSaved\) await this\.onSaved\(saved\);\s+else new FoodLogModal/);
@@ -8651,3 +8651,91 @@ function pathLabel(path) {
   const normalized = path.replace(/\.md$/i, "");
   return normalized.split("/").pop() || normalized;
 }
+
+test("grounded food research rejects impossible Clubtails nutrition and preserves identity for label scanning", async () => {
+  const { alcoholGramsFromAbv, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi } = await importPluginWithObsidianStub();
+  assert.equal(alcoholGramsFromAbv(10, 473), 37.3);
+  assert.equal(foodResearchNutritionIsPlausible({ calories: 200, carbsG: 13, alcoholG: 37.3 }), false);
+  const result = {
+    found: true,
+    name: "Blue Hawaiian",
+    brand: "Clubtails",
+    barcode: "0684746402542",
+    servingAmount: 1,
+    servingUnit: "can",
+    servingGrams: 0,
+    servingMl: 473,
+    abvPercent: 10,
+    nutritionStatus: "conflicting",
+    confidence: 0.91,
+    reason: "The product identity is supported, but published calories conflict with the alcohol content.",
+    nutrition: { calories: 200, proteinG: 0, carbsG: 13, fatG: 0, fiberG: 0, sugarG: 12, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 0 },
+  };
+  const outcome = foodResearchOutcomeFromAi(result, [
+    { title: "Clubtails", url: "https://clubtails.com/blue-hawaiian/" },
+    { title: "Unsafe", url: "javascript:alert(1)" },
+  ]);
+  assert.equal(outcome.item.name, "Blue Hawaiian");
+  assert.equal(outcome.item.brand, "Clubtails");
+  assert.equal(outcome.item.nutrition.alcoholG, undefined);
+  assert.equal(outcome.needsLabel, true);
+  assert.deepEqual(outcome.sources, [{ title: "Clubtails", url: "https://clubtails.com/blue-hawaiian/" }]);
+});
+
+test("grounded food research accepts coherent serving evidence and uses a stable durable Gemini request", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, foodResearchOutcomeFromAi } = await importPluginWithObsidianStub();
+  const coherent = {
+    found: true,
+    name: "Blue Hawaiian",
+    brand: "Clubtails",
+    barcode: "0684746402542",
+    servingAmount: 1,
+    servingUnit: "can",
+    servingGrams: 0,
+    servingMl: 473,
+    abvPercent: 10,
+    nutritionStatus: "consistent-sources",
+    confidence: 0.9,
+    reason: "Two credible sources agree.",
+    nutrition: { calories: 313, proteinG: 0, carbsG: 13, fatG: 0, fiberG: 0, sugarG: 12, sugarAlcoholG: 0, alcoholG: 37.3, sodiumMg: 0 },
+  };
+  const direct = foodResearchOutcomeFromAi(coherent, []);
+  assert.equal(direct.needsLabel, false);
+  assert.equal(direct.item.nutrition.calories, 313);
+  assert.equal(direct.item.source, "ai-research");
+
+  const fake = createFakeHealthApp();
+  const requests = [];
+  fake.app.tpsAiGateway = {
+    features: { googleSearchGrounding: true },
+    async completeStructured(request) {
+      requests.push(request);
+      return { data: coherent, provider: "gemini", model: "gemini-2.5-flash", traceId: "trace-grounded", attempts: 1, sources: [{ title: "Clubtails", url: "https://clubtails.com/blue-hawaiian/" }] };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  const first = await plugin.researchFoodWithAi("Clubtails Blue Hawaiian");
+  const second = await plugin.researchFoodWithAi("  Clubtails   Blue Hawaiian ");
+  assert.equal(first.needsLabel, false);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].taskId, "health.research-packaged-food");
+  assert.equal(requests[0].grounding, "google-search");
+  assert.deepEqual(requests[0].preferredProviders, ["gemini"]);
+  assert.equal(requests[0].durableJobId, requests[1].durableJobId);
+  assert.match(requests[0].durableJobId, /^health-food-research-v1-[a-z0-9]{7}$/);
+  assert.equal(second.sources[0].url, "https://clubtails.com/blue-hawaiian/");
+  delete fake.app.tpsAiGateway.features;
+  await assert.rejects(() => plugin.researchFoodWithAi("Clubtails"), /Update TPS AI Gateway/);
+});
+
+test("food search exposes an explicit wider Gemini route and barcode misses remain label-first", () => {
+  assert.match(mainSource, /setButtonText\("Search wider with Gemini"\)/);
+  assert.match(mainSource, /grounding: "google-search"/);
+  assert.match(mainSource, /new NutritionLabelScanModal\(this\.app, this\.plugin, barcode/);
+  assert.match(mainSource, /setButtonText\("Research barcode"\)/);
+  assert.match(mainSource, /this\.plugin\.extractFoodFromLabelImage\(image, this\.barcode, this\.seedIdentity\)/);
+  assert.match(mainSource, /renderFoodResearchSources\(this\.contentEl, this\.sources\)/);
+  assert.match(stylesSource, /\.tps-health-food-research-sources/);
+});
