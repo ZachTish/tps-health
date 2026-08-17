@@ -114,3 +114,19 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
   assert.match(mainSource, /job:dismissed-while-running/);
   assert.match(mainSource, /openTray\.addEventListener\("click", \(\) => new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)\)/);
 });
+
+test("Describe persists a resumable workflow and uses stable durable Gateway jobs", () => {
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review` : undefined/);
+  assert.match(mainSource, /tps-health-pending-food-describe-/);
+  assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);
+  assert.match(mainSource, /resumePendingFoodDescribeWorkflow\("layout-ready"\)/);
+  assert.match(mainSource, /isPendingAiJobError\(error\)/);
+  assert.match(mainSource, /id: workflow\?\.id \|\| id\("describe-food"\)/);
+  assert.match(mainSource, /workflow\.createdMealPath = meal\.sourcePath/);
+  assert.match(mainSource, /savedItem = entry\.item\.sourcePath \? entry\.item : await this\.findOrCreateFoodNote\(entry\.item\)/);
+  assert.match(mainSource, /workflow\.preparedSelectionItems = selectionItems\.map\(cloneBatchFoodSelection\)/);
+  assert.match(mainSource, /workflow:prepared-tray-restored/);
+  assert.match(mainSource, /this\.settings\.pendingFoodLogDraft\?\.id === workflow\.id/);
+  assert.match(mainSource, /tps:health-food-describe-ready/);
+});
