@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.12.3
+
+- Starting a blank workout from Home, a Base, or another non-Markdown view now verifies that the matching Core Daily Note is the active leaf and opens it in Live Preview. A Global Context Menu request that only creates a background tab is promoted; if that cannot be verified, TPS Health falls back to Obsidian's native opener instead of reporting a false success.
+- Adding an exercise keeps the Daily Note as the canonical workout surface. The optional dedicated session note is updated without navigating away, so choosing an exercise no longer opens an empty tab or strands the user outside the running workout.
+- Open workout editors are now discovered through Obsidian's supported Markdown-leaf API as well as the older all-leaf iterator. Exercise and set writes therefore update the visible Live Preview buffer immediately instead of leaving a stale empty card while the disk note changes underneath it.
+- Workout set cards now use a supported CodeMirror state-field renderer. The prior view-plugin route could throw `Block decorations may not be specified via plugins`, prevent Health from reloading, and leave set controls missing until the note was reopened.
+- This is a backward-compatible reliability patch with no setting, note-schema, or public-API migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 173 of 174 declared checks passed; only the credential-gated live USDA check skipped. In the isolated test vault on Obsidian 1.13.7, a blank workout started from a blank tab, activated the Daily Note in Live Preview, rendered one bounded workout card and two exercise rows in a narrow pane, completed a `135 lb × 8` set as `1/2`, preserved the existing task below the end marker, and discarded only the synthetic workout. A clean app reload confirmed the supported renderer without plugin errors; active workout state was cleared and the optional dedicated note moved to Obsidian trash. Production was not changed.
+
 ## 0.12.2
 
 - Active Daily Note workout cards now include a visible **Discard workout** action beside **End workout**. End preserves the workout; Discard asks for confirmation, removes only the matching `## Workout` block and its sets, clears active state, and moves an optional dedicated workout note to Obsidian trash so it remains recoverable.
@@ -846,6 +855,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.12.3: Makes blank-workout opening deterministic, keeps exercise insertion on the Daily Note, synchronizes visible Live Preview buffers through supported leaf discovery, and replaces the invalid block-decoration view plugin with a CodeMirror state field.
 - 0.11.0: Adds an explicit Google-grounded Gemini fallback for missing packaged foods and barcodes, with source links, label-first uncertainty handling, and macro/alcohol plausibility rejection.
 - 0.7.0: Moves reusable food/recipe identity tags into YAML frontmatter and adds guarded Replace/Remove ingredient editing across rendered recipe cards and the full meal editor.
 - 0.6.0: Adds honest per-100 serving fallbacks, cached exact label enrichment and stale local serving repair, coherent gram-serving ranking/deduplication, and transactional meal-tray consumption after a successful log.

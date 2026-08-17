@@ -1,6 +1,6 @@
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
-import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
+import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
@@ -2010,7 +2010,10 @@ export default class TPSHealthPlugin extends Plugin {
       new Notice("Could not create workout note.");
       return;
     }
-    await this.addSetForExerciseToWorkoutFile(file.path, exercise, after);
+    // The Daily Note is the canonical live-workout surface. Keep the
+    // dedicated session note in sync without navigating away from the card
+    // the user is actively editing.
+    await this.addSetForExerciseToWorkoutFile(file.path, exercise, after, { focusAfter: false });
     const refreshedActive = this.getActiveWorkoutState();
     if (refreshedActive?.dailyNotePath && refreshedActive.id) {
       await this.addExercisePlaceholderToDailyWorkout(refreshedActive.dailyNotePath, refreshedActive.id, exercise);
@@ -2116,20 +2119,30 @@ export default class TPSHealthPlugin extends Plugin {
 
   private workoutViewsForFile(file: TFile): MarkdownView[] {
     const views: MarkdownView[] = [];
+    const collect = (leaf: any) => {
+      try {
+        const view = leaf?.view;
+        const markdownView = view instanceof MarkdownView || view?.getViewType?.() === "markdown";
+        if (!markdownView || view.file?.path !== file.path) return;
+        const mode = typeof view.getMode === "function" ? view.getMode() : "";
+        logger.flow("WorkoutSet", "mutation:view-found", { path: file.path, mode: mode || "unknown" });
+        if (!views.includes(view)) views.push(view as MarkdownView);
+      } catch (error) {
+        logger.flowWarn("WorkoutSet", "mutation:editor-leaf-skip", { path: file.path, error: logger.errorSummary(error) });
+      }
+    };
+    const getLeavesOfType = (this.app.workspace as any).getLeavesOfType;
+    if (typeof getLeavesOfType === "function") {
+      try {
+        for (const leaf of getLeavesOfType.call(this.app.workspace, "markdown") || []) collect(leaf);
+      } catch (error) {
+        logger.flowWarn("WorkoutSet", "mutation:markdown-leaf-scan-failed", { path: file.path, error: logger.errorSummary(error) });
+      }
+    }
     const iterateAllLeaves = (this.app.workspace as any).iterateAllLeaves;
     if (typeof iterateAllLeaves !== "function") return views;
     try {
-      iterateAllLeaves.call(this.app.workspace, (leaf: any) => {
-        try {
-          const view = leaf?.view;
-          if (!(view instanceof MarkdownView) || view.file?.path !== file.path) return;
-          const mode = typeof view.getMode === "function" ? view.getMode() : "";
-          logger.flow("WorkoutSet", "mutation:view-found", { path: file.path, mode: mode || "unknown" });
-          if (!views.includes(view)) views.push(view);
-        } catch (error) {
-          logger.flowWarn("WorkoutSet", "mutation:editor-leaf-skip", { path: file.path, error: logger.errorSummary(error) });
-        }
-      });
+      iterateAllLeaves.call(this.app.workspace, collect);
     } catch (error) {
       logger.flowWarn("WorkoutSet", "mutation:editor-scan-failed", { path: file.path, error: logger.errorSummary(error) });
     }
@@ -3394,11 +3407,14 @@ export default class TPSHealthPlugin extends Plugin {
           { revealLeaf: true },
         );
         if (opened) {
-          await this.showWorkoutReadingMode(file);
-          logger.flow("WorkoutOpen", "gcm:done", { path: file.path });
-          return { requested: true, opened: true, route: "gcm" };
+          const activated = await this.activateWorkoutFileLeaf(file);
+          if (activated) {
+            logger.flow("WorkoutOpen", "gcm:done", { path: file.path });
+            return { requested: true, opened: true, route: "gcm" };
+          }
+          logger.flowWarn("WorkoutOpen", "gcm:not-active", { path: file.path });
         }
-        logger.flowWarn("WorkoutOpen", "gcm:declined", { path: file.path });
+        else logger.flowWarn("WorkoutOpen", "gcm:declined", { path: file.path });
       } catch (error) {
         logger.flowWarn("WorkoutOpen", "gcm:failed", { path: file.path, error: logger.errorSummary(error) });
       }
@@ -3409,8 +3425,8 @@ export default class TPSHealthPlugin extends Plugin {
       const leaf = this.app.workspace.getLeaf(false);
       logger.flow("WorkoutOpen", "obsidian:try", { path: file.path, leafViewType: leaf?.view?.getViewType?.() || "" });
       await leaf.openFile(file, { active: true } as any);
-      this.app.workspace.revealLeaf?.(leaf);
-      await this.showWorkoutReadingMode(file);
+      const activated = await this.activateWorkoutFileLeaf(file, leaf);
+      if (!activated) throw new Error(`Obsidian did not activate ${file.path}.`);
       logger.flow("WorkoutOpen", "obsidian:done", { path: file.path, leafViewType: leaf?.view?.getViewType?.() || "" });
       return { requested: true, opened: true, route: "obsidian" };
     } catch (error) {
@@ -3419,29 +3435,61 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async showWorkoutReadingMode(file: TFile): Promise<void> {
-    const leaves = typeof this.app.workspace.getLeavesOfType === "function"
-      ? this.app.workspace.getLeavesOfType("markdown")
-      : [];
-    const leaf = leaves.find((candidate) => (candidate.view as MarkdownView)?.file?.path === file.path);
-    const activeView = typeof this.app.workspace.getActiveViewOfType === "function"
-      ? this.app.workspace.getActiveViewOfType(MarkdownView)
-      : null;
-    const view = (leaf?.view as MarkdownView | undefined)
-      || (activeView?.file?.path === file.path ? activeView : undefined);
+  private async activateWorkoutFileLeaf(file: TFile, preferredLeaf?: WorkspaceLeaf): Promise<boolean> {
+    let leaf = preferredLeaf;
+    const canInspectMarkdownLeaves = typeof this.app.workspace.getLeavesOfType === "function";
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const leaves = canInspectMarkdownLeaves
+        ? this.app.workspace.getLeavesOfType("markdown")
+        : [];
+      const matchingLeaf = leaves.find((candidate) => (candidate.view as MarkdownView)?.file?.path === file.path);
+      if (matchingLeaf) {
+        leaf = matchingLeaf;
+        break;
+      }
+      if (leaf && (leaf.view as MarkdownView)?.file?.path === file.path) break;
+      if (attempt < 3) await sleep(40);
+    }
+    if (!leaf || (leaf.view as MarkdownView)?.file?.path !== file.path) {
+      // Older/test workspace shims cannot enumerate Markdown leaves. In that
+      // environment, a resolved native open is the strongest available
+      // signal; real Obsidian always takes the verified branch above.
+      if (preferredLeaf && !canInspectMarkdownLeaves) {
+        this.app.workspace.revealLeaf?.(preferredLeaf);
+        logger.flowWarn("WorkoutOpen", "activate:unverified", { path: file.path });
+        return true;
+      }
+      return false;
+    }
+    this.app.workspace.setActiveLeaf?.(leaf, { focus: true });
+    this.app.workspace.revealLeaf?.(leaf);
+    await this.showWorkoutLivePreview(file, leaf);
+    const activeFile = this.app.workspace.getActiveFile?.();
+    const activeLeaf = this.app.workspace.activeLeaf;
+    const activePath = activeFile?.path || ((activeLeaf?.view as MarkdownView | undefined)?.file?.path || "");
+    const activated = activePath === file.path || this.app.workspace.activeLeaf === leaf;
+    logger.flow("WorkoutOpen", activated ? "activate:done" : "activate:failed", {
+      path: file.path,
+      activePath,
+    });
+    return activated;
+  }
+
+  private async showWorkoutLivePreview(file: TFile, leaf?: WorkspaceLeaf): Promise<void> {
+    const view = leaf?.view as MarkdownView | undefined;
     const getState = (view as any)?.getState;
     const setState = (view as any)?.setState;
     if (!view || typeof getState !== "function" || typeof setState !== "function") {
-      logger.flowWarn("WorkoutOpen", "reading-mode:unavailable", { path: file.path, matchingLeaves: leaves.length, activeMatch: activeView?.file?.path === file.path });
-      return;
-    }
-    if (typeof view.getMode === "function" && view.getMode() === "preview") {
-      logger.flow("WorkoutOpen", "reading-mode:already", { path: file.path });
+      logger.flowWarn("WorkoutOpen", "live-preview:unavailable", { path: file.path });
       return;
     }
     const state = getState.call(view) || {};
-    await setState.call(view, { ...state, mode: "preview", source: false }, { history: false });
-    logger.flow("WorkoutOpen", "reading-mode:done", { path: file.path });
+    if (state.mode === "source" && state.source !== true) {
+      logger.flow("WorkoutOpen", "live-preview:already", { path: file.path });
+      return;
+    }
+    await setState.call(view, { ...state, mode: "source", source: false }, { history: false });
+    logger.flow("WorkoutOpen", "live-preview:done", { path: file.path });
   }
 
   async searchLocalFoods(query: string, usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
@@ -10791,58 +10839,50 @@ class WorkoutSetEmptyWidget extends WidgetType {
 }
 
 function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
-  return ViewPlugin.fromClass(class {
-    decorations: DecorationSet;
-
-    constructor(view: EditorView) {
-      this.decorations = this.buildDecorations(view);
-    }
-
-    update(update: ViewUpdate): void {
-      if (update.docChanged || update.viewportChanged || update.selectionSet) {
-        this.decorations = this.buildDecorations(update.view);
+  return StateField.define<DecorationSet>({
+    create(state) {
+      return buildWorkoutSetChipDecorations(plugin, state);
+    },
+    update(decorations, transaction) {
+      if (transaction.docChanged || transaction.selection) {
+        return buildWorkoutSetChipDecorations(plugin, transaction.state);
       }
-    }
-
-    private buildDecorations(view: EditorView): DecorationSet {
-      if (!view.state.field(editorLivePreviewField, false)) return Decoration.none;
-      const builder = new RangeSetBuilder<Decoration>();
-      const filePath = workoutFilePathForEditorView(plugin, view);
-      const documentContent = view.state.doc.toString();
-      const dailyWorkoutDocument = documentContent.split("\n").some(isWorkoutDailyMarkerLine);
-      if (!filePath || (!isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
-      const hasWorkoutSets = docHasWorkoutSetLine(documentContent);
-      const documentLines = documentContent.split("\n");
-      for (const { from, to } of view.visibleRanges) {
-        let position = from;
-        while (position <= to) {
-          const line = view.state.doc.lineAt(position);
-          if (line.to > to && position !== from) break;
-          position = line.to + 1;
-          if (!hasWorkoutSets && /^##\s+Sets\s*$/i.test(line.text.trim())) {
-            builder.add(line.to, line.to, Decoration.widget({
-              widget: new WorkoutSetEmptyWidget(plugin, filePath),
-              block: true,
-              side: 1,
-            }));
-            continue;
-          }
-          if (line.from === line.to || selectionTouchesLine(view, line.from, line.to)) continue;
-          const chip = workoutSetChipDataFromLine(line.text);
-          if (!chip) continue;
-          if (dailyWorkoutDocument && !dailyWorkoutIdForLine(documentLines, line.number - 1)) continue;
-          Object.assign(chip, workoutSetPresentation(documentLines, line.number - 1, chip));
-          builder.add(line.from, line.to, Decoration.replace({
-            widget: new WorkoutSetChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: line.text }),
-            block: true,
-          }));
-        }
-      }
-      return builder.finish();
-    }
-  }, {
-    decorations: (plugin) => plugin.decorations,
+      return decorations;
+    },
+    provide: (field) => EditorView.decorations.from(field),
   });
+}
+
+function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
+  if (!state.field(editorLivePreviewField, false)) return Decoration.none;
+  const builder = new RangeSetBuilder<Decoration>();
+  const filePath = plugin.app.workspace.getActiveFile()?.path || "";
+  const documentContent = state.doc.toString();
+  const dailyWorkoutDocument = documentContent.split("\n").some(isWorkoutDailyMarkerLine);
+  if (!filePath || (!isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
+  const hasWorkoutSets = docHasWorkoutSetLine(documentContent);
+  const documentLines = documentContent.split("\n");
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
+    const line = state.doc.line(lineNumber);
+    if (!hasWorkoutSets && /^##\s+Sets\s*$/i.test(line.text.trim())) {
+      builder.add(line.to, line.to, Decoration.widget({
+        widget: new WorkoutSetEmptyWidget(plugin, filePath),
+        block: true,
+        side: 1,
+      }));
+      continue;
+    }
+    if (line.from === line.to || selectionTouchesLineInState(state, line.from, line.to)) continue;
+    const chip = workoutSetChipDataFromLine(line.text);
+    if (!chip) continue;
+    if (dailyWorkoutDocument && !dailyWorkoutIdForLine(documentLines, line.number - 1)) continue;
+    Object.assign(chip, workoutSetPresentation(documentLines, line.number - 1, chip));
+    builder.add(line.from, line.to, Decoration.replace({
+      widget: new WorkoutSetChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: line.text }),
+      block: true,
+    }));
+  }
+  return builder.finish();
 }
 
 function docHasWorkoutSetLine(content: string): boolean {

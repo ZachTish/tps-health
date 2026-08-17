@@ -4971,12 +4971,14 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /openRoute: openResult\.route/);
   assert.match(mainSource, /openReason: openResult\.reason \|\| ""/);
   assert.match(mainSource, /private async openWorkoutFile\(file: TFile\): Promise<WorkoutOpenResult>/);
-  assert.match(mainSource, /private async showWorkoutReadingMode\(file: TFile\): Promise<void>/);
-  assert.match(mainSource, /await this\.showWorkoutReadingMode\(file\)/);
-  assert.match(mainSource, /mode: "preview", source: false/);
+  assert.match(mainSource, /private async activateWorkoutFileLeaf\(file: TFile, preferredLeaf\?: WorkspaceLeaf\): Promise<boolean>/);
+  assert.match(mainSource, /private async showWorkoutLivePreview\(file: TFile, leaf\?: WorkspaceLeaf\): Promise<void>/);
+  assert.match(mainSource, /await this\.showWorkoutLivePreview\(file, leaf\)/);
+  assert.match(mainSource, /mode: "source", source: false/);
   assert.match(mainSource, /logger\.flow\("WorkoutOpen", "start", \{ path: file\.path \}\)/);
   assert.match(mainSource, /typeof gcmApi\?\.openFileInLeaf === "function"/);
   assert.match(mainSource, /gcmApi\.openFileInLeaf\(\s*file,\s*false,\s*\(\) => this\.app\.workspace\.getLeaf\(false\),\s*\{ revealLeaf: true \}/);
+  assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:not-active", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:declined", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowError\("WorkoutOpen", "obsidian:failed", error, \{ path: file\.path \}\)/);
   assert.match(mainSource, /private async startGcmWorkoutTimer\(target: TFile \| string \| null\): Promise<void>/);
@@ -6644,8 +6646,11 @@ test("completed food logs render as the same polished mobile card in Live Previe
     mainSource.indexOf("function createWorkoutSetChipExtension"),
     mainSource.indexOf("function docHasWorkoutSetLine"),
   );
-  assert.match(workoutSetExtensionSource, /view\.state\.field\(editorLivePreviewField, false\)/);
-  assert.match(workoutSetExtensionSource, /workoutFilePathForEditorView\(plugin, view\)/);
+  assert.match(workoutSetExtensionSource, /StateField\.define<DecorationSet>/);
+  assert.match(workoutSetExtensionSource, /buildWorkoutSetChipDecorations\(plugin, state\)/);
+  assert.match(workoutSetExtensionSource, /state\.field\(editorLivePreviewField, false\)/);
+  assert.match(workoutSetExtensionSource, /selectionTouchesLineInState\(state, line\.from, line\.to\)/);
+  assert.doesNotMatch(workoutSetExtensionSource, /ViewPlugin\.fromClass/);
   assert.match(workoutSetExtensionSource, /if \(!filePath \|\| \(!isWorkoutLikeMarkdownPath\(plugin, filePath\) && !dailyWorkoutDocument\)\) return Decoration\.none;/);
   assert.match(workoutSetExtensionSource, /builder\.add\(line\.from, line\.to, Decoration\.replace/);
   assert.match(mainSource, /function workoutFilePathForRenderedRoot\(plugin: TPSHealthPlugin, root: HTMLElement, sourcePath: string \| null \| undefined\): string/);
@@ -7047,6 +7052,7 @@ test("active workout set rows recover stale state and stay simple in the workout
   const activePath = plugin.settings.activeWorkoutPath;
   assert.match(fake.files.get(activePath), /#tps\/workout\n\n- Squat - 0 lb x 0 \[type:: workoutSet\]/);
   assert.doesNotMatch(fake.files.get(activePath), /## Sets|### Squat|- \[ \] Squat/);
+  assert.equal(fake.app.workspace.activeLeaf, undefined, "adding an exercise must not navigate away from the Daily Note surface");
 
   await plugin.addSetForExerciseToActiveWorkout("Squat", {
     filePath: activePath,
@@ -7400,6 +7406,79 @@ test("workout row controls link adjacent exercises and sets while starting inlin
   assert.match(performedLine, /\[endedAt:: .+?\]/);
   assert.match(performedLine, /\[rest:: 75\]/);
   assert.match(performedLine, /\[restStartedAt:: .+?\]/);
+});
+
+test("blank workout start activates its Daily Note in Live Preview when GCM opens a background leaf", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Inbox/Daily", "YYYY-MM-DD");
+  const MarkdownView = globalThis.__TPSHealthTestMarkdownView;
+  const activeHistory = [];
+  const stateHistory = [];
+  const homeLeaf = { view: { getViewType: () => "tps-home" } };
+  const workoutView = new MarkdownView();
+  workoutView.file = null;
+  workoutView.getViewType = () => "markdown";
+  workoutView.getState = () => ({ file: workoutView.file?.path || "", mode: "preview", source: false });
+  workoutView.setState = async (state) => stateHistory.push(state);
+  const backgroundLeaf = {
+    view: workoutView,
+    openFile: async (file) => {
+      workoutView.file = file;
+    },
+  };
+  const markdownLeaves = [];
+  fake.app.workspace.activeLeaf = homeLeaf;
+  fake.app.workspace.getActiveFile = () => fake.app.workspace.activeLeaf?.view?.file || null;
+  fake.app.workspace.getLeavesOfType = (type) => type === "markdown" ? markdownLeaves : [];
+  fake.app.workspace.setActiveLeaf = (leaf) => {
+    fake.app.workspace.activeLeaf = leaf;
+    activeHistory.push(leaf);
+  };
+  fake.app.workspace.revealLeaf = () => {};
+  fake.app.workspace.iterateAllLeaves = (callback) => [homeLeaf, ...markdownLeaves].forEach(callback);
+  fake.app.workspace.getLeaf = () => backgroundLeaf;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      openFileInLeaf: async (file) => {
+        workoutView.file = file;
+        markdownLeaves.push(backgroundLeaf);
+        return true;
+      },
+    },
+  };
+
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutLogTarget: "daily-note",
+    workoutDailyNotePlacement: "after-frontmatter",
+  };
+  await plugin.startWorkout({
+    title: "Visible Blank QA",
+    logTarget: "daily-note",
+    startedAt: "2026-08-17T21:56:52.127Z",
+    openFile: true,
+  });
+
+  const dailyPath = "Inbox/Daily/2026-08-17.md";
+  assert.equal(fake.app.workspace.getActiveFile()?.path, dailyPath, "success must make the workout Daily Note active");
+  assert.equal(activeHistory.at(-1), backgroundLeaf, "a GCM background tab must be promoted to the active leaf");
+  assert.deepEqual(stateHistory.at(-1), { file: dailyPath, mode: "source", source: false }, "the active workout opens in Live Preview");
+  assert.equal((fake.files.get(dailyPath).match(/^## Workout$/gm) || []).length, 1);
+  assert.match(fake.files.get(dailyPath), /<!-- tps-health:workout-end \[workoutId:: workout-/);
+
+  let openEditorValue = fake.files.get(dailyPath);
+  workoutView.getMode = () => "source";
+  workoutView.editor = {
+    getValue: () => openEditorValue,
+    setValue: (value) => { openEditorValue = value; },
+  };
+  delete fake.app.workspace.iterateAllLeaves;
+  await plugin.addSetForExerciseToActiveWorkout("Bench press");
+  assert.match(openEditorValue, /Bench press - 0 lb x 0 \[type:: workoutSet\]/, "getLeavesOfType must keep the open Live Preview editor synchronized");
+  assert.match(fake.files.get(dailyPath), /Bench press - 0 lb x 0 \[type:: workoutSet\]/);
 });
 
 test("active workout can log five exercises with superset and dropset groups", async () => {
