@@ -241,6 +241,7 @@ export interface TPSHealthApi {
   logFood(input: LogFoodInput): Promise<FoodLogEntry>;
   startWorkout(input?: StartWorkoutInput): Promise<string>;
   finishWorkout(input?: FinishWorkoutInput): Promise<void>;
+  discardWorkout(): Promise<void>;
   logSet(input: LogSetInput): Promise<WorkoutSet>;
   getActiveWorkoutPath(): string;
   getActiveWorkout(): ActiveWorkoutState | null;

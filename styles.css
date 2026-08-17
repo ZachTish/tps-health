@@ -1619,6 +1619,7 @@ body.is-phone .tps-health-selection-controls {
 }
 
 .tps-health-daily-workout-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
@@ -1645,6 +1646,18 @@ body.is-phone .tps-health-selection-controls {
   color: var(--text-on-accent);
 }
 
+.tps-health-daily-workout-action.is-discard {
+  border-color: color-mix(in srgb, var(--color-red) 52%, var(--background-modifier-border));
+  color: var(--text-error);
+}
+
+.tps-health-daily-workout-action.is-discard:hover,
+.tps-health-daily-workout-action.is-discard:focus-visible {
+  background: color-mix(in srgb, var(--color-red) 16%, var(--background-primary));
+  border-color: var(--color-red);
+  color: var(--text-error);
+}
+
 .tps-health-daily-workout-action:hover,
 .tps-health-daily-workout-action:focus-visible {
   border-color: var(--interactive-accent);
@@ -1657,7 +1670,7 @@ body.is-phone .tps-health-selection-controls {
   opacity: 0.46;
 }
 
-@container (max-width: 520px) {
+@container (max-width: 620px) {
   .tps-health-daily-workout-header {
     align-items: stretch;
     grid-template-columns: minmax(0, 1fr);
@@ -1668,9 +1681,6 @@ body.is-phone .tps-health-selection-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .tps-health-daily-workout-action.is-end {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (hover: none) and (pointer: coarse) {

@@ -199,6 +199,10 @@ function createFakeHealthApp() {
       files.set(file.path, `${files.get(file.path) || ""}${content}`);
       writes.push({ op: "append", path: file.path, content });
     },
+    async trash(file, system) {
+      files.delete(file.path);
+      writes.push({ op: "trash", path: file.path, system });
+    },
   };
   return {
     app: {
@@ -4808,7 +4812,7 @@ test("built-in scalar health goals migrate, save, reload, and render canonically
 
 test("blank food sections stay unheaded while workout blocks honor Daily Note placement", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
-  const { insertWorkoutBlockIntoContent, repairWorkoutDailyBlockContent, mergeWorkoutSetLinesIntoDailyBlockContent } = await importPluginWithObsidianStub();
+  const { insertWorkoutBlockIntoContent, repairWorkoutDailyBlockContent, mergeWorkoutSetLinesIntoDailyBlockContent, removeWorkoutDailyBlockContent } = await importPluginWithObsidianStub();
   const normalized = normalizeTPSHealthSettings({ defaultFoodLogSection: "   ", workoutLogHeading: "   " });
   assert.equal(normalized.defaultFoodLogSection, "");
   assert.equal("workoutLogHeading" in normalized, false);
@@ -4888,6 +4892,11 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   assert.equal((repairedPromotedHeading.match(/^#{1,2} Workout$/gm) || []).length, 1, "a promoted workout heading must remain a single heading");
   assert.match(repairedPromotedHeading, /^## Workout$/m, "a promoted workout heading is normalized back to the canonical H2");
   assert.doesNotMatch(repairedPromotedHeading, /^# Workout$/m);
+  const removedWorkout = removeWorkoutDailyBlockContent(cleanWorkout, "workout-test", "bottom");
+  assert.doesNotMatch(removedWorkout, /(?:^## Workout$|tps-health:workout|setId:: set-two)/m);
+  assert.match(removedWorkout, /^# Daily Note$/m);
+  assert.match(removedWorkout, /^- \[ \] unrelated task$/m);
+  assert.match(removedWorkout, /^## Journal$/m);
   const duplicateStart = insertWorkoutBlockIntoContent(cleanWorkout, "## Workout\n<!-- tps-health:workout [workoutId:: workout-test] -->\n<!-- tps-health:workout-end [workoutId:: workout-test] -->", "bottom");
   assert.equal((duplicateStart.match(/## Workout/g) || []).length, 1, "restarting the same workout must not create a second heading");
   assert.match(mainSource, /mergeWorkoutSetLinesIntoDailyBlockContent\(editorContent, dailyWorkoutId, missingDiskSetLines\)/);
@@ -5126,6 +5135,7 @@ test("command palette only exposes polished everyday health actions", async () =
     "start-workout",
     "start-blank-workout",
     "finish-workout",
+    "discard-workout",
     "log-workout-set",
     "save-active-workout-layout",
     "finish-workout-and-save-layout",
@@ -6736,11 +6746,14 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(mainSource, /action\("\+ Exercise"/);
   assert.match(mainSource, /action\("\+ Set"/);
   assert.match(mainSource, /action\("End workout"/);
+  assert.match(mainSource, /action\("Discard workout"/);
+  assert.match(mainSource, /new DiscardWorkoutPromptModal\(this\.app/);
   assert.match(mainSource, /heading\.insertAdjacentElement\("afterend", workoutDailyHeaderElement/);
   assert.match(stylesSource, /\.tps-health-daily-workout-header \{[\s\S]*container-type: inline-size;[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
   assert.match(stylesSource, /\.tps-health-workout-set-metrics \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.doesNotMatch(stylesSource, /min-width: 530px/);
-  assert.match(stylesSource, /@container \(max-width: 520px\) \{[\s\S]*\.tps-health-daily-workout-action\.is-end \{\s+grid-column: 1 \/ -1;/);
+  assert.match(stylesSource, /@container \(max-width: 620px\) \{[\s\S]*\.tps-health-daily-workout-actions \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(stylesSource, /\.tps-health-daily-workout-action\.is-discard \{[\s\S]*var\(--text-error\)/);
   assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*\.tps-health-daily-workout-action[\s\S]*min-height: 44px/);
 });
 
@@ -6901,6 +6914,47 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.match(completedMarkerLine, /\[completedDate:: 2026-07-06T10:20:00\.000Z\]/);
   assert.match(completedMarkerLine, /\[durationMinutes:: 20\].*-->$/);
   assert.doesNotMatch(completedMarkerLine, /-->\s+\[/);
+  assert.equal(plugin.getActiveWorkoutState(), null);
+});
+
+test("discarding a running workout removes only its Daily Note block and trashes the dedicated note", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Daily", "YYYY-MM-DD");
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    workoutsFolder: "Health/Workouts",
+    exercisesFolder: "Health/Exercises",
+    workoutLogTarget: "both",
+    workoutDailyNotePlacement: "bottom",
+    defaultRestSeconds: 90,
+  };
+  const workoutPath = await plugin.startWorkout({
+    title: "Discard QA",
+    startedAt: "2026-07-07T10:00:00.000Z",
+    openFile: false,
+  });
+  const dailyPath = "Daily/2026-07-07.md";
+  await plugin.logSet({
+    exercise: "Squat",
+    reps: 5,
+    weight: 225,
+    weightUnit: "lb",
+    createExerciseNote: false,
+    completedDate: "2026-07-07T10:05:00.000Z",
+  });
+  fake.files.set(dailyPath, `${fake.files.get(dailyPath)}\n\n## Tasks\n- [ ] keep this task\n`);
+
+  await plugin.discardWorkout();
+
+  const daily = fake.files.get(dailyPath);
+  assert.doesNotMatch(daily, /(?:^## Workout$|tps-health:workout|type:: workoutSet)/m);
+  assert.match(daily, /^## Tasks$/m);
+  assert.match(daily, /^- \[ \] keep this task$/m);
+  assert.equal(fake.files.has(workoutPath), false, "the optional dedicated workout note moves to trash");
+  assert.ok(fake.writes.some((write) => write.op === "trash" && write.path === workoutPath && write.system === false));
   assert.equal(plugin.getActiveWorkoutState(), null);
 });
 

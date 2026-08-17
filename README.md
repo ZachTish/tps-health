@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.12.2
+
+- Active Daily Note workout cards now include a visible **Discard workout** action beside **End workout**. End preserves the workout; Discard asks for confirmation, removes only the matching `## Workout` block and its sets, clears active state, and moves an optional dedicated workout note to Obsidian trash so it remains recoverable.
+- `TPS Health: Discard active workout` exposes the same confirmed action from the command palette only while a workout is running. A failed timer cleanup or dedicated-note trash operation cannot leave the discarded Daily Note session active.
+- The four everyday actions reflow as a clean two-by-two grid in narrow panes and retain 44 px coarse-pointer targets. Surrounding Daily Note headings, tasks, and prose are preserved byte-for-byte by the bounded removal path.
+- This backward-compatible patch adds `discardWorkout()` to the public API, changes no settings or note schema, and keeps Obsidian 1.12.0 as the minimum supported version.
+- Validation: 172 of 173 declared checks passed; only the credential-gated live USDA check skipped. The isolated test-vault UI on Obsidian 1.13.7 showed one `## Workout` heading, a clear two-by-two action card with the red-outlined **Discard workout** button, and a mobile-sized confirmation explaining exactly what is removed and what remains recoverable. The behavioral discard test removed only the active block, preserved a following Tasks section, trashed the optional workout note, and cleared active state. Synthetic UI notes were moved to `_archive`; production was inspected but not directly redeployed.
+
 ## 0.12.1
 
 - Daily Note workout mutations now reconcile stale Live Preview buffers only inside the matching protected workout block. If the editor no longer contains that block, TPS Health falls back to the complete vault copy instead of appending a set at the end of the note where it could overwrite or absorb unrelated tasks, prose, or headings.

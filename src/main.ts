@@ -613,6 +613,15 @@ export default class TPSHealthPlugin extends Plugin {
       callback: () => this.traceCommand("finish-workout", () => this.finishWorkout()),
     });
     this.addCommand({
+      id: "discard-workout",
+      name: "Discard active workout",
+      checkCallback: (checking) => {
+        if (!this.getActiveWorkoutState()) return false;
+        if (!checking) this.openDiscardWorkoutConfirmation();
+        return true;
+      },
+    });
+    this.addCommand({
       id: "log-workout-set",
       name: "Log workout set",
       callback: () => this.traceCommand("log-workout-set", async () => {
@@ -1866,6 +1875,62 @@ export default class TPSHealthPlugin extends Plugin {
       planPath: planPath || "",
     });
     new Notice("Finished workout");
+  }
+
+  openDiscardWorkoutConfirmation(): void {
+    if (!this.getActiveWorkoutState()) {
+      new Notice("No active workout");
+      return;
+    }
+    new DiscardWorkoutPromptModal(this.app, async () => this.discardWorkout()).open();
+  }
+
+  async discardWorkout(): Promise<void> {
+    const active = this.getActiveWorkoutState();
+    if (!active) {
+      logger.flowWarn("Workout", "discard:no-active-workout");
+      new Notice("No active workout");
+      return;
+    }
+    logger.flow("Workout", "discard:start", {
+      workoutId: active.id,
+      path: active.path,
+      dailyNotePath: active.dailyNotePath,
+      setCount: active.setCount,
+    });
+    if (active.dailyNotePath && active.id) {
+      const dailyFile = this.app.vault.getAbstractFileByPath(active.dailyNotePath);
+      if (dailyFile instanceof TFile) {
+        await this.serializeWorkoutMutation(dailyFile.path, "discard-daily-workout", async () => {
+          const content = await this.readWorkoutMutationContent(dailyFile, "discard-daily-workout");
+          const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+          const updated = removeWorkoutDailyBlockContent(content, active.id, placement);
+          if (updated !== content) await this.writeWorkoutMutationContent(dailyFile, updated, "discard-daily-workout");
+        });
+      } else {
+        logger.flowWarn("Workout", "discard:daily-note-missing", { workoutId: active.id, dailyNotePath: active.dailyNotePath });
+      }
+    }
+    const workoutFile = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
+    try {
+      await this.stopGcmWorkoutTimer(workoutFile instanceof TFile ? workoutFile : active.path || active.dailyNotePath, isoNow());
+    } catch (error) {
+      logger.flowWarn("Workout", "discard:timer-stop-failed", { workoutId: active.id, error: logger.errorSummary(error) });
+    }
+    let workoutNoteTrashFailed = false;
+    if (workoutFile instanceof TFile && workoutFile.path !== active.dailyNotePath) {
+      try {
+        await this.app.vault.trash(workoutFile, false);
+        this.workoutFileSnapshots.delete(workoutFile.path);
+        logger.flow("Workout", "discard:workout-note-trashed", { workoutId: active.id, path: workoutFile.path });
+      } catch (error) {
+        workoutNoteTrashFailed = true;
+        logger.flowWarn("Workout", "discard:workout-note-trash-failed", { workoutId: active.id, path: workoutFile.path, error: logger.errorSummary(error) });
+      }
+    }
+    await this.clearActiveWorkoutState();
+    logger.flow("Workout", "discard:done", { workoutId: active.id, dailyNotePath: active.dailyNotePath, workoutNoteTrashFailed });
+    new Notice(workoutNoteTrashFailed ? "Discarded workout. The dedicated workout note could not be moved to trash." : "Discarded workout");
   }
 
   private async clearActiveWorkoutState(): Promise<void> {
@@ -5867,6 +5932,10 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flow("WorkoutActionBar", "layout:open", { path: file.path });
         new WorkoutLayoutModal(this.app, this, false).open();
       }));
+      menu.addItem((item) => item.setTitle("Discard workout").setIcon("trash-2").setDisabled(!activeForFile).onClick(() => {
+        logger.flow("WorkoutActionBar", "discard:open", { path: file.path });
+        this.openDiscardWorkoutConfirmation();
+      }));
       menu.showAtMouseEvent(event);
     });
     logger.flow("WorkoutActionBar", "render:done", { path: file.path, created, activeForFile, mobileFloating, source });
@@ -6644,6 +6713,7 @@ export default class TPSHealthPlugin extends Plugin {
       logFood: (input) => this.traceApiCall("logFood", input, () => this.logFoodFromInput(input)),
       startWorkout: (input) => this.traceApiCall("startWorkout", input, () => this.startWorkout(input)),
       finishWorkout: (input) => this.traceApiCall("finishWorkout", input, () => this.finishWorkout(input)),
+      discardWorkout: () => this.traceApiCall("discardWorkout", {}, () => this.discardWorkout()),
       logSet: (input) => this.traceApiCall("logSet", input, () => this.logSet(input)),
       getActiveWorkoutPath: () => this.settings.activeWorkoutPath,
       getActiveWorkout: () => this.getActiveWorkoutState(),
@@ -10670,6 +10740,7 @@ function workoutDailyHeaderElement(plugin: TPSHealthPlugin, data: WorkoutDailyHe
       actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = true);
       await plugin.finishWorkout();
     }),
+    action("Discard workout", "is-discard", () => plugin.openDiscardWorkoutConfirmation()),
   );
   card.append(summary, actions);
   return card;
@@ -14151,6 +14222,52 @@ class FinishWorkoutPromptModal extends Modal {
   }
 }
 
+class DiscardWorkoutPromptModal extends Modal {
+  constructor(app: App, private onDiscard: () => Promise<void>) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("tps-keyboard-aware-modal");
+    this.contentEl.empty();
+    this.contentEl.addClass("tps-health-modal");
+    this.contentEl.createEl("h2", { text: "Discard workout?" });
+    this.contentEl.createEl("p", {
+      text: "This removes the running workout and its sets from the Daily Note. A dedicated workout note is moved to Obsidian trash so it remains recoverable.",
+      cls: "tps-health-status",
+    });
+    let discarding = false;
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText("Cancel")
+        .onClick(() => this.close()))
+      .addButton((button) => {
+        button.setButtonText("Discard workout");
+        button.buttonEl.addClass("mod-warning");
+        button.onClick(async () => {
+          if (discarding) return;
+          discarding = true;
+          this.contentEl.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => candidate.disabled = true);
+          button.setButtonText("Discarding…");
+          try {
+            await this.onDiscard();
+            this.close();
+          } catch (error) {
+            discarding = false;
+            this.contentEl.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => candidate.disabled = false);
+            button.setButtonText("Discard workout");
+            logger.flowError("Workout", "discard:failed", error);
+            new Notice("Could not discard the workout. Nothing else was removed.");
+          }
+        });
+      });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 function numberOrUndefined(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -17482,6 +17599,25 @@ export function repairWorkoutDailyBlockContent(
     remaining.splice(startIndex, 1);
   }
   return insertWorkoutBlockIntoContent(remaining.join("\n"), block, placement);
+}
+
+export function removeWorkoutDailyBlockContent(
+  content: string,
+  workoutId: string,
+  placement: WorkoutDailyNotePlacement,
+): string {
+  const repaired = repairWorkoutDailyBlockContent(content, workoutId, placement);
+  const lines = repaired.split("\n");
+  const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
+  if (anchorIndex < 0) return content;
+  const startIndex = workoutDailyHeadingIndex(lines, anchorIndex);
+  const endIndex = explicitWorkoutDailyEndIndex(lines, anchorIndex);
+  if (endIndex < 0) return content;
+  lines.splice(startIndex, endIndex - startIndex + 1);
+  while (startIndex > 0 && startIndex < lines.length && !lines[startIndex - 1].trim() && !lines[startIndex].trim()) {
+    lines.splice(startIndex, 1);
+  }
+  return lines.join("\n");
 }
 
 function dailyWorkoutIdForLine(lines: readonly string[], lineIndex: number): string {
