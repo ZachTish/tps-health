@@ -162,6 +162,21 @@ test("Health settings mobile CSS is namespaced and keeps controls usable", () =>
   assert.match(stylesSource, /\.tps-health-settings-page \[data-tps-health-usda-secret-index\]\s*\{[\s\S]+min-width: 0/);
 });
 
+test("Workout set controls reflow inside narrow panes without clipping", () => {
+  assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+container-type: inline-size;/);
+  assert.match(stylesSource, /\.tps-health-workout-set-editor\s*\{[\s\S]+container-type: inline-size;/);
+  assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+overflow: visible;/);
+  const finalLayoutStart = stylesSource.lastIndexOf("/* Authoritative set-metric layout.");
+  assert.ok(finalLayoutStart > stylesSource.indexOf("/* Workout rows are compact"), "authoritative layout must follow compact defaults");
+  const finalLayout = stylesSource.slice(finalLayoutStart);
+  assert.match(finalLayout, /grid-template-columns: minmax\(52px, 0\.4fr\) minmax\(110px, 0\.9fr\) repeat\(3, minmax\(116px, 1fr\)\) minmax\(74px, 0\.6fr\)/);
+  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 680px\)[\s\S]+repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 440px\)[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 320px\)[\s\S]+minmax\(0, 1fr\)/);
+  assert.match(finalLayout, /\.tps-health-workout-set-metrics > :nth-child\(6\) \{ grid-column: 3; grid-row: 1; \}/);
+  assert.equal((stylesSource.match(/@container tps-health-workout-set-row/g) || []).length, 3, "one authoritative 6/3/2/1 container cascade");
+});
+
 test("README documents the routed settings contract", () => {
   for (const label of ["Daily logging", "Food & goals", "Workouts", "Note library", "Integrations & advanced"]) {
     assert.match(readmeSource, new RegExp(`\\*\\*${label.replace(/[&]/g, "\\&")}\\*\\*`));

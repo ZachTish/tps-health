@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.12.1
+
+- Daily Note workout mutations now reconcile stale Live Preview buffers only inside the matching protected workout block. If the editor no longer contains that block, TPS Health falls back to the complete vault copy instead of appending a set at the end of the note where it could overwrite or absorb unrelated tasks, prose, or headings.
+- Starting a workout is one-shot across commands, modals, and the public API. A rapid second submission shares the in-flight start, and a second workout cannot begin until the active one is ended. Retried starts reuse the matching workout ID instead of creating another heading.
+- Every repaired or new session uses one clean `## Workout` heading, one protected start marker, and one matching end marker. Legacy titled/missing-boundary blocks are normalized before template application, exercise/set insertion, or completion; the descriptive session title remains in the rendered control card.
+- Workout set inputs now use the actual row width rather than the app-window width: six visible controls on wide cards, then 3/2/1-column reflow at 680/440/320 px. Weight, reps, rest, status, and action controls remain visible with practical touch sizes in Reading mode, Live Preview, narrow split panes, and phones.
+- This patch changes no settings schema or note property contract and keeps Obsidian 1.12.0 as the minimum supported version.
+- Validation: 171 of 172 declared checks passed; only the credential-gated live USDA check skipped. In Obsidian 1.13.7, an isolated test-vault blank workout created one bounded `## Workout` block, exposed every set-entry field at a practical size, logged a synthetic set inside the boundary, normalized a temporarily promoted H1 back to the canonical H2, and ended with no active session. The synthetic Daily Note, workout, and exercise were moved to `_archive`. The separately authorized production-note repair preserved the unaffected Daily Note prefix and cleared only the matching corrupt workout state; production TPS Health was not deployed or reloaded.
+
 ## 0.12.0
 
 - **Frontmatter** and **Frontmatter, folder, or tag** food-identification modes now reveal editable identity controls for the property key plus the food, recipe, and meal values. Defaults remain `kind: food`, `kind: recipe`, and `kind: meal`; custom values are used consistently for creation, updates, catalog recognition, search indexing, and the GCM property-catalog scope. Legacy `kind` and `tpsType` values remain readable, and a legacy note moves to the configured identity when TPS Health next updates it.

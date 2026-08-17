@@ -4808,7 +4808,7 @@ test("built-in scalar health goals migrate, save, reload, and render canonically
 
 test("blank food sections stay unheaded while workout blocks honor Daily Note placement", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
-  const { insertWorkoutBlockIntoContent, repairWorkoutDailyBlockContent } = await importPluginWithObsidianStub();
+  const { insertWorkoutBlockIntoContent, repairWorkoutDailyBlockContent, mergeWorkoutSetLinesIntoDailyBlockContent } = await importPluginWithObsidianStub();
   const normalized = normalizeTPSHealthSettings({ defaultFoodLogSection: "   ", workoutLogHeading: "   " });
   assert.equal(normalized.defaultFoodLogSection, "");
   assert.equal("workoutLogHeading" in normalized, false);
@@ -4850,7 +4850,8 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
     "",
   ].join("\n");
   const repairedTop = repairWorkoutDailyBlockContent(legacyWorkout, "workout-test", "before-first-h2");
-  assert.ok(repairedTop.indexOf("## Workout — Old title") < repairedTop.indexOf("## Scheduled"));
+  assert.ok(repairedTop.indexOf("## Workout") < repairedTop.indexOf("## Scheduled"));
+  assert.doesNotMatch(repairedTop, /^## Workout —/m, "legacy titles move into the control card instead of duplicating the Daily Note heading");
   assert.ok(repairedTop.indexOf("tps-health:workout-end [workoutId:: workout-test]") < repairedTop.indexOf("## Scheduled"));
   assert.ok(repairedTop.indexOf("setId:: set-one") < repairedTop.indexOf("tps-health:workout-end [workoutId:: workout-test]"));
   assert.ok(repairedTop.indexOf("existing task one") > repairedTop.indexOf("## Scheduled"));
@@ -4859,11 +4860,37 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   assert.equal((repairedTop.match(/setId:: set-one/g) || []).length, 1);
   assert.equal(repairWorkoutDailyBlockContent(repairedTop, "workout-test", "before-first-h2"), repairedTop, "boundary repair should be idempotent after relocation");
   const repairedBottom = repairWorkoutDailyBlockContent(legacyWorkout, "workout-test", "bottom");
-  assert.ok(repairedBottom.indexOf("existing task two") < repairedBottom.indexOf("## Workout — Old title"));
+  assert.ok(repairedBottom.indexOf("existing task two") < repairedBottom.indexOf("## Workout"));
   assert.ok(repairedBottom.indexOf("tps-health:workout-end [workoutId:: workout-test]") > repairedBottom.indexOf("existing task two"));
   assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);[\s\S]+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
   assert.match(settingsSource, /\.setName\("Default food log section"\)\s+\.setDesc\("Optional\. Blank inserts food logs immediately after daily-note frontmatter\."\)[\s\S]+\.setPlaceholder\("Food Log"\)[\s\S]+defaultFoodLogSection = value\.trim\(\);/);
   assert.doesNotMatch(settingsSource, /\.setName\("Workout log heading"\)/);
+  const cleanWorkout = [
+    "# Daily Note",
+    "Intro prose",
+    "## Tasks",
+    "- [ ] unrelated task",
+    "## Workout",
+    "<!-- tps-health:workout [workoutId:: workout-test] -->",
+    "<!-- tps-health:workout-end [workoutId:: workout-test] -->",
+    "## Journal",
+    "Notes",
+  ].join("\n");
+  const setLine = "- [ ] bench press [type:: workoutSet] [setId:: set-two] [exercise:: bench press]";
+  const merged = mergeWorkoutSetLinesIntoDailyBlockContent(cleanWorkout, "workout-test", [setLine]);
+  assert.ok(merged);
+  assert.ok(merged.indexOf("setId:: set-two") < merged.indexOf("tps-health:workout-end"));
+  assert.ok(merged.indexOf("setId:: set-two") < merged.indexOf("## Journal"));
+  assert.equal((merged.match(/## Workout/g) || []).length, 1);
+  assert.equal(mergeWorkoutSetLinesIntoDailyBlockContent("## Tasks\n- task", "workout-test", [setLine]), null);
+  const promotedHeading = cleanWorkout.replace("## Workout", "# Workout");
+  const repairedPromotedHeading = repairWorkoutDailyBlockContent(promotedHeading, "workout-test", "bottom");
+  assert.equal((repairedPromotedHeading.match(/^#{1,2} Workout$/gm) || []).length, 1, "a promoted workout heading must remain a single heading");
+  assert.match(repairedPromotedHeading, /^## Workout$/m, "a promoted workout heading is normalized back to the canonical H2");
+  assert.doesNotMatch(repairedPromotedHeading, /^# Workout$/m);
+  const duplicateStart = insertWorkoutBlockIntoContent(cleanWorkout, "## Workout\n<!-- tps-health:workout [workoutId:: workout-test] -->\n<!-- tps-health:workout-end [workoutId:: workout-test] -->", "bottom");
+  assert.equal((duplicateStart.match(/## Workout/g) || []).length, 1, "restarting the same workout must not create a second heading");
+  assert.match(mainSource, /mergeWorkoutSetLinesIntoDailyBlockContent\(editorContent, dailyWorkoutId, missingDiskSetLines\)/);
   assert.match(readmeSource, /`Default food log section` is intentionally blank by default\. Blank keeps food entries unheaded and inserts daily-note entries immediately after frontmatter; `Food Log` is only the settings placeholder suggestion, not the persisted default\./);
   assert.match(readmeSource, /Every workout is anchored by a real level-2 heading in the Daily Note/);
 });
@@ -6821,6 +6848,13 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout-end \[workoutId:: workout-/);
   assert.equal((fake.files.get(dailyWorkoutPath).match(/\[type:: workoutSet\]/g) || []).length, 0, "a blank workout must begin without forced exercises");
   assert.equal(plugin.getActiveWorkoutState().title, "Blank Active QA");
+  await assert.rejects(
+    () => plugin.startWorkout({ title: "Duplicate Active QA", startedAt: "2026-07-06T10:01:00.000Z", openFile: false }),
+    /Finish or end the active workout/,
+  );
+  assert.equal((fake.files.get(dailyWorkoutPath).match(/^## Workout$/gm) || []).length, 1, "an active workout must own one clean Daily Note heading");
+  assert.match(mainSource, /private startWorkoutInFlight: Promise<string> \| null = null;/);
+  assert.match(mainSource, /"start:suppressed-in-flight"/);
 
   await plugin.logSet({
     exercise: "Bench press",

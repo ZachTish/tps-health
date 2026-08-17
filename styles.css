@@ -2059,7 +2059,11 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 .tps-health-workout-set-row {
   background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
   border-inline: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  container-type: inline-size;
+  container-name: tps-health-workout-set-row;
   margin-block: 0;
+  min-width: 0;
+  overflow: visible;
   padding-inline: 8px;
 }
 
@@ -2086,6 +2090,8 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   background: transparent;
   border: 0;
   border-radius: 0;
+  container-type: inline-size;
+  container-name: tps-health-workout-set-row;
   gap: 5px;
   margin: 0;
   padding: 5px 0;
@@ -2098,11 +2104,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-workout-set-header {
   padding-bottom: 3px;
-}
-
-.tps-health-workout-set-grid-header,
-.tps-health-workout-set-metrics {
-  grid-template-columns: minmax(58px, .45fr) minmax(110px, 1fr) minmax(104px, .9fr) minmax(92px, .75fr) minmax(104px, .9fr) minmax(78px, .55fr);
 }
 
 .tps-health-workout-set-advanced {
@@ -2157,7 +2158,7 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   align-items: center;
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(42px, 0.28fr) minmax(92px, 1fr) minmax(90px, 0.75fr) minmax(78px, 0.62fr) minmax(72px, 0.55fr);
+  min-width: 0;
 }
 
 .tps-health-workout-set-grid-header {
@@ -2491,16 +2492,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
     display: none;
   }
 
-  .tps-health-workout-set-metrics {
-    grid-template-columns: minmax(48px, .55fr) minmax(92px, 1fr) minmax(84px, .9fr);
-  }
-
-  .tps-health-workout-set-metrics > :nth-child(4),
-  .tps-health-workout-set-metrics > :nth-child(5),
-  .tps-health-workout-set-metrics > :nth-child(6) {
-    grid-row: 2;
-  }
-
   .tps-health-workout-set-editor input,
   .tps-health-workout-set-editor select,
   .tps-health-workout-set-step,
@@ -2518,10 +2509,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
   .tps-health-workout-set-grid-header {
     display: none;
-  }
-
-  .tps-health-workout-set-metrics {
-    grid-template-columns: minmax(40px, 0.32fr) minmax(84px, 1fr) minmax(88px, 0.84fr) minmax(74px, 0.7fr) minmax(72px, 0.55fr);
   }
 
   .tps-health-workout-set-advanced,
@@ -2898,22 +2885,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   align-items: stretch;
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.tps-health-workout-set-metrics > :nth-child(1),
-.tps-health-workout-set-metrics > :nth-child(2) {
-  grid-row: 1;
-}
-
-.tps-health-workout-set-metrics > :nth-child(3),
-.tps-health-workout-set-metrics > :nth-child(4) {
-  grid-row: 2;
-}
-
-.tps-health-workout-set-metrics > :nth-child(5),
-.tps-health-workout-set-metrics > :nth-child(6) {
-  grid-row: 3;
 }
 
 .tps-health-workout-set-grid-header > span,
@@ -2971,6 +2942,53 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-workout-set-step {
     min-height: 44px;
     min-width: 44px;
+  }
+}
+
+/* Authoritative set-metric layout. The editor is an inline-size container so
+   these breakpoints also apply inside desktop split panes and Live Preview.
+   A wide card gets one compact row; narrower cards deliberately reflow all
+   six controls instead of allowing a hidden or clipped cell. */
+.tps-health-workout-set-editor {
+  container-name: tps-health-workout-set-row;
+}
+
+.tps-health-workout-set-metrics {
+  grid-template-columns: minmax(52px, 0.4fr) minmax(110px, 0.9fr) repeat(3, minmax(116px, 1fr)) minmax(74px, 0.6fr);
+}
+
+@container tps-health-workout-set-row (max-width: 680px) {
+  .tps-health-workout-set-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tps-health-workout-set-metrics > :nth-child(1) { grid-column: 1; grid-row: 1; }
+  .tps-health-workout-set-metrics > :nth-child(2) { grid-column: 2; grid-row: 1; }
+  .tps-health-workout-set-metrics > :nth-child(6) { grid-column: 3; grid-row: 1; }
+  .tps-health-workout-set-metrics > :nth-child(3) { grid-column: 1; grid-row: 2; }
+  .tps-health-workout-set-metrics > :nth-child(4) { grid-column: 2; grid-row: 2; }
+  .tps-health-workout-set-metrics > :nth-child(5) { grid-column: 3; grid-row: 2; }
+}
+
+@container tps-health-workout-set-row (max-width: 440px) {
+  .tps-health-workout-set-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tps-health-workout-set-metrics > :nth-child(1),
+  .tps-health-workout-set-metrics > :nth-child(2),
+  .tps-health-workout-set-metrics > :nth-child(3),
+  .tps-health-workout-set-metrics > :nth-child(4),
+  .tps-health-workout-set-metrics > :nth-child(5),
+  .tps-health-workout-set-metrics > :nth-child(6) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@container tps-health-workout-set-row (max-width: 320px) {
+  .tps-health-workout-set-metrics {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .tps-health-workout-options {

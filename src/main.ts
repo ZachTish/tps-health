@@ -502,6 +502,7 @@ export default class TPSHealthPlugin extends Plugin {
   private lastFoodLogOpenAt = 0;
   private workoutFileSnapshots = new Map<string, string>();
   private processingWorkoutFiles = new Set<string>();
+  private startWorkoutInFlight: Promise<string> | null = null;
   private workoutMutationQueues = new Map<string, Promise<unknown>>();
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
@@ -1673,6 +1674,28 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async startWorkout(input: StartWorkoutInput = {}): Promise<string> {
+    if (this.startWorkoutInFlight) {
+      logger.flowWarn("Workout", "start:suppressed-in-flight");
+      return this.startWorkoutInFlight;
+    }
+    if (this.settings.activeWorkoutId) {
+      logger.flowWarn("Workout", "start:suppressed-active", {
+        workoutId: this.settings.activeWorkoutId,
+        dailyNotePath: this.settings.activeWorkoutDailyNotePath || "",
+      });
+      new Notice("End the active workout before starting another one.");
+      throw new Error("Finish or end the active workout before starting another one.");
+    }
+    const start = this.startWorkoutOnce(input);
+    this.startWorkoutInFlight = start;
+    try {
+      return await start;
+    } finally {
+      if (this.startWorkoutInFlight === start) this.startWorkoutInFlight = null;
+    }
+  }
+
+  private async startWorkoutOnce(input: StartWorkoutInput): Promise<string> {
     const startedAt = input.startedAt || isoNow();
     const dailyNoteDate = input.dailyNoteDate || startedAt;
     const plan = await this.resolveWorkoutPlanForStart(input);
@@ -1936,7 +1959,8 @@ export default class TPSHealthPlugin extends Plugin {
       const file = this.app.vault.getAbstractFileByPath(filePath);
       if (!(file instanceof TFile)) throw new Error("Daily Note was not found");
       const content = await this.readWorkoutMutationContent(file, "add-daily-workout-exercise");
-      const lines = content.split("\n");
+      const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+      const lines = repairWorkoutDailyBlockContent(content, workoutId, placement).split("\n");
       const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
       if (anchorIndex < 0 || !isWorkoutDailyMarkerLine(lines[anchorIndex])) {
         throw new Error("Workout section was moved or removed");
@@ -2182,12 +2206,36 @@ export default class TPSHealthPlugin extends Plugin {
       return Boolean(setId && !editorSetIds.has(setId));
     });
     if (missingDiskSetLines.length) {
+      // A Daily Note can be open in Live Preview while the editor snapshot is
+      // briefly behind the vault.  Appending disk rows to the end of that
+      // snapshot used to put workout sets inside the next heading (or beside
+      // unrelated tasks), corrupting the note.  Reconcile only inside the
+      // active bounded Daily Note workout block; if the editor no longer has
+      // that block, the disk copy is the only safe source of truth.
+      const dailyWorkoutId = file.path === this.settings.activeWorkoutDailyNotePath
+        ? (this.settings.activeWorkoutId || "").trim()
+        : "";
       let reconciled = editorContent;
-      for (const line of missingDiskSetLines) reconciled = appendWorkoutSetLineToContent(reconciled, line);
+      if (dailyWorkoutId) {
+        const bounded = mergeWorkoutSetLinesIntoDailyBlockContent(editorContent, dailyWorkoutId, missingDiskSetLines);
+        if (bounded == null) {
+          logger.flowWarn("WorkoutSet", "mutation:daily-editor-block-missing", {
+            path: file.path,
+            operation,
+            workoutId: dailyWorkoutId,
+            missingSetCount: missingDiskSetLines.length,
+          });
+          return diskContent;
+        }
+        reconciled = bounded;
+      } else {
+        for (const line of missingDiskSetLines) reconciled = appendWorkoutSetLineToContent(reconciled, line);
+      }
       logger.flowWarn("WorkoutSet", "mutation:stale-editor-sets-merged", {
         path: file.path,
         operation,
         missingSetCount: missingDiskSetLines.length,
+        boundedToDailyWorkout: Boolean(dailyWorkoutId),
       });
       return reconciled;
     }
@@ -4830,7 +4878,12 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const append = async () => {
       const content = await this.readWorkoutMutationContent(file, "append-daily-workout-set");
-      const lines = content.split("\n");
+      // Normalize legacy/misplaced blocks before adding a row.  Otherwise an
+      // old block without a boundary marker can absorb the Daily Note's task
+      // list and every new set is appended into that corrupted span.
+      const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+      const repaired = repairWorkoutDailyBlockContent(content, workoutId, placement);
+      const lines = repaired.split("\n");
       const parentIndex = dailyWorkoutAnchorIndex(lines, workoutId);
       if (parentIndex < 0) {
         logger.flowWarn("NoteWrite", "workout-set:daily-parent-missing", { dailyNotePath, workoutId });
@@ -4854,7 +4907,8 @@ export default class TPSHealthPlugin extends Plugin {
     if (!exercises.length) return;
     await this.serializeWorkoutMutation(file.path, "apply-daily-workout-template", async () => {
       const content = await this.readWorkoutMutationContent(file, "apply-daily-workout-template");
-      const lines = content.split("\n");
+      const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+      const lines = repairWorkoutDailyBlockContent(content, workoutId, placement).split("\n");
       const parentIndex = dailyWorkoutAnchorIndex(lines, workoutId);
       if (parentIndex < 0) return;
       const insertIndex = ensureWorkoutDailyEndMarker(lines, parentIndex);
@@ -5097,7 +5151,8 @@ export default class TPSHealthPlugin extends Plugin {
     }
     await this.serializeWorkoutMutation(file.path, "complete-daily-workout", async () => {
       const content = await this.readWorkoutMutationContent(file, "complete-daily-workout");
-      const lines = content.split("\n");
+      const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+      const lines = repairWorkoutDailyBlockContent(content, workoutId, placement).split("\n");
       const index = dailyWorkoutAnchorIndex(lines, workoutId);
       if (index < 0) {
         logger.flowWarn("Workout", "daily-complete:missing-row", { path: file.path, workoutId, lines: lines.length });
@@ -17342,10 +17397,47 @@ function ensureWorkoutDailyEndMarker(lines: string[], anchorIndex: number): numb
   return insertIndex;
 }
 
+/**
+ * Merge set rows from a newer vault read into a stale Daily Note editor
+ * snapshot without allowing rows to escape the active workout block.
+ *
+ * `null` means the editor no longer contains the active block and callers
+ * should discard the editor snapshot in favor of the vault copy.
+ */
+export function mergeWorkoutSetLinesIntoDailyBlockContent(
+  content: string,
+  workoutId: string,
+  setLines: readonly string[],
+): string | null {
+  const lines = content.split("\n");
+  const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
+  if (anchorIndex < 0 || !isWorkoutDailyMarkerLine(lines[anchorIndex] || "")) return null;
+  const insertIndex = ensureWorkoutDailyEndMarker(lines, anchorIndex);
+  const prefix = isWorkoutDailyMarkerLine(lines[anchorIndex]) ? "" : "  ";
+  const existingIds = new Set(lines.map((line) => readStringField(line, "setId")).filter(Boolean));
+  const rows = setLines
+    .filter((line) => isWorkoutSetLine(line))
+    .filter((line) => {
+      const setId = readStringField(line, "setId");
+      return Boolean(setId) && !existingIds.has(setId);
+    })
+    .map((line) => `${prefix}${line}`);
+  if (rows.length) lines.splice(insertIndex, 0, ...rows);
+  return lines.join("\n");
+}
+
 function workoutDailyHeadingIndex(lines: readonly string[], anchorIndex: number): number {
   let index = anchorIndex - 1;
   while (index >= 0 && !lines[index].trim()) index--;
-  return /^\s*##\s+Workout(?:\s*[—:-].*)?\s*$/i.test(lines[index] || "") ? index : anchorIndex;
+  // TPS Linter and a few Daily Note title workflows can temporarily promote
+  // the first heading in an otherwise-empty note to H1. Treat that promoted
+  // line as the same workout heading so the next mutation replaces it with
+  // the one canonical H2 instead of leaving an H1 beside a new H2.
+  return /^\s*#{1,2}\s+Workout(?:\s*[—:-].*)?\s*$/i.test(lines[index] || "") ? index : anchorIndex;
+}
+
+function workoutDailyHeadingLine(_marker: string): string {
+  return "## Workout";
 }
 
 export function repairWorkoutDailyBlockContent(
@@ -17361,7 +17453,7 @@ export function repairWorkoutDailyBlockContent(
   let blockLines: string[];
   let remaining: string[];
   if (explicitEnd >= 0) {
-    blockLines = lines.slice(startIndex, explicitEnd + 1);
+    blockLines = [workoutDailyHeadingLine(lines[anchorIndex]), ...lines.slice(anchorIndex, explicitEnd + 1)];
     remaining = [...lines.slice(0, startIndex), ...lines.slice(explicitEnd + 1)];
   } else {
     // The 0.9.0 boundary was the next H1/H2, so ordinary tasks could sit
@@ -17378,7 +17470,8 @@ export function repairWorkoutDailyBlockContent(
       if (isWorkoutSetLine(lines[index] || "")) setIndexes.add(index);
     }
     blockLines = [
-      ...lines.slice(startIndex, anchorIndex + 1),
+      workoutDailyHeadingLine(lines[anchorIndex]),
+      lines[anchorIndex],
       ...Array.from(setIndexes, (index) => lines[index]),
       workoutDailyEndMarkerLine(workoutId),
     ];
@@ -17408,6 +17501,17 @@ function dailyWorkoutIdForLine(lines: readonly string[], lineIndex: number): str
 export function insertWorkoutBlockIntoContent(content: string, block: string, placement: WorkoutDailyNotePlacement): string {
   const lines = content.split("\n");
   const blockLines = block.split("\n");
+  // Start-workout can be retried while Obsidian is still committing the Daily
+  // Note (for example after a mobile reconnect).  The workout id is the stable
+  // idempotency key: repair and reuse the existing bounded block instead of
+  // creating a second level-2 heading.
+  const blockWorkoutId = blockLines
+    .find((line) => isWorkoutDailyMarkerLine(line))
+    ? readStringField(blockLines.find((line) => isWorkoutDailyMarkerLine(line)) || "", "workoutId")
+    : "";
+  if (blockWorkoutId && dailyWorkoutAnchorIndex(lines, blockWorkoutId) >= 0) {
+    return repairWorkoutDailyBlockContent(content, blockWorkoutId, placement);
+  }
   const bodyStart = frontmatterLineEnd(lines);
   let insertIndex = bodyStart;
   if (placement === "bottom") {
