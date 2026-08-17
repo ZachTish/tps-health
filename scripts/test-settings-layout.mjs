@@ -72,6 +72,10 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "foodsFolder",
     "recipesFolder",
     "foodIdentificationMode",
+    "foodFrontmatterKey",
+    "foodFrontmatterFoodValue",
+    "foodFrontmatterRecipeValue",
+    "foodFrontmatterMealValue",
     "workoutIdentificationMode",
     "workoutTag",
     "exerciseTag",
@@ -90,6 +94,11 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     assert.match(settingsSource, new RegExp(`this\\.plugin\\.settings\\.${key}\\b`), `${key} must remain connected to the settings UI`);
   }
   assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag[\s\S]+?DEFAULT_SETTINGS\.exerciseTag/);
+  assert.match(settingsSource, /\.setName\("Food frontmatter key"\)/);
+  assert.match(settingsSource, /addIdentifierValue\("Food value"/);
+  assert.match(settingsSource, /addIdentifierValue\("Recipe value"/);
+  assert.match(settingsSource, /addIdentifierValue\("Meal value"/);
+  assert.match(settingsSource, /foodIdentificationMode === "metadata" \|\| this\.plugin\.settings\.foodIdentificationMode === "metadata-folder-tag"/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(dailyNoteFormat|dailyNoteFolder)/);
   assert.match(settingsSource, /\.setName\("Daily Notes source"\)/);
   assert.match(settingsSource, /Obsidian → Core plugins → Daily notes/);

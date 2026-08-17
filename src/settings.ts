@@ -524,16 +524,62 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     new Setting(identification)
       .setName("Food note identification")
       .setDesc("Controls both how foods, meals, and recipes are recognized and which identity fields TPS Health writes.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
-        .addOption("folder", "Folders only")
-        .addOption("tag", "Tags only")
-        .addOption("metadata", "Frontmatter only")
-        .setValue(this.plugin.settings.foodIdentificationMode)
-        .onChange(async (value) => {
-          this.plugin.settings.foodIdentificationMode = value as HealthEntityIdentificationMode;
-          await this.plugin.saveSettings();
-        }));
+      .addDropdown((dropdown) => {
+        dropdown.selectEl.dataset.tpsHealthFoodIdentification = "true";
+        return dropdown
+          .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
+          .addOption("folder", "Folders only")
+          .addOption("tag", "Tags only")
+          .addOption("metadata", "Frontmatter only")
+          .setValue(this.plugin.settings.foodIdentificationMode)
+          .onChange(async (value) => {
+            this.plugin.settings.foodIdentificationMode = value as HealthEntityIdentificationMode;
+            await this.plugin.saveSettings();
+            this.redisplayPreservingContext("[data-tps-health-food-identification]");
+          });
+      });
+
+    if (this.plugin.settings.foodIdentificationMode === "metadata" || this.plugin.settings.foodIdentificationMode === "metadata-folder-tag") {
+      new Setting(identification)
+        .setName("Food frontmatter key")
+        .setDesc("Property used to identify foods, recipes, and meals. Letters, numbers, underscores, and hyphens are supported.")
+        .addText((text) => text
+          .setPlaceholder(DEFAULT_SETTINGS.foodFrontmatterKey)
+          .setValue(this.plugin.settings.foodFrontmatterKey)
+          .onChange(async (value) => {
+            const key = value.trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return;
+            this.plugin.settings.foodFrontmatterKey = key;
+            await this.plugin.saveSettings();
+          }));
+
+      const addIdentifierValue = (
+        label: string,
+        currentValue: string,
+        fallback: string,
+        save: (value: string) => Promise<void>,
+      ) => {
+        new Setting(identification)
+          .setName(label)
+          .setDesc(`Value written to ${this.plugin.settings.foodFrontmatterKey} for ${label.replace(" value", "").toLowerCase()} notes.`)
+          .addText((text) => text
+            .setPlaceholder(fallback)
+            .setValue(currentValue)
+            .onChange((value) => save(value.trim() || fallback)));
+      };
+      addIdentifierValue("Food value", this.plugin.settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue, async (value) => {
+        this.plugin.settings.foodFrontmatterFoodValue = value;
+        await this.plugin.saveSettings();
+      });
+      addIdentifierValue("Recipe value", this.plugin.settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue, async (value) => {
+        this.plugin.settings.foodFrontmatterRecipeValue = value;
+        await this.plugin.saveSettings();
+      });
+      addIdentifierValue("Meal value", this.plugin.settings.foodFrontmatterMealValue, DEFAULT_SETTINGS.foodFrontmatterMealValue, async (value) => {
+        this.plugin.settings.foodFrontmatterMealValue = value;
+        await this.plugin.saveSettings();
+      });
+    }
 
     new Setting(identification)
       .setName("Workout note identification")

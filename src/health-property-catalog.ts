@@ -55,6 +55,15 @@ function normalizedTag(value: unknown): string {
   return String(value || "").trim().replace(/^#/, "");
 }
 
+function foodFrontmatterScope(settings: TPSHealthSettings): { key: string; value: string } {
+  const rawKey = String(settings.foodFrontmatterKey || "").trim();
+  const key = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(rawKey) ? rawKey : "kind";
+  return {
+    key,
+    value: String(settings.foodFrontmatterFoodValue || "").trim() || "food",
+  };
+}
+
 function foodScope(settings: TPSHealthSettings): HealthPropertyCatalogScope {
   const mode = settings.foodIdentificationMode;
   const scope: HealthPropertyCatalogScope = { mode: mode === "metadata-folder-tag" ? "any" : "all" };
@@ -67,7 +76,8 @@ function foodScope(settings: TPSHealthSettings): HealthPropertyCatalogScope {
     if (path) scope.paths = [path];
   }
   if (mode === "metadata-folder-tag" || mode === "metadata") {
-    scope.properties = [{ key: "kind", value: "food", operator: "equals" }];
+    const identifier = foodFrontmatterScope(settings);
+    scope.properties = [{ key: identifier.key, value: identifier.value, operator: "equals" }];
   }
   return scope;
 }

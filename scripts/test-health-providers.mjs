@@ -310,9 +310,9 @@ function installDeterministicBrowserGlobals() {
 }
 
 test("food logger queues searched foods without leaving the search flow", () => {
-  assert.match(mainSource, /type FoodLogTab = "barcode" \| "search" \| "mine" \| "describe"/);
+  assert.match(mainSource, /type FoodLogTab = "barcode" \| "search" \| "mine" \| "describe" \| "quick"/);
   assert.match(mainSource, /private activeFoodLogTab: FoodLogTab/);
-  assert.doesNotMatch(mainSource, /Quick add/);
+  assert.match(mainSource, /Quick add/);
   assert.doesNotMatch(mainSource, /parseQuickFoodEntries/);
   assert.doesNotMatch(mainSource, /handleQuickAdd/);
   assert.match(mainSource, /private searchInputEl: HTMLInputElement \| null = null;/);
@@ -344,7 +344,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
   assert.match(stylesSource, /\.tps-health-selection\.is-empty/);
-  assert.match(stylesSource, /\.tps-health-food-tabs[\s\S]+grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(stylesSource, /\.tps-health-food-tabs[\s\S]+grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
   assert.match(mainSource, /tabsEl\.setAttr\("role", "tablist"\)/);
   assert.match(mainSource, /button\.setAttr\("role", "tab"\)/);
   assert.match(mainSource, /panel\.setAttr\("role", "tabpanel"\)/);
@@ -3565,7 +3565,7 @@ test("custom food creation validates manual input and writes deterministic food 
   assert.equal(created.sourcePath, "Health/Foods/Manual Shake.md");
   assert.equal(files.has("Health/Foods/Manual Shake.md"), true);
   const content = files.get("Health/Foods/Manual Shake.md");
-  assert.match(content, /kind: food/);
+  assert.match(content, /kind: ["']?food["']?/);
   assert.match(content, /name: "Manual Shake"/);
   assert.match(content, /servingAmount: 250/);
   assert.match(content, /servingUnit: "g"/);
@@ -4116,7 +4116,11 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
+  assert.equal(normalized.foodFrontmatterKey, "kind");
+  assert.equal(normalized.foodFrontmatterFoodValue, "food");
+  assert.equal(normalized.foodFrontmatterRecipeValue, "recipe");
+  assert.equal(normalized.foodFrontmatterMealValue, "meal");
   assert.equal(normalized.pendingFoodLogDraft?.activeTab, "search");
   assert.equal(normalized.pendingFoodLogDraft?.searchInput, "eggs");
   assert.equal(normalized.pendingFoodLogDraft?.consumedDateInput, "2026-07-06T07:30");
@@ -4169,12 +4173,12 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
   assert.equal(Object.hasOwn(preservedUnknown, "dailyNoteFolder"), false);
   const futureSettings = normalizeTPSHealthSettings({
-    settingsVersion: 4,
+    settingsVersion: 5,
     dailyNoteFolder: "Future Dailynotes",
     futureOnlySetting: { mode: "new" },
   });
   assert.equal(isFutureTPSHealthSettings(futureSettings), true);
-  assert.equal(futureSettings.settingsVersion, 4, "normalization must never downgrade a future schema");
+  assert.equal(futureSettings.settingsVersion, 5, "normalization must never downgrade a future schema");
   assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
@@ -5099,6 +5103,7 @@ test("command palette only exposes polished everyday health actions", async () =
     "save-active-workout-layout",
     "finish-workout-and-save-layout",
     "log-food",
+    "quick-add-food",
     "open-food-log-base",
     "open-workout-log-base",
     "scan-food-barcode",
@@ -5150,6 +5155,81 @@ test("one-off food entry lines without a food note keep nutrition for rollups", 
   assert.match(line, /\[carbs:: 12\]/);
   assert.match(line, /\[fat:: 4\]/);
   assert.doesNotMatch(line, /\[foodPath::/);
+});
+
+test("quick add logs an estimate to the selected day without creating a food note", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Daily");
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+  };
+
+  await plugin.logFood({
+    id: "quick-sandwich",
+    name: "Sandwich",
+    source: "custom-inline",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutritionBasis: "estimated-serving",
+    nutrition: { calories: 450, proteinG: 25, carbsG: 40, fatG: 20 },
+  }, 1, "serving", undefined, "2026-08-12T12:30:00.000Z", false, "daily-note", { focusAfterLog: false });
+
+  const line = fake.files.get("Daily/2026-08-12.md").split("\n").find((value) => value.includes("Sandwich"));
+  assert.ok(line);
+  assert.match(line, /\[nutritionSnapshot:: true\]/);
+  assert.match(line, /\[source:: custom-inline\]/);
+  assert.match(line, /\[cal:: 450\]/);
+  assert.match(line, /\[protein:: 25\]/);
+  assert.doesNotMatch(line, /\[foodPath::/);
+  assert.equal(Array.from(fake.files.keys()).some((path) => path.startsWith("Health/Foods/")), false);
+  assert.match(mainSource, /id: "quick-add-food"/);
+  assert.match(mainSource, /\["quick", "Quick add"\]/);
+  assert.match(mainSource, /persistFoodNote: false/);
+  assert.match(mainSource, /if \(this\.item\.sourcePath\) actions\.addButton/);
+  assert.match(mainSource, /nutritionSnapshot", "cal", "protein", "carbs", "fat"/);
+});
+
+test("food logs keep their nutrition snapshot after the linked food note changes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Daily");
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    foodLogTarget: "daily-note",
+    automaticDailyRollups: false,
+  };
+  const saved = await plugin.createFoodFromInput({
+    name: "Changing Sandwich",
+    servingAmount: 1,
+    servingUnit: "sandwich",
+    nutrition: { calories: 400, proteinG: 20, carbsG: 40, fatG: 18 },
+  });
+  await plugin.logFood(saved, 1, "sandwich", undefined, "2026-08-13T12:00:00.000Z", true, "daily-note", { focusAfterLog: false });
+  await plugin.upsertFoodFromInput({
+    path: saved.sourcePath,
+    name: "Changing Sandwich",
+    servingAmount: 1,
+    servingUnit: "sandwich",
+    nutrition: { calories: 600, proteinG: 30, carbsG: 60, fatG: 28 },
+  });
+
+  const totals = await plugin.getDailyFoodMacroTotals("2026-08-13");
+  assert.equal(totals.entryCount, 1);
+  assert.equal(totals.calories, 402, "the original macro-derived snapshot must remain after the food note changes");
+  assert.equal(totals.proteinG, 20);
+  const line = fake.files.get("Daily/2026-08-13.md").split("\n").find((value) => value.includes("Changing Sandwich"));
+  assert.match(line, /\[foodServingAmount:: 1\]/);
+  assert.match(line, /\[foodServingUnit:: sandwich\]/);
+  assert.match(line, /\[nutritionSnapshot:: true\]/);
 });
 
 test("linked food entry lines keep nutrition overrides out of the note", async () => {
@@ -5745,7 +5825,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   });
   assert.equal(recipe.sourcePath, "Health/Recipes/Provider Snack Plate.md");
   const recipeContent = fake.files.get("Health/Recipes/Provider Snack Plate.md");
-  assert.match(recipeContent, /kind: recipe/);
+  assert.match(recipeContent, /kind: ["']?recipe["']?/);
   assert.match(recipeContent, /tags:\n\s+- "tps\/recipe"/);
   assert.match(recipeContent, /servingUnit: "serving"/);
   assert.match(recipeContent, /recipeServings: 1/);
@@ -5797,7 +5877,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.equal(multiServingRecipe.nutrition.calories, 79);
   assert.equal(multiServingRecipe.nutrition.proteinG, 8.625);
   const multiServingRecipeContent = fake.files.get("Health/Recipes/Four Serving Snack Plate.md");
-  assert.match(multiServingRecipeContent, /kind: recipe/);
+  assert.match(multiServingRecipeContent, /kind: ["']?recipe["']?/);
   assert.match(multiServingRecipeContent, /recipeServings: 4/);
   assert.match(multiServingRecipeContent, /calories: 79/);
   assert.match(multiServingRecipeContent, /proteinG: 8\.625/);
@@ -5817,7 +5897,7 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   });
   assert.equal(meal.nutrition.calories, 316);
   const mealContent = fake.files.get("Health/Recipes/Single Serving Snack Plate.md");
-  assert.match(mealContent, /kind: meal/);
+  assert.match(mealContent, /kind: ["']?meal["']?/);
   assert.match(mealContent, /servingUnit: "meal"/);
   assert.match(mealContent, /recipeServings: 1/);
   assert.match(mealContent, /calories: 316/);
@@ -7711,6 +7791,55 @@ test("food note creation and updates write only the selected identification sign
   const folderFrontmatter = parseFrontmatter(fake.files.get(folderFood.sourcePath));
   assert.equal(folderFrontmatter.kind, undefined);
   assert.equal(folderFrontmatter.tags, undefined);
+});
+
+test("custom frontmatter identifiers create, recognize, and update each reusable food type", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, foodNoteTypeFromFrontmatter } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    foodIdentificationMode: "metadata",
+    foodFrontmatterKey: "healthEntity",
+    foodFrontmatterFoodValue: "pantry-item",
+    foodFrontmatterRecipeValue: "recipe-card",
+    foodFrontmatterMealValue: "saved-meal",
+  };
+
+  for (const [type, value] of [["food", "pantry-item"], ["recipe", "recipe-card"], ["meal", "saved-meal"]]) {
+    const created = await plugin.createFoodFromInput({
+      type,
+      name: `Custom ${type}`,
+      servingAmount: 1,
+      servingUnit: type === "meal" ? "meal" : "serving",
+      ingredients: type === "food" ? undefined : "",
+      nutrition: { calories: 100, proteinG: 10, carbsG: 8, fatG: 3 },
+    });
+    const content = fake.files.get(created.sourcePath);
+    const frontmatter = parseFrontmatter(content);
+    assert.equal(frontmatter.healthEntity, value);
+    assert.equal(frontmatter.kind, undefined, `${type} must not receive the hardcoded kind property`);
+    assert.equal(
+      foodNoteTypeFromFrontmatter(frontmatter, fake.app.vault.getAbstractFileByPath(created.sourcePath), plugin.settings),
+      type,
+    );
+  }
+
+  const legacyPath = "Health/Foods/Legacy Kind.md";
+  fake.files.set(legacyPath, "---\nkind: food\nname: Legacy Kind\nservingAmount: 1\nservingUnit: serving\ncalories: 90\nproteinG: 9\ncarbsG: 8\nfatG: 2\n---\n");
+  await plugin.upsertFoodFromInput({
+    path: legacyPath,
+    name: "Legacy Kind",
+    servingAmount: 1,
+    servingUnit: "serving",
+    nutrition: { calories: 95, proteinG: 10, carbsG: 8, fatG: 2 },
+  });
+  const updated = parseFrontmatter(fake.files.get(legacyPath));
+  assert.equal(updated.healthEntity, "pantry-item");
+  assert.equal(updated.kind, undefined, "a touched legacy note should move to the configured identifier");
 });
 
 test("identity tag migration preserves YAML comments and only removes actual body hashtags", async () => {

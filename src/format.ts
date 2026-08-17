@@ -42,6 +42,7 @@ export function foodEntryLine(entry: FoodLogEntry): string {
   const nutrition = getLogLineNutrition(entry);
   const fields = [
     dataviewField("type", "foodLog"),
+    dataviewField("nutritionSnapshot", "true"),
     dataviewField("food", itemName),
     dataviewField("qty", entry.servingQuantity ?? entry.quantity),
     dataviewField("unit", entry.servingUnit || entry.unit),
@@ -97,16 +98,15 @@ export function activityEntryLine(entry: ActivityLogEntry): string {
 }
 
 function foodItemMetadataFields(item: FoodItem): string[] {
-  if (item.sourcePath) return [];
   return [
-    item.brand ? dataviewField("brand", item.brand) : "",
-    item.barcode ? dataviewField("barcode", item.barcode) : "",
-    item.source ? dataviewField("source", item.source) : "",
+    !item.sourcePath && item.brand ? dataviewField("brand", item.brand) : "",
+    !item.sourcePath && item.barcode ? dataviewField("barcode", item.barcode) : "",
+    !item.sourcePath && item.source ? dataviewField("source", item.source) : "",
     item.servingAmount != null ? dataviewField("foodServingAmount", item.servingAmount) : "",
     item.servingUnit ? dataviewField("foodServingUnit", item.servingUnit) : "",
     item.servingGrams != null ? dataviewField("foodServingGrams", item.servingGrams) : "",
     item.servingMl != null ? dataviewField("foodServingMl", item.servingMl) : "",
-    item.imageUrl ? dataviewField("imageUrl", item.imageUrl) : "",
+    !item.sourcePath && item.imageUrl ? dataviewField("imageUrl", item.imageUrl) : "",
   ].filter(Boolean);
 }
 

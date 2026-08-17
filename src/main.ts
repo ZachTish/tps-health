@@ -78,7 +78,7 @@ interface HealthAiGatewayApi {
   }): Promise<{ data: T; provider: string; model: string; traceId: string; attempts: number; sources?: FoodResearchSource[] }>;
 }
 
-type FoodLogTab = "barcode" | "search" | "mine" | "describe";
+type FoodLogTab = "barcode" | "search" | "mine" | "describe" | "quick";
 
 interface WorkoutOpenResult {
   requested: boolean;
@@ -649,6 +649,15 @@ export default class TPSHealthPlugin extends Plugin {
         const dateContext = await this.getActiveDailyNoteDateContext();
         logger.flow("FoodDateContext", "log-food:active-file", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
         this.openFoodSearchModal(this.getActiveInlineFoodDraft(), dateContext);
+      }),
+    });
+    this.addCommand({
+      id: "quick-add-food",
+      name: "Quick add food estimate",
+      callback: () => this.traceCommand("quick-add-food", async () => {
+        const dateContext = await this.getActiveDailyNoteDateContext();
+        logger.flow("FoodDateContext", "quick-add:active-file", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
+        this.openFoodSearchModal(null, dateContext, "quick");
       }),
     });
     this.addCommand({
@@ -2664,6 +2673,7 @@ export default class TPSHealthPlugin extends Plugin {
       createdDate: isoNow(),
       completedDate: consumedAt,
       item: loggedItem,
+      nutritionOverride: multiplyNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
       quantity: resolvedServing.servings,
       unit: "serving",
       servingQuantity: resolvedServing.inputQuantity,
@@ -2778,7 +2788,7 @@ export default class TPSHealthPlugin extends Plugin {
     const writesTag = foodIdentificationWritesTag(this.settings.foodIdentificationMode);
     return [
       "---",
-      writesMetadata ? `kind: ${type}` : "",
+      writesMetadata ? yamlScalarLine(foodFrontmatterKey(this.settings), foodFrontmatterValue(this.settings, type)) : "",
       `name: "${item.name.replace(/"/g, '\\"')}"`,
       writesTag ? yamlStringList("tags", [foodIdentityTagValue(tag)]) : "",
       item.brand ? `brand: "${item.brand.replace(/"/g, '\\"')}"` : "",
@@ -2824,6 +2834,8 @@ export default class TPSHealthPlugin extends Plugin {
       ingredients: item.ingredients || "",
       notes: item.notes || "",
       kind: type,
+      identifierKey: foodFrontmatterKey(this.settings),
+      identifierValue: foodFrontmatterValue(this.settings, type),
       tag: foodIdentityTagValue(tag) ? `#${foodIdentityTagValue(tag)}` : "",
       servingAmount: String(item.servingAmount || 1),
       servingUnit: item.servingUnit || "serving",
@@ -2860,7 +2872,7 @@ export default class TPSHealthPlugin extends Plugin {
     const withNutritionBasis = Object.keys(templateUpdates).length
       ? updateYamlFrontmatterContent(withCanonicalIngredients, templateUpdates)
       : withCanonicalIngredients;
-    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type, this.settings.foodIdentificationMode);
+    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type, this.settings);
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
@@ -2928,6 +2940,10 @@ export default class TPSHealthPlugin extends Plugin {
       normalizePath(this.settings.recipesFolder || ""),
       normalizeHealthTag(this.settings.customFoodTag || ""),
       normalizeHealthTag(this.settings.recipeTag || ""),
+      foodFrontmatterKey(this.settings),
+      this.settings.foodFrontmatterFoodValue,
+      this.settings.foodFrontmatterRecipeValue,
+      this.settings.foodFrontmatterMealValue,
     ]);
   }
 
@@ -3162,7 +3178,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
 
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      const updated = foodFrontmatter(normalized, type, this.settings.foodIdentificationMode);
+      const updated = foodFrontmatter(normalized, type, this.settings);
       if (!replaceAliases) delete updated.aliases;
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
@@ -3175,7 +3191,7 @@ export default class TPSHealthPlugin extends Plugin {
         delete frontmatter.ingredients;
         if (!normalized.ingredients.trim()) delete frontmatter.ingredientStatement;
       }
-      applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings.foodIdentificationMode);
+      applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
     });
 
     if (recipeLike && recipeContent != null) {
@@ -3515,7 +3531,7 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedItem = isRecipeLikeFoodType(type)
       ? await this.serializeRecipeMutation(file.path, "food-note-update", update)
       : await update();
-    const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings.foodIdentificationMode);
+    const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings);
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
     if (!replaceAliases) delete itemFrontmatter.aliases;
     else if (explicitAliases?.length) itemFrontmatter.aliases = explicitAliases;
@@ -3525,7 +3541,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...itemFrontmatter,
     };
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
-    applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings.foodIdentificationMode);
+    applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
     logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, openRequested, openReason });
     if (openRequested) await this.openPath(file.path);
@@ -6470,7 +6486,7 @@ export default class TPSHealthPlugin extends Plugin {
       version: 1 as const,
       entities: {
         food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "nutritionBasis", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", "ingredients", "sourceImagePath"],
-        foodLog: ["type", "foodPath", "servings", "amount", "unit", "createdDate", "completedDate"],
+        foodLog: ["type", "foodPath", "servings", "amount", "unit", "foodServingAmount", "foodServingUnit", "foodServingGrams", "foodServingMl", "nutritionSnapshot", "cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium", "createdDate", "completedDate"],
         activityLog: ["type", "activity", "activityType", "activityId", "source", "sourceId", "device", "startedAt", "completedDate", "durationMinutes", "distance", "distanceUnit", "steps", "caloriesBurned", "dailyNotePath", "note"],
         exercise: ["name", "category", "primaryMuscles", "secondaryMuscles", "equipment", "defaultRestSeconds", "defaultSetType", "recommendedRestDays"],
         workoutPlan: ["name", "cooldownDays", "defaultRestSeconds", "lastCompletedDate", "nextEligibleDate", "lastSessionPath"],
@@ -6792,12 +6808,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   openAdjustFoodLogServing(entry: FoodLogBaseEntry, afterSave?: () => void): void {
-    const food = this.foodItemForFoodLogEntry(entry);
-    if (!food) {
-      logger.flowWarn("FoodLogEntry", "adjust:missing-food", { path: entry.file.path, line: entry.lineNumber, name: entry.name, foodPath: entry.foodPath || "" });
-      new Notice("This food log does not have a linked food note to recalculate from.");
-      return;
-    }
+    const food = foodLogSnapshotItem(entry, this.foodItemForFoodLogEntry(entry));
     new FoodLogAdjustModal(this.app, this, entry, food, async (updatedLine) => {
       await this.replaceFoodLogEntryLine(entry, updatedLine);
       afterSave?.();
@@ -7363,6 +7374,23 @@ interface FoodLogBaseEntry {
   nutrition: Required<Nutrition>;
 }
 
+function foodLogSnapshotItem(entry: FoodLogBaseEntry, linkedFood: FoodItem | null): FoodItem {
+  const loggedServings = normalizedQuantity(readNumber(entry.line, "servings") ?? readNumber(entry.line, "qty"));
+  const source = readStringField(entry.line, "source") as FoodItem["source"] || linkedFood?.source || "custom-inline";
+  return {
+    ...(linkedFood || {}),
+    id: entry.foodPath || readStringField(entry.line, "foodId") || entry.id,
+    name: entry.name,
+    source,
+    sourcePath: entry.foodPath || linkedFood?.sourcePath,
+    servingAmount: readNumber(entry.line, "foodServingAmount") ?? linkedFood?.servingAmount ?? 1,
+    servingUnit: readStringField(entry.line, "foodServingUnit") || linkedFood?.servingUnit || "serving",
+    servingGrams: readNumber(entry.line, "foodServingGrams") ?? linkedFood?.servingGrams,
+    servingMl: readNumber(entry.line, "foodServingMl") ?? linkedFood?.servingMl,
+    nutrition: multiplyNutrition(entry.nutrition, 1 / loggedServings),
+  };
+}
+
 class FoodLogConsumedDateModal extends Modal {
 
   constructor(
@@ -7461,8 +7489,8 @@ class FoodLogAdjustModal extends Modal {
         updatePreview();
       });
     });
-    new Setting(this.contentEl)
-      .addButton((button) => button
+    const actions = new Setting(this.contentEl);
+    if (this.item.sourcePath) actions.addButton((button) => button
         .setButtonText("Open food note")
         .onClick(async () => {
           const file = this.item.sourcePath ? this.plugin.app.vault.getAbstractFileByPath(this.item.sourcePath) : null;
@@ -7478,8 +7506,8 @@ class FoodLogAdjustModal extends Modal {
           } else {
             logger.flowWarn("FoodLogBase", "adjust:food-note-missing", { sourcePath: this.item.sourcePath || "", name: this.item.name });
           }
-        }))
-      .addButton((button) => button
+        }));
+    actions.addButton((button) => button
         .setButtonText("Save")
         .setCta()
         .onClick(async () => {
@@ -7795,9 +7823,10 @@ class FoodSearchModal extends Modal {
       search: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
       mine: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
       describe: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
+      quick: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
     };
     const tabButtons = new Map<FoodLogTab, HTMLButtonElement>();
-    const tabOrder: FoodLogTab[] = ["barcode", "search", "mine", "describe"];
+    const tabOrder: FoodLogTab[] = ["barcode", "search", "mine", "describe", "quick"];
     const setActiveTab = (mode: FoodLogTab) => {
       const token = ++this.searchToken;
       this.activeFoodLogTab = mode;
@@ -7821,11 +7850,13 @@ class FoodSearchModal extends Modal {
       } else if (mode === "barcode") {
         this.statusEl.setText("Enter or scan a UPC/EAN barcode.");
         this.openBarcodeScanner();
+      } else if (mode === "quick") {
+        this.statusEl.setText("Estimate one item without creating a reusable food note.");
       } else {
         this.statusEl.setText("Describe the meal naturally. We’ll research it, self-review the plan, then prepare the tray.");
       }
     };
-    for (const [mode, label] of [["barcode", "Scan"], ["search", "Search"], ["mine", "Saved"], ["describe", "Describe"]] as const) {
+    for (const [mode, label] of [["barcode", "Scan"], ["search", "Search"], ["mine", "Saved"], ["describe", "Describe"], ["quick", "Quick add"]] as const) {
       const button = tabsEl.createEl("button", { text: label, cls: "tps-health-food-tab" });
       button.setAttr("type", "button");
       button.setAttr("role", "tab");
@@ -7853,6 +7884,64 @@ class FoodSearchModal extends Modal {
     }
 
     panelByMode.mine.createDiv({ cls: "tps-health-selection-empty", text: "Choose from recent foods, saved foods, and recipes." });
+    const quickForm = panelByMode.quick.createDiv({ cls: "tps-health-quick-add" });
+    quickForm.createDiv({
+      cls: "tps-health-selection-empty",
+      text: "Enter your best estimate. This log is saved only in the selected day and will not create a food note.",
+    });
+    const quickFields = quickForm.createDiv({ cls: "tps-health-food-editor-grid" });
+    let quickName = "";
+    const quickNutrition: Nutrition = { calories: 0, proteinG: 0, carbsG: 0, fatG: 0 };
+    let quickNameInput: HTMLInputElement | null = null;
+    new Setting(quickFields).setName("Name").addText((text) => {
+      quickNameInput = text.inputEl;
+      return text
+        .setPlaceholder("Sandwich")
+        .onChange((value) => quickName = value.trim());
+    });
+    for (const [label, key, placeholder] of [
+      ["Calories", "calories", "450"],
+      ["Protein g", "proteinG", "25"],
+      ["Carbs g", "carbsG", "40"],
+      ["Fat g", "fatG", "20"],
+    ] as const) {
+      new Setting(quickFields).setName(label).addText((text) => {
+        text.inputEl.setAttr("inputmode", "decimal");
+        return text
+          .setPlaceholder(placeholder)
+          .onChange((value) => quickNutrition[key] = nonNegativeNumberOrZero(value));
+      });
+    }
+    const quickAction = quickForm.createEl("button", {
+      text: "Review and log",
+      cls: "mod-cta tps-health-quick-add-action",
+      attr: { type: "button" },
+    });
+    quickAction.addEventListener("click", () => {
+      const name = quickName.trim();
+      if (!name) {
+        new Notice("Enter a name for the quick add.");
+        quickNameInput?.focus();
+        return;
+      }
+      const nutrition = {
+        ...quickNutrition,
+        calories: quickNutrition.calories || caloriesFromMacros(quickNutrition),
+      };
+      const item: FoodItem = {
+        id: id("quick-food"),
+        name,
+        source: "custom-inline",
+        servingAmount: 1,
+        servingUnit: "serving",
+        nutritionBasis: "estimated-serving",
+        nutrition,
+        notes: "One-off estimate; no reusable food note was created.",
+      };
+      logger.flow("FoodQuickAdd", "review:open", { name, calories: nutrition.calories || 0, ...summarizeDateContext(this.dateContext) });
+      this.close();
+      new FoodLogModal(this.app, this.plugin, item, null, this.dateContext, undefined, { persistFoodNote: false }).open();
+    });
     const describeInput = panelByMode.describe.createEl("textarea", { cls: "tps-health-describe-input", attr: { placeholder: "Two eggs, toast with a tablespoon of butter, and a medium latte…", rows: "5", enterkeyhint: "done" } });
     const describeAction = panelByMode.describe.createEl("button", { text: "Build tray", cls: "mod-cta tps-health-describe-action", attr: { type: "button" } });
     const submitDescription = async () => {
@@ -12476,6 +12565,7 @@ class FoodLogModal extends Modal {
     private initialDraft: InlineFoodDraft | null = null,
     private dateContext: FoodLogDateContext | null = null,
     private onLogged?: (entry: FoodLogEntry) => void | Promise<void>,
+    private options: { persistFoodNote?: boolean } = {},
   ) {
     super(app);
   }
@@ -12573,7 +12663,7 @@ class FoodLogModal extends Modal {
         });
         let loggedEntry: FoodLogEntry;
         try {
-          loggedEntry = await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, true, this.dateContext?.foodLogTarget, {
+          loggedEntry = await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, this.options.persistFoodNote !== false, this.dateContext?.foodLogTarget, {
             focusAfterLog: this.dateContext?.focusAfterLog,
           });
         } catch (error) {
@@ -14011,6 +14101,11 @@ function numberOrUndefined(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function nonNegativeNumberOrZero(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 function finitePositiveOr(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -14594,14 +14689,16 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
 function foodFrontmatter(
   item: FoodItem,
   type: FoodNoteType,
-  identificationMode: HealthEntityIdentificationMode = "metadata-folder-tag",
+  settings: TPSHealthSettings = DEFAULT_SETTINGS,
 ): Record<string, unknown> {
   const nutrition = item.nutrition || {};
   const recipeIngredients = isRecipeLikeFoodType(type)
     ? recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")
     : [];
   return compactObject({
-    kind: foodIdentificationWritesMetadata(identificationMode) ? type : undefined,
+    ...(foodIdentificationWritesMetadata(settings.foodIdentificationMode)
+      ? { [foodFrontmatterKey(settings)]: foodFrontmatterValue(settings, type) }
+      : {}),
     name: item.name,
     brand: item.brand,
     aliases: foodAliasesForItem(item).length ? foodAliasesForItem(item) : undefined,
@@ -14643,6 +14740,35 @@ function isLegacyFoodFrontmatterType(value: unknown): boolean {
   return value === "health-food" || value === "health-recipe" || value === "health-meal";
 }
 
+function foodFrontmatterKey(settings: Pick<TPSHealthSettings, "foodFrontmatterKey">): string {
+  const key = String(settings.foodFrontmatterKey || "").trim();
+  return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key) ? key : DEFAULT_SETTINGS.foodFrontmatterKey;
+}
+
+function foodFrontmatterValue(
+  settings: Pick<TPSHealthSettings, "foodFrontmatterFoodValue" | "foodFrontmatterRecipeValue" | "foodFrontmatterMealValue">,
+  type: FoodNoteType,
+): string {
+  const value = type === "recipe"
+    ? settings.foodFrontmatterRecipeValue
+    : type === "meal"
+      ? settings.foodFrontmatterMealValue
+      : settings.foodFrontmatterFoodValue;
+  return String(value || "").trim() || foodFrontmatterValue(DEFAULT_SETTINGS, type);
+}
+
+function configuredFoodFrontmatterType(fm: any, settings: TPSHealthSettings): FoodNoteType | null {
+  const configuredValue = String(fm?.[foodFrontmatterKey(settings)] ?? "").trim();
+  for (const type of ["food", "recipe", "meal"] as FoodNoteType[]) {
+    if (configuredValue === foodFrontmatterValue(settings, type)) return type;
+  }
+  if (isFoodFrontmatterKind(fm?.kind)) return fm.kind;
+  if (fm?.tpsType === "health-recipe") return "recipe";
+  if (fm?.tpsType === "health-meal") return "meal";
+  if (fm?.tpsType === "health-food") return "food";
+  return null;
+}
+
 function foodIdentificationWritesMetadata(mode: HealthEntityIdentificationMode | undefined): boolean {
   return mode !== "folder" && mode !== "tag";
 }
@@ -14652,10 +14778,7 @@ function foodIdentificationWritesTag(mode: HealthEntityIdentificationMode | unde
 }
 
 function hasFoodIdentitySignal(settings: TPSHealthSettings, file: TFile, fm: any, tags: string[] = []): boolean {
-  return isFoodFrontmatterKind(fm.kind) ||
-    fm.tpsType === "health-food" ||
-    fm.tpsType === "health-recipe" ||
-    fm.tpsType === "health-meal" ||
+  return configuredFoodFrontmatterType(fm, settings) != null ||
     tags.includes(settings.customFoodTag) ||
     tags.includes(settings.recipeTag);
 }
@@ -14678,10 +14801,7 @@ function isFoodLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?: an
   const resolvedCache = cache || plugin.app.metadataCache.getFileCache(file);
   const fm = resolvedCache?.frontmatter || {};
   return healthEntityMatches(plugin.settings.foodIdentificationMode, {
-    metadata: isFoodFrontmatterKind(fm.kind) ||
-      fm.tpsType === "health-food" ||
-      fm.tpsType === "health-recipe" ||
-      fm.tpsType === "health-meal",
+    metadata: configuredFoodFrontmatterType(fm, plugin.settings) != null,
     folder: fileIsInConfiguredFolder(file.path, plugin.settings.foodsFolder) ||
       fileIsInConfiguredFolder(file.path, plugin.settings.recipesFolder),
     tag: hasConfiguredTag(resolvedCache, plugin.settings.customFoodTag) ||
@@ -14777,11 +14897,17 @@ function applyFoodIdentityFrontmatterMode(
   frontmatter: Record<string, any>,
   configuredTag: string,
   type: FoodNoteType,
-  mode: HealthEntityIdentificationMode,
+  settings: TPSHealthSettings,
 ): void {
+  const mode = settings.foodIdentificationMode;
+  const key = foodFrontmatterKey(settings);
   if (foodIdentificationWritesMetadata(mode)) {
-    frontmatter.kind = type;
+    if (key !== "kind" && isFoodFrontmatterKind(frontmatter.kind)) delete frontmatter.kind;
+    if (isLegacyFoodFrontmatterType(frontmatter.tpsType)) delete frontmatter.tpsType;
+    frontmatter[key] = foodFrontmatterValue(settings, type);
   } else {
+    const configuredType = configuredFoodFrontmatterType(frontmatter, settings);
+    if (configuredType && Object.prototype.hasOwnProperty.call(frontmatter, key)) delete frontmatter[key];
     if (isFoodFrontmatterKind(frontmatter.kind)) delete frontmatter.kind;
     if (isLegacyFoodFrontmatterType(frontmatter.tpsType)) delete frontmatter.tpsType;
   }
@@ -14927,19 +15053,22 @@ function stripStandaloneFoodIdentityTagFromBody(content: string, configuredTag: 
   return lines.filter((line, index) => index < bodyStart || !standaloneFoodIdentityTagLine(line, tags)).join("\n");
 }
 
-function removeFoodIdentityMetadataFromContent(content: string): string {
+function removeFoodIdentityMetadataFromContent(content: string, settings: TPSHealthSettings): string {
   const lines = content.split("\n");
   const frontmatterEnd = frontmatterLineEnd(lines);
   if (!frontmatterEnd) return content;
+  const configuredKey = foodFrontmatterKey(settings);
+  const configuredValues = new Set((["food", "recipe", "meal"] as FoodNoteType[]).map((type) => foodFrontmatterValue(settings, type)));
   return lines.filter((line, index) => {
     if (index <= 0 || index >= frontmatterEnd - 1) return true;
-    const match = line.match(/^(kind|tpsType)\s*:\s*(.*?)\s*$/i);
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$/);
     if (!match) return true;
     const parsed = yamlValueAndComment(match[2] || "");
     const value = unquoteYamlTagValue(parsed.value);
-    return match[1].toLowerCase() === "kind"
-      ? !isFoodFrontmatterKind(value as FoodNoteType)
-      : !isLegacyFoodFrontmatterType(value);
+    if (match[1] === configuredKey && configuredValues.has(value)) return false;
+    if (match[1].toLowerCase() === "kind") return !isFoodFrontmatterKind(value as FoodNoteType);
+    if (match[1].toLowerCase() === "tpstype") return !isLegacyFoodFrontmatterType(value);
+    return true;
   }).join("\n");
 }
 
@@ -14967,13 +15096,14 @@ function ensureFoodIdentityTagInContent(
   content: string,
   configuredTag: string,
   type: FoodNoteType,
-  mode: HealthEntityIdentificationMode = "metadata-folder-tag",
+  settings: TPSHealthSettings = DEFAULT_SETTINGS,
 ): string {
   const withoutBodyTag = stripStandaloneFoodIdentityTagFromBody(content, configuredTag, type);
-  const withMetadata = foodIdentificationWritesMetadata(mode)
-    ? updateYamlFrontmatterContent(withoutBodyTag, { kind: type })
-    : removeFoodIdentityMetadataFromContent(withoutBodyTag);
-  return updateFoodIdentityTagsInContent(withMetadata, configuredTag, type, foodIdentificationWritesTag(mode));
+  const withoutOldMetadata = removeFoodIdentityMetadataFromContent(withoutBodyTag, settings);
+  const withMetadata = foodIdentificationWritesMetadata(settings.foodIdentificationMode)
+    ? updateYamlFrontmatterContent(withoutOldMetadata, { [foodFrontmatterKey(settings)]: foodFrontmatterValue(settings, type) })
+    : withoutOldMetadata;
+  return updateFoodIdentityTagsInContent(withMetadata, configuredTag, type, foodIdentificationWritesTag(settings.foodIdentificationMode));
 }
 
 function normalizeHealthTag(value: string): string {
@@ -14990,9 +15120,8 @@ function hasCssClass(value: unknown, cssClass: string): boolean {
 }
 
 function foodNoteTypeFromFrontmatter(fm: any, file: TFile, settings: TPSHealthSettings): FoodNoteType {
-  if (isFoodFrontmatterKind(fm.kind)) return fm.kind;
-  if (fm.tpsType === "health-recipe") return "recipe";
-  if (fm.tpsType === "health-meal") return "meal";
+  const configuredType = configuredFoodFrontmatterType(fm, settings);
+  if (configuredType) return configuredType;
   const recipeIdentity = normalizePath(file.path).startsWith(`${normalizePath(settings.recipesFolder)}/`) ||
     frontmatterTags(fm.tags).some((tag) => normalizeHealthTag(tag) === normalizeHealthTag(settings.recipeTag));
   if (recipeIdentity && String(fm.servingUnit || "").trim().toLowerCase() === "meal") return "meal";
@@ -17468,15 +17597,9 @@ function resolveFoodLogNutrition(line: string, resolveFood?: (foodPath: string) 
   const foodPath = readStringField(line, "foodPath");
   const food = foodPath && resolveFood ? resolveFood(foodPath) : null;
   if (hasLineNutritionFields(line)) {
-    const lineNutrition = readLineNutrition(line);
-    if (food?.nutrition) {
-      const baseNutrition = multiplyNutrition(food.nutrition, foodLogMultiplier(line, food));
-      if (shouldTreatLineNutritionAsLegacyPerServing(lineNutrition, food.nutrition, foodLogMultiplier(line, food))) {
-        return baseNutrition;
-      }
-      return mergeLineNutritionOverrides(baseNutrition, line);
-    }
-    return lineNutrition;
+    if (readStringField(line, "nutritionSnapshot") === "true" || hasCompleteLineNutritionSnapshot(line)) return readLineNutrition(line);
+    if (food?.nutrition) return mergeLineNutritionOverrides(multiplyNutrition(food.nutrition, foodLogMultiplier(line, food)), line);
+    return readLineNutrition(line);
   }
   if (food?.nutrition) return multiplyNutrition(food.nutrition, foodLogMultiplier(line, food));
   return readLineNutrition(line);
@@ -17484,6 +17607,10 @@ function resolveFoodLogNutrition(line: string, resolveFood?: (foodPath: string) 
 
 function hasLineNutritionFields(line: string): boolean {
   return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"].some((key) => readNumber(line, key) != null);
+}
+
+function hasCompleteLineNutritionSnapshot(line: string): boolean {
+  return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"].every((key) => readNumber(line, key) != null);
 }
 
 function readLineNutrition(line: string): Required<Nutrition> {
@@ -17530,33 +17657,6 @@ function zeroNutrition(): Required<Nutrition> {
     alcoholG: 0,
     sodiumMg: 0,
   };
-}
-
-function shouldTreatLineNutritionAsLegacyPerServing(lineNutrition: Required<Nutrition>, foodNutrition: Nutrition, multiplier: number): boolean {
-  if (!Number.isFinite(multiplier) || Math.abs(multiplier - 1) < 0.0001) return false;
-  const comparableKeys: Array<[keyof Required<Nutrition>, keyof Nutrition]> = [
-    ["calories", "calories"],
-    ["proteinG", "proteinG"],
-    ["carbsG", "carbsG"],
-    ["fatG", "fatG"],
-    ["fiberG", "fiberG"],
-    ["sugarG", "sugarG"],
-    ["sugarAlcoholG", "sugarAlcoholG"],
-    ["alcoholG", "alcoholG"],
-    ["sodiumMg", "sodiumMg"],
-  ];
-  const comparisons = comparableKeys
-    .map(([lineKey, foodKey]) => {
-      const foodValue = foodNutrition[foodKey];
-      if (foodValue == null || !Number.isFinite(Number(foodValue))) return null;
-      return valuesApproximatelyEqual(lineNutrition[lineKey], Number(foodValue));
-    })
-    .filter((value): value is boolean => value != null);
-  return comparisons.length > 0 && comparisons.every(Boolean);
-}
-
-function valuesApproximatelyEqual(left: number, right: number): boolean {
-  return Math.abs((left || 0) - (right || 0)) < 0.05;
 }
 
 function foodLogMultiplier(line: string, food: FoodItem): number {

@@ -16,7 +16,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 3;
+export const TPS_HEALTH_SCHEMA_VERSION = 4;
 
 export interface HealthGoal {
   propertyKey: string;
@@ -50,6 +50,10 @@ export interface TPSHealthSettings {
   workoutDailyNotePlacement: WorkoutDailyNotePlacement;
   foodIdentificationMode: HealthEntityIdentificationMode;
   workoutIdentificationMode: HealthEntityIdentificationMode;
+  foodFrontmatterKey: string;
+  foodFrontmatterFoodValue: string;
+  foodFrontmatterRecipeValue: string;
+  foodFrontmatterMealValue: string;
   workoutTag: string;
   exerciseTag: string;
   customFoodTag: string;
@@ -156,7 +160,7 @@ export interface ActivityLogEntry {
 export interface PendingFoodLogDraft {
   id: string;
   updatedAt: string;
-  activeTab?: "barcode" | "search" | "mine" | "describe";
+  activeTab?: "barcode" | "search" | "mine" | "describe" | "quick";
   searchInput?: string;
   consumedDateInput?: string;
   dateContext?: {
@@ -279,6 +283,10 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   workoutDailyNotePlacement: "after-frontmatter",
   foodIdentificationMode: "metadata-folder-tag",
   workoutIdentificationMode: "metadata-folder-tag",
+  foodFrontmatterKey: "kind",
+  foodFrontmatterFoodValue: "food",
+  foodFrontmatterRecipeValue: "recipe",
+  foodFrontmatterMealValue: "meal",
   workoutTag: "#tps/workout",
   exerciseTag: "#tps/exercise",
   customFoodTag: "#tps/food",

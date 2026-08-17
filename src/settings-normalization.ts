@@ -37,6 +37,10 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.exerciseTag = stringSetting(settings.exerciseTag, DEFAULT_SETTINGS.exerciseTag);
   settings.customFoodTag = stringSetting(settings.customFoodTag, DEFAULT_SETTINGS.customFoodTag);
   settings.recipeTag = stringSetting(settings.recipeTag, DEFAULT_SETTINGS.recipeTag);
+  settings.foodFrontmatterKey = frontmatterPropertyKeySetting(settings.foodFrontmatterKey, DEFAULT_SETTINGS.foodFrontmatterKey);
+  settings.foodFrontmatterFoodValue = stringSetting(settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue);
+  settings.foodFrontmatterRecipeValue = stringSetting(settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue);
+  settings.foodFrontmatterMealValue = stringSetting(settings.foodFrontmatterMealValue, DEFAULT_SETTINGS.foodFrontmatterMealValue);
   settings.rollupHeading = stringSetting(settings.rollupHeading, DEFAULT_SETTINGS.rollupHeading);
   settings.openFoodFactsUserAgent = stringSetting(settings.openFoodFactsUserAgent, DEFAULT_SETTINGS.openFoodFactsUserAgent);
   const storedUsdaReferences = Object.prototype.hasOwnProperty.call(storedRecord, "usdaApiKeySecrets")
@@ -210,7 +214,7 @@ function normalizePendingFoodLogDraft(value: unknown): TPSHealthSettings["pendin
   if (!selectionItems.length) return null;
   const context = input.dateContext && typeof input.dateContext === "object" ? input.dateContext as SettingsRecord : null;
   const dateIso = typeof context?.dateIso === "string" ? context.dateIso.trim() : "";
-  const activeTab = input.activeTab === "barcode" || input.activeTab === "search" || input.activeTab === "mine" || input.activeTab === "describe" ? input.activeTab : undefined;
+  const activeTab = input.activeTab === "barcode" || input.activeTab === "search" || input.activeTab === "mine" || input.activeTab === "describe" || input.activeTab === "quick" ? input.activeTab : undefined;
   return {
     id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : "pending-food-log",
     updatedAt: typeof input.updatedAt === "string" && input.updatedAt.trim() ? input.updatedAt.trim() : new Date().toISOString(),
@@ -246,6 +250,11 @@ function stringSetting(value: unknown, fallback: string): string {
 
 function optionalStringSetting(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function frontmatterPropertyKeySetting(value: unknown, fallback: string): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(normalized) ? normalized : fallback;
 }
 
 function booleanSetting(value: unknown, fallback: boolean): boolean {

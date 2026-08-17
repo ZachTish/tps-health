@@ -13,6 +13,8 @@ const { buildHealthPropertyCatalog } = moduleRecord.exports;
 
 const settings = (mode) => ({
   foodIdentificationMode: mode,
+  foodFrontmatterKey: 'healthEntity',
+  foodFrontmatterFoodValue: 'pantry-item',
   customFoodTag: '#my/food',
   foodsFolder: 'Health/My Foods',
   healthGoals: [
@@ -29,7 +31,7 @@ test('food property catalog follows the configured Health identification mode', 
     mode: 'any',
     tags: ['my/food'],
     paths: ['Health/My Foods'],
-    properties: [{ key: 'kind', value: 'food', operator: 'equals' }],
+    properties: [{ key: 'healthEntity', value: 'pantry-item', operator: 'equals' }],
   });
 
   assert.deepEqual(buildHealthPropertyCatalog(settings('tag')).food[0].scope, {
@@ -48,7 +50,7 @@ test('food property catalog follows the configured Health identification mode', 
     mode: 'all',
     tags: undefined,
     paths: undefined,
-    properties: [{ key: 'kind', value: 'food', operator: 'equals' }],
+    properties: [{ key: 'healthEntity', value: 'pantry-item', operator: 'equals' }],
   });
 });
 
