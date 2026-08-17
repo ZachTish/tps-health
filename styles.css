@@ -350,6 +350,20 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
   font-size: var(--font-ui-small);
 }
 
+.tps-health-label-scan-actions {
+  border-top: 0;
+  padding: 8px 0 0;
+}
+
+.tps-health-label-scan-actions .setting-item-control {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.tps-health-label-scan-actions button {
+  min-height: 40px;
+}
+
 .modal.tps-health-modal-frame {
   max-height: min(720px, calc(100vh - 32px));
 }
@@ -1531,6 +1545,22 @@ body.is-phone .tps-health-selection-controls {
   display: flex;
   gap: 7px;
   min-width: 0;
+}
+
+.tps-health-daily-workout-summary-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tps-health-daily-workout-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 750;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tps-health-daily-workout-lock {
@@ -2749,8 +2779,14 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-food-search-frame .tps-health-selection-actions button,
   .tps-health-scanner-controls button,
   .tps-health-scanner-manual input,
-  .tps-health-scanner-manual button {
+  .tps-health-scanner-manual button,
+  .tps-health-label-scan-actions button {
     min-height: 44px;
+  }
+
+  .tps-health-label-scan-actions .setting-item-control,
+  .tps-health-label-scan-actions button {
+    width: 100%;
   }
 
   .tps-health-food-search-frame .tps-health-food-tab {
@@ -2777,11 +2813,24 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   }
 }
 
-/* Workout table containment: keep the six labels and controls on one readable row. */
+/* Workout rows are compact by default so split panes and phones get the same
+   useful layout without relying on the app window's viewport width. */
 .tps-health-workout-set-editor {
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 12%, var(--background-modifier-border));
+  border-radius: 10px;
+  container-type: inline-size;
+  margin: 7px 0;
+  overflow: visible;
+  padding: 8px;
+}
+
+.tps-health-workout-set-row .tps-health-workout-set-editor {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 5px 0;
 }
 
 .tps-health-workout-set-identity {
@@ -2795,8 +2844,33 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-workout-set-grid-header,
 .tps-health-workout-set-metrics {
-  grid-template-columns: 62px minmax(104px, 1fr) minmax(86px, .8fr) minmax(78px, .7fr) minmax(86px, .8fr) 78px;
-  min-width: 530px;
+  min-width: 0;
+}
+
+.tps-health-workout-set-grid-header {
+  display: none;
+}
+
+.tps-health-workout-set-metrics {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tps-health-workout-set-metrics > :nth-child(1),
+.tps-health-workout-set-metrics > :nth-child(2) {
+  grid-row: 1;
+}
+
+.tps-health-workout-set-metrics > :nth-child(3),
+.tps-health-workout-set-metrics > :nth-child(4) {
+  grid-row: 2;
+}
+
+.tps-health-workout-set-metrics > :nth-child(5),
+.tps-health-workout-set-metrics > :nth-child(6) {
+  grid-row: 3;
 }
 
 .tps-health-workout-set-grid-header > span,
@@ -2805,6 +2879,18 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tps-health-workout-set-editor .tps-health-workout-set-perform {
+  align-self: stretch;
+  height: auto;
+  justify-self: stretch;
+  min-height: 44px;
+  width: 100%;
+}
+
+.tps-health-workout-set-advanced {
+  display: none;
 }
 
 @media (max-width: 760px) and (min-width: 521px) {
@@ -2827,10 +2913,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 }
 
 @media (max-width: 520px), (hover: none) and (pointer: coarse) {
-  .tps-health-workout-set-editor {
-    overflow-x: hidden;
-  }
-
   .tps-health-workout-set-grid-header,
   .tps-health-workout-set-metrics {
     min-width: 0;
@@ -2841,6 +2923,11 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-workout-set-perform,
   .tps-health-workout-set-action {
     min-height: 44px;
+  }
+
+  .tps-health-workout-set-step {
+    min-height: 44px;
+    min-width: 44px;
   }
 }
 .tps-health-workout-options {

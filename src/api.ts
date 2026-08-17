@@ -150,6 +150,36 @@ export interface HealthMetricRenderConfig {
   color?: string;
 }
 
+export type HealthPropertyCatalogType = "text" | "number" | "datetime" | "selector" | "list";
+
+export interface HealthPropertyCatalogScope {
+  mode: "any" | "all";
+  tags?: string[];
+  paths?: string[];
+  properties?: Array<{
+    key: string;
+    value: string;
+    operator: "equals" | "exists";
+  }>;
+}
+
+export interface HealthPropertyCatalogEntry {
+  id: string;
+  key: string;
+  label: string;
+  type: HealthPropertyCatalogType;
+  icon?: string;
+  options?: string[];
+  listItemType?: "text";
+  scope: HealthPropertyCatalogScope;
+}
+
+export interface HealthPropertyCatalog {
+  version: 1;
+  food: HealthPropertyCatalogEntry[];
+  dailyRollups: HealthPropertyCatalogEntry[];
+}
+
 export interface TPSHealthApiSchema {
   version: 1;
   entities: {
@@ -219,5 +249,6 @@ export interface TPSHealthApi {
   updateDailyRollup(): Promise<DailyRollup>;
   getMetricRenderConfigs(): HealthMetricRenderConfig[];
   getMetricRenderConfig(propertyKey: string): HealthMetricRenderConfig | null;
+  getPropertyCatalog(): HealthPropertyCatalog;
   openFoodLogEntryMenuFromLine(event: MouseEvent, filePath: string, lineNumber: number, line: string): Promise<void>;
 }
