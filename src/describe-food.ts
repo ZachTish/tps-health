@@ -5,7 +5,7 @@ export interface DescribedFoodPart {
   unit?: string;
 }
 
-export interface DescribeNutritionPer100G {
+export interface DescribeNutritionEstimate {
   calories: number;
   proteinG: number;
   carbsG: number;
@@ -22,11 +22,8 @@ export interface DescribePlannedFood {
   quantity: number;
   unit: string;
   estimatedWeightG: number;
-  foodType: string;
-  queries: string[];
-  estimatedNutritionPer100G: DescribeNutritionPer100G;
-  expectedCaloriesPer100GMin: number;
-  expectedCaloriesPer100GMax: number;
+  confidence: number;
+  estimatedNutritionForAmount: DescribeNutritionEstimate;
 }
 
 export interface DescribeFoodPlan {
@@ -53,7 +50,7 @@ function isNonBlankString(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim());
 }
 
-function isUsableDescribeNutrition(value: unknown): value is DescribeNutritionPer100G {
+function isUsableDescribeNutrition(value: unknown): value is DescribeNutritionEstimate {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const nutrition = value as Record<string, unknown>;
   return ["calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "alcoholG", "sodiumMg"]
@@ -67,17 +64,12 @@ export function isUsableDescribeFoodPlan(value: unknown): value is DescribeFoodP
   return plan.foods.every((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const food = value as Record<string, unknown>;
-    const queries = food.queries;
     return isNonBlankString(food.label) &&
       isFinitePositive(food.quantity) &&
       isNonBlankString(food.unit) &&
       isFinitePositive(food.estimatedWeightG) &&
-      isNonBlankString(food.foodType) &&
-      Array.isArray(queries) && queries.length >= 1 && queries.length <= 4 && queries.every(isNonBlankString) &&
-      isUsableDescribeNutrition(food.estimatedNutritionPer100G) &&
-      isFiniteNonNegative(food.expectedCaloriesPer100GMin) &&
-      isFiniteNonNegative(food.expectedCaloriesPer100GMax) &&
-      Number(food.expectedCaloriesPer100GMax) >= Number(food.expectedCaloriesPer100GMin);
+      isFiniteNonNegative(food.confidence) && Number(food.confidence) <= 1 &&
+      isUsableDescribeNutrition(food.estimatedNutritionForAmount);
   });
 }
 
@@ -89,21 +81,18 @@ export function describeFoodPlanSignature(plan: DescribeFoodPlan): string {
       quantity: food.quantity,
       unit: food.unit.trim().toLowerCase(),
       estimatedWeightG: food.estimatedWeightG,
-      foodType: food.foodType.trim().toLowerCase(),
-      queries: food.queries.map((query) => query.trim().toLowerCase()),
-      estimatedNutritionPer100G: {
-        calories: food.estimatedNutritionPer100G.calories,
-        proteinG: food.estimatedNutritionPer100G.proteinG,
-        carbsG: food.estimatedNutritionPer100G.carbsG,
-        fatG: food.estimatedNutritionPer100G.fatG,
-        fiberG: food.estimatedNutritionPer100G.fiberG,
-        sugarG: food.estimatedNutritionPer100G.sugarG,
-        sugarAlcoholG: food.estimatedNutritionPer100G.sugarAlcoholG,
-        alcoholG: food.estimatedNutritionPer100G.alcoholG,
-        sodiumMg: food.estimatedNutritionPer100G.sodiumMg,
+      confidence: food.confidence,
+      estimatedNutritionForAmount: {
+        calories: food.estimatedNutritionForAmount.calories,
+        proteinG: food.estimatedNutritionForAmount.proteinG,
+        carbsG: food.estimatedNutritionForAmount.carbsG,
+        fatG: food.estimatedNutritionForAmount.fatG,
+        fiberG: food.estimatedNutritionForAmount.fiberG,
+        sugarG: food.estimatedNutritionForAmount.sugarG,
+        sugarAlcoholG: food.estimatedNutritionForAmount.sugarAlcoholG,
+        alcoholG: food.estimatedNutritionForAmount.alcoholG,
+        sodiumMg: food.estimatedNutritionForAmount.sodiumMg,
       },
-      expectedCaloriesPer100GMin: food.expectedCaloriesPer100GMin,
-      expectedCaloriesPer100GMax: food.expectedCaloriesPer100GMax,
     })),
   });
 }

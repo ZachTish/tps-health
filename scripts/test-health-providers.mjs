@@ -2704,6 +2704,14 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   assert.equal(mergedAlias.sourcePath, "Health/Foods/Eleven Digit Alias.md");
   assert.equal(localFake.files.has("Health/Foods/Eleven Digit Alias 2.md"), false);
   assert.equal(localRemoteCalls, 0, "a UPC/EAN alias found in the local index must not hit the network");
+  const michelob = await localPlugin.lookupFoodByBarcode("018200202636");
+  assert.equal(michelob?.name, "Michelob Ultra Organic Seltzer Signature Collection");
+  assert.equal(michelob?.servingUnit, "can");
+  assert.equal(michelob?.servingMl, 355);
+  assert.equal(michelob?.nutrition?.calories, 80);
+  assert.equal(michelob?.nutrition?.alcoholG, 11.2);
+  assert.equal(localRemoteCalls, 0, "the verified common-product fallback must resolve before a remote barcode request");
+  assert.equal((await localPlugin.searchLocalFoods("michelob ultra seltzer"))[0]?.name, michelob?.name);
 
   const remoteFake = createFakeHealthApp();
   const remotePlugin = new TPSHealthPlugin(remoteFake.app);
@@ -2755,7 +2763,7 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   assert.equal(candidateCalls, 2, "a confirmed barcode miss should be negatively cached");
 });
 
-test("barcode misses default to Nutrition Facts scanning and still return reviewed foods to the tray", () => {
+test("barcode misses automatically try grounded Gemini before falling back to Nutrition Facts scanning", () => {
   const typedLookup = mainSource.slice(
     mainSource.indexOf("private async handleBarcodeAdd"),
     mainSource.indexOf("private async renderQuickPicks"),
@@ -2772,8 +2780,13 @@ test("barcode misses default to Nutrition Facts scanning and still return review
     mainSource.indexOf("class NutritionLabelScanModal"),
     mainSource.indexOf("class BarcodeFoodReviewModal"),
   );
-  assert.match(typedLookup, /new NutritionLabelScanModal\([\s\S]+this\.dateContext, async \(saved\) => \{\s+await this\.addSelection\(saved, null, \{ enrich: false \}\);\s+this\.statusEl\.setText\(`Added \$\{saved\.name\}`\);/);
-  assert.match(scannerLookup, /new NutritionLabelScanModal\([\s\S]+this\.dateContext,\s+this\.onItem/);
+  assert.match(typedLookup, /this\.plugin\.researchFoodWithAi\("", barcode\)/);
+  assert.match(typedLookup, /new BarcodeFoodReviewModal\(this\.app, this\.plugin, outcome\.item/);
+  assert.match(typedLookup, /new NutritionLabelScanModal\(this\.app, this\.plugin, barcode, this\.dateContext, onSaved, outcome\?\.item \|\| null/);
+  assert.match(scannerLookup, /this\.plugin\.researchFoodWithAi\("", barcode\)/);
+  assert.match(scannerLookup, /scanner-lookup:ai-fallback/);
+  assert.match(scannerLookup, /scanner-lookup:ai-fallback[\s\S]+this\.close\(\);\s+return/);
+  assert.match(scannerLookup, /new NutritionLabelScanModal\(this\.app, this\.plugin, barcode, this\.dateContext, this\.onItem, outcome\.item, outcome\.sources, outcome\.reason\)/);
   assert.match(labelScanModal, /\.setButtonText\("Take label photo"\)\s+\.setCta\(\)/);
   assert.match(labelScanModal, /\.setButtonText\("Create manually"\)/);
   assert.match(labelScanModal, /setAttr\("capture", "environment"\)/);
@@ -2854,7 +2867,7 @@ test("food result metadata uses clean source labels", () => {
   );
 });
 
-test("Describe bounds provider fan-out and reuses one history snapshot", () => {
+test("AI Describe skips database fan-out while the no-Gateway fallback remains bounded", () => {
   const aiDescribe = mainSource.slice(
     mainSource.indexOf("private async openFoodDescriberWithAi"),
     mainSource.indexOf("private async describeFoodAi"),
@@ -2863,14 +2876,9 @@ test("Describe bounds provider fan-out and reuses one history snapshot", () => {
     mainSource.indexOf("private async legacyOpenFoodDescriber"),
     mainSource.indexOf("openWorkoutStarter"),
   );
-  assert.match(aiDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
-  assert.match(aiDescribe, /mapWithConcurrency\(plannedFoods, 3, async \(food\) =>/);
-  assert.match(aiDescribe, /for \(const query of food\.queries\.slice\(0, 2\)\)/);
-  assert.match(aiDescribe, /this\.searchLocalFoods\(query, loggedStats\)/);
-  assert.match(aiDescribe, /if \(remoteQueriesUsed >= DESCRIBE_REMOTE_QUERY_BUDGET\) continue/);
-  assert.match(aiDescribe, /remoteQueriesUsed\+\+/);
-  assert.match(aiDescribe, /this\.searchFoods\(query, loggedStats\)/);
-  assert.match(aiDescribe, /if \(candidates\.length >= 8\) break/);
+  assert.match(aiDescribe, /taskId: "health\.describe-food\.estimate"/);
+  assert.match(aiDescribe, /source: "custom-inline"/);
+  assert.doesNotMatch(aiDescribe, /getLoggedFoodStats|mapWithConcurrency|searchLocalFoods|searchFoods/);
   assert.match(legacyDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
   assert.match(legacyDescribe, /mapWithConcurrency\(parts, 3, async \(part\) =>/);
   assert.match(legacyDescribe, /this\.searchLocalFoods\(part\.query, loggedStats\)/);
@@ -9042,10 +9050,11 @@ test("grounded food research accepts coherent serving evidence and uses a stable
   await assert.rejects(() => plugin.researchFoodWithAi("Clubtails"), /Update TPS AI Gateway/);
 });
 
-test("food search exposes an explicit wider Gemini route and barcode misses remain label-first", () => {
+test("food search exposes wider Gemini research and barcode misses use it automatically before label fallback", () => {
   assert.match(mainSource, /setButtonText\("Search wider with Gemini"\)/);
   assert.match(mainSource, /grounding: "google-search"/);
   assert.match(mainSource, /new NutritionLabelScanModal\(this\.app, this\.plugin, barcode/);
+  assert.match(mainSource, /No database match\. Asking Gemini to identify this barcode/);
   assert.match(mainSource, /setButtonText\("Research barcode"\)/);
   assert.match(mainSource, /this\.plugin\.extractFoodFromLabelImage\(image, this\.barcode, this\.seedIdentity\)/);
   assert.match(mainSource, /renderFoodResearchSources\(this\.contentEl, this\.sources\)/);
