@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.15.1
+
+- Workout exercises now render as genuinely compact tables: the exercise name and `Set / Weight / Reps / Rest / Done` labels appear once, and every set remains one short row even in the narrow pane shown in the reported screenshot. The former per-set metric cards and visible `Last set` row are gone.
+- The prior-set copy action remains available from the exercise row menu, set type and units remain editable there, and weight/reps/rest values remain direct inputs with keyboard arrows. Completion is a small square action, while `+ Set` stays one short footer row.
+- The workout summary is also leaner: title/progress and compact `+ Ex / + Set / End / Discard` actions stay inline until the container is truly phone-narrow. Superset metadata no longer adds a colored left rail.
+- This is a backward-compatible visual patch with no settings, API, or Markdown migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 180 of 181 declared checks passed with only the credential-gated live USDA check skipped. Focused layout regressions require one shared table header, five persistent columns through a 330 px container, hidden per-set labels/previous-result cards, compact completion controls, no stacked metric grids, and no colored left rail. The final source and isolated test-runtime artifacts are byte-identical, and plugin-owned `data.json` remained unchanged. Visual automation was stopped because the only focused Obsidian window was production; production was not clicked or changed.
+
 ## 0.15.0
 
 - Starting a workout now writes exactly one ordinary Daily Note task that links to the session section: `[[#Workout|Workout title]]`. The task carries the workout start time for Controller/calendar-style discovery, is checked when the workout finishes, and is removed with the bounded session when the workout is discarded. Repair removes duplicates and never treats the parent task as an exercise set.

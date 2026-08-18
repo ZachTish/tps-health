@@ -3004,116 +3004,256 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   }
 }
 
-/* Authoritative set-metric layout. The editor is an inline-size container so
-   these breakpoints also apply inside desktop split panes and Live Preview.
-   A wide card gets one compact row; narrower cards deliberately reflow all
-   six controls instead of allowing a hidden or clipped cell. */
-.tps-health-workout-set-editor {
+/* Authoritative compact workout table. Exercise identity and column labels
+   appear once; every persisted set remains one short row at every pane size. */
+.tps-health-daily-workout-header {
+  border-radius: 8px;
+  gap: 6px;
+  margin: 5px 0 8px;
+  padding: 6px 8px;
+}
+
+.tps-health-daily-workout-summary {
+  gap: 4px;
+}
+
+.tps-health-daily-workout-summary-text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+}
+
+.tps-health-daily-workout-lock {
+  height: 18px;
+  width: 16px;
+}
+
+.tps-health-daily-workout-action {
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+@container (max-width: 360px) {
+  .tps-health-daily-workout-header {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tps-health-daily-workout-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+}
+
+.tps-health-workout-set-row {
+  border-inline: 1px solid var(--background-modifier-border);
+  padding-inline: 7px;
+}
+
+.tps-health-workout-set-row.is-exercise-start {
+  border-block-start: 1px solid var(--background-modifier-border);
+  border-radius: 8px 8px 0 0;
+  margin-top: 7px;
+  padding-top: 4px;
+}
+
+.tps-health-workout-set-row.is-exercise-end {
+  border-block-end: 1px solid var(--background-modifier-border);
+  border-radius: 0 0 8px 8px;
+  margin-bottom: 7px;
+  padding-bottom: 4px;
+}
+
+.tps-health-workout-set-row.is-superset,
+.tps-health-workout-set-editor.is-superset {
+  border-left-width: 1px;
+  border-left-color: var(--background-modifier-border);
+}
+
+.tps-health-workout-set-editor,
+.tps-health-workout-set-row .tps-health-workout-set-editor {
   container-name: tps-health-workout-set-row;
+  gap: 0;
+  padding: 0;
+}
+
+.tps-health-workout-set-editor.is-exercise-start {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.tps-health-workout-set-header {
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 0 3px;
+}
+
+.tps-health-workout-set-exercise-input,
+.tps-health-workout-set-editor input.tps-health-workout-set-exercise-input {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+  height: 28px;
+  min-height: 28px;
+  padding: 2px 4px;
+}
+
+.tps-health-workout-set-more {
+  height: 28px;
+  min-height: 28px;
+  min-width: 30px;
+  padding: 0 7px;
+}
+
+.tps-health-workout-set-grid-header,
+.tps-health-workout-set-metrics {
+  align-items: center;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(30px, .42fr) minmax(66px, 1.15fr) minmax(46px, .78fr) minmax(54px, .9fr) minmax(34px, .5fr);
+  min-width: 0;
+}
+
+.tps-health-workout-set-grid-header {
+  border-block: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  line-height: 24px;
+  padding: 0 2px;
+  text-align: center;
+  text-transform: none;
 }
 
 .tps-health-workout-set-metrics {
-  grid-template-columns:
-    minmax(42px, 0.35fr)
-    minmax(82px, 0.9fr)
-    minmax(76px, 0.8fr)
-    minmax(60px, 0.6fr)
-    minmax(76px, 0.7fr)
-    minmax(64px, 0.55fr);
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  min-height: 34px;
+  padding: 2px;
 }
 
-/* Keep the numeric fields visible while moving the increment controls out of
-   the resting layout. Keyboard arrows always work; focusing or hovering a
-   field reveals the same +/- affordances without making every set a card. */
-.tps-health-workout-set-stepper {
-  grid-template-columns: minmax(0, 1fr);
+.tps-health-workout-set-row.is-exercise-end .tps-health-workout-set-metrics {
+  border-bottom: 0;
 }
 
+.tps-health-workout-set-previous,
+.tps-health-workout-set-field-label,
 .tps-health-workout-set-stepper .tps-health-workout-set-step {
   display: none;
 }
 
-.tps-health-workout-set-stepper input {
-  grid-column: 1;
-}
-
-.tps-health-workout-set-stepper:focus-within,
-.tps-health-workout-set-stepper:hover {
-  grid-template-columns: 28px minmax(0, 1fr) 28px;
-}
-
-.tps-health-workout-set-stepper:focus-within .tps-health-workout-set-step,
-.tps-health-workout-set-stepper:hover .tps-health-workout-set-step {
-  display: inline-flex;
-  min-width: 28px;
-  width: 28px;
-}
-
-.tps-health-workout-set-stepper:focus-within input,
-.tps-health-workout-set-stepper:hover input {
-  grid-column: 2;
-}
-
-.tps-health-workout-rest-countdown {
+.tps-health-workout-set-badge {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: var(--font-ui-small);
   font-weight: 650;
-  text-transform: none;
+  height: 28px;
+  padding: 0;
 }
 
-@container tps-health-workout-set-row (max-width: 520px) {
-  .tps-health-workout-set-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .tps-health-workout-set-metrics > :nth-child(1) { grid-column: 1; grid-row: 1; }
-  .tps-health-workout-set-metrics > :nth-child(2) { grid-column: 2; grid-row: 1; }
-  .tps-health-workout-set-metrics > :nth-child(6) { grid-column: 3; grid-row: 1; }
-  .tps-health-workout-set-metrics > :nth-child(3) { grid-column: 1; grid-row: 2; }
-  .tps-health-workout-set-metrics > :nth-child(4) { grid-column: 2; grid-row: 2; }
-  .tps-health-workout-set-metrics > :nth-child(5) { grid-column: 3; grid-row: 2; }
+.tps-health-workout-set-stepper {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 28px;
+  padding: 0;
 }
 
-@container tps-health-workout-set-row (max-width: 440px) {
-  .tps-health-workout-set-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.tps-health-workout-set-stepper input,
+.tps-health-workout-set-editor .tps-health-workout-set-stepper input {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+  grid-column: 1;
+  grid-row: 1;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 3px;
+  text-align: center;
+}
 
-  .tps-health-workout-set-metrics > :nth-child(1),
-  .tps-health-workout-set-metrics > :nth-child(2),
-  .tps-health-workout-set-metrics > :nth-child(3),
-  .tps-health-workout-set-metrics > :nth-child(4),
-  .tps-health-workout-set-metrics > :nth-child(5),
-  .tps-health-workout-set-metrics > :nth-child(6) {
-    grid-column: auto;
-    grid-row: auto;
-  }
+.tps-health-workout-set-stepper input:hover {
+  background: var(--background-modifier-hover);
+}
+
+.tps-health-workout-set-stepper input:focus {
+  background: var(--background-primary);
+  border-color: var(--interactive-accent);
+}
+
+.tps-health-workout-set-editor .tps-health-workout-set-perform {
+  align-items: center;
+  align-self: center;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: var(--font-ui-small);
+  height: 27px;
+  justify-self: center;
+  min-height: 27px;
+  min-width: 27px;
+  padding: 0;
+  width: 27px;
+}
+
+.tps-health-workout-set-editor .tps-health-workout-set-perform[data-state="complete"] {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  opacity: 1;
+}
+
+.tps-health-workout-exercise-add {
+  height: 29px;
+  min-height: 29px;
+  margin-top: 3px;
 }
 
 @media (hover: none) and (pointer: coarse) {
-  .tps-health-workout-set-stepper:hover:not(:focus-within) {
-    grid-template-columns: minmax(0, 1fr);
+  .tps-health-daily-workout-action {
+    min-height: 38px;
   }
 
-  .tps-health-workout-set-stepper:hover:not(:focus-within) .tps-health-workout-set-step {
-    display: none;
+  .tps-health-workout-set-metrics {
+    min-height: 40px;
   }
 
-  .tps-health-workout-set-stepper:hover:not(:focus-within) input {
-    grid-column: 1;
+  .tps-health-workout-set-stepper,
+  .tps-health-workout-set-stepper input,
+  .tps-health-workout-set-editor .tps-health-workout-set-stepper input,
+  .tps-health-workout-set-editor .tps-health-workout-set-perform {
+    height: 36px;
+    min-height: 36px;
   }
 
-  .tps-health-workout-set-stepper:focus-within {
-    grid-template-columns: 36px minmax(0, 1fr) 36px;
-  }
-
-  .tps-health-workout-set-stepper:focus-within .tps-health-workout-set-step {
+  .tps-health-workout-set-editor .tps-health-workout-set-perform {
     min-width: 36px;
     width: 36px;
   }
 }
 
-@container tps-health-workout-set-row (max-width: 320px) {
+@container tps-health-workout-set-row (max-width: 330px) {
+  .tps-health-workout-set-grid-header,
   .tps-health-workout-set-metrics {
-    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    grid-template-columns: 28px minmax(56px, 1fr) minmax(40px, .7fr) minmax(46px, .78fr) 34px;
+  }
+
+  .tps-health-workout-set-grid-header {
+    font-size: 10px;
   }
 }
 .tps-health-workout-options {

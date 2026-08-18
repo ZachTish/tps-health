@@ -162,21 +162,20 @@ test("Health settings mobile CSS is namespaced and keeps controls usable", () =>
   assert.match(stylesSource, /\.tps-health-settings-page \[data-tps-health-usda-secret-index\]\s*\{[\s\S]+min-width: 0/);
 });
 
-test("Workout set controls reflow inside narrow panes without clipping", () => {
+test("Workout set controls stay in one compact table row inside narrow panes", () => {
   assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+container-type: inline-size;/);
   assert.match(stylesSource, /\.tps-health-workout-set-editor\s*\{[\s\S]+container-type: inline-size;/);
   assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+overflow: visible;/);
-  const finalLayoutStart = stylesSource.lastIndexOf("/* Authoritative set-metric layout.");
+  const finalLayoutStart = stylesSource.lastIndexOf("/* Authoritative compact workout table.");
   assert.ok(finalLayoutStart > stylesSource.indexOf("/* Workout rows are compact"), "authoritative layout must follow compact defaults");
   const finalLayout = stylesSource.slice(finalLayoutStart);
-  assert.match(finalLayout, /minmax\(42px, 0\.35fr\)[\s\S]+minmax\(82px, 0\.9fr\)[\s\S]+minmax\(76px, 0\.8fr\)[\s\S]+minmax\(60px, 0\.6fr\)[\s\S]+minmax\(76px, 0\.7fr\)[\s\S]+minmax\(64px, 0\.55fr\)/);
+  assert.match(finalLayout, /grid-template-columns: minmax\(30px, \.42fr\) minmax\(66px, 1\.15fr\) minmax\(46px, \.78fr\) minmax\(54px, \.9fr\) minmax\(34px, \.5fr\)/);
+  assert.match(finalLayout, /\.tps-health-workout-set-grid-header,[\s\S]+\.tps-health-workout-set-metrics[\s\S]+display: grid/);
+  assert.match(finalLayout, /\.tps-health-workout-set-previous,[\s\S]+\.tps-health-workout-set-field-label,[\s\S]+display: none/);
   assert.match(finalLayout, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step\s*\{\s*display: none;/);
-  assert.match(finalLayout, /\.tps-health-workout-set-stepper:focus-within[\s\S]+\.tps-health-workout-set-stepper:hover[\s\S]+grid-template-columns: 28px minmax\(0, 1fr\) 28px/);
-  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 520px\)[\s\S]+repeat\(3, minmax\(0, 1fr\)\)/);
-  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 440px\)[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 320px\)[\s\S]+minmax\(0, 1fr\)/);
-  assert.match(finalLayout, /\.tps-health-workout-set-metrics > :nth-child\(6\) \{ grid-column: 3; grid-row: 1; \}/);
-  assert.equal((stylesSource.match(/@container tps-health-workout-set-row/g) || []).length, 3, "one authoritative 6/3/2/1 container cascade");
+  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 330px\)[\s\S]+grid-template-columns: 28px minmax\(56px, 1fr\) minmax\(40px, \.7fr\) minmax\(46px, \.78fr\) 34px/);
+  assert.doesNotMatch(finalLayout, /repeat\([123], minmax\(0, 1fr\)\)/, "set metrics must never reflow into stacked cards");
+  assert.doesNotMatch(finalLayout, /border-left: 3px solid/, "the compact table does not add a colored left rail");
 });
 
 test("README documents the routed settings contract", () => {

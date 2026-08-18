@@ -6759,7 +6759,8 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.doesNotMatch(mainSource, /\[exercise:: Exercise\] \[setId::/);
   assert.match(mainSource, /rest\.setAttribute\("aria-label", "Rest seconds"\)/);
   assert.match(mainSource, /restLabel\.textContent = "Rest"/);
-  assert.match(mainSource, /perform\.textContent = data\.status === "complete" \? "Done ✓" : "Done"/);
+  assert.match(mainSource, /perform\.textContent = data\.status === "complete" \? "✓" : ""/);
+  assert.match(mainSource, /perform\.dataset\.state = data\.status/);
   assert.match(mainSource, /perform\.setAttribute\("aria-label", data\.status === "complete"/);
   assert.match(mainSource, /restLabel\.append\(document\.createTextNode\(" · "\), restCountdown\)/);
   assert.match(mainSource, /restControl\.append\(restLabel, restDown, rest, restUp\)/);
@@ -6770,7 +6771,9 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(mainSource, /metrics\.className = "tps-health-workout-set-metrics"/);
   assert.match(mainSource, /setBadge\.className = `tps-health-workout-set-badge is-\$\{data\.setType \|\| "normal"\}`/);
   assert.match(mainSource, /previous\.className = "tps-health-workout-set-previous"/);
-  assert.doesNotMatch(mainSource, /gridHeader\.className = "tps-health-workout-set-grid-header"/);
+  assert.match(mainSource, /gridHeader\.className = "tps-health-workout-set-grid-header"/);
+  assert.match(mainSource, /for \(const label of \["Set", `Weight \(\$\{data\.unit \|\| "lb"\}\)`, "Reps", "Rest", "Done"\]\)/);
+  assert.match(mainSource, /if \(data\.exerciseStart\) chip\.append\(header, gridHeader\)/);
   assert.match(mainSource, /input\.addEventListener\("focus", \(\) => input\.select\(\)\)/);
   assert.match(mainSource, /event\.key === "ArrowUp" \|\| event\.key === "ArrowDown"/);
   assert.match(mainSource, /restSeconds: restValue/);
@@ -6900,22 +6903,23 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(mainSource, /if \(isWorkoutDailyEndMarkerLine\(line\.text\)\) \{/);
   assert.match(mainSource, /repairWorkoutDailyBlockContent\(content, workoutId, placement\)/);
   assert.match(mainSource, /lock\.setAttribute\("title", "Workout identifier is protected in Live Preview"\)/);
-  assert.match(mainSource, /action\("\+ Exercise"/);
-  assert.match(mainSource, /action\("\+ Set"/);
-  assert.match(mainSource, /action\("End workout"/);
-  assert.match(mainSource, /action\("Discard workout"/);
+  assert.match(mainSource, /action\("\+ Ex", "Add exercise"/);
+  assert.match(mainSource, /action\("\+ Set", "Add set"/);
+  assert.match(mainSource, /action\("End", "End workout"/);
+  assert.match(mainSource, /action\("Discard", "Discard workout"/);
   assert.match(mainSource, /new DiscardWorkoutPromptModal\(this\.app/);
   assert.match(mainSource, /heading\.insertAdjacentElement\("afterend", workoutDailyHeaderElement/);
   assert.match(stylesSource, /\.tps-health-daily-workout-header \{[\s\S]*container-type: inline-size;[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
-  assert.match(stylesSource, /\.tps-health-workout-set-metrics \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
-  assert.match(stylesSource, /\.tps-health-workout-set-metrics \{\s*grid-template-columns:\s*minmax\(42px, 0\.35fr\)[\s\S]*minmax\(64px, 0\.55fr\);/);
+  const compactWorkoutTable = stylesSource.slice(stylesSource.lastIndexOf("/* Authoritative compact workout table."));
+  assert.match(compactWorkoutTable, /grid-template-columns: minmax\(30px, \.42fr\) minmax\(66px, 1\.15fr\) minmax\(46px, \.78fr\) minmax\(54px, \.9fr\) minmax\(34px, \.5fr\)/);
+  assert.match(compactWorkoutTable, /\.tps-health-workout-set-grid-header[\s\S]*line-height: 24px/);
   assert.match(stylesSource, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step \{\s*display: none;/);
-  assert.match(stylesSource, /\.tps-health-workout-set-stepper:focus-within \.tps-health-workout-set-step,[\s\S]*display: inline-flex;/);
-  assert.match(stylesSource, /@container tps-health-workout-set-row \(max-width: 520px\)/);
+  assert.match(compactWorkoutTable, /\.tps-health-workout-set-editor \.tps-health-workout-set-perform\[data-state="complete"\]/);
+  assert.doesNotMatch(compactWorkoutTable, /repeat\([123], minmax\(0, 1fr\)\)/);
   assert.doesNotMatch(stylesSource, /min-width: 530px/);
-  assert.match(stylesSource, /@container \(max-width: 620px\) \{[\s\S]*\.tps-health-daily-workout-actions \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(compactWorkoutTable, /@container \(max-width: 360px\)/);
   assert.match(stylesSource, /\.tps-health-daily-workout-action\.is-discard \{[\s\S]*var\(--text-error\)/);
-  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*\.tps-health-daily-workout-action[\s\S]*min-height: 44px/);
+  assert.match(compactWorkoutTable, /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*\.tps-health-daily-workout-action[\s\S]*min-height: 38px/);
 });
 
 test("workout checklist completion tracks rest and prompts on the final planned set", async () => {

@@ -10871,11 +10871,13 @@ function workoutDailyHeaderElement(plugin: TPSHealthPlugin, data: WorkoutDailyHe
   const actions = document.createElement("div");
   actions.className = "tps-health-daily-workout-actions";
   const active = data.status === "active" && plugin.settings.activeWorkoutId === data.workoutId;
-  const action = (text: string, className: string, handler: () => void | Promise<void>): HTMLButtonElement => {
+  const action = (text: string, label: string, className: string, handler: () => void | Promise<void>): HTMLButtonElement => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `tps-health-daily-workout-action ${className}`;
     button.textContent = text;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
     button.disabled = !active;
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -10885,13 +10887,13 @@ function workoutDailyHeaderElement(plugin: TPSHealthPlugin, data: WorkoutDailyHe
     return button;
   };
   actions.append(
-    action("+ Exercise", "is-add-exercise", () => new WorkoutExercisePickerModal(plugin.app, plugin, filePath, data.workoutId).open()),
-    action("+ Set", "is-add-set", () => new SetModal(plugin.app, plugin).open()),
-    action("End workout", "is-end", async () => {
+    action("+ Ex", "Add exercise", "is-add-exercise", () => new WorkoutExercisePickerModal(plugin.app, plugin, filePath, data.workoutId).open()),
+    action("+ Set", "Add set", "is-add-set", () => new SetModal(plugin.app, plugin).open()),
+    action("End", "End workout", "is-end", async () => {
       actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = true);
       await plugin.finishWorkout();
     }),
-    action("Discard workout", "is-discard", () => plugin.openDiscardWorkoutConfirmation()),
+    action("Discard", "Discard workout", "is-discard", () => plugin.openDiscardWorkoutConfirmation()),
   );
   card.append(summary, actions);
   return card;
@@ -11102,13 +11104,16 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
   const perform = document.createElement("button");
   perform.className = "tps-health-workout-set-perform";
   perform.type = "button";
-  perform.textContent = data.status === "complete" ? "Done ✓" : "Done";
+  perform.textContent = data.status === "complete" ? "✓" : "";
   perform.disabled = data.status === "complete";
+  perform.dataset.state = data.status;
   perform.setAttribute("aria-label", data.status === "complete" ? `${data.exercise || "Set"} performed` : `Perform ${data.exercise || "set"}`);
+  perform.setAttribute("title", data.status === "complete" ? "Performed" : "Mark set done");
   const setBadge = document.createElement("span");
   setBadge.className = `tps-health-workout-set-badge is-${data.setType || "normal"}`;
   const typeLabel = data.setType && data.setType !== "normal" ? data.setType.charAt(0).toUpperCase() + data.setType.slice(1) : "Set";
-  setBadge.textContent = `${data.setOrdinal || 1} · ${typeLabel}`;
+  setBadge.textContent = String(data.setOrdinal || 1);
+  setBadge.setAttribute("title", typeLabel);
   const previous = document.createElement("button");
   previous.className = "tps-health-workout-set-previous";
   previous.type = "button";
@@ -11280,7 +11285,8 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
     event.preventDefault();
     event.stopPropagation();
     perform.disabled = true;
-    perform.textContent = "Done ✓";
+    perform.textContent = "✓";
+    perform.dataset.state = "complete";
     save({ perform: true });
   });
   weightDown.addEventListener("click", (event) => {
@@ -11326,6 +11332,12 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
     event.preventDefault();
     event.stopPropagation();
     const menu = new Menu();
+    if (data.previous) {
+      menu.addItem((item) => item.setTitle(`Use last set: ${data.previous?.details || "previous values"}`).setIcon("history").onClick(() => {
+        previous.click();
+      }));
+      menu.addSeparator();
+    }
     for (const [value, label] of [["normal", "Normal set"], ["warmup", "Warmup"], ["drop", "Drop set"], ["failure", "To failure"]] as const) {
       menu.addItem((item) => item.setTitle(label).setChecked(setType.value === value).onClick(() => { setType.value = value; save(); }));
     }
@@ -11359,10 +11371,17 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
   const metrics = document.createElement("span");
   metrics.className = "tps-health-workout-set-metrics";
   metrics.append(setBadge, previous, weightControl, repsControl, restControl, perform);
+  const gridHeader = document.createElement("span");
+  gridHeader.className = "tps-health-workout-set-grid-header";
+  for (const label of ["Set", `Weight (${data.unit || "lb"})`, "Reps", "Rest", "Done"]) {
+    const cell = document.createElement("span");
+    cell.textContent = label;
+    gridHeader.appendChild(cell);
+  }
   const advanced = document.createElement("span");
   advanced.className = "tps-health-workout-set-advanced";
   advanced.append(unit, groups);
-  if (data.exerciseStart) chip.append(header);
+  if (data.exerciseStart) chip.append(header, gridHeader);
   chip.append(metrics, advanced);
   if (data.exerciseEnd) chip.append(add);
   if (!sourceSetId) {
