@@ -397,6 +397,8 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
 }
 
 .tps-health-search-results {
+  container-name: tps-health-food-search;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -656,7 +658,6 @@ body.is-phone .tps-health-selection-controls {
   align-items: center;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  cursor: pointer;
   display: grid;
   gap: 4px 10px;
   grid-template-areas:
@@ -685,11 +686,23 @@ body.is-phone .tps-health-selection-controls {
   grid-area: macros;
 }
 
-.tps-health-result > .setting-item {
+.tps-health-result-actions {
+  align-items: center;
   border: 0;
+  display: flex;
+  gap: 5px;
   grid-area: actions;
+  justify-content: flex-end;
   min-height: 0;
+  min-width: 0;
   padding: 0;
+}
+
+.tps-health-result-actions button {
+  flex: 0 1 auto;
+  margin: 0;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 /* The tray is a frequent-use surface, so keep it denser than settings-style modals. */
@@ -728,11 +741,7 @@ body.is-phone .tps-health-selection-controls {
   padding: 6px 8px;
 }
 
-.tps-health-food-search-frame .tps-health-result > .setting-item .setting-item-control {
-  gap: 5px;
-}
-
-.tps-health-food-search-frame .tps-health-result > .setting-item button {
+.tps-health-food-search-frame .tps-health-result-actions button {
   font-size: var(--font-ui-smaller);
   min-height: 28px;
   padding: 3px 7px;
@@ -807,6 +816,33 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-food-search-frame .tps-health-selection button:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
+}
+
+@container tps-health-food-search (max-width: 520px) {
+  .tps-health-result {
+    grid-template-areas:
+      "title"
+      "meta"
+      "macros"
+      "actions";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tps-health-result-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .tps-health-result-actions button {
+    min-height: 40px;
+    width: 100%;
+  }
+
+  .tps-health-result-actions.has-create-action button:last-child {
+    grid-column: 1 / -1;
+  }
 }
 
 .tps-health-result-title {
@@ -2741,11 +2777,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .tps-health-result > .setting-item,
-  .tps-health-result > .setting-item .setting-item-control {
-    width: 100%;
-  }
-
   .tps-health-selection-header,
   .tps-health-selection-actions {
     align-items: stretch;
@@ -2793,21 +2824,25 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 @media (max-width: 600px), (hover: none) and (pointer: coarse) {
   .tps-health-food-search-frame .tps-health-food-tabs {
-    display: flex;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    overflow: visible;
   }
 
-  .tps-health-food-search-frame .tps-health-food-tabs::-webkit-scrollbar {
-    display: none;
+  .tps-health-food-search-frame .tps-health-food-tab {
+    grid-column: span 2;
+    min-width: 0;
+  }
+
+  .tps-health-food-search-frame .tps-health-food-tab:nth-last-child(-n + 2) {
+    grid-column: span 3;
   }
 
   .tps-health-food-search-frame .tps-health-food-tab,
   .tps-health-food-search-frame .tps-health-result,
   .tps-health-food-search-frame .setting-item-control input,
   .tps-health-food-search-frame .setting-item-control button,
-  .tps-health-food-search-frame .tps-health-result > .setting-item button,
+  .tps-health-food-search-frame .tps-health-result-actions button,
   .tps-health-food-search-frame .tps-health-search-actions button,
   .tps-health-food-search-frame .tps-health-selection-step,
   .tps-health-food-search-frame .tps-health-selection-controls input,
@@ -2828,9 +2863,22 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   }
 
   .tps-health-food-search-frame .tps-health-food-tab {
-    flex: 0 0 auto;
-    min-width: 92px;
     padding: 6px 4px;
+  }
+
+  .tps-health-food-search-frame .tps-health-result-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .tps-health-food-search-frame .tps-health-result-actions button {
+    width: 100%;
+  }
+
+  .tps-health-food-search-frame .tps-health-result-actions.has-create-action button:last-child {
+    grid-column: 1 / -1;
   }
 
   .tps-health-food-search-frame .tps-health-selection-step {

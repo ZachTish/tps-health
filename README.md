@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.12.4
+
+- The iPhone **Log food** modal no longer lets Obsidian's generic mobile `Setting` layout turn each saved/search result into a tall card with oversized stacked actions. Food results now own their button markup and keep **Add** and **Choose amount** together in one compact action row.
+- Narrow result containers place title, serving details, macro pills, and actions on four predictable rows. Provider-only **Create from this** spans the following row rather than squeezing or clipping the primary actions.
+- The five logging methods use a stable two-row phone grid—Scan/Search/Saved, then Describe/Quick add—instead of a horizontally scrolling strip that could collapse to a thin line on iOS.
+- Result cards are labeled groups containing ordinary buttons rather than a button-like card containing nested buttons, so touch and accessibility activation target the requested action directly.
+- This is a backward-compatible mobile-layout patch with no setting, note-schema, or public-API migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 173 of 174 declared checks passed with only the credential-gated live USDA check skipped. The isolated Obsidian 1.13.7 test vault rendered Saved-food cards with compact title/meta/macros rows and separate Add/Choose amount actions after hot reload; the accessibility tree exposed each result as a labeled group with independent buttons. Mobile CSS regressions assert the two-row tab grid, 44 px coarse-pointer targets, container-driven card stacking, and removal of the generic Setting wrapper. Production was not changed.
+
 ## 0.12.3
 
 - Starting a blank workout from Home, a Base, or another non-Markdown view now verifies that the matching Core Daily Note is the active leaf and opens it in Live Preview. A Global Context Menu request that only creates a background tab is promoted; if that cannot be verified, TPS Health falls back to Obsidian's native opener instead of reporting a false success.

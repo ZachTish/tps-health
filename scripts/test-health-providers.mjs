@@ -3456,6 +3456,22 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-step/);
   assert.match(stylesSource, /grid-template-areas:\s*"title title"\s*"meta meta"\s*"macros actions"/);
   assert.match(stylesSource, /> \.tps-health-result-title/);
+  assert.match(mainSource, /createDiv\(\{ cls: "tps-health-result-actions" \}\)/);
+  assert.match(mainSource, /row\.setAttr\("role", "group"\);\s+row\.setAttr\("aria-label", item\.name\);/);
+  assert.match(mainSource, /actions\.createEl\("button", \{ text: label, attr: \{ type: "button" \} \}\)/);
+  assert.match(mainSource, /actions\.addClass\("has-create-action"\)/);
+  const foodResultRenderer = mainSource.slice(
+    mainSource.indexOf("private renderFoodResult"),
+    mainSource.indexOf("private async addSelection"),
+  );
+  assert.doesNotMatch(foodResultRenderer, /new Setting\(row\)/, "food-card actions must not inherit Obsidian's mobile Setting layout");
+  assert.doesNotMatch(foodResultRenderer, /row\.setAttr\("role", "button"\)|row\.setAttr\("tabindex"|row\.addEventListener\("click"/, "result cards must not wrap their real buttons in another button role");
+  assert.match(stylesSource, /container-name: tps-health-food-search;/);
+  assert.match(stylesSource, /@container tps-health-food-search \(max-width: 520px\)[\s\S]+grid-template-areas:\s*"title"\s*"meta"\s*"macros"\s*"actions"/);
+  assert.match(stylesSource, /\.tps-health-result-actions\s*\{[\s\S]+grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(stylesSource, /\.tps-health-result-actions\.has-create-action button:last-child\s*\{\s*grid-column: 1 \/ -1;/);
+  assert.match(stylesSource, /@media \(max-width: 600px\), \(hover: none\) and \(pointer: coarse\)[\s\S]+\.tps-health-food-search-frame \.tps-health-food-tabs\s*\{[\s\S]+grid-template-columns: repeat\(6, minmax\(0, 1fr\)\);/);
+  assert.match(stylesSource, /\.tps-health-food-tab:nth-last-child\(-n \+ 2\)\s*\{\s*grid-column: span 3;/);
 });
 
 test("alternate gram servings scale from a known serving weight without rounding to zero", async () => {
@@ -5434,10 +5450,10 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
   assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
-  assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+row\.addEventListener\("click", \(\) => void add\(\)\);/);
+  assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+action\(addLabel, async \(\) => add\(\)\);/);
   assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.close\(\);\s+new FoodLogModal/);
-  assert.match(mainSource, /setButtonText\("Choose amount"\)/);
-  assert.match(mainSource, /if \(!item\.sourcePath\) actions\.addButton/);
+  assert.match(mainSource, /action\("Choose amount", async \(\) =>/);
+  assert.match(mainSource, /if \(!item\.sourcePath\) \{\s+actions\.addClass\("has-create-action"\);\s+action\("Create from this"/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
   assert.match(mainSource, /requestCameraStream\?: \(constraints: MediaStreamConstraints\) => Promise<MediaStream>/);
   assert.match(mainSource, /createLiveReader\?: \(\) => any/);

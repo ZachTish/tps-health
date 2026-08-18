@@ -8456,9 +8456,8 @@ class FoodSearchModal extends Modal {
 
   private renderFoodResult(item: FoodItem, addLabel: string): void {
     const row = this.resultsEl.createDiv({ cls: "tps-health-result" });
-    row.setAttr("role", "button");
-    row.setAttr("tabindex", "0");
-    row.setAttr("aria-label", `Add ${item.name}`);
+    row.setAttr("role", "group");
+    row.setAttr("aria-label", item.name);
     row.createDiv({ cls: "tps-health-result-title", text: item.name });
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
     renderMacroPills(row.createDiv({ cls: "tps-health-result-macros" }), item.nutrition || {});
@@ -8474,38 +8473,30 @@ class FoodSearchModal extends Modal {
         row.setAttr("aria-busy", "false");
       }
     };
-    row.addEventListener("click", () => void add());
-    row.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      void add();
+    const actions = row.createDiv({ cls: "tps-health-result-actions" });
+    const action = (label: string, onClick: (event: MouseEvent) => Promise<void>) => {
+      const button = actions.createEl("button", { text: label, attr: { type: "button" } });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void onClick(event);
+      });
+      return button;
+    };
+    action(addLabel, async () => add());
+    action("Choose amount", async () => {
+      row.setAttr("aria-busy", "true");
+      const enriched = await this.plugin.enrichFoodSearchItem(item);
+      this.close();
+      new FoodLogModal(this.app, this.plugin, enriched, this.initialDraft, this.dateContext).open();
     });
-    const actions = new Setting(row)
-      .addButton((button) => button
-        .setButtonText(addLabel)
-        .onClick(async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          await add();
-        }))
-      .addButton((button) => button
-        .setButtonText("Choose amount")
-        .onClick(async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          row.setAttr("aria-busy", "true");
-          const enriched = await this.plugin.enrichFoodSearchItem(item);
-          this.close();
-          new FoodLogModal(this.app, this.plugin, enriched, this.initialDraft, this.dateContext).open();
-        }));
-    if (!item.sourcePath) actions.addButton((button) => button
-        .setButtonText("Create from this")
-        .onClick(async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.close();
-          new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
-        }));
+    if (!item.sourcePath) {
+      actions.addClass("has-create-action");
+      action("Create from this", async () => {
+        this.close();
+        new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
+      });
+    }
   }
 
   private async addSelection(item: FoodItem, draft: InlineFoodDraft | null = null, options: { enrich?: boolean } = {}): Promise<void> {
