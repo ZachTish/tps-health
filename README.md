@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.14.0
+
+- **Describe** now uses a resilient review pipeline: a small first request extracts every requested food with a stable item ID, a flat second request estimates portions and nutrition, and only missing, low-confidence, or physically inconsistent items are retried individually.
+- Reconciliation requires every extracted item ID exactly once before the tray is built. An omitted result can no longer silently disappear; if Gemini and local recovery both fail, the item remains visible in the tray with a clear needs-review warning.
+- Extraction, review, and per-item repair use separate durable Gateway IDs. The extracted checkpoint survives an app close, and reopening resumes the same phase without creating a second tray.
+- The deterministic fallback now recognizes a large Honeycrisp apple as one 242 g apple (about 126 kcal), and the exact request `4 yogurts and a large honeycrisp apple` is covered end to end.
+- The Gemini schemas are flat and substantially smaller than the prior nested one-pass schema, avoiding the HTTP 400 failure observed in the production queue. This is a backward-compatible reliability feature with no settings, note-schema, or API migration; Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 177 of 178 declared checks passed with only the credential-gated live USDA check skipped. Regressions force both Gemini extraction and review to omit the Honeycrisp apple, then verify deterministic extraction restores it, individual repair runs, and the final editable tray contains four yogurts plus the 126 kcal apple. The mandatory separate build was byte-stable and the final artifacts deployed only to the isolated test runtime. Source and runtime artifacts are byte-identical. UI reload was intentionally not attempted because the only open Obsidian window was the production vault, which remained untouched.
+
 ## 0.13.0
 
 - **Describe** now sends one structured request through TPS AI Gateway with Gemini preferred. A typed or dictated meal becomes an editable tray of practical food estimates in one pass, including the described amount, serving unit, estimated weight, macros, sodium, alcohol, and confidence.
@@ -848,11 +857,11 @@ await app.tpsHealth.finishWorkout();
 - 2026-07-08: Normalized health goal bounds for accurate GCM rings. Goals with both `min` and `max` are exported as ranges, one-bound `range` goals collapse to `min` or `max`, reversed bounds are sorted, and the API exports the upper bound as the range progress target. Validation: focused provider regression and production build.
 # Describe food
 
-Describe is a mode inside the normal food logging menu. Enter a typed or dictated meal, then choose **Estimate meal**. The panel dismisses the mobile keyboard, blocks duplicate submission, and shows progress while one schema-constrained Gemini request turns the description into practical loggable items. Explicit amounts, units, brands, preparation methods, and item order are retained. Named prepared dishes stay together unless the description explicitly lists their ingredients, while distinct sides and drinks become separate tray items.
+Describe is a mode inside the normal food logging menu. Enter a typed or dictated meal, then choose **Estimate meal**. The panel dismisses the mobile keyboard, blocks duplicate submission, and shows progress through extraction, review, and any necessary item repair. The extraction stage assigns every explicit food a stable ID and preserves amounts, units, brands, preparation methods, sizes, and order. Named prepared dishes stay together unless the description explicitly lists their ingredients, while distinct sides and drinks become separate tray items.
 
-Each result carries the nutrition estimate for the whole described amount, an estimated edible weight, and a confidence score. The completed tray opens automatically and remains fully editable: change an estimate, remove or replace it, search for another food, or add more items. These `custom-inline` items are intentionally one-off estimates; editing or logging one never creates a reusable food/meal note, and nothing reaches the Daily Note before **Log selected** succeeds.
+The second stage estimates nutrition for the whole described amount and audits confidence, calorie/macro consistency, macro mass, and calorie density. A missing or questionable item gets its own bounded retry. The final reconciliation requires every extracted ID exactly once; unresolved items stay visible with zero confidence instead of being discarded. The completed tray opens automatically and remains fully editable: change an estimate, remove or replace it, search for another food, or add more items. These `custom-inline` items are intentionally one-off estimates; editing or logging one never creates a reusable food/meal note, and nothing reaches the Daily Note before **Log selected** succeeds.
 
-Provider credentials and models are managed centrally in TPS AI Gateway. Describe requests prefer Gemini, use strict JSON-schema output, and keep one stable durable job ID so a queued text request can resume on the requesting device. If Gateway is unavailable, TPS Health retains its deterministic local matching fallback. Diagnostics record phase, item count, confidence summary, and outcome without logging meal text, API keys, full provider payloads, or images.
+Provider credentials and models are managed centrally in TPS AI Gateway. Describe requests prefer Gemini, use small flat JSON schemas, and keep separate stable durable IDs for extraction, review, and each repair so a queued text request can resume on the requesting device. The extracted list is checkpointed before review. If Gateway is unavailable, TPS Health retains its deterministic local matching fallback, including a reviewed large-Honeycrisp serving. Diagnostics record phase, item count, retry/recovery counts, confidence summary, and outcome without logging meal text, API keys, full provider payloads, or images.
 
 Barcode lookup remains local/curated first, then Open Food Facts. After a confirmed miss, TPS Health automatically asks Gateway's Google-grounded Gemini route to check manufacturer, retailer, distributor, and label evidence. Coherent complete nutrition opens an editable review; an uncertain or identity-only result seeds **Scan Nutrition Facts** instead of inventing macros. Label images remain device-local and require Gemini on that device. Manual creation remains available when the provider or camera is unavailable.
 
@@ -871,6 +880,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.14.0: Makes Describe omission-safe with durable extraction/review/repair phases, physical plausibility auditing, per-item retries, and a large Honeycrisp fallback.
 - 0.13.0: Replaces the multi-pass Describe/database fan-out with one editable Gemini estimate tray, prevents Describe from creating reusable notes, automatically researches barcode misses, and adds a reviewed Michelob Ultra Organic Seltzer fallback.
 - 0.12.3: Makes blank-workout opening deterministic, keeps exercise insertion on the Daily Note, synchronizes visible Live Preview buffers through supported leaf discovery, and replaces the invalid block-decoration view plugin with a CodeMirror state field.
 - 0.11.0: Adds an explicit Google-grounded Gemini fallback for missing packaged foods and barcodes, with source links, label-first uncertainty handling, and macro/alcohol plausibility rejection.

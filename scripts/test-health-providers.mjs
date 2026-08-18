@@ -2712,6 +2712,15 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   assert.equal(michelob?.nutrition?.alcoholG, 11.2);
   assert.equal(localRemoteCalls, 0, "the verified common-product fallback must resolve before a remote barcode request");
   assert.equal((await localPlugin.searchLocalFoods("michelob ultra seltzer"))[0]?.name, michelob?.name);
+  const honeycrisp = (await localPlugin.searchLocalFoods("large honeycrisp apple"))[0];
+  assert.equal(honeycrisp?.name, "Honeycrisp apple, large");
+  assert.equal(honeycrisp?.servingUnit, "apple");
+  assert.equal(honeycrisp?.servingGrams, 242);
+  assert.equal(honeycrisp?.nutrition?.calories, 126);
+  await localPlugin.legacyOpenFoodDescriber("4 yogurts and a large honeycrisp apple");
+  assert.equal(localPlugin.settings.pendingFoodLogDraft?.selectionItems?.length, 2, "fallback Describe must never drop the apple");
+  assert.equal(localPlugin.settings.pendingFoodLogDraft?.selectionItems?.[0]?.quantity, 4);
+  assert.equal(localPlugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.name, "Honeycrisp apple, large");
 
   const remoteFake = createFakeHealthApp();
   const remotePlugin = new TPSHealthPlugin(remoteFake.app);
@@ -2867,7 +2876,7 @@ test("food result metadata uses clean source labels", () => {
   );
 });
 
-test("AI Describe skips database fan-out while the no-Gateway fallback remains bounded", () => {
+test("AI Describe reviews every extracted item while the no-Gateway fallback remains bounded", () => {
   const aiDescribe = mainSource.slice(
     mainSource.indexOf("private async openFoodDescriberWithAi"),
     mainSource.indexOf("private async describeFoodAi"),
@@ -2876,9 +2885,12 @@ test("AI Describe skips database fan-out while the no-Gateway fallback remains b
     mainSource.indexOf("private async legacyOpenFoodDescriber"),
     mainSource.indexOf("openWorkoutStarter"),
   );
-  assert.match(aiDescribe, /taskId: "health\.describe-food\.estimate"/);
+  assert.match(aiDescribe, /taskId: "health\.describe-food\.extract"/);
+  assert.match(aiDescribe, /taskId: "health\.describe-food\.review"/);
+  assert.match(aiDescribe, /taskId: "health\.describe-food\.repair"/);
   assert.match(aiDescribe, /source: "custom-inline"/);
-  assert.doesNotMatch(aiDescribe, /getLoggedFoodStats|mapWithConcurrency|searchLocalFoods|searchFoods/);
+  assert.match(aiDescribe, /searchLocalFoods\(query, loggedStats\)/);
+  assert.doesNotMatch(aiDescribe, /createFoodFromInput|findOrCreateFoodNote/);
   assert.match(legacyDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
   assert.match(legacyDescribe, /mapWithConcurrency\(parts, 3, async \(part\) =>/);
   assert.match(legacyDescribe, /this\.searchLocalFoods\(part\.query, loggedStats\)/);
@@ -2887,6 +2899,61 @@ test("AI Describe skips database fan-out while the no-Gateway fallback remains b
   assert.match(mainSource, /const DESCRIBE_REMOTE_QUERY_BUDGET = 4/);
   assert.match(mainSource, /async function mapWithConcurrency<T, R>\(items: T\[\], concurrency: number/);
   assert.match(mainSource, /Array\.from\(\{ length: Math\.min\(Math\.max\(1, concurrency\), items\.length\) \}/);
+});
+
+test("AI Describe recovers a Honeycrisp apple omitted by extraction and review before committing the tray", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe test vault";
+  const requests = [];
+  fake.app.tpsAiGateway = {
+    completeStructured: async (request) => {
+      requests.push(request);
+      if (request.taskId === "health.describe-food.extract") return {
+        data: {
+          mealName: "Yogurts and apple",
+          foods: [{ itemId: "item-1", label: "vanilla yogurts", quantity: 4, unit: "cup", estimatedWeightG: 600 }],
+        },
+        provider: "gemini", model: "test", traceId: "extract", attempts: 1,
+      };
+      if (request.taskId === "health.describe-food.review") return {
+        data: {
+          mealName: "Yogurts and apple",
+          foods: [{ itemId: "item-1", label: "vanilla yogurts", quantity: 4, unit: "cup", estimatedWeightG: 600, confidence: 0.8, calories: 320, proteinG: 48, carbsG: 36, fatG: 0, fiberG: 0, sugarG: 28, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 180 }],
+        },
+        provider: "gemini", model: "test", traceId: "review", attempts: 1,
+      };
+      assert.equal(request.taskId, "health.describe-food.repair");
+      return {
+        data: { itemId: "item-2", label: "large Honeycrisp apple", quantity: 1, unit: "apple", estimatedWeightG: 242, confidence: 0.9, calories: 126, proteinG: 0.7, carbsG: 33.4, fatG: 0.5, fiberG: 5.8, sugarG: 25.2, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 2 },
+        provider: "gemini", model: "test", traceId: "repair", attempts: 1,
+      };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  assert.equal(plugin.getAiGatewayApi(), fake.app.tpsAiGateway);
+  assert.match(plugin.openFoodDescriberWithAi.toString(), /Separating every food/);
+  await plugin.openFoodDescriberWithAi("4 yogurts and a large honeycrisp apple", null, undefined, {
+    version: 1,
+    id: "describe-test",
+    description: "4 yogurts and a large honeycrisp apple",
+    createdAt: new Date().toISOString(),
+    dateContext: null,
+  });
+  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.extract", "health.describe-food.review", "health.describe-food.repair"]);
+  assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.length, 2);
+  assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[0]?.quantity, 4);
+  assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.name, "large Honeycrisp apple");
+  assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.nutrition?.calories, 126);
 });
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {

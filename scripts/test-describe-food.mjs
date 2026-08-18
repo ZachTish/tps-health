@@ -8,7 +8,7 @@ const source = readFileSync(new URL("../src/describe-food.ts", import.meta.url),
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
 const compiled = transformSync(source, { loader: "ts", format: "esm", target: "es2020" }).code;
-const { assessFoodPlausibility, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodPlan, parseFoodDescription } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { assessFoodPlausibility, describeFoodEstimateIssues, describeFoodPlanFromReview, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodExtraction, isUsableDescribeFoodPlan, isUsableDescribeFoodReview, parseFoodDescription } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
 test("Describe food splits a natural meal into reviewable foods", () => {
   assert.deepEqual(parseFoodDescription("I had 2 eggs, 1 slice toast with butter, and 12 oz coffee with milk"), [
@@ -21,6 +21,13 @@ test("Describe food splits a natural meal into reviewable foods", () => {
 test("Describe food keeps conjunctions that belong to one food", () => {
   assert.deepEqual(parseFoodDescription("chicken and rice"), [
     { original: "chicken and rice", query: "chicken and rice", quantity: 1 },
+  ]);
+});
+
+test("Describe food keeps four yogurts and a large Honeycrisp apple as two explicit items", () => {
+  assert.deepEqual(parseFoodDescription("4 yogurts and a large honeycrisp apple"), [
+    { original: "4 yogurts", query: "yogurts", quantity: 4 },
+    { original: "a large honeycrisp apple", query: "large honeycrisp apple", quantity: 1 },
   ]);
 });
 
@@ -47,10 +54,11 @@ test("Describe converts total contextual portion weight into a per-unit gram est
   assert.equal(describePortionGramsPerUnit({ quantity: 0, estimatedWeightG: 60 }), 0);
 });
 
-test("Describe plan validation accepts one-pass portion estimates and rejects malformed output", () => {
+test("Describe plan validation accepts reviewed portion estimates and rejects malformed output", () => {
   const plan = {
     mealName: "Chicken salad",
     foods: [{
+      itemId: "item-1",
       label: "Chicken breast",
       quantity: 150,
       unit: "g",
@@ -66,10 +74,53 @@ test("Describe plan validation accepts one-pass portion estimates and rejects ma
   assert.equal(isUsableDescribeFoodPlan({ ...plan, foods: [{ ...plan.foods[0], estimatedNutritionForAmount: { calories: -1 } }] }), false);
 });
 
-test("Describe delegates AI transport to TPS AI Gateway and retains the local parser", () => {
+test("Describe extraction and review require stable unique IDs and cannot silently omit the apple", () => {
+  const extraction = {
+    mealName: "Yogurt and apple",
+    foods: [
+      { itemId: "item-1", label: "yogurts", quantity: 4, unit: "cup", estimatedWeightG: 600 },
+      { itemId: "item-2", label: "large Honeycrisp apple", quantity: 1, unit: "apple", estimatedWeightG: 242 },
+    ],
+  };
+  const review = {
+    mealName: "Yogurt and apple",
+    foods: [
+      { ...extraction.foods[0], confidence: 0.8, calories: 320, proteinG: 48, carbsG: 36, fatG: 0, fiberG: 0, sugarG: 28, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 180 },
+      { ...extraction.foods[1], confidence: 0.9, calories: 126, proteinG: 0.7, carbsG: 33.4, fatG: 0.5, fiberG: 5.8, sugarG: 25.2, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 2 },
+    ],
+  };
+  assert.equal(isUsableDescribeFoodExtraction(extraction), true);
+  assert.equal(isUsableDescribeFoodReview(review), true);
+  assert.equal(describeFoodPlanFromReview(extraction, review)?.foods.length, 2);
+  assert.equal(describeFoodPlanFromReview(extraction, { ...review, foods: review.foods.slice(0, 1) }), null);
+  assert.equal(isUsableDescribeFoodExtraction({ ...extraction, foods: [extraction.foods[0], { ...extraction.foods[1], itemId: "item-1" }] }), false);
+});
+
+test("Describe audit flags uncertain and physically inconsistent estimates for retry", () => {
+  const base = {
+    itemId: "item-2",
+    label: "large Honeycrisp apple",
+    quantity: 1,
+    unit: "apple",
+    estimatedWeightG: 242,
+    confidence: 0.9,
+    estimatedNutritionForAmount: { calories: 126, proteinG: 0.7, carbsG: 33.4, fatG: 0.5, fiberG: 5.8, sugarG: 25.2, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 2 },
+  };
+  assert.deepEqual(describeFoodEstimateIssues(base), []);
+  assert.deepEqual(describeFoodEstimateIssues({ ...base, confidence: 0.3, estimatedWeightG: 10, estimatedNutritionForAmount: { ...base.estimatedNutritionForAmount, calories: 1500, proteinG: 100 } }), [
+    "low-confidence",
+    "calorie-macro-mismatch",
+    "macro-mass-high",
+    "calorie-density-impossible",
+  ]);
+});
+
+test("Describe delegates its review pipeline to TPS AI Gateway and retains the local parser", () => {
   assert.match(mainSource, /getAiGatewayApi/);
   assert.match(mainSource, /gateway\.completeStructured<T>/);
-  assert.match(mainSource, /taskId: \"health\.describe-food\.estimate\"/);
+  assert.match(mainSource, /taskId: \"health\.describe-food\.extract\"/);
+  assert.match(mainSource, /taskId: \"health\.describe-food\.review\"/);
+  assert.match(mainSource, /taskId: \"health\.describe-food\.repair\"/);
   assert.match(mainSource, /preferredProviders: \[\"gemini\"\]/);
   assert.doesNotMatch(mainSource, /api\.openai\.com/);
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
@@ -79,17 +130,19 @@ test("Describe delegates AI transport to TPS AI Gateway and retains the local pa
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
 });
 
-test("Describe uses one Gemini estimate and prepares editable inline tray items without provider searches or food notes", () => {
+test("Describe reviews and repairs every extracted item before preparing editable inline tray items", () => {
   const describeMethod = mainSource.slice(
     mainSource.indexOf("private async openFoodDescriberWithAi"),
     mainSource.indexOf("private async describeFoodAi"),
   );
-  assert.match(describeMethod, /Turn the user's natural food description into a small editable logging tray in one pass/);
-  assert.match(describeMethod, /estimatedNutritionForAmount must be the total nutrition for that whole described amount/);
+  assert.match(describeMethod, /Assign stable IDs item-1, item-2/);
+  assert.match(describeMethod, /Return every extracted itemId exactly once/);
+  assert.match(describeMethod, /Rechecking item/);
+  assert.match(describeMethod, /unresolvedDescribeFood/);
   assert.match(describeMethod, /source: \"custom-inline\"/);
   assert.match(describeMethod, /nutritionBasis: \"estimated-serving\"/);
   assert.match(describeMethod, /noteCreation: false/);
-  assert.doesNotMatch(describeMethod, /searchFoods|searchLocalFoods|createFoodFromInput|findOrCreateFoodNote/);
+  assert.doesNotMatch(describeMethod, /createFoodFromInput|findOrCreateFoodNote/);
   assert.match(mainSource, /captured\.selection\.item\.source !== \"custom-inline\"/);
   assert.match(mainSource, /freshItem\.source === \"custom-inline\" && !freshItem\.sourcePath/);
   assert.match(mainSource, /submit:inline-estimate/);
@@ -107,8 +160,11 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
   assert.match(mainSource, /openTray\.addEventListener\("click", \(\) => new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)\)/);
 });
 
-test("Describe persists a resumable workflow and uses one stable durable Gateway job", () => {
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v2` : undefined/);
+test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract-v3` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v3` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v3-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);
   assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);
   assert.match(mainSource, /resumePendingFoodDescribeWorkflow\("layout-ready"\)/);

@@ -17,7 +17,21 @@ export interface DescribeNutritionEstimate {
   sodiumMg: number;
 }
 
+export interface DescribeExtractedFood {
+  itemId: string;
+  label: string;
+  quantity: number;
+  unit: string;
+  estimatedWeightG: number;
+}
+
+export interface DescribeFoodExtraction {
+  mealName: string;
+  foods: DescribeExtractedFood[];
+}
+
 export interface DescribePlannedFood {
+  itemId: string;
   label: string;
   quantity: number;
   unit: string;
@@ -29,6 +43,15 @@ export interface DescribePlannedFood {
 export interface DescribeFoodPlan {
   mealName: string;
   foods: DescribePlannedFood[];
+}
+
+export interface DescribeReviewedFood extends DescribeExtractedFood, DescribeNutritionEstimate {
+  confidence: number;
+}
+
+export interface DescribeFoodReview {
+  mealName: string;
+  foods: DescribeReviewedFood[];
 }
 
 export function describePortionGramsPerUnit(food: Pick<DescribePlannedFood, "quantity" | "estimatedWeightG">): number {
@@ -57,6 +80,85 @@ function isUsableDescribeNutrition(value: unknown): value is DescribeNutritionEs
     .every((key) => isFiniteNonNegative(nutrition[key]));
 }
 
+export function isUsableDescribeFoodExtraction(value: unknown): value is DescribeFoodExtraction {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const extraction = value as Record<string, unknown>;
+  if (typeof extraction.mealName !== "string" || !Array.isArray(extraction.foods) || !extraction.foods.length || extraction.foods.length > 24) return false;
+  const itemIds = new Set<string>();
+  return extraction.foods.every((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const food = value as Record<string, unknown>;
+    if (!isNonBlankString(food.itemId) || itemIds.has(food.itemId.trim())) return false;
+    itemIds.add(food.itemId.trim());
+    return isNonBlankString(food.label) &&
+      isFinitePositive(food.quantity) &&
+      isNonBlankString(food.unit) &&
+      isFinitePositive(food.estimatedWeightG);
+  });
+}
+
+export function isUsableDescribeFoodReview(value: unknown): value is DescribeFoodReview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const review = value as Record<string, unknown>;
+  if (typeof review.mealName !== "string" || !Array.isArray(review.foods) || !review.foods.length || review.foods.length > 24) return false;
+  const itemIds = new Set<string>();
+  return review.foods.every((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const food = value as Record<string, unknown>;
+    if (!isNonBlankString(food.itemId) || itemIds.has(food.itemId.trim())) return false;
+    itemIds.add(food.itemId.trim());
+    return isNonBlankString(food.label) &&
+      isFinitePositive(food.quantity) &&
+      isNonBlankString(food.unit) &&
+      isFinitePositive(food.estimatedWeightG) &&
+      isFiniteNonNegative(food.confidence) && Number(food.confidence) <= 1 &&
+      isUsableDescribeNutrition(food);
+  });
+}
+
+export function describeFoodPlanFromReview(extraction: DescribeFoodExtraction, review: DescribeFoodReview): DescribeFoodPlan | null {
+  if (!isUsableDescribeFoodExtraction(extraction) || !isUsableDescribeFoodReview(review)) return null;
+  const reviewedById = new Map(review.foods.map((food) => [food.itemId.trim(), food]));
+  if (reviewedById.size !== extraction.foods.length || extraction.foods.some((food) => !reviewedById.has(food.itemId.trim()))) return null;
+  return {
+    mealName: review.mealName.trim() || extraction.mealName.trim(),
+    foods: extraction.foods.map((extracted) => {
+      const reviewed = reviewedById.get(extracted.itemId.trim())!;
+      return {
+        itemId: extracted.itemId.trim(),
+        label: reviewed.label.trim(),
+        quantity: reviewed.quantity,
+        unit: reviewed.unit.trim(),
+        estimatedWeightG: reviewed.estimatedWeightG,
+        confidence: reviewed.confidence,
+        estimatedNutritionForAmount: {
+          calories: reviewed.calories,
+          proteinG: reviewed.proteinG,
+          carbsG: reviewed.carbsG,
+          fatG: reviewed.fatG,
+          fiberG: reviewed.fiberG,
+          sugarG: reviewed.sugarG,
+          sugarAlcoholG: reviewed.sugarAlcoholG,
+          alcoholG: reviewed.alcoholG,
+          sodiumMg: reviewed.sodiumMg,
+        },
+      };
+    }),
+  };
+}
+
+export function describeFoodEstimateIssues(food: DescribePlannedFood): string[] {
+  const issues: string[] = [];
+  if (food.confidence < 0.55) issues.push("low-confidence");
+  const nutrition = food.estimatedNutritionForAmount;
+  const macroEnergy = nutrition.proteinG * 4 + nutrition.carbsG * 4 + nutrition.fatG * 9 + nutrition.sugarAlcoholG * 2.4 + nutrition.alcoholG * 7;
+  if (nutrition.calories > 40 && Math.abs(macroEnergy - nutrition.calories) > Math.max(40, nutrition.calories * 0.45)) issues.push("calorie-macro-mismatch");
+  const macroMass = nutrition.proteinG + nutrition.carbsG + nutrition.fatG + nutrition.alcoholG;
+  if (food.estimatedWeightG > 0 && macroMass > food.estimatedWeightG * 1.2) issues.push("macro-mass-high");
+  if (food.estimatedWeightG > 0 && nutrition.calories / food.estimatedWeightG * 100 > 950) issues.push("calorie-density-impossible");
+  return issues;
+}
+
 export function isUsableDescribeFoodPlan(value: unknown): value is DescribeFoodPlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const plan = value as Record<string, unknown>;
@@ -64,7 +166,8 @@ export function isUsableDescribeFoodPlan(value: unknown): value is DescribeFoodP
   return plan.foods.every((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const food = value as Record<string, unknown>;
-    return isNonBlankString(food.label) &&
+    return isNonBlankString(food.itemId) &&
+      isNonBlankString(food.label) &&
       isFinitePositive(food.quantity) &&
       isNonBlankString(food.unit) &&
       isFinitePositive(food.estimatedWeightG) &&
@@ -77,6 +180,7 @@ export function describeFoodPlanSignature(plan: DescribeFoodPlan): string {
   return JSON.stringify({
     mealName: plan.mealName.trim().toLowerCase(),
     foods: plan.foods.map((food) => ({
+      itemId: food.itemId.trim(),
       label: food.label.trim().toLowerCase(),
       quantity: food.quantity,
       unit: food.unit.trim().toLowerCase(),
