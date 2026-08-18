@@ -5039,13 +5039,10 @@ test("whole-note workouts use workout-specific date fields and plain set logs", 
   assert.match(mainSource, /logger\.flow\("Workout", "start:note-created"/);
   assert.match(mainSource, /logger\.flow\("Workout", "start:state-saved"/);
   assert.match(mainSource, /await this\.openWorkoutFile\(file\)/);
-  assert.match(mainSource, /await this\.startGcmWorkoutTimer/);
-  assert.match(mainSource, /await this\.stopGcmWorkoutTimer/);
+  assert.doesNotMatch(mainSource, /startGcmWorkoutTimer|stopGcmWorkoutTimer/);
   assert.match(mainSource, /logger\.flow\("Workout", "finish:frontmatter-done"/);
-  assert.match(mainSource, /timeTracking\.startTimer/);
-  assert.match(mainSource, /timeTracking\.stopActiveTimerForFile/);
-  assert.match(mainSource, /const timerEnd: Date \| string = Number\.isFinite\(parsedEnd\.getTime\(\)\) \? parsedEnd : endedAt/);
-  assert.match(mainSource, /timeTracking\.stopActiveTimerForFile\(file, timerEnd\)/);
+  assert.doesNotMatch(mainSource, /timeTracking\.startTimer/);
+  assert.match(mainSource, /legacy-workout-timer:detached/);
 });
 
 test("active workout commands expose set logging and layout saving", async () => {
@@ -5057,7 +5054,7 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /id: "finish-workout-and-save-layout"/);
   assert.match(mainSource, /interface WorkoutOpenResult/);
   assert.match(mainSource, /let openResult: WorkoutOpenResult = \{/);
-  assert.match(mainSource, /await this\.startGcmWorkoutTimer\(file instanceof TFile \? file : dailyNotePath\);\s+if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && dailyFile instanceof TFile\) openResult = await this\.openWorkoutFile\(dailyFile\);/);
+  assert.match(mainSource, /if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && dailyFile instanceof TFile\) openResult = await this\.openWorkoutFile\(dailyFile\);/);
   assert.match(mainSource, /openRequested: openResult\.requested/);
   assert.match(mainSource, /openRoute: openResult\.route/);
   assert.match(mainSource, /openReason: openResult\.reason \|\| ""/);
@@ -5072,16 +5069,7 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:not-active", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutOpen", "gcm:declined", \{ path: file\.path \}\)/);
   assert.match(mainSource, /logger\.flowError\("WorkoutOpen", "obsidian:failed", error, \{ path: file\.path \}\)/);
-  assert.match(mainSource, /private async startGcmWorkoutTimer\(target: TFile \| string \| null\): Promise<void>/);
-  assert.match(mainSource, /await timeTracking\.startTimer\(\{\s*file,\s*type: "note",\s*title: this\.settings\.activeWorkoutTitle \|\| file\.basename,\s*\}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-unavailable", \{ hasTimeTracking: !!timeTracking \}\)/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:start-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:start-done", \{ path: file\.path, title: this\.settings\.activeWorkoutTitle \|\| file\.basename \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-unavailable"\)/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-missing-target", \{ target: typeof target === "string" \? target : "" \}\)/);
-  assert.match(mainSource, /logger\.flow\("GCM", "timer:stop-done", \{ path: file\.path, route: "file", endedAt \}\)/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-active-mismatch"/);
-  assert.match(mainSource, /logger\.flowWarn\("GCM", "timer:stop-method-missing", \{ path: file\.path \}\)/);
+  assert.doesNotMatch(mainSource, /private async (?:start|stop)GcmWorkoutTimer/);
   assert.doesNotMatch(mainSource, /setPinned\?\.\(true\)/);
   assert.match(mainSource, /new SetModal\(this\.app, this\)\.open\(\)/);
   assert.match(mainSource, /callback: \(\) => this\.traceCommand\("log-workout-set", async \(\) => \{\s+new SetModal\(this\.app, this\)\.open\(\);/);
@@ -6919,6 +6907,16 @@ test("blank active workouts can log sets with rest and save repeated planned set
   const fake = createFakeHealthApp();
   configureFakeCoreDailyNotes(fake.app, "Daily", "YYYY-MM-DD");
   const plugin = new TPSHealthPlugin(fake.app);
+  let gcmTimerStarts = 0;
+  let gcmTimerStops = 0;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      timeTracking: {
+        startTimer: async () => { gcmTimerStarts++; },
+        stopActiveTimerForFile: async () => { gcmTimerStops++; },
+      },
+    },
+  };
   plugin.settings = {
     ...plugin.settings,
     dailyNoteFolder: "Daily",
@@ -6955,6 +6953,8 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.match(fake.files.get(dailyWorkoutPath), /## Workout\n/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout .*?\[workoutId:: workout-/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout-end \[workoutId:: workout-/);
+  assert.doesNotMatch(fake.files.get(dailyWorkoutPath), /^## Scheduled$/m, "Health must not create a second GCM time-tracking section");
+  assert.equal(gcmTimerStarts, 0, "the workout card owns elapsed time without starting a separate GCM timer workspace");
   assert.equal((fake.files.get(dailyWorkoutPath).match(/\[type:: workoutSet\]/g) || []).length, 0, "a blank workout must begin without forced exercises");
   assert.equal(plugin.getActiveWorkoutState().title, "Blank Active QA");
   await assert.rejects(
@@ -7010,7 +7010,86 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.match(completedMarkerLine, /\[completedDate:: 2026-07-06T10:20:00\.000Z\]/);
   assert.match(completedMarkerLine, /\[durationMinutes:: 20\].*-->$/);
   assert.doesNotMatch(completedMarkerLine, /-->\s+\[/);
+  assert.equal(gcmTimerStops, 0, "finishing a Health workout must not stop an unrelated GCM timer");
   assert.equal(plugin.getActiveWorkoutState(), null);
+});
+
+test("an active pre-0.14.1 workout removes its empty GCM Scheduled workspace without touching the workout", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, removeEmptyWorkoutTimerWorkspace } = await importPluginWithObsidianStub();
+  const legacy = [
+    "---",
+    "tags:",
+    "---",
+    "## Scheduled",
+    "",
+    "### 4:59 PM · [[Workout 2026-08-18 16.59]] ^tps-time-legacy-workout",
+    "",
+    "## Workout",
+    "<!-- tps-health:workout [workoutId:: workout-legacy] [activity:: Legacy Workout] -->",
+    "- Bench press - 135 lb x 8 [type:: workoutSet] [setId:: legacy-set]",
+    "<!-- tps-health:workout-end [workoutId:: workout-legacy] -->",
+    "## Journal",
+    "Keep this",
+  ].join("\n");
+  const cleaned = removeEmptyWorkoutTimerWorkspace(legacy, "tps-time-legacy-workout", "Scheduled");
+  assert.doesNotMatch(cleaned, /^## Scheduled$|tps-time-legacy-workout/m);
+  assert.match(cleaned, /^## Workout$/m);
+  assert.match(cleaned, /legacy-set/);
+  assert.match(cleaned, /^## Journal\nKeep this$/m);
+  const withAnotherScheduledItem = legacy.replace(
+    "## Workout",
+    "### 5:30 PM · [[Other timer]] ^tps-time-other\n\n## Workout",
+  );
+  const cleanedOneTimer = removeEmptyWorkoutTimerWorkspace(withAnotherScheduledItem, "tps-time-legacy-workout", "Scheduled");
+  assert.match(cleanedOneTimer, /^## Scheduled$/m);
+  assert.match(cleanedOneTimer, /tps-time-other/);
+  assert.doesNotMatch(cleanedOneTimer, /tps-time-legacy-workout/);
+  const withUserNotes = legacy.replace(
+    "^tps-time-legacy-workout\n\n## Workout",
+    "^tps-time-legacy-workout\nUser-authored timer note\n\n## Workout",
+  );
+  assert.equal(
+    removeEmptyWorkoutTimerWorkspace(withUserNotes, "tps-time-legacy-workout", "Scheduled"),
+    withUserNotes,
+    "a non-empty legacy timer workspace is user content and must remain untouched",
+  );
+
+  const fake = createFakeHealthApp();
+  const dailyPath = "Daily/2026-08-18.md";
+  fake.files.set(dailyPath, legacy);
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    activeWorkoutId: "workout-legacy",
+    activeWorkoutTarget: "daily-note",
+    activeWorkoutDailyNotePath: dailyPath,
+    activeWorkoutPath: "",
+    activeWorkoutTitle: "Legacy Workout",
+    activeWorkoutStartedAt: "2026-08-18T16:59:00.000Z",
+  };
+  let stoppedAt = null;
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      timeTracking: {
+        getActiveTimersForFile: async () => [{
+          title: "Legacy Workout",
+          notesPath: dailyPath,
+          notesHeading: "Scheduled",
+          notesBlockId: "tps-time-legacy-workout",
+        }],
+        stopActiveTimerForFile: async (_file, end) => { stoppedAt = end; },
+      },
+    },
+  };
+
+  await plugin["detachLegacyGcmWorkoutTimer"]("2026-08-18T17:15:00.000Z");
+  const migrated = fake.files.get(dailyPath);
+  assert.doesNotMatch(migrated, /^## Scheduled$|tps-time-legacy-workout/m);
+  assert.equal((migrated.match(/^## Workout$/gm) || []).length, 1);
+  assert.match(migrated, /legacy-set/);
+  assert.ok(stoppedAt instanceof Date);
+  assert.equal(stoppedAt.toISOString(), "2026-08-18T17:15:00.000Z");
 });
 
 test("discarding a running workout removes only its Daily Note block and trashes the dedicated note", async () => {
@@ -7360,6 +7439,51 @@ test("source to Reading workout views stay synchronized while truly unwritable s
     /Could not synchronize 1 open workout editor/,
   );
   assert.equal(source.files.get(sourcePath), sourceInitial);
+});
+
+test("live workout editor synchronization preserves its scroll anchor through a minimal change", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, workoutEditorContentChange } = await importPluginWithObsidianStub();
+  assert.deepEqual(workoutEditorContentChange("abcXYZdef", "abc123def"), { from: 3, to: 6, insert: "123" });
+  assert.equal(workoutEditorContentChange("unchanged", "unchanged"), null);
+
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const current = "Top prose\n## Workout\n- Squat [reps:: 5]\n## Journal\nBottom prose";
+  const next = current.replace("[reps:: 5]", "[reps:: 6]");
+  const expectedFrom = current.indexOf("5");
+  const changeDescription = { mapped: "workout-change" };
+  const mappedScrollEffect = { preserved: "scroll-anchor" };
+  let dispatched = null;
+  const cm = {
+    state: {
+      doc: {
+        length: current.length,
+        toString: () => current,
+      },
+      update: ({ changes }) => {
+        assert.deepEqual(changes, { from: expectedFrom, to: expectedFrom + 1, insert: "6" });
+        return { changes: changeDescription };
+      },
+    },
+    scrollSnapshot: () => ({
+      map: (changes) => {
+        assert.equal(changes, changeDescription);
+        return mappedScrollEffect;
+      },
+    }),
+    dispatch: (spec) => { dispatched = spec; },
+  };
+  const editor = {
+    cm,
+    setValue: () => assert.fail("CodeMirror synchronization must not replace the whole document"),
+  };
+
+  assert.equal(plugin["replaceWorkoutEditorValue"](editor, next), true);
+  assert.deepEqual(dispatched, {
+    changes: { from: expectedFrom, to: expectedFrom + 1, insert: "6" },
+    effects: mappedScrollEffect,
+  });
 });
 
 test("seeded workout add keeps the active editor buffer and disk in sync through a later row save", async () => {
@@ -8507,27 +8631,6 @@ test("food log entry consumed date edits move daily-note lines and refresh both 
 test("workout cooldown date math writes the next eligible date", () => {
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 3), "2026-06-06");
   assert.equal(addDaysIsoDate("2026-06-03T17:30:00.000Z", 0), "2026-06-03");
-});
-
-test("workout finish hands GCM an absolute Date instead of a schedule-parsed ISO string", async () => {
-  installDeterministicBrowserGlobals();
-  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
-  const fake = createFakeHealthApp();
-  const plugin = new TPSHealthPlugin(fake.app);
-  const path = "Health/Workouts/Timer Date QA.md";
-  fake.files.set(path, "---\nkind: workout\n---\n");
-  const file = fake.app.vault.getAbstractFileByPath(path);
-  let receivedEnd = null;
-  plugin.getGcmApi = () => ({
-    timeTracking: {
-      stopActiveTimerForFile: async (_file, end) => { receivedEnd = end; },
-    },
-  });
-
-  await plugin.stopGcmWorkoutTimer(file, "2026-07-09T22:58:57.086Z");
-
-  assert.ok(receivedEnd instanceof Date);
-  assert.equal(receivedEnd.toISOString(), "2026-07-09T22:58:57.086Z");
 });
 
 test("workout set line uses Dataview fields for reusable exercise and set groups", () => {

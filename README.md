@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.14.1
+
+- Live workout mutations now send only the smallest changed text range to CodeMirror and map its native scroll snapshot through that transaction. Adjusting reps, weight, rest, status, or another set value therefore keeps the current Live Preview viewport and selection instead of replacing the entire Daily Note and jumping upward.
+- Health workouts now use their own `startedAt` clock and the existing workout control card exclusively. They no longer start a second GCM time-tracking session, so a new workout creates one `## Workout` section without a companion `## Scheduled`/time-tracking workspace.
+- When 0.14.1 loads with a workout that was already active under an older release, it stops only the single matching GCM timer and removes its empty generated workspace. It preserves the workout block, every set, surrounding Daily Note content, any non-empty timer notes, other Scheduled entries, and unrelated GCM timers.
+- This is a backward-compatible patch with no settings, note-schema, or public-API migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 178 of 179 declared checks passed with only the credential-gated live USDA check skipped. Behavioral regressions cover minimal CodeMirror range replacement with a mapped scroll snapshot, new workouts making zero GCM timer calls and no Scheduled heading, active legacy timer detachment, removal of only an empty matching workspace, preservation of non-empty timer notes and other Scheduled sessions, and the existing bounded workout/set mutation suite. The final artifacts deployed only to the isolated test runtime and matched source byte-for-byte. UI reload was intentionally not attempted because the only open Obsidian window was the production vault, which remained untouched.
+
 ## 0.14.0
 
 - **Describe** now uses a resilient review pipeline: a small first request extracts every requested food with a stable item ID, a flat second request estimates portions and nutrition, and only missing, low-confidence, or physically inconsistent items are retried individually.

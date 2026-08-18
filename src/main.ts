@@ -762,7 +762,10 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.app.workspace.onLayoutReady(() => {
       this.scheduleFoodLogNutritionRepair("layout-ready", 500);
-      void this.repairActiveDailyWorkoutBlock().catch((error) => {
+      void (async () => {
+        await this.repairActiveDailyWorkoutBlock();
+        await this.detachLegacyGcmWorkoutTimer();
+      })().catch((error) => {
         logger.flowError("Workout", "daily-boundary-repair:failed", error, {
           path: this.settings.activeWorkoutDailyNotePath,
           workoutId: this.settings.activeWorkoutId,
@@ -1811,7 +1814,6 @@ export default class TPSHealthPlugin extends Plugin {
       route: input.openFile === false ? "skipped" : "missing-file",
       reason: input.openFile === false ? "openFile=false" : dailyNotePath ? "daily note was not found in vault" : "no daily workout path was created",
     };
-    await this.startGcmWorkoutTimer(file instanceof TFile ? file : dailyNotePath);
     if (file instanceof TFile) await this.cacheWorkoutFile(file);
     if (input.openFile !== false && dailyFile instanceof TFile) openResult = await this.openWorkoutFile(dailyFile);
     logger.flow("Workout", "start:done", {
@@ -1897,7 +1899,7 @@ export default class TPSHealthPlugin extends Plugin {
     if (dailyNotePath && workoutId) await this.completeDailyWorkoutLine(dailyNotePath, workoutId, endedAt, nextEligibleDate);
     const planPath = typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : this.settings.activeWorkoutPlanPath;
     if (planPath) await this.updateWorkoutPlanCompletion(planPath, endedAt, cooldownDays, path || dailyNotePath, nextEligibleDate);
-    await this.stopGcmWorkoutTimer(file instanceof TFile ? file : path || dailyNotePath, endedAt);
+    await this.detachLegacyGcmWorkoutTimer(endedAt);
     await this.clearActiveWorkoutState();
     logger.flow("Workout", "finish:done", {
       workoutId,
@@ -1943,11 +1945,7 @@ export default class TPSHealthPlugin extends Plugin {
       }
     }
     const workoutFile = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-    try {
-      await this.stopGcmWorkoutTimer(workoutFile instanceof TFile ? workoutFile : active.path || active.dailyNotePath, isoNow());
-    } catch (error) {
-      logger.flowWarn("Workout", "discard:timer-stop-failed", { workoutId: active.id, error: logger.errorSummary(error) });
-    }
+    await this.detachLegacyGcmWorkoutTimer();
     let workoutNoteTrashFailed = false;
     if (workoutFile instanceof TFile && workoutFile.path !== active.dailyNotePath) {
       try {
@@ -2218,9 +2216,23 @@ export default class TPSHealthPlugin extends Plugin {
   private replaceWorkoutEditorValue(editor: Editor, content: string): boolean {
     const failures: string[] = [];
     try {
-      const cm = (editor as any).cm;
+      const cm = (editor as any).cm as EditorView | undefined;
       if (cm?.dispatch && cm?.state?.doc) {
-        cm.dispatch({ changes: { from: 0, to: cm.state.doc.length, insert: content } });
+        const changes = workoutEditorContentChange(cm.state.doc.toString(), content);
+        if (!changes) return true;
+        let effects: any;
+        try {
+          if (typeof cm.scrollSnapshot === "function" && typeof cm.state.update === "function") {
+            const snapshot = cm.scrollSnapshot();
+            const transaction = cm.state.update({ changes });
+            effects = typeof (snapshot as any)?.map === "function"
+              ? (snapshot as any).map(transaction.changes)
+              : snapshot;
+          }
+        } catch (error) {
+          logger.flowWarn("WorkoutSet", "mutation:scroll-snapshot-failed", { error: logger.errorSummary(error) });
+        }
+        cm.dispatch(effects ? { changes, effects } : { changes });
         return true;
       }
     } catch (error) {
@@ -5719,71 +5731,60 @@ export default class TPSHealthPlugin extends Plugin {
       || plugins?.getPlugin?.("tps-global-context-menu")?.api;
   }
 
-  private async startGcmWorkoutTimer(target: TFile | string | null): Promise<void> {
+  private async detachLegacyGcmWorkoutTimer(endedAt = isoNow()): Promise<void> {
+    const active = this.getActiveWorkoutState();
+    if (!active) return;
+    const targetPath = active.path || active.dailyNotePath;
+    const targetFile = targetPath ? this.app.vault.getAbstractFileByPath(targetPath) : null;
     const timeTracking = this.getGcmApi()?.timeTracking;
-    if (typeof timeTracking?.startTimer !== "function") {
-      logger.flow("GCM", "timer:start-unavailable", { hasTimeTracking: !!timeTracking });
-      return;
-    }
-    const file = target instanceof TFile
-      ? target
-      : typeof target === "string" && target
-        ? this.app.vault.getAbstractFileByPath(target)
-        : null;
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("GCM", "timer:start-missing-target", { target: typeof target === "string" ? target : "" });
-      return;
-    }
+    if (
+      !(targetFile instanceof TFile)
+      || typeof timeTracking?.getActiveTimersForFile !== "function"
+      || typeof timeTracking?.stopActiveTimerForFile !== "function"
+    ) return;
     try {
-      await timeTracking.startTimer({
-        file,
-        type: "note",
-        title: this.settings.activeWorkoutTitle || file.basename,
-      });
-      logger.flow("GCM", "timer:start-done", { path: file.path, title: this.settings.activeWorkoutTitle || file.basename });
-    } catch (error) {
-      logger.flowWarn("GCM", "timer:start-failed", { path: file.path, error: logger.errorSummary(error) });
-    }
-  }
-
-  private async stopGcmWorkoutTimer(target: TFile | string | null, endedAt: string): Promise<void> {
-    const timeTracking = this.getGcmApi()?.timeTracking;
-    if (!timeTracking) {
-      logger.flow("GCM", "timer:stop-unavailable");
-      return;
-    }
-    const file = target instanceof TFile
-      ? target
-      : typeof target === "string" && target
-        ? this.app.vault.getAbstractFileByPath(target)
-        : null;
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("GCM", "timer:stop-missing-target", { target: typeof target === "string" ? target : "" });
-      return;
-    }
-    const parsedEnd = new Date(endedAt);
-    const timerEnd: Date | string = Number.isFinite(parsedEnd.getTime()) ? parsedEnd : endedAt;
-    try {
-      if (typeof timeTracking.stopActiveTimerForFile === "function") {
-        await timeTracking.stopActiveTimerForFile(file, timerEnd);
-        logger.flow("GCM", "timer:stop-done", { path: file.path, route: "file", endedAt });
-      } else if (typeof timeTracking.stopActiveTimer === "function") {
-        const active = typeof timeTracking.getActiveTimer === "function" ? await timeTracking.getActiveTimer() : null;
-        if (!active || active.targetPath === file.path || active.sourcePath === file.path) {
-          await timeTracking.stopActiveTimer(timerEnd);
-          logger.flow("GCM", "timer:stop-done", { path: file.path, route: "active", endedAt, matchedActive: !!active });
-        } else {
-          logger.flowWarn("GCM", "timer:stop-active-mismatch", {
-            path: file.path,
-            activeTargetPath: active.targetPath || "",
-            activeSourcePath: active.sourcePath || "",
-          });
-        }
-      } else {
-        logger.flowWarn("GCM", "timer:stop-method-missing", { path: file.path });
+      const timers = await timeTracking.getActiveTimersForFile(targetFile);
+      const title = active.title.trim().toLocaleLowerCase();
+      const matching = Array.isArray(timers)
+        ? timers.filter((timer) => String(timer?.title || "").trim().toLocaleLowerCase() === title)
+        : [];
+      if (timers.length !== 1 || matching.length !== 1) {
+        if (timers.length) logger.flow("GCM", "legacy-workout-timer:skip", {
+          path: targetFile.path,
+          activeTimers: timers.length,
+          titleMatches: matching.length,
+        });
+        return;
       }
+      const timer = matching[0];
+      const notesPath = String(timer?.notesPath || "").trim();
+      const notesBlockId = String(timer?.notesBlockId || "").trim();
+      const notesHeading = String(timer?.notesHeading || "").trim();
+      const notesFile = notesPath ? this.app.vault.getAbstractFileByPath(notesPath) : null;
+      if (notesFile instanceof TFile && notesBlockId) {
+        await this.serializeWorkoutMutation(notesFile.path, "remove-legacy-workout-timer-workspace", async () => {
+          const content = await this.readWorkoutMutationContent(notesFile, "remove-legacy-workout-timer-workspace");
+          const updated = removeEmptyWorkoutTimerWorkspace(content, notesBlockId, notesHeading);
+          if (updated !== content) {
+            await this.writeWorkoutMutationContent(notesFile, updated, "remove-legacy-workout-timer-workspace");
+          }
+        });
+      }
+      const parsedEnd = new Date(endedAt);
+      await timeTracking.stopActiveTimerForFile(
+        targetFile,
+        Number.isFinite(parsedEnd.getTime()) ? parsedEnd : endedAt,
+      );
+      logger.flow("GCM", "legacy-workout-timer:detached", {
+        path: targetFile.path,
+        notesPath,
+        removedWorkspace: notesFile instanceof TFile && Boolean(notesBlockId),
+      });
     } catch (error) {
-      logger.flowWarn("GCM", "timer:stop-failed", { path: file.path, error: logger.errorSummary(error) });
+      logger.flowWarn("GCM", "legacy-workout-timer:failed", {
+        path: targetFile.path,
+        error: logger.errorSummary(error),
+      });
     }
   }
 
@@ -17660,6 +17661,70 @@ function foodLogBaseDefaultFilters(settings: TPSHealthSettings, dailyFolder: str
 
 function baseString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+}
+
+export function workoutEditorContentChange(
+  current: string,
+  next: string,
+): { from: number; to: number; insert: string } | null {
+  if (current === next) return null;
+  const sharedLimit = Math.min(current.length, next.length);
+  let from = 0;
+  while (from < sharedLimit && current.charCodeAt(from) === next.charCodeAt(from)) from++;
+  let currentTo = current.length;
+  let nextTo = next.length;
+  while (
+    currentTo > from
+    && nextTo > from
+    && current.charCodeAt(currentTo - 1) === next.charCodeAt(nextTo - 1)
+  ) {
+    currentTo--;
+    nextTo--;
+  }
+  return { from, to: currentTo, insert: next.slice(from, nextTo) };
+}
+
+export function removeEmptyWorkoutTimerWorkspace(content: string, blockId: string, heading = ""): string {
+  const normalizedBlockId = blockId.trim().replace(/^\^+/, "");
+  if (!normalizedBlockId) return content;
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const blockSuffix = new RegExp(`\\^${escapeRegExp(normalizedBlockId)}\\s*$`);
+  const anchorIndex = lines.findIndex((line) => /^\s*###(?:\s+|$)/.test(line) && blockSuffix.test(line));
+  if (anchorIndex < 0) return content;
+  let sessionEnd = anchorIndex + 1;
+  while (sessionEnd < lines.length && !/^\s*#{1,3}(?:\s+|$)/.test(lines[sessionEnd])) sessionEnd++;
+  if (lines.slice(anchorIndex + 1, sessionEnd).some((line) => line.trim())) return content;
+
+  let containerStart = anchorIndex - 1;
+  while (containerStart >= 0 && !/^\s*#{1,2}(?:\s+|$)/.test(lines[containerStart])) containerStart--;
+  const normalizedHeading = heading.replace(/^\s*#{1,6}\s*/, "").trim().toLocaleLowerCase();
+  const containerMatch = lines[containerStart]?.match(/^\s*##\s+(.+?)\s*$/);
+  const ownsContainer = Boolean(
+    containerMatch
+    && (!normalizedHeading || containerMatch[1].trim().toLocaleLowerCase() === normalizedHeading),
+  );
+  let containerEnd = sessionEnd;
+  if (ownsContainer) {
+    containerEnd = containerStart + 1;
+    while (containerEnd < lines.length && !/^\s*#{1,2}(?:\s+|$)/.test(lines[containerEnd])) containerEnd++;
+  }
+  const otherContainerContent = ownsContainer && lines
+    .slice(containerStart + 1, containerEnd)
+    .some((line, offset) => {
+      const index = containerStart + 1 + offset;
+      return (index < anchorIndex || index >= sessionEnd) && Boolean(line.trim());
+    });
+  const removeFrom = ownsContainer && !otherContainerContent ? containerStart : anchorIndex;
+  const removeTo = ownsContainer && !otherContainerContent ? containerEnd : sessionEnd;
+  lines.splice(removeFrom, removeTo - removeFrom);
+  while (
+    removeFrom > 0
+    && removeFrom < lines.length
+    && !lines[removeFrom - 1].trim()
+    && !lines[removeFrom].trim()
+  ) lines.splice(removeFrom, 1);
+  return lines.join(eol);
 }
 
 function normalizeWorkoutLogTarget(target: WorkoutLogTarget): WorkoutLogTarget {
