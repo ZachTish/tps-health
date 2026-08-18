@@ -3013,10 +3013,53 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 }
 
 .tps-health-workout-set-metrics {
-  grid-template-columns: minmax(52px, 0.4fr) minmax(110px, 0.9fr) repeat(3, minmax(116px, 1fr)) minmax(74px, 0.6fr);
+  grid-template-columns:
+    minmax(42px, 0.35fr)
+    minmax(82px, 0.9fr)
+    minmax(76px, 0.8fr)
+    minmax(60px, 0.6fr)
+    minmax(76px, 0.7fr)
+    minmax(64px, 0.55fr);
 }
 
-@container tps-health-workout-set-row (max-width: 680px) {
+/* Keep the numeric fields visible while moving the increment controls out of
+   the resting layout. Keyboard arrows always work; focusing or hovering a
+   field reveals the same +/- affordances without making every set a card. */
+.tps-health-workout-set-stepper {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tps-health-workout-set-stepper .tps-health-workout-set-step {
+  display: none;
+}
+
+.tps-health-workout-set-stepper input {
+  grid-column: 1;
+}
+
+.tps-health-workout-set-stepper:focus-within,
+.tps-health-workout-set-stepper:hover {
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+}
+
+.tps-health-workout-set-stepper:focus-within .tps-health-workout-set-step,
+.tps-health-workout-set-stepper:hover .tps-health-workout-set-step {
+  display: inline-flex;
+  min-width: 28px;
+  width: 28px;
+}
+
+.tps-health-workout-set-stepper:focus-within input,
+.tps-health-workout-set-stepper:hover input {
+  grid-column: 2;
+}
+
+.tps-health-workout-rest-countdown {
+  font-weight: 650;
+  text-transform: none;
+}
+
+@container tps-health-workout-set-row (max-width: 520px) {
   .tps-health-workout-set-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3042,6 +3085,29 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-workout-set-metrics > :nth-child(6) {
     grid-column: auto;
     grid-row: auto;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .tps-health-workout-set-stepper:hover:not(:focus-within) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tps-health-workout-set-stepper:hover:not(:focus-within) .tps-health-workout-set-step {
+    display: none;
+  }
+
+  .tps-health-workout-set-stepper:hover:not(:focus-within) input {
+    grid-column: 1;
+  }
+
+  .tps-health-workout-set-stepper:focus-within {
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
+  }
+
+  .tps-health-workout-set-stepper:focus-within .tps-health-workout-set-step {
+    min-width: 36px;
+    width: 36px;
   }
 }
 

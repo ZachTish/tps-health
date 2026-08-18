@@ -169,8 +169,10 @@ test("Workout set controls reflow inside narrow panes without clipping", () => {
   const finalLayoutStart = stylesSource.lastIndexOf("/* Authoritative set-metric layout.");
   assert.ok(finalLayoutStart > stylesSource.indexOf("/* Workout rows are compact"), "authoritative layout must follow compact defaults");
   const finalLayout = stylesSource.slice(finalLayoutStart);
-  assert.match(finalLayout, /grid-template-columns: minmax\(52px, 0\.4fr\) minmax\(110px, 0\.9fr\) repeat\(3, minmax\(116px, 1fr\)\) minmax\(74px, 0\.6fr\)/);
-  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 680px\)[\s\S]+repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(finalLayout, /minmax\(42px, 0\.35fr\)[\s\S]+minmax\(82px, 0\.9fr\)[\s\S]+minmax\(76px, 0\.8fr\)[\s\S]+minmax\(60px, 0\.6fr\)[\s\S]+minmax\(76px, 0\.7fr\)[\s\S]+minmax\(64px, 0\.55fr\)/);
+  assert.match(finalLayout, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step\s*\{\s*display: none;/);
+  assert.match(finalLayout, /\.tps-health-workout-set-stepper:focus-within[\s\S]+\.tps-health-workout-set-stepper:hover[\s\S]+grid-template-columns: 28px minmax\(0, 1fr\) 28px/);
+  assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 520px\)[\s\S]+repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 440px\)[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 320px\)[\s\S]+minmax\(0, 1fr\)/);
   assert.match(finalLayout, /\.tps-health-workout-set-metrics > :nth-child\(6\) \{ grid-column: 3; grid-row: 1; \}/);

@@ -5013,6 +5013,8 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
     "",
   ].join("\n");
   const repairedTop = repairWorkoutDailyBlockContent(legacyWorkout, "workout-test", "before-first-h2");
+  assert.match(repairedTop, /- \[ \] \[\[#Workout\|Old title\]\] <!-- tps-health:workout-task \[workoutId:: workout-test\] -->/);
+  assert.equal((repairedTop.match(/tps-health:workout-task/g) || []).length, 1, "one workout owns one linked Daily Note task");
   assert.ok(repairedTop.indexOf("## Workout") < repairedTop.indexOf("## Scheduled"));
   assert.doesNotMatch(repairedTop, /^## Workout —/m, "legacy titles move into the control card instead of duplicating the Daily Note heading");
   assert.ok(repairedTop.indexOf("tps-health:workout-end [workoutId:: workout-test]") < repairedTop.indexOf("## Scheduled"));
@@ -5052,7 +5054,7 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   assert.match(repairedPromotedHeading, /^## Workout$/m, "a promoted workout heading is normalized back to the canonical H2");
   assert.doesNotMatch(repairedPromotedHeading, /^# Workout$/m);
   const removedWorkout = removeWorkoutDailyBlockContent(cleanWorkout, "workout-test", "bottom");
-  assert.doesNotMatch(removedWorkout, /(?:^## Workout$|tps-health:workout|setId:: set-two)/m);
+  assert.doesNotMatch(removedWorkout, /(?:^## Workout$|tps-health:workout|setId:: set-two|#Workout\|)/m);
   assert.match(removedWorkout, /^# Daily Note$/m);
   assert.match(removedWorkout, /^- \[ \] unrelated task$/m);
   assert.match(removedWorkout, /^## Journal$/m);
@@ -5203,7 +5205,7 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flowError\("WorkoutLayoutModal", "failed"/);
   assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "cancel"/);
   assert.match(mainSource, /async addSetForExerciseToActiveWorkout\(exercise: string, after\?: WorkoutSetLineSource\): Promise<void>/);
-  assert.match(mainSource, /async addSetForExerciseToWorkoutFile\(filePath: string, exercise: string, after\?: WorkoutSetLineSource, options: \{ focusAfter\?: boolean \} = \{\}\): Promise<void>/);
+  assert.match(mainSource, /async addSetForExerciseToWorkoutFile\(filePath: string, exercise: string, after\?: WorkoutSetLineSource, options: \{ focusAfter\?: boolean \} = \{\}\): Promise<ExerciseItem \| null>/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:create-workout-missing"/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:missing-file"/);
   assert.match(mainSource, /logger\.flow\("WorkoutSet", "placeholder:open-modal"/);
@@ -6753,13 +6755,14 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(mainSource, /plugin\.updateWorkoutSetLine\(source, \{/);
   assert.match(mainSource, /void plugin\.addSeededWorkoutSetAfterBlock\(source\)/);
   assert.match(mainSource, /void plugin\.duplicateWorkoutSetBelow\(source\)/);
-  assert.match(mainSource, /function workoutSetPlaceholderLine\(exercise: string\): string/);
+  assert.match(mainSource, /function workoutSetPlaceholderLine\(exercise: string, exercisePath\?: string\): string/);
   assert.doesNotMatch(mainSource, /\[exercise:: Exercise\] \[setId::/);
   assert.match(mainSource, /rest\.setAttribute\("aria-label", "Rest seconds"\)/);
   assert.match(mainSource, /restLabel\.textContent = "Rest"/);
   assert.match(mainSource, /perform\.textContent = data\.status === "complete" \? "Done ✓" : "Done"/);
   assert.match(mainSource, /perform\.setAttribute\("aria-label", data\.status === "complete"/);
-  assert.match(mainSource, /restControl\.append\(restLabel, restDown, rest, restUp, restStatus\)/);
+  assert.match(mainSource, /restLabel\.append\(document\.createTextNode\(" · "\), restCountdown\)/);
+  assert.match(mainSource, /restControl\.append\(restLabel, restDown, rest, restUp\)/);
   assert.match(mainSource, /restCountdown\.textContent = remaining > 0 \? formatRestDuration\(remaining\) : "done"/);
   assert.match(mainSource, /void plugin\.linkWorkoutExerciseWithPrevious\(source\)/);
   assert.match(mainSource, /void plugin\.linkWorkoutSetWithPreviousDropSet\(source\)/);
@@ -6889,6 +6892,8 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(mainSource, /!transaction\.isUserEvent\("input"\) && !transaction\.isUserEvent\("delete"\)/);
   assert.match(mainSource, /workoutDailyMarkerEditIsSafe\(before, after\) \? transaction : \[\]/);
   assert.match(mainSource, /line = upsertWorkoutDailyMarkerField\(line, "status", "complete"\)/);
+  assert.match(mainSource, /!isWorkoutDailyTaskLine\(currentLine\)/);
+  assert.match(mainSource, /lines\[taskIndex\] = lines\[taskIndex\]\.replace/);
   assert.match(mainSource, /EditorView\.atomicRanges\.of\(\(view\) => view\.state\.field\(field\)\)/);
   assert.match(mainSource, /const protectedTo = line\.to < state\.doc\.length \? line\.to \+ 1 : line\.to/);
   assert.match(mainSource, /builder\.add\(line\.from, protectedTo, Decoration\.replace/);
@@ -6903,6 +6908,10 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(mainSource, /heading\.insertAdjacentElement\("afterend", workoutDailyHeaderElement/);
   assert.match(stylesSource, /\.tps-health-daily-workout-header \{[\s\S]*container-type: inline-size;[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
   assert.match(stylesSource, /\.tps-health-workout-set-metrics \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(stylesSource, /\.tps-health-workout-set-metrics \{\s*grid-template-columns:\s*minmax\(42px, 0\.35fr\)[\s\S]*minmax\(64px, 0\.55fr\);/);
+  assert.match(stylesSource, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step \{\s*display: none;/);
+  assert.match(stylesSource, /\.tps-health-workout-set-stepper:focus-within \.tps-health-workout-set-step,[\s\S]*display: inline-flex;/);
+  assert.match(stylesSource, /@container tps-health-workout-set-row \(max-width: 520px\)/);
   assert.doesNotMatch(stylesSource, /min-width: 530px/);
   assert.match(stylesSource, /@container \(max-width: 620px\) \{[\s\S]*\.tps-health-daily-workout-actions \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.match(stylesSource, /\.tps-health-daily-workout-action\.is-discard \{[\s\S]*var\(--text-error\)/);
@@ -7019,6 +7028,8 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.doesNotMatch(fake.files.get(workoutPath), /## Sets|### Bench press/);
   const dailyWorkoutPath = "Daily/2026-07-06.md";
   assert.match(fake.files.get(dailyWorkoutPath), /## Workout\n/);
+  assert.match(fake.files.get(dailyWorkoutPath), /- \[ \] \[\[#Workout\|Blank Active QA\]\] \[scheduled:: 2026-07-06T10:00:00\.000Z\] <!-- tps-health:workout-task \[workoutId:: workout-/);
+  assert.equal((fake.files.get(dailyWorkoutPath).match(/tps-health:workout-task/g) || []).length, 1);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout .*?\[workoutId:: workout-/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout-end \[workoutId:: workout-/);
   assert.doesNotMatch(fake.files.get(dailyWorkoutPath), /^## Scheduled$/m, "Health must not create a second GCM time-tracking section");
@@ -7073,7 +7084,9 @@ test("blank active workouts can log sets with rest and save repeated planned set
 
   await plugin.finishWorkout({ endedAt: "2026-07-06T10:20:00.000Z" });
   const completedDailyWorkout = fake.files.get(dailyWorkoutPath);
-  const completedMarkerLine = completedDailyWorkout.split("\n").find((line) => line.includes("tps-health:workout"));
+  const completedTaskLine = completedDailyWorkout.split("\n").find((line) => line.includes("tps-health:workout-task"));
+  assert.match(completedTaskLine, /^- \[x\] \[\[#Workout\|Blank Active QA\]\]/);
+  const completedMarkerLine = completedDailyWorkout.split("\n").find((line) => /<!-- tps-health:workout /.test(line));
   assert.match(completedMarkerLine, /\[status:: complete\]/);
   assert.match(completedMarkerLine, /\[completedDate:: 2026-07-06T10:20:00\.000Z\]/);
   assert.match(completedMarkerLine, /\[durationMinutes:: 20\].*-->$/);
@@ -7288,18 +7301,20 @@ test("active workout set rows recover stale state and stay simple in the workout
   assert.notEqual(plugin.settings.activeWorkoutPath, "Health/Workouts/Missing Workout.md");
   assert.match(plugin.settings.activeWorkoutPath, /^Health\/Workouts\/Workout /);
   const activePath = plugin.settings.activeWorkoutPath;
-  assert.match(fake.files.get(activePath), /#tps\/workout\n\n- Squat - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.match(fake.files.get(activePath), /#tps\/workout\n\n- \[\[Health\/Exercises\/Squat\|Squat\]\] - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.match(fake.files.get(activePath), /\[exercisePath:: Health\/Exercises\/Squat\.md\]/);
+  assert.ok(fake.files.has("Health/Exercises/Squat.md"), "adding a new exercise creates its reusable exercise note immediately");
   assert.doesNotMatch(fake.files.get(activePath), /## Sets|### Squat|- \[ \] Squat/);
   assert.equal(fake.app.workspace.activeLeaf, undefined, "adding an exercise must not navigate away from the Daily Note surface");
 
   await plugin.addSetForExerciseToActiveWorkout("Squat", {
     filePath: activePath,
-    lineNumber: fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 0 lb x 0")),
-    line: fake.files.get(activePath).split("\n").find((line) => line.includes("Squat - 0 lb x 0")),
+    lineNumber: fake.files.get(activePath).split("\n").findIndex((line) => line.includes("[exercise:: Squat]")),
+    line: fake.files.get(activePath).split("\n").find((line) => line.includes("[exercise:: Squat]")),
   });
-  assert.equal((fake.files.get(activePath).match(/- Squat - 0 lb x 0/g) || []).length, 2);
+  assert.equal((fake.files.get(activePath).match(/- \[\[Health\/Exercises\/Squat\|Squat\]\] - 0 lb x 0/g) || []).length, 2);
 
-  const lineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 0 lb x 0"));
+  const lineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("[exercise:: Squat]"));
   await plugin.updateWorkoutSetLine({
     filePath: activePath,
     lineNumber,
@@ -7311,10 +7326,10 @@ test("active workout set rows recover stale state and stay simple in the workout
     weightUnit: "lb",
     completed: false,
   });
-  assert.match(fake.files.get(activePath), /- Squat - 225 lb x 5/);
+  assert.match(fake.files.get(activePath), /- \[\[Health\/Exercises\/Squat\|Squat\]\] - 225 lb x 5/);
   assert.doesNotMatch(fake.files.get(activePath), /\[superset::|\[dropSet::/);
 
-  const groupedLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 225 lb x 5"));
+  const groupedLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("225 lb x 5") && line.includes("[exercise:: Squat]"));
   await plugin.updateWorkoutSetLine({
     filePath: activePath,
     lineNumber: groupedLineNumber,
@@ -7329,16 +7344,16 @@ test("active workout set rows recover stale state and stay simple in the workout
     dropSetGroupId: "B",
     completed: false,
   });
-  assert.match(fake.files.get(activePath), /- Squat - 225 lb x 5 .*?\[setType:: drop\] \[superset:: A\] \[dropSet:: B\]/);
-  assert.match(fake.files.get(activePath), /\[exercise:: Squat\] \[reps:: 5\] \[weight:: 225\] \[unit:: lb\]/);
+  assert.match(fake.files.get(activePath), /- \[\[Health\/Exercises\/Squat\|Squat\]\] - 225 lb x 5 .*?\[setType:: drop\] \[superset:: A\] \[dropSet:: B\]/);
+  assert.match(fake.files.get(activePath), /\[exercise:: Squat\] \[exercisePath:: Health\/Exercises\/Squat\.md\] \[reps:: 5\] \[weight:: 225\] \[unit:: lb\]/);
 
-  const squatLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("Squat - 225 lb x 5"));
+  const squatLineNumber = fake.files.get(activePath).split("\n").findIndex((line) => line.includes("225 lb x 5") && line.includes("[exercise:: Squat]"));
   await plugin.duplicateWorkoutSetBelow({
     filePath: activePath,
     lineNumber: squatLineNumber,
     line: fake.files.get(activePath).split("\n")[squatLineNumber],
   });
-  assert.equal((fake.files.get(activePath).match(/- Squat - 225 lb x 5/g) || []).length, 2);
+  assert.equal((fake.files.get(activePath).match(/- \[\[Health\/Exercises\/Squat\|Squat\]\] - 225 lb x 5/g) || []).length, 2);
   assert.equal((fake.files.get(activePath).match(/\[superset:: A\]/g) || []).length, 2);
   assert.equal((fake.files.get(activePath).match(/\[dropSet:: B\]/g) || []).length, 2);
   assert.equal((fake.files.get(activePath).match(/\[setId::/g) || []).length, 3);
@@ -7355,8 +7370,8 @@ test("active workout set rows recover stale state and stay simple in the workout
     "## Sets",
   ].join("\n"));
   await plugin.addSetForExerciseToWorkoutFile(inactivePath, "Bench press");
-  assert.match(fake.files.get(inactivePath), /## Sets\n\n- Bench press - 0 lb x 0 \[type:: workoutSet\]/);
-  assert.equal((fake.files.get(activePath).match(/- Squat - 0 lb x 0/g) || []).length, 1);
+  assert.match(fake.files.get(inactivePath), /## Sets\n\n- \[\[Health\/Exercises\/Bench press\|Bench press\]\] - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.equal((fake.files.get(activePath).match(/- \[\[Health\/Exercises\/Squat\|Squat\]\] - 0 lb x 0/g) || []).length, 1);
 });
 
 test("active workout session loads after a stale saved path by recovering the workout id", async () => {
@@ -7392,7 +7407,7 @@ test("active workout session loads after a stale saved path by recovering the wo
   assert.equal(plugin.settings.activeWorkoutPath, "Health/Workouts/Renamed Workout.md");
 
   await plugin.addSetForExerciseToActiveWorkout("Row");
-  assert.match(fake.files.get("Health/Workouts/Renamed Workout.md"), /## Sets\n\n- Row - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.match(fake.files.get("Health/Workouts/Renamed Workout.md"), /## Sets\n\n- \[\[Health\/Exercises\/Row\|Row\]\] - 0 lb x 0 \[type:: workoutSet\]/);
   assert.doesNotMatch(fake.files.get("Health/Workouts/Renamed Workout.md"), /### Row|- \[ \] Row/);
 });
 
@@ -7760,8 +7775,8 @@ test("blank workout start activates its Daily Note in Live Preview when GCM open
   };
   delete fake.app.workspace.iterateAllLeaves;
   await plugin.addSetForExerciseToActiveWorkout("Bench press");
-  assert.match(openEditorValue, /Bench press - 0 lb x 0 \[type:: workoutSet\]/, "getLeavesOfType must keep the open Live Preview editor synchronized");
-  assert.match(fake.files.get(dailyPath), /Bench press - 0 lb x 0 \[type:: workoutSet\]/);
+  assert.match(openEditorValue, /\[\[Health\/Exercises\/Bench press\|Bench press\]\] - 0 lb x 0 \[type:: workoutSet\]/, "getLeavesOfType must keep the open Live Preview editor synchronized");
+  assert.match(fake.files.get(dailyPath), /\[\[Health\/Exercises\/Bench press\|Bench press\]\] - 0 lb x 0 \[type:: workoutSet\]/);
 });
 
 test("active workout can log five exercises with superset and dropset groups", async () => {

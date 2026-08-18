@@ -2043,12 +2043,14 @@ export default class TPSHealthPlugin extends Plugin {
 
   async addSetForExerciseToActiveWorkout(exercise: string, after?: WorkoutSetLineSource): Promise<void> {
     const active = this.getActiveWorkoutState();
+    const exerciseName = exercise.trim();
+    if (!exerciseName || exerciseName === "Exercise") {
+      if (active) new WorkoutExercisePickerModal(this.app, this, active.dailyNotePath || active.path, active.id).open();
+      return;
+    }
     if (active?.target === "daily-note") {
-      if (!exercise.trim() || exercise.trim() === "Exercise") {
-        new WorkoutExercisePickerModal(this.app, this, active.dailyNotePath, active.id).open();
-        return;
-      }
-      await this.addExercisePlaceholderToDailyWorkout(active.dailyNotePath, active.id, exercise);
+      const savedExercise = await this.findOrCreateExercise({ name: exerciseName });
+      await this.addExercisePlaceholderToDailyWorkout(active.dailyNotePath, active.id, savedExercise.name, savedExercise.sourcePath);
       return;
     }
     let file = this.activeWorkoutFile();
@@ -2074,14 +2076,19 @@ export default class TPSHealthPlugin extends Plugin {
     // The Daily Note is the canonical live-workout surface. Keep the
     // dedicated session note in sync without navigating away from the card
     // the user is actively editing.
-    await this.addSetForExerciseToWorkoutFile(file.path, exercise, after, { focusAfter: false });
+    const savedExercise = await this.addSetForExerciseToWorkoutFile(file.path, exerciseName, after, { focusAfter: false });
     const refreshedActive = this.getActiveWorkoutState();
     if (refreshedActive?.dailyNotePath && refreshedActive.id) {
-      await this.addExercisePlaceholderToDailyWorkout(refreshedActive.dailyNotePath, refreshedActive.id, exercise);
+      await this.addExercisePlaceholderToDailyWorkout(
+        refreshedActive.dailyNotePath,
+        refreshedActive.id,
+        savedExercise?.name || exerciseName,
+        savedExercise?.sourcePath,
+      );
     }
   }
 
-  async addExercisePlaceholderToDailyWorkout(filePath: string, workoutId: string, exercise: string): Promise<void> {
+  async addExercisePlaceholderToDailyWorkout(filePath: string, workoutId: string, exercise: string, exercisePath?: string): Promise<void> {
     const exerciseName = exercise.trim();
     if (!exerciseName) throw new Error("Exercise is required");
     await this.serializeWorkoutMutation(filePath, "add-daily-workout-exercise", async () => {
@@ -2095,17 +2102,28 @@ export default class TPSHealthPlugin extends Plugin {
         throw new Error("Workout section was moved or removed");
       }
       const insertIndex = ensureWorkoutDailyEndMarker(lines, anchorIndex);
-      lines.splice(insertIndex, 0, workoutSetPlaceholderLine(exerciseName));
+      lines.splice(insertIndex, 0, workoutSetPlaceholderLine(exerciseName, exercisePath));
       await this.writeWorkoutMutationContent(file, lines.join("\n"), "add-daily-workout-exercise");
       logger.flow("WorkoutSet", "daily-placeholder:add", { path: file.path, workoutId, exercise: exerciseName, line: insertIndex });
     });
   }
 
-  async addSetForExerciseToWorkoutFile(filePath: string, exercise: string, after?: WorkoutSetLineSource, options: { focusAfter?: boolean } = {}): Promise<void> {
-    await this.serializeWorkoutMutation(filePath, "add-exercise-set", () => this.addSetForExerciseToWorkoutFileNow(filePath, exercise, after, options));
+  async addSetForExerciseToWorkoutFile(filePath: string, exercise: string, after?: WorkoutSetLineSource, options: { focusAfter?: boolean } = {}): Promise<ExerciseItem | null> {
+    const exerciseName = exercise.trim();
+    const savedExercise = exerciseName && exerciseName !== "Exercise"
+      ? await this.findOrCreateExercise({ name: exerciseName })
+      : null;
+    await this.serializeWorkoutMutation(filePath, "add-exercise-set", () => this.addSetForExerciseToWorkoutFileNow(
+      filePath,
+      savedExercise?.name || exercise,
+      after,
+      options,
+      savedExercise?.sourcePath,
+    ));
+    return savedExercise;
   }
 
-  private async addSetForExerciseToWorkoutFileNow(filePath: string, exercise: string, after: WorkoutSetLineSource | undefined, options: { focusAfter?: boolean }): Promise<void> {
+  private async addSetForExerciseToWorkoutFileNow(filePath: string, exercise: string, after: WorkoutSetLineSource | undefined, options: { focusAfter?: boolean }, exercisePath?: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof TFile)) {
       logger.flowWarn("WorkoutSet", "placeholder:missing-file", {
@@ -2124,7 +2142,7 @@ export default class TPSHealthPlugin extends Plugin {
       new WorkoutExercisePickerModal(this.app, this, file.path, dailyWorkoutId).open();
       return;
     }
-    const line = workoutSetPlaceholderLine(exerciseName);
+    const line = workoutSetPlaceholderLine(exerciseName, exercisePath);
     let lineNumber: number;
     if (after?.filePath === file.path && after.lineNumber >= 0) {
       const content = await this.readWorkoutMutationContent(file, "add-exercise-set", readStringField(after.line, "setId") || "");
@@ -2479,8 +2497,9 @@ export default class TPSHealthPlugin extends Plugin {
       let last = index;
       while (last + 1 < lines.length && workoutSetDataAtLine(lines, last + 1)?.exercise === seed.exercise) last++;
       const recent = workoutSetDataAtLine(lines, last) || seed;
-      const next = workoutSetMarkdownLine(workoutSetPlaceholderLine(seed.exercise), {
+      const next = workoutSetMarkdownLine(workoutSetPlaceholderLine(seed.exercise, seed.exercisePath), {
         exercise: seed.exercise,
+        exercisePath: seed.exercisePath,
         reps: recent.reps ?? 0,
         weight: recent.weight ?? 0,
         weightUnit: recent.unit || "lb",
@@ -2534,8 +2553,9 @@ export default class TPSHealthPlugin extends Plugin {
     if (resolvedLine == null) return;
     const sourceLine = lines[resolvedLine];
     const data = workoutSetChipDataFromLine(sourceLine);
-    const copiedLine = workoutSetMarkdownLine(workoutSetPlaceholderLine(data?.exercise || "Exercise"), {
+    const copiedLine = workoutSetMarkdownLine(workoutSetPlaceholderLine(data?.exercise || "Exercise", data?.exercisePath), {
       exercise: data?.exercise || "Exercise",
+      exercisePath: data?.exercisePath,
       reps: data?.reps ?? 0,
       weight: data?.weight ?? 0,
       weightUnit: data?.unit || "lb",
@@ -3987,9 +4007,10 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("Exercise", "active-workout-names:no-active");
       return [];
     }
-    const file = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
+    const activeSourcePath = active.path || active.dailyNotePath;
+    const file = activeSourcePath ? this.app.vault.getAbstractFileByPath(activeSourcePath) : null;
     if (!(file instanceof TFile)) {
-      logger.flowWarn("Exercise", "active-workout-names:missing-file", { path: active.path || "" });
+      logger.flowWarn("Exercise", "active-workout-names:missing-file", { path: activeSourcePath || "" });
       return [];
     }
     const lines = (await this.app.vault.read(file)).split("\n");
@@ -5355,6 +5376,8 @@ export default class TPSHealthPlugin extends Plugin {
       if (Number.isFinite(durationMinutes)) line = upsertWorkoutDailyMarkerField(line, "durationMinutes", String(durationMinutes));
       if (nextEligibleDate) line = upsertWorkoutDailyMarkerField(line, "nextEligibleDate", nextEligibleDate);
       lines[index] = line;
+      const taskIndex = workoutDailyTaskIndex(lines, workoutId);
+      if (taskIndex >= 0) lines[taskIndex] = lines[taskIndex].replace(/^(\s*-\s+)\[[ xX]\]/, "$1[x]");
       ensureWorkoutDailyEndMarker(lines, index);
       await this.writeWorkoutMutationContent(file, lines.join("\n"), "complete-daily-workout");
       logger.flow("Workout", "daily-complete:done", { path: file.path, workoutId, line: index, nextEligibleDate: nextEligibleDate || "" });
@@ -5464,14 +5487,14 @@ export default class TPSHealthPlugin extends Plugin {
       const completedIndexes: number[] = [];
       if (!previous) {
         for (let index = 0; index < currentLines.length; index++) {
-          if (isCheckedWorkoutTaskLine(currentLines[index]) && !currentLines[index].includes("[setId::")) completedIndexes.push(index);
+          if (isCheckedWorkoutTaskLine(currentLines[index]) && !currentLines[index].includes("[setId::") && !isWorkoutDailyTaskLine(currentLines[index])) completedIndexes.push(index);
         }
       } else {
         const previousLines = previous.split("\n");
         for (let index = 0; index < currentLines.length; index++) {
           const previousLine = previousLines[index] || "";
           const currentLine = currentLines[index] || "";
-          if (isCheckedWorkoutTaskLine(currentLine) && !isCheckedWorkoutTaskLine(previousLine) && !currentLine.includes("[setId::")) {
+          if (isCheckedWorkoutTaskLine(currentLine) && !isCheckedWorkoutTaskLine(previousLine) && !currentLine.includes("[setId::") && !isWorkoutDailyTaskLine(currentLine)) {
             completedIndexes.push(index);
           }
         }
@@ -10672,6 +10695,7 @@ function foodNameFromFoodLogSummary(line: string): string | null {
 
 interface WorkoutSetChipData {
   exercise: string;
+  exercisePath?: string;
   reps?: number;
   weight?: number;
   unit?: string;
@@ -11178,10 +11202,8 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
   restLabel.textContent = "Rest";
   weightControl.append(weightLabel, weightDown, weight, weightUp);
   repsControl.append(repsLabel, repsDown, reps, repsUp);
-  const restStatus = document.createElement("span");
-  restStatus.className = "tps-health-workout-rest-status";
-  restStatus.append(restCountdown);
-  restControl.append(restLabel, restDown, rest, restUp, restStatus);
+  restLabel.append(document.createTextNode(" · "), restCountdown);
+  restControl.append(restLabel, restDown, rest, restUp);
   actions.append(more);
   let currentRestStartedAt = data.restStartedAt || "";
   const updateRestCountdown = () => {
@@ -11390,6 +11412,7 @@ function workoutSetChipDataFromLine(line: string): WorkoutSetChipData | null {
   ].filter((entry): entry is string => Boolean(entry));
   return {
     exercise,
+    exercisePath: readStringField(line, "exercisePath") || undefined,
     reps,
     weight,
     unit,
@@ -14690,7 +14713,7 @@ function isPerformedWorkoutSetLine(line: string): boolean {
 }
 
 function hasUncheckedPlannedWorkoutTask(lines: string[]): boolean {
-  return lines.some((line) => isUncheckedWorkoutTaskLine(line) && !line.includes("[setId::"));
+  return lines.some((line) => isUncheckedWorkoutTaskLine(line) && !line.includes("[setId::") && !isWorkoutDailyTaskLine(line));
 }
 
 function latestCompletedSetEndedAt(lines: string[], beforeIndex: number): string {
@@ -14736,11 +14759,12 @@ function parseWorkoutTaskSetLine(line: string): Partial<WorkoutSet> {
   return parsed;
 }
 
-function workoutSetPlaceholderLine(exercise: string): string {
+function workoutSetPlaceholderLine(exercise: string, exercisePath?: string): string {
   const exerciseName = exercise.trim();
   if (!exerciseName || exerciseName === "Exercise") throw new Error("Exercise is required");
   return workoutSetMarkdownLine(`- ${exerciseName} - 0 lb x 0 [type:: workoutSet] [setId:: ${id("set")}]`, {
     exercise: exerciseName,
+    exercisePath,
     reps: 0,
     weight: 0,
     weightUnit: "lb",
@@ -14750,10 +14774,17 @@ function workoutSetPlaceholderLine(exercise: string): string {
 function workoutSetMarkdownLine(original: string, draft: Partial<WorkoutSet> & { completed?: boolean }): string {
   const indent = original.match(/^\s*/)?.[0] || "";
   const exercise = (draft.exercise || "Exercise").trim() || "Exercise";
+  const originalExercise = wikilinkLabel(readStringField(original, "exercise") || workoutSetExerciseFromSummary(original)).trim();
+  const exercisePath = draft.exercisePath !== undefined
+    ? String(draft.exercisePath || "").trim()
+    : normalizeLookup(originalExercise) === normalizeLookup(exercise)
+      ? (readStringField(original, "exercisePath") || "").trim()
+      : "";
+  const exerciseLabel = exercisePath ? `[[${exercisePath.replace(/\.md$/i, "")}|${exercise}]]` : exercise;
   const weight = draft.weight == null ? 0 : Math.max(0, draft.weight);
   const reps = draft.reps == null ? 0 : Math.max(0, draft.reps);
   const unit = (draft.weightUnit || "lb").trim() || "lb";
-  let line = `${indent}- ${exercise} - ${round(weight)} ${unit} x ${round(reps)}`;
+  let line = `${indent}- ${exerciseLabel} - ${round(weight)} ${unit} x ${round(reps)}`;
   const preserved = dataviewFieldsExcept(original, new Set(["exercise", "exercisepath", "reps", "weight", "unit", "perarm", "settype", "superset", "dropset", "rest", "reststartedat"]));
   if (preserved.length) line += ` ${preserved.join(" ")}`;
   const setType = normalizeWorkoutSetType(draft.setType);
@@ -14768,6 +14799,7 @@ function workoutSetMarkdownLine(original: string, draft: Partial<WorkoutSet> & {
   if (/\[setId::\s*[^\]]+\]/i.test(line)) {
     line = upsertDataviewField(line, "type", "workoutSet");
     line = upsertDataviewField(line, "exercise", exercise);
+    if (exercisePath) line = upsertDataviewField(line, "exercisePath", exercisePath);
     line = upsertDataviewField(line, "reps", reps);
     line = upsertDataviewField(line, "weight", weight);
     line = upsertDataviewField(line, "unit", unit);
@@ -17774,7 +17806,27 @@ function normalizeWorkoutLogTarget(target: WorkoutLogTarget): WorkoutLogTarget {
 function workoutDailyNoteBlock(sessionLine: string): string {
   const record = sessionLine.replace(/^\s*-\s*/, "").trim();
   const workoutId = readStringField(record, "workoutId") || "";
-  return `## Workout\n<!-- tps-health:workout ${record} -->\n${workoutDailyEndMarkerLine(workoutId)}`;
+  const marker = `<!-- tps-health:workout ${record} -->`;
+  return `${workoutDailyTaskLine(marker)}\n## Workout\n${marker}\n${workoutDailyEndMarkerLine(workoutId)}`;
+}
+
+function workoutDailyTaskLine(marker: string, completed = false): string {
+  const workoutId = readStringField(marker, "workoutId") || "";
+  const title = (readStringField(marker, "activity") || "Workout")
+    .replace(/[\[\]|]/g, "")
+    .trim() || "Workout";
+  const startedAt = readStringField(marker, "startedAt");
+  const scheduled = startedAt ? ` [scheduled:: ${startedAt}]` : "";
+  return `- [${completed ? "x" : " "}] [[#Workout|${title}]]${scheduled} <!-- tps-health:workout-task [workoutId:: ${workoutId}] -->`;
+}
+
+function isWorkoutDailyTaskLine(line: string, workoutId = ""): boolean {
+  if (!/^\s*-\s+\[[ xX]\]\s+/.test(line) || !/<!--\s*tps-health:workout-task(?=\s|-->)[\s\S]*-->\s*$/i.test(line)) return false;
+  return !workoutId || readStringField(line, "workoutId") === workoutId;
+}
+
+function workoutDailyTaskIndex(lines: readonly string[], workoutId: string): number {
+  return lines.findIndex((line) => isWorkoutDailyTaskLine(line, workoutId));
 }
 
 function isWorkoutDailyMarkerLine(line: string): boolean {
@@ -17900,12 +17952,16 @@ export function repairWorkoutDailyBlockContent(
   const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
   if (anchorIndex < 0) return content;
   const startIndex = workoutDailyHeadingIndex(lines, anchorIndex);
+  const existingTaskIndex = workoutDailyTaskIndex(lines, workoutId);
+  const originalBlockStart = existingTaskIndex >= 0 && existingTaskIndex < startIndex ? existingTaskIndex : startIndex;
+  const existingTask = existingTaskIndex >= 0 ? lines[existingTaskIndex] : "";
+  const taskLine = workoutDailyTaskLine(lines[anchorIndex], /^\s*-\s+\[[xX]\]/.test(existingTask));
   const explicitEnd = explicitWorkoutDailyEndIndex(lines, anchorIndex);
   let blockLines: string[];
   let remaining: string[];
   if (explicitEnd >= 0) {
-    blockLines = [workoutDailyHeadingLine(lines[anchorIndex]), ...lines.slice(anchorIndex, explicitEnd + 1)];
-    remaining = [...lines.slice(0, startIndex), ...lines.slice(explicitEnd + 1)];
+    blockLines = [taskLine, workoutDailyHeadingLine(lines[anchorIndex]), ...lines.slice(anchorIndex, explicitEnd + 1)];
+    remaining = lines.filter((_, index) => (index < startIndex || index > explicitEnd) && index !== existingTaskIndex);
   } else {
     // The 0.9.0 boundary was the next H1/H2, so ordinary tasks could sit
     // between the marker and set rows. Recover every actual workout-set row
@@ -17921,16 +17977,17 @@ export function repairWorkoutDailyBlockContent(
       if (isWorkoutSetLine(lines[index] || "")) setIndexes.add(index);
     }
     blockLines = [
+      taskLine,
       workoutDailyHeadingLine(lines[anchorIndex]),
       lines[anchorIndex],
       ...Array.from(setIndexes, (index) => lines[index]),
       workoutDailyEndMarkerLine(workoutId),
     ];
-    remaining = lines.filter((_, index) => !(index >= startIndex && index <= anchorIndex) && !setIndexes.has(index));
+    remaining = lines.filter((_, index) => !(index >= startIndex && index <= anchorIndex) && !setIndexes.has(index) && index !== existingTaskIndex);
   }
   const block = blockLines.join("\n");
-  while (remaining.length > 1 && !remaining[startIndex - 1]?.trim() && !remaining[startIndex]?.trim()) {
-    remaining.splice(startIndex, 1);
+  while (remaining.length > 1 && !remaining[originalBlockStart - 1]?.trim() && !remaining[originalBlockStart]?.trim()) {
+    remaining.splice(originalBlockStart, 1);
   }
   return insertWorkoutBlockIntoContent(remaining.join("\n"), block, placement);
 }
@@ -17945,11 +18002,13 @@ export function removeWorkoutDailyBlockContent(
   const anchorIndex = dailyWorkoutAnchorIndex(lines, workoutId);
   if (anchorIndex < 0) return content;
   const startIndex = workoutDailyHeadingIndex(lines, anchorIndex);
+  const taskIndex = workoutDailyTaskIndex(lines, workoutId);
+  const blockStartIndex = taskIndex >= 0 && taskIndex < startIndex ? taskIndex : startIndex;
   const endIndex = explicitWorkoutDailyEndIndex(lines, anchorIndex);
   if (endIndex < 0) return content;
-  lines.splice(startIndex, endIndex - startIndex + 1);
-  while (startIndex > 0 && startIndex < lines.length && !lines[startIndex - 1].trim() && !lines[startIndex].trim()) {
-    lines.splice(startIndex, 1);
+  lines.splice(blockStartIndex, endIndex - blockStartIndex + 1);
+  while (blockStartIndex > 0 && blockStartIndex < lines.length && !lines[blockStartIndex - 1].trim() && !lines[blockStartIndex].trim()) {
+    lines.splice(blockStartIndex, 1);
   }
   return lines.join("\n");
 }
