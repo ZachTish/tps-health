@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.14.2
+
+- Describe no longer accepts an unexplained all-zero Gemini response as a completed food estimate. Empty nutrition now triggers the same per-item review path as an omitted, low-confidence, or physically inconsistent result; clearly identified zero-nutrition items such as plain water remain valid.
+- When Gemini review and repair remain unusable and saved/curated matching finds no food, TPS Health makes one dedicated final Gemini estimate request using the described identity, quantity, preparation, size, and edible weight. Gemini is explicitly asked to use the closest ordinary analogue and return its best reasonable total nutrition instead of substituting zeros for an unknown product.
+- A physically coherent final estimate remains editable in the tray even when its confidence is low. Failed items are still retained for explicit review rather than being silently dropped, Describe remains resumable through TPS AI Gateway's durable job IDs, and no reusable food note is created.
+- This is a backward-compatible patch with no settings, note-schema, or public-API migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 180 of 181 declared checks passed with only the credential-gated live USDA check skipped. Regressions cover all-zero detection, legitimate plain-water zeros, review and repair both returning empty nutrition, a saved/curated miss, the dedicated Gemini estimate pass, and retention of a coherent low-confidence result with actual calories and macros. The final artifacts deployed only to the isolated test runtime; production was not accessed.
+
 ## 0.14.1
 
 - Live workout mutations now send only the smallest changed text range to CodeMirror and map its native scroll snapshot through that transaction. Adjusting reps, weight, rest, status, or another set value therefore keeps the current Live Preview viewport and selection instead of replacing the entire Daily Note and jumping upward.

@@ -2888,6 +2888,7 @@ test("AI Describe reviews every extracted item while the no-Gateway fallback rem
   assert.match(aiDescribe, /taskId: "health\.describe-food\.extract"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.review"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.repair"/);
+  assert.match(aiDescribe, /taskId: "health\.describe-food\.estimate"/);
   assert.match(aiDescribe, /source: "custom-inline"/);
   assert.match(aiDescribe, /searchLocalFoods\(query, loggedStats\)/);
   assert.doesNotMatch(aiDescribe, /createFoodFromInput|findOrCreateFoodNote/);
@@ -2954,6 +2955,62 @@ test("AI Describe recovers a Honeycrisp apple omitted by extraction and review b
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[0]?.quantity, 4);
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.name, "large Honeycrisp apple");
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.nutrition?.calories, 126);
+});
+
+test("AI Describe replaces an empty result with a final Gemini estimate after database matching misses", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe estimate fallback vault";
+  const requests = [];
+  const empty = { itemId: "item-1", label: "mystery saffron dumpling", quantity: 1, unit: "serving", estimatedWeightG: 180, confidence: 0.82, calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 0 };
+  fake.app.tpsAiGateway = {
+    completeStructured: async (request) => {
+      requests.push(request);
+      if (request.taskId === "health.describe-food.extract") return {
+        data: { mealName: "Mystery dumpling", foods: [{ itemId: "item-1", label: "mystery saffron dumpling", quantity: 1, unit: "serving", estimatedWeightG: 180 }] },
+        provider: "gemini", model: "test", traceId: "extract", attempts: 1,
+      };
+      if (request.taskId === "health.describe-food.review" || request.taskId === "health.describe-food.repair") return {
+        data: request.taskId.endsWith("review") ? { mealName: "Mystery dumpling", foods: [empty] } : empty,
+        provider: "gemini", model: "test", traceId: request.taskId, attempts: 1,
+      };
+      assert.equal(request.taskId, "health.describe-food.estimate");
+      return {
+        data: { ...empty, confidence: 0.42, calories: 240, proteinG: 8, carbsG: 36, fatG: 7, fiberG: 3, sugarG: 4, sodiumMg: 420 },
+        provider: "gemini", model: "test", traceId: "estimate", attempts: 1,
+      };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  plugin.getLoggedFoodStats = async () => new Map();
+  plugin.searchLocalFoods = async () => [];
+  await plugin.openFoodDescriberWithAi("one mystery saffron dumpling", null, undefined, {
+    version: 1,
+    id: "describe-estimate-fallback",
+    description: "one mystery saffron dumpling",
+    createdAt: new Date().toISOString(),
+    dateContext: null,
+  });
+  assert.deepEqual(requests.map((request) => request.taskId), [
+    "health.describe-food.extract",
+    "health.describe-food.review",
+    "health.describe-food.repair",
+    "health.describe-food.estimate",
+  ]);
+  const selection = plugin.settings.pendingFoodLogDraft?.selectionItems?.[0];
+  assert.equal(selection?.item?.name, "mystery saffron dumpling");
+  assert.equal(selection?.item?.nutrition?.calories, 240);
+  assert.equal(selection?.item?.nutrition?.proteinG, 8);
+  assert.equal(selection?.item?.confidence, 0.42, "a coherent low-confidence estimate should remain editable instead of becoming an empty food");
 });
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {

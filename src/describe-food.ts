@@ -151,6 +151,25 @@ export function describeFoodEstimateIssues(food: DescribePlannedFood): string[] 
   const issues: string[] = [];
   if (food.confidence < 0.55) issues.push("low-confidence");
   const nutrition = food.estimatedNutritionForAmount;
+  const nutritionTotal = nutrition.calories
+    + nutrition.proteinG
+    + nutrition.carbsG
+    + nutrition.fatG
+    + nutrition.fiberG
+    + nutrition.sugarG
+    + nutrition.sugarAlcoholG
+    + nutrition.alcoholG
+    + nutrition.sodiumMg;
+  const normalizedLabel = food.label.trim().toLowerCase();
+  const zeroDrinkLabel = /\b(?:diet|zero(?:[- ]?(?:sugar|calorie|cal))?)\b/.test(normalizedLabel)
+    && /\b(?:soda|cola|pepsi|coke|drink|beverage|seltzer|sparkling water)\b/.test(normalizedLabel);
+  const explicitlyZeroFood = food.confidence >= 0.75 && (
+    /^(?:plain\s+)?(?:water|ice(?: cubes?)?)$/.test(normalizedLabel)
+    || /^(?:plain\s+)?black coffee$/.test(normalizedLabel)
+    || /^unsweetened (?:iced )?tea$/.test(normalizedLabel)
+    || zeroDrinkLabel
+  );
+  if (nutritionTotal === 0 && !explicitlyZeroFood) issues.push("nutrition-empty");
   const macroEnergy = nutrition.proteinG * 4 + nutrition.carbsG * 4 + nutrition.fatG * 9 + nutrition.sugarAlcoholG * 2.4 + nutrition.alcoholG * 7;
   if (nutrition.calories > 40 && Math.abs(macroEnergy - nutrition.calories) > Math.max(40, nutrition.calories * 0.45)) issues.push("calorie-macro-mismatch");
   const macroMass = nutrition.proteinG + nutrition.carbsG + nutrition.fatG + nutrition.alcoholG;

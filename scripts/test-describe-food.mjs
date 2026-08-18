@@ -115,12 +115,28 @@ test("Describe audit flags uncertain and physically inconsistent estimates for r
   ]);
 });
 
+test("Describe audit retries empty nutrition unless the food is credibly zero nutrition", () => {
+  const emptyEstimate = {
+    itemId: "item-1",
+    label: "mystery saffron dumpling",
+    quantity: 1,
+    unit: "serving",
+    estimatedWeightG: 180,
+    confidence: 0.82,
+    estimatedNutritionForAmount: { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 0 },
+  };
+  assert.deepEqual(describeFoodEstimateIssues(emptyEstimate), ["nutrition-empty"]);
+  assert.deepEqual(describeFoodEstimateIssues({ ...emptyEstimate, label: "plain water", confidence: 0.95 }), []);
+  assert.deepEqual(describeFoodEstimateIssues({ ...emptyEstimate, label: "vanilla ice cream", confidence: 0.95 }), ["nutrition-empty"]);
+});
+
 test("Describe delegates its review pipeline to TPS AI Gateway and retains the local parser", () => {
   assert.match(mainSource, /getAiGatewayApi/);
   assert.match(mainSource, /gateway\.completeStructured<T>/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.extract\"/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.review\"/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.repair\"/);
+  assert.match(mainSource, /taskId: \"health\.describe-food\.estimate\"/);
   assert.match(mainSource, /preferredProviders: \[\"gemini\"\]/);
   assert.doesNotMatch(mainSource, /api\.openai\.com/);
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
@@ -138,6 +154,7 @@ test("Describe reviews and repairs every extracted item before preparing editabl
   assert.match(describeMethod, /Assign stable IDs item-1, item-2/);
   assert.match(describeMethod, /Return every extracted itemId exactly once/);
   assert.match(describeMethod, /Rechecking item/);
+  assert.match(describeMethod, /Estimating item/);
   assert.match(describeMethod, /unresolvedDescribeFood/);
   assert.match(describeMethod, /source: \"custom-inline\"/);
   assert.match(describeMethod, /nutritionBasis: \"estimated-serving\"/);
@@ -164,6 +181,7 @@ test("Describe persists a resumable workflow and uses stable durable jobs for ea
   assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract-v3` : undefined/);
   assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v3` : undefined/);
   assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v3-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v1-\$\{index \+ 1\}` : undefined/);
   assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);
   assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);
