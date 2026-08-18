@@ -322,6 +322,17 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /private searchInputEl: HTMLInputElement \| null = null;/);
   assert.match(mainSource, /this\.selectionItems\.unshift\(\{/);
   assert.doesNotMatch(mainSource, /this\.selectionItems\.push\(\{\s*item: selectedItem/);
+  const foodSearchOpen = mainSource.slice(
+    mainSource.indexOf("class FoodSearchModal extends Modal"),
+    mainSource.indexOf("  onClose(): void", mainSource.indexOf("class FoodSearchModal extends Modal")),
+  );
+  assert.ok(
+    foodSearchOpen.indexOf('this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" })')
+      < foodSearchOpen.indexOf('this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" })'),
+    "the tray must render above the potentially long food results list",
+  );
+  assert.match(mainSource, /this\.renderSelection\(\);\s+this\.resetSearchForNextFood\(enriched\.name\);\s+this\.revealSelectionAfterAdd\(\);/);
+  assert.match(mainSource, /querySelector\("\.tps-health-selection-header"\)[\s\S]+?scrollIntoView\?\.\(\{ block: "nearest", inline: "nearest" \}\)/);
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /getPendingFoodLogDraft\(dateContext: FoodLogDateContext \| null\): PendingFoodLogDraft \| null/);
   assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null\): Promise<void>/);
@@ -344,7 +355,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(foodSearchModalSource, /await this\.persistDraftIfOwned\(\)/);
   assert.match(mainSource, /Added \$\{addedName\}\. Search for another food or log selected\./);
   assert.match(mainSource, /this\.searchInput = "";/);
-  assert.match(mainSource, /this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);\s+this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);/);
+  assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
   assert.match(stylesSource, /\.tps-health-selection\.is-empty/);

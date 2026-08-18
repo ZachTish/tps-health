@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.14.3
+
+- The selected-food tray now renders immediately below the active Scan, Search, Saved, Describe, or Quick add controls and above the potentially long food-results list. Recent and frequent foods can no longer push the tray to the bottom of the modal.
+- Adding or incrementing a food reveals only the compact tray header using nearest-edge scrolling. The count, combined macros, and **Log selected** action become reachable without a long manual scroll, while the full tray stays in place and search can continue normally.
+- The same ordering applies to restored and Describe-generated trays on desktop, narrow panes, and mobile. This is a backward-compatible layout patch with no settings, note-schema, data, or public-API migration; Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 180 of 181 declared checks passed with only the credential-gated live USDA check skipped. Regression coverage locks the tray before results, the post-Add reveal after search reset, nearest-edge header scrolling, and the existing mobile logger, durable draft, repeated-Add, meal, and logging behaviors. The final artifacts deployed only to the isolated test runtime; production was not accessed.
+
 ## 0.14.2
 
 - Describe no longer accepts an unexplained all-zero Gemini response as a completed food estimate. Empty nutrition now triggers the same per-item review path as an omitted, low-confidence, or physically inconsistent result; clearly identified zero-nutrition items such as plain water remain valid.

@@ -8293,9 +8293,9 @@ class FoodSearchModal extends Modal {
       .addButton((button) => button
         .setButtonText("Scan")
         .onClick(() => this.openBarcodeScanner()));
+    this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" });
     this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" });
     this.actionsEl = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
-    this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" });
     this.renderSelection();
     void this.refreshSelectionItemsFromSources();
     setActiveTab(this.activeFoodLogTab);
@@ -8602,8 +8602,16 @@ class FoodSearchModal extends Modal {
     });
     this.renderSelection();
     this.resetSearchForNextFood(enriched.name);
+    this.revealSelectionAfterAdd();
     this.persistDraft();
     new Notice(`Added ${enriched.name}`);
+  }
+
+  private revealSelectionAfterAdd(): void {
+    window.setTimeout(() => {
+      const header = this.selectionEl?.querySelector(".tps-health-selection-header") as HTMLElement | null;
+      header?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    }, 0);
   }
 
   private renderSelection(): void {

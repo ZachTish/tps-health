@@ -750,6 +750,7 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-food-search-frame .tps-health-selection {
   margin-top: 7px;
   padding: 7px;
+  scroll-margin-block: 8px;
 }
 
 .tps-health-food-search-frame .tps-health-selection-row {
