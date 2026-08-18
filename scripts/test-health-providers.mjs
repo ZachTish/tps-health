@@ -6915,6 +6915,9 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(compactWorkoutTable, /\.tps-health-workout-set-grid-header[\s\S]*line-height: 24px/);
   assert.match(stylesSource, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step \{\s*display: none;/);
   assert.match(compactWorkoutTable, /\.tps-health-workout-set-editor \.tps-health-workout-set-perform\[data-state="complete"\]/);
+  assert.match(compactWorkoutTable, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\s*\{[\s\S]*background: transparent;[\s\S]*border-inline: 1px solid var\(--background-modifier-border\);[\s\S]*width: 100%;/);
+  assert.match(compactWorkoutTable, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\.is-exercise-start\s*\{[\s\S]*border-block-start: 1px solid var\(--background-modifier-border\)/);
+  assert.match(compactWorkoutTable, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\.is-exercise-end\s*\{[\s\S]*border-block-end: 1px solid var\(--background-modifier-border\)/);
   assert.doesNotMatch(compactWorkoutTable, /repeat\([123], minmax\(0, 1fr\)\)/);
   assert.doesNotMatch(stylesSource, /min-width: 530px/);
   assert.match(compactWorkoutTable, /@container \(max-width: 360px\)/);

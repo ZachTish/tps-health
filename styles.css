@@ -3142,6 +3142,38 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   border-bottom: 0;
 }
 
+/* Live Preview block widgets do not receive Reading mode's list-row wrapper.
+   Give the widgets the same joined exercise-table boundary directly. */
+.markdown-source-view.mod-cm6 .cm-content .tps-health-workout-set-editor {
+  background: transparent;
+  border-block: 0;
+  border-inline: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  box-sizing: border-box;
+  margin: 0;
+  max-width: none;
+  padding: 0 7px;
+  width: 100%;
+}
+
+.markdown-source-view.mod-cm6 .cm-content .tps-health-workout-set-editor.is-exercise-start {
+  border-block-start: 1px solid var(--background-modifier-border);
+  border-radius: 8px 8px 0 0;
+  margin-top: 7px;
+  padding-top: 4px;
+}
+
+.markdown-source-view.mod-cm6 .cm-content .tps-health-workout-set-editor.is-exercise-end {
+  border-block-end: 1px solid var(--background-modifier-border);
+  border-radius: 0 0 8px 8px;
+  margin-bottom: 7px;
+  padding-bottom: 4px;
+}
+
+.markdown-source-view.mod-cm6 .cm-content .tps-health-workout-set-editor.is-exercise-end .tps-health-workout-set-metrics {
+  border-bottom: 0;
+}
+
 .tps-health-workout-set-previous,
 .tps-health-workout-set-field-label,
 .tps-health-workout-set-stepper .tps-health-workout-set-step {

@@ -162,7 +162,7 @@ test("Health settings mobile CSS is namespaced and keeps controls usable", () =>
   assert.match(stylesSource, /\.tps-health-settings-page \[data-tps-health-usda-secret-index\]\s*\{[\s\S]+min-width: 0/);
 });
 
-test("Workout set controls stay in one compact table row inside narrow panes", () => {
+test("Workout set controls stay in one compact table row in Reading and Live Preview", () => {
   assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+container-type: inline-size;/);
   assert.match(stylesSource, /\.tps-health-workout-set-editor\s*\{[\s\S]+container-type: inline-size;/);
   assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+overflow: visible;/);
@@ -174,6 +174,10 @@ test("Workout set controls stay in one compact table row inside narrow panes", (
   assert.match(finalLayout, /\.tps-health-workout-set-previous,[\s\S]+\.tps-health-workout-set-field-label,[\s\S]+display: none/);
   assert.match(finalLayout, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step\s*\{\s*display: none;/);
   assert.match(finalLayout, /@container tps-health-workout-set-row \(max-width: 330px\)[\s\S]+grid-template-columns: 28px minmax\(56px, 1fr\) minmax\(40px, \.7fr\) minmax\(46px, \.78fr\) 34px/);
+  assert.match(finalLayout, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\s*\{[\s\S]+background: transparent;[\s\S]+border-block: 0;[\s\S]+border-inline: 1px solid var\(--background-modifier-border\);[\s\S]+margin: 0;[\s\S]+padding: 0 7px;[\s\S]+width: 100%;/);
+  assert.match(finalLayout, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\.is-exercise-start\s*\{[\s\S]+border-block-start: 1px solid var\(--background-modifier-border\);[\s\S]+border-radius: 8px 8px 0 0;/);
+  assert.match(finalLayout, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-workout-set-editor\.is-exercise-end\s*\{[\s\S]+border-block-end: 1px solid var\(--background-modifier-border\);[\s\S]+border-radius: 0 0 8px 8px;/);
+  assert.match(finalLayout, /\.tps-health-workout-set-editor\.is-exercise-end \.tps-health-workout-set-metrics\s*\{\s*border-bottom: 0;/);
   assert.doesNotMatch(finalLayout, /repeat\([123], minmax\(0, 1fr\)\)/, "set metrics must never reflow into stacked cards");
   assert.doesNotMatch(finalLayout, /border-left: 3px solid/, "the compact table does not add a colored left rail");
 });

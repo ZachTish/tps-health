@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.15.2
+
+- Live Preview workout sets now use the same compact joined exercise table as Reading mode. CodeMirror's standalone set widgets no longer fall back to the former bordered card styling.
+- The first, middle, and last sets share one exercise boundary in Live Preview, with the exercise header and column labels shown once and no gaps or duplicate bottom rules between set rows.
+- The fix is scoped to Live Preview and preserves the working Reading-mode layout, direct inputs, compact completion action, narrow-pane columns, and touch sizing.
+- This is a backward-compatible visual patch with no settings, API, or Markdown migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: focused Reading/Live Preview parity, workout identifier protection, and TypeScript checks passed. The full declared suite, final build/deploy, artifact hashes, and isolated-runtime verification are recorded in the 0.15.2 release notes. Visual automation was not run because the only focused Obsidian window was production; production was not clicked or changed.
+
 ## 0.15.1
 
 - Workout exercises now render as genuinely compact tables: the exercise name and `Set / Weight / Reps / Rest / Done` labels appear once, and every set remains one short row even in the narrow pane shown in the reported screenshot. The former per-set metric cards and visible `Last set` row are gone.
