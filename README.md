@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.15.6
+
+- Startup workout repair no longer enters an infinite synchronous loop when the active workout block already ends the Daily Note. The boundary cleanup now clamps its index and runs only while each iteration can remove an actual duplicate blank line.
+- The repair remains idempotent and preserves the single linked workout task, the single `## Workout` heading, marker/end boundaries, and all content before the workout.
+- This is a backward-compatible emergency reliability patch with no settings, API, or note-schema migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation includes the exact production-shaped EOF block, repeated repair, earlier-content preservation, the full declared suite, a separate production-mode build, and isolated test-vault runtime verification. Final artifact hashes are recorded in the release notes.
+
 ## 0.15.5
 
 - Opening **Add exercise** now performs zero vault-catalog work. The picker renders a usable search field, cancel action, and create-by-name path without scheduling a background scan merely because the modal opened.

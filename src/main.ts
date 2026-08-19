@@ -18208,8 +18208,17 @@ export function repairWorkoutDailyBlockContent(
     remaining = lines.filter((_, index) => !(index >= startIndex && index <= anchorIndex) && !setIndexes.has(index) && index !== existingTaskIndex);
   }
   const block = blockLines.join("\n");
-  while (remaining.length > 1 && !remaining[originalBlockStart - 1]?.trim() && !remaining[originalBlockStart]?.trim()) {
-    remaining.splice(originalBlockStart, 1);
+  // When the workout already ends the note, originalBlockStart can point one
+  // past the shortened array. Splicing that index is a no-op, so the old loop
+  // never made progress and locked Obsidian's renderer during startup repair.
+  const blankBoundaryIndex = Math.min(originalBlockStart, remaining.length - 1);
+  while (
+    blankBoundaryIndex > 0
+    && blankBoundaryIndex < remaining.length
+    && !remaining[blankBoundaryIndex - 1].trim()
+    && !remaining[blankBoundaryIndex].trim()
+  ) {
+    remaining.splice(blankBoundaryIndex, 1);
   }
   return insertWorkoutBlockIntoContent(remaining.join("\n"), block, placement);
 }

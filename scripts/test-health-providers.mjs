@@ -5027,6 +5027,25 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   const repairedBottom = repairWorkoutDailyBlockContent(legacyWorkout, "workout-test", "bottom");
   assert.ok(repairedBottom.indexOf("existing task two") < repairedBottom.indexOf("## Workout"));
   assert.ok(repairedBottom.indexOf("tps-health:workout-end [workoutId:: workout-test]") > repairedBottom.indexOf("existing task two"));
+  const eofWorkout = [
+    "---",
+    "title: Today",
+    "---",
+    "",
+    "- [ ] Existing task",
+    "",
+    "- [ ] [[#Workout|EOF Workout]] <!-- tps-health:workout-task [workoutId:: workout-eof] -->",
+    "## Workout",
+    "<!-- tps-health:workout EOF Workout [workoutId:: workout-eof] [startedAt:: 2026-08-19T12:25:08.272Z] [status:: active] -->",
+    "<!-- tps-health:workout-end [workoutId:: workout-eof] -->",
+  ].join("\n");
+  const repairedEofWorkout = repairWorkoutDailyBlockContent(eofWorkout, "workout-eof", "bottom");
+  assert.match(repairedEofWorkout, /^- \[ \] Existing task$/m, "repairing an EOF workout preserves earlier daily-note content");
+  assert.equal((repairedEofWorkout.match(/tps-health:workout-task/g) || []).length, 1);
+  assert.equal((repairedEofWorkout.match(/^## Workout$/gm) || []).length, 1);
+  assert.equal((repairedEofWorkout.match(/tps-health:workout EOF Workout/g) || []).length, 1);
+  assert.equal((repairedEofWorkout.match(/tps-health:workout-end/g) || []).length, 1);
+  assert.equal(repairWorkoutDailyBlockContent(repairedEofWorkout, "workout-eof", "bottom"), repairedEofWorkout, "an EOF workout repair is idempotent");
   assert.match(mainSource, /private async insertIntoFoodLogFile\(line: string, section\?: string\): Promise<TFile> \{\s+const file = await this\.getFoodLogFile\(true\);\s+if \(!file\) throw new Error\("Food log file is not available"\);\s+if \(section\?\.trim\(\)\) return this\.appendToHeading\(file, section\.trim\(\), line\);[\s\S]+await this\.app\.vault\.append\(file, `\$\{line\}\\n`\);/);
   assert.match(settingsSource, /\.setName\("Default food log section"\)\s+\.setDesc\("Optional\. Blank inserts food logs immediately after daily-note frontmatter\."\)[\s\S]+\.setPlaceholder\("Food Log"\)[\s\S]+defaultFoodLogSection = value\.trim\(\);/);
   assert.doesNotMatch(settingsSource, /\.setName\("Workout log heading"\)/);
