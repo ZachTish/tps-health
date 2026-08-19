@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.15.7
+
+- Completed food logs now use the same compact two-line row in Reading mode and Live Preview: food/calories on top, serving/metric amount/macros below, and one small trailing action.
+- Reading mode trusts a resolved TPS Health source record instead of requiring the visible serving unit to appear in a short hard-coded list. Custom units such as `portion` no longer fall back to a raw Markdown bullet; common singular/plural units remain supported for legacy visible-only entries.
+- Live Preview food widgets now include their file and exact source line in widget identity, so moving or replacing an otherwise identical log cannot leave its action menu targeting a stale row.
+- The visual action remains 28 px while an invisible coarse-pointer hit area preserves a 44 px touch target. Container-aware wrapping keeps long titles and macros usable without returning to tall cards.
+- This backward-compatible patch changes no settings, APIs, or stored food-log Markdown. Obsidian 1.12.0 remains the minimum supported version.
+
 ## 0.15.6
 
 - Startup workout repair no longer enters an infinite synchronous loop when the active workout block already ends the Daily Note. The boundary cleanup now clamps its index and runs only while each iteration can remove an actual duplicate blank line.

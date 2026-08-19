@@ -9653,7 +9653,10 @@ class FoodLogChipWidget extends WidgetType {
     return this.data.food === other.data.food &&
       this.data.serving === other.data.serving &&
       this.data.amount === other.data.amount &&
-      this.data.macros.join("|") === other.data.macros.join("|");
+      this.data.macros.join("|") === other.data.macros.join("|") &&
+      this.source.filePath === other.source.filePath &&
+      this.source.lineNumber === other.source.lineNumber &&
+      this.source.line === other.source.line;
   }
 
   toDOM(): HTMLElement {
@@ -9768,7 +9771,7 @@ function foodLogChipElement(data: FoodLogChipData, actions?: { onMenu?: (event: 
     menuButton.setAttribute("aria-label", `Food log actions for ${data.food}`);
     menuButton.textContent = "⋯";
     menuButton.addEventListener("click", actions.onMenu);
-    details.appendChild(menuButton);
+    chip.appendChild(menuButton);
   }
   chip.appendChild(details);
 
@@ -9946,7 +9949,11 @@ async function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ct
     const sourceLine = lineNumber >= 0 ? sourceLines[lineNumber] || "" : "";
     const sourceChip = isFoodLogLine(sourceLine) ? foodLogChipDataFromLine(sourceLine, plugin) : null;
     if (!isFoodLogLine(text)) {
-      if (looksLikeFoodLogVisibleLine(visibleText)) {
+      // Reading mode strips the hidden source fields before post-processing.
+      // A resolved source record is authoritative even when its visible unit
+      // is custom (for example "portion"), so do not gate it on a short unit
+      // vocabulary and leave a raw Markdown row beside polished chips.
+      if (sourceChip || looksLikeFoodLogVisibleLine(visibleText)) {
         const renderedChip = sourceChip || foodLogChipDataFromRenderedItem(item, plugin);
         if (renderedChip) {
           item.empty();
@@ -18780,8 +18787,8 @@ function normalizeFoodLogVisibleText(value: string): string {
     .trim();
 }
 
-function looksLikeFoodLogVisibleLine(value: string): boolean {
-  return /^[\s\-•]*\d+(?:\.\d+)?\s*(serving|g|ml|oz|cup|bar|slice|piece|package)\b/i.test(value.trim());
+export function looksLikeFoodLogVisibleLine(value: string): boolean {
+  return /^[\s\-•]*\d+(?:\.\d+)?\s*(servings?|portions?|grams?|milliliters?|ounces?|cups?|bars?|slices?|pieces?|packages?|bags?|cans?|bottles?|pints?|pastr(?:y|ies)|wraps?|cookies?|scoops?|g|ml|oz)\b/i.test(value.trim());
 }
 
 function readNumber(line: string, key: string): number | undefined {

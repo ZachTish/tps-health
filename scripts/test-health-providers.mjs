@@ -6702,9 +6702,9 @@ test("inline food autocomplete supports linked food amounts without property bra
   assert.match(mainSource, /resolveFoodLogServing\(saved, parsed\.quantity, parsed\.unit \|\| preferredFoodLogUnit\(saved\)\)/);
 });
 
-test("completed food logs render as the same polished mobile card in Live Preview and Reading mode", async () => {
+test("completed food logs render as the same lean reliable row in Live Preview and Reading mode", async () => {
   const fs = await import("node:fs/promises");
-  const { findFoodLogSourceLineIndex } = await importPluginWithObsidianStub();
+  const { findFoodLogSourceLineIndex, looksLikeFoodLogVisibleLine } = await importPluginWithObsidianStub();
   const mainSource = await fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8");
   const stylesSource = await fs.readFile(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
   const renderedSourceLines = [
@@ -6717,6 +6717,9 @@ test("completed food logs render as the same polished mobile card in Live Previe
   const secondRenderedLine = findFoodLogSourceLineIndex(renderedSourceLines, "1.5 serving - Very Long Example Food Name That Must Wrap Cleanly on a Narrow iPhone Screen", 1, firstRenderedLine + 1);
   assert.equal(firstRenderedLine, 1);
   assert.equal(secondRenderedLine, 3);
+  assert.equal(looksLikeFoodLogVisibleLine("2 portion - Brownie a La Mode STACKS protein bar"), true);
+  assert.equal(looksLikeFoodLogVisibleLine("2 portions - Brownie a La Mode STACKS protein bar"), true);
+  assert.equal(looksLikeFoodLogVisibleLine("ordinary daily note bullet"), false);
   assert.match(mainSource, /this\.registerEditorExtension\(createFoodLogChipExtension\(this\)\)/);
   assert.match(mainSource, /function createFoodLogChipExtension\(plugin: TPSHealthPlugin\)/);
   assert.match(mainSource, /function buildFoodLogChipDecorations\(plugin: TPSHealthPlugin, state: EditorState\)/);
@@ -6746,9 +6749,10 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(mainSource, /logger\.flowError\("RenderedControls", "food-log:failed"/);
   assert.match(mainSource, /renderWorkoutSetChips\(this\.containerEl, this\.plugin, this\.ctx\)/);
   assert.match(mainSource, /class FoodLogChipWidget extends WidgetType/);
+  assert.match(mainSource, /this\.source\.filePath === other\.source\.filePath &&\s+this\.source\.lineNumber === other\.source\.lineNumber &&\s+this\.source\.line === other\.source\.line/);
   assert.match(mainSource, /menuButton\.className = "tps-health-food-chip-menu"/);
   assert.match(mainSource, /menuButton\.textContent = "⋯"/);
-  assert.match(mainSource, /details\.appendChild\(menuButton\)/);
+  assert.match(mainSource, /chip\.appendChild\(menuButton\)/);
   assert.match(mainSource, /partitionFoodLogChipMacros\(data\.macros\)/);
   assert.match(mainSource, /calorie\.className = "tps-health-food-chip-calories tps-health-food-chip-macro"/);
   assert.match(mainSource, /details\.className = "tps-health-food-chip-details"/);
@@ -6812,6 +6816,7 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(mainSource, /export function findFoodLogSourceLineIndex/);
   assert.match(mainSource, /if \(preferredLine >= afterLine && preferredLine < lines\.length && matches\(preferredLine\)\) return preferredLine/);
   assert.match(mainSource, /const sourceChip = isFoodLogLine\(sourceLine\) \? foodLogChipDataFromLine\(sourceLine, plugin\) : null/);
+  assert.match(mainSource, /if \(sourceChip \|\| looksLikeFoodLogVisibleLine\(visibleText\)\)/);
   assert.match(mainSource, /const renderedChip = sourceChip \|\| foodLogChipDataFromRenderedItem\(item, plugin\)/);
   assert.match(mainSource, /if \(renderedChip\) \{\s+item\.empty\(\);\s+item\.appendChild\(foodLogChipElement\(renderedChip/);
   assert.match(mainSource, /workoutSetChipDataFromLine/);
@@ -6830,7 +6835,7 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(mainSource, /function markdownFilePathForRenderedElement\(plugin: TPSHealthPlugin, element: HTMLElement\): string/);
   assert.match(mainSource, /const items = root\.matches\("li"\) \? \[root, \.\.\.Array\.from\(root\.querySelectorAll\("li"\)\)\] : Array\.from\(root\.querySelectorAll\("li"\)\);/);
   assert.match(stylesSource, /\.tps-health-food-chip/);
-  assert.match(stylesSource, /\.tps-health-food-chip \{[\s\S]*display: grid;[\s\S]*grid-template-areas:[\s\S]*"food calories"[\s\S]*"details details";[\s\S]*width: 100%;/);
+  assert.match(stylesSource, /\.tps-health-food-chip \{[\s\S]*display: grid;[\s\S]*grid-template-areas:[\s\S]*"food calories menu"[\s\S]*"details details menu";[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto 30px;[\s\S]*min-height: 44px;[\s\S]*padding: 5px 7px;[\s\S]*width: 100%;/);
   assert.doesNotMatch(stylesSource, /width: min\(42rem, max\(24rem, 100%\)\)/);
   assert.match(stylesSource, /@media \(max-width: 520px\), \(hover: none\) and \(pointer: coarse\) \{/);
   assert.match(stylesSource, /\.tps-health-food-chip-food \{[\s\S]*grid-area: food;[\s\S]*overflow-wrap: anywhere;/);
@@ -6838,7 +6843,7 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(stylesSource, /\.markdown-source-view\.mod-cm6 \.cm-content \.tps-health-food-chip \{\s+display: grid !important;[\s\S]+width: 100%;/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros \{[\s\S]*flex-wrap: wrap;[\s\S]*overflow: visible;/);
   assert.match(stylesSource, /@container \(max-width: 420px\)/);
-  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*\.tps-health-food-chip-menu[\s\S]*min-height: 44px/);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*\.tps-health-food-chip-menu::before\s*\{[\s\S]*inset: -8px;/);
   assert.match(stylesSource, /\.tps-health-food-chip-serving/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros/);
   assert.match(stylesSource, /\.tps-health-food-chip-calories/);
@@ -6847,6 +6852,7 @@ test("completed food logs render as the same polished mobile card in Live Previe
   assert.match(stylesSource, /\.tps-health-food-chip-macro \{[\s\S]*font-variant-numeric: tabular-nums;/);
   assert.match(stylesSource, /\.tps-health-food-chip-macros \{[\s\S]*justify-content: flex-end;/);
   assert.match(stylesSource, /\.tps-health-food-chip-menu/);
+  assert.match(stylesSource, /\.tps-health-food-chip-menu \{[\s\S]*grid-area: menu;[\s\S]*height: 28px;[\s\S]*min-height: 28px;[\s\S]*min-width: 28px;/);
   assert.match(stylesSource, /\.tps-health-macro-pill/);
   assert.match(stylesSource, /\.tps-health-workout-set-chip/);
   assert.match(stylesSource, /\.tps-health-workout-action-bar/);
