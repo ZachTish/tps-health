@@ -5159,10 +5159,11 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flowWarn\("Exercise", "active-workout-names:missing-file"/);
   assert.match(mainSource, /logger\.flow\("Exercise", "active-workout-names:done"/);
   assert.match(mainSource, /logger\.flow\("Exercise", "search:done", \{ query, \.\.\.stats \}\)/);
-  assert.match(mainSource, /foodLike: 0,\s+recognized: 0,\s+queryMiss: 0,\s+returned: 0/);
+  assert.match(mainSource, /const index = await this\.getExerciseSearchIndex\(\)/);
+  assert.match(mainSource, /queryMiss: index\.items\.length - results\.length/);
   assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "active-workout" \}\)/);
   assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "workout-file", path: file\.path \}\)/);
-  assert.match(mainSource, /private resolveExistingExerciseFile\(path: string \| undefined, name: string\): TFile \| null/);
+  assert.match(mainSource, /private async resolveExistingExerciseFile\(path: string \| undefined, name: string\): Promise<TFile \| null>/);
   assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:path-hit"/);
   assert.match(mainSource, /logger\.flowWarn\("Exercise", "upsert-resolve:path-missing"/);
   assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:name-hit"/);
@@ -7953,10 +7954,60 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
     mainSource.indexOf("async searchWorkoutPlans"),
     mainSource.indexOf("async createWorkoutPlan"),
   );
-  assert.match(exerciseMethod, /for \(const file of files\)/);
+  assert.match(exerciseMethod, /for \(let fileIndex = 0; fileIndex < files\.length; fileIndex\+\+\)/);
+  assert.match(exerciseMethod, /fileIndex % 40 === 0[\s\S]+window\.setTimeout\(resolve, 0\)/);
+  assert.match(exerciseMethod, /this\.exerciseSearchIndex = built/);
   assert.match(workoutPlanMethod, /for \(const file of files\)/);
   assert.doesNotMatch(exerciseMethod, /\.map\(\(file\) => \(\{ file, cache:/);
   assert.doesNotMatch(workoutPlanMethod, /\.map\(\(file\) => \(\{ file, cache:/);
+});
+
+test("exercise picker indexing yields to the UI, reuses its catalog, and normalizes configured folders", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    exercisesFolder: "_assets/exercise/",
+    exerciseTag: "#exercise",
+    enableLogging: false,
+  };
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const files = Array.from({ length: 85 }, (_entry, index) => new TFile(
+    index === 84 ? "Elsewhere/Responsive Curl.md" : `Elsewhere/Ordinary ${index}.md`,
+  ));
+  let metadataLookups = 0;
+  fake.app.vault.getMarkdownFiles = () => files;
+  fake.app.metadataCache.getFileCache = (file) => {
+    metadataLookups++;
+    return file.path.endsWith("Responsive Curl.md")
+      ? { frontmatter: { kind: "exercise", name: "Responsive Curl" } }
+      : { frontmatter: {} };
+  };
+  const originalSetTimeout = window.setTimeout;
+  let uiYields = 0;
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay === 0) uiYields++;
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  try {
+    const first = await plugin.searchExercises("responsive");
+    assert.deepEqual(first.map((item) => item.name), ["Responsive Curl"]);
+    assert.equal(metadataLookups, 85);
+    assert.equal(uiYields, 2, "large catalogs must yield between bounded scan chunks");
+    await plugin.searchExercises("curl");
+    assert.equal(metadataLookups, 85, "subsequent picker queries must reuse the catalog");
+    assert.equal(uiYields, 2);
+  } finally {
+    window.setTimeout = originalSetTimeout;
+  }
+
+  await plugin.saveSettings();
+  assert.equal(plugin.settings.exercisesFolder, "_assets/exercise");
+  const created = await plugin.createExercise({ name: "Normalized Folder Curl" });
+  assert.equal(created.sourcePath, "_assets/exercise/Normalized Folder Curl.md");
+  assert.doesNotMatch(created.sourcePath, /\/\//);
 });
 
 test("exact exercise lookup reuses one coherent metadata snapshot per scanned file", async () => {

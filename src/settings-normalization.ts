@@ -22,11 +22,11 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
     return normalized;
   }, {} as SettingsRecord) as unknown as TPSHealthSettings;
 
-  settings.workoutsFolder = stringSetting(settings.workoutsFolder, DEFAULT_SETTINGS.workoutsFolder);
-  settings.workoutPlansFolder = stringSetting(settings.workoutPlansFolder, DEFAULT_SETTINGS.workoutPlansFolder);
-  settings.exercisesFolder = stringSetting(settings.exercisesFolder, DEFAULT_SETTINGS.exercisesFolder);
-  settings.foodsFolder = stringSetting(settings.foodsFolder, DEFAULT_SETTINGS.foodsFolder);
-  settings.recipesFolder = stringSetting(settings.recipesFolder, DEFAULT_SETTINGS.recipesFolder);
+  settings.workoutsFolder = folderSetting(settings.workoutsFolder, DEFAULT_SETTINGS.workoutsFolder);
+  settings.workoutPlansFolder = folderSetting(settings.workoutPlansFolder, DEFAULT_SETTINGS.workoutPlansFolder);
+  settings.exercisesFolder = folderSetting(settings.exercisesFolder, DEFAULT_SETTINGS.exercisesFolder);
+  settings.foodsFolder = folderSetting(settings.foodsFolder, DEFAULT_SETTINGS.foodsFolder);
+  settings.recipesFolder = folderSetting(settings.recipesFolder, DEFAULT_SETTINGS.recipesFolder);
   settings.workoutTemplatePath = optionalStringSetting(settings.workoutTemplatePath);
   settings.workoutPlanTemplatePath = optionalStringSetting(settings.workoutPlanTemplatePath);
   settings.exerciseTemplatePath = optionalStringSetting(settings.exerciseTemplatePath);
@@ -245,6 +245,14 @@ function cloneSettingValue(value: unknown): unknown {
 
 function stringSetting(value: unknown, fallback: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || fallback;
+}
+
+function folderSetting(value: unknown, fallback: string): string {
+  const normalized = stringSetting(value, fallback)
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^\/+|\/+$/g, "");
   return normalized || fallback;
 }
 

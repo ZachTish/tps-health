@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.15.3
+
+- Adding an exercise can no longer hand Obsidian a doubled-slash note path when an exercise folder setting ends in `/`. Health canonicalizes every configured entity folder at load/save and again at the exercise-note write boundary.
+- The exercise picker now builds one reusable catalog in bounded chunks, yielding to Obsidian every 40 Markdown files. Opening the picker and typing no longer perform repeated uninterrupted full-vault scans on the UI thread.
+- Concurrent picker searches share the same catalog build, later queries reuse the result, and Markdown changes invalidate it. Exact matching still preserves the existing vault order and food/archive exclusions.
+- This is a backward-compatible reliability patch with no API or note-schema migration. A trailing slash is removed from affected folder settings on the next normalized settings save. Obsidian 1.12.0 remains the minimum supported version.
+- Validation covers the production-shaped `_assets/exercise/` setting, canonical `_assets/exercise/Name.md` creation, an 85-file responsive catalog build with two UI yields, cache reuse, existing workout insertion, and exact exercise lookup. Full-suite/build/deploy results and hashes are recorded in the release notes.
+
 ## 0.15.2
 
 - Live Preview workout sets now use the same compact joined exercise table as Reading mode. CodeMirror's standalone set widgets no longer fall back to the former bordered card styling.

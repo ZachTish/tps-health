@@ -355,6 +355,16 @@ interface LocalFoodIndex {
   scannedFiles: number;
 }
 
+interface ExerciseSearchIndex {
+  signature: string;
+  items: ExerciseItem[];
+  byName: Map<string, ExerciseItem>;
+  scannedFiles: number;
+  archived: number;
+  foodLike: number;
+  recognized: number;
+}
+
 interface FoodUsageIndex {
   signature: string;
   stats: Map<string, FoodUsageStats>;
@@ -522,6 +532,10 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutActionBarRefreshTimer: number | null = null;
   private foodLogNutritionRepairTimer: number | null = null;
   private localFoodIndex: LocalFoodIndex | null = null;
+  private exerciseSearchIndex: ExerciseSearchIndex | null = null;
+  private exerciseSearchIndexDirty = true;
+  private exerciseSearchIndexGeneration = 0;
+  private exerciseSearchIndexInFlight: { signature: string; generation: number; promise: Promise<ExerciseSearchIndex> } | null = null;
   private foodUsageIndex: FoodUsageIndex | null = null;
   private localFoodIndexDirty = true;
   private foodUsageIndexDirty = true;
@@ -3209,6 +3223,8 @@ export default class TPSHealthPlugin extends Plugin {
       || this.foodUsagePathCouldChange(file.path)
       || this.foodUsagePathCouldChange(oldPath);
     if (invalidateCatalog) this.localFoodIndexDirty = true;
+    this.exerciseSearchIndexDirty = true;
+    this.exerciseSearchIndexGeneration++;
     if (invalidateUsage) this.markFoodUsageIndexDirty();
     if ((invalidateCatalog && hadCatalog) || (invalidateUsage && hadUsage)) {
       logger.flow("FoodIndex", "invalidate", {
@@ -3962,43 +3978,85 @@ export default class TPSHealthPlugin extends Plugin {
 
   async searchExercises(query: string): Promise<ExerciseItem[]> {
     const lowered = query.toLowerCase();
-    const files = this.app.vault.getMarkdownFiles();
+    const index = await this.getExerciseSearchIndex();
+    const results = index.items.filter((item) => item.name.toLowerCase().includes(lowered));
     const stats = {
-      scanned: files.length,
-      archived: 0,
-      foodLike: 0,
-      recognized: 0,
-      queryMiss: 0,
-      returned: 0,
+      scanned: index.scannedFiles,
+      archived: index.archived,
+      foodLike: index.foodLike,
+      recognized: index.recognized,
+      queryMiss: index.items.length - results.length,
+      returned: results.length,
     };
-    const results: ExerciseItem[] = [];
-    for (const file of files) {
+    logger.flow("Exercise", "search:done", { query, ...stats });
+    return results;
+  }
+
+  private exerciseSearchIndexSettingsSignature(): string {
+    return JSON.stringify([
+      normalizePath(this.settings.exercisesFolder || "").replace(/^\/+|\/+$/g, ""),
+      normalizeHealthTag(this.settings.exerciseTag || ""),
+      this.foodIndexSettingsSignature(),
+    ]);
+  }
+
+  private async getExerciseSearchIndex(): Promise<ExerciseSearchIndex> {
+    const signature = this.exerciseSearchIndexSettingsSignature();
+    if (this.exerciseSearchIndex && !this.exerciseSearchIndexDirty && this.exerciseSearchIndex.signature === signature) {
+      return this.exerciseSearchIndex;
+    }
+    const generation = this.exerciseSearchIndexGeneration;
+    if (this.exerciseSearchIndexInFlight?.signature === signature && this.exerciseSearchIndexInFlight.generation === generation) {
+      return this.exerciseSearchIndexInFlight.promise;
+    }
+    const promise = this.buildExerciseSearchIndex(signature);
+    this.exerciseSearchIndexInFlight = { signature, generation, promise };
+    try {
+      const built = await promise;
+      if (generation === this.exerciseSearchIndexGeneration && signature === this.exerciseSearchIndexSettingsSignature()) {
+        this.exerciseSearchIndex = built;
+        this.exerciseSearchIndexDirty = false;
+      }
+      return built;
+    } finally {
+      if (this.exerciseSearchIndexInFlight?.promise === promise) this.exerciseSearchIndexInFlight = null;
+    }
+  }
+
+  private async buildExerciseSearchIndex(signature: string): Promise<ExerciseSearchIndex> {
+    const files = this.app.vault.getMarkdownFiles();
+    const items: ExerciseItem[] = [];
+    const byName = new Map<string, ExerciseItem>();
+    let archived = 0;
+    let foodLike = 0;
+    let recognized = 0;
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      if (fileIndex > 0 && fileIndex % 40 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      const file = files[fileIndex];
       const cache = this.app.metadataCache.getFileCache(file);
       const tags = cache?.tags?.map((tag) => tag.tag) || [];
       const fm = cache?.frontmatter || {};
       if (isArchivedHealthPath(file.path)) {
-        stats.archived++;
+        archived++;
         continue;
       }
       if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
-        stats.foodLike++;
+        foodLike++;
         continue;
       }
-      const recognized = tags.includes(this.settings.exerciseTag) ||
+      const isExercise = tags.includes(this.settings.exerciseTag) ||
         fm.kind === "exercise" ||
         fm.tpsType === "health-exercise" ||
-        file.path.startsWith(`${this.settings.exercisesFolder}/`);
-      if (!recognized) continue;
-      stats.recognized++;
-      if (!`${fm.name || file.basename}`.toLowerCase().includes(lowered)) {
-        stats.queryMiss++;
-        continue;
-      }
-      results.push(this.exerciseFromFrontmatter(file, fm));
+        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+      if (!isExercise) continue;
+      recognized++;
+      const item = this.exerciseFromFrontmatter(file, fm);
+      items.push(item);
+      const key = normalizeLookup(item.name);
+      if (key && !byName.has(key)) byName.set(key, item);
     }
-    stats.returned = results.length;
-    logger.flow("Exercise", "search:done", { query, ...stats });
-    return results;
+    logger.flow("ExerciseIndex", "build:done", { files: files.length, archived, foodLike, recognized, items: items.length });
+    return { signature, items, byName, scannedFiles: files.length, archived, foodLike, recognized };
   }
 
   async getActiveWorkoutExerciseNames(): Promise<string[]> {
@@ -4030,11 +4088,14 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async createExercise(input: CreateExerciseInput): Promise<ExerciseItem> {
-    await this.ensureFolder(this.settings.exercisesFolder);
-    const path = await this.uniquePath(`${this.settings.exercisesFolder}/${sanitizeFileName(input.name)}.md`);
+    const folder = normalizePath(this.settings.exercisesFolder || DEFAULT_SETTINGS.exercisesFolder).replace(/^\/+|\/+$/g, "");
+    await this.ensureFolder(folder);
+    const path = await this.uniquePath(`${folder}/${sanitizeFileName(input.name)}.md`);
     const template = await this.readExerciseTemplate();
     const body = template ? this.renderExerciseTemplate(template, input) : this.defaultExerciseTemplate(input);
     await this.app.vault.create(path, body);
+    this.exerciseSearchIndexDirty = true;
+    this.exerciseSearchIndexGeneration++;
     logger.flow("Exercise", "note:create", { path, name: input.name, template: Boolean(template) });
     return {
       id: path,
@@ -4052,7 +4113,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async findOrCreateExercise(input: CreateExerciseInput): Promise<ExerciseItem> {
-    const existing = this.findExercise(input.name);
+    const existing = (await this.getExerciseSearchIndex()).byName.get(normalizeLookup(input.name)) || null;
     if (existing) {
       logger.flow("Exercise", "find-or-create:hit", { path: existing.sourcePath || "", name: existing.name });
       return existing;
@@ -4062,7 +4123,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async upsertExercise(input: UpsertExerciseInput): Promise<ExerciseItem> {
-    const file = this.resolveExistingExerciseFile(input.path, input.name);
+    const file = await this.resolveExistingExerciseFile(input.path, input.name);
     if (!(file instanceof TFile) || input.merge === false) {
       logger.flow("Exercise", "upsert:create", { name: input.name, requestedPath: input.path || "", merge: input.merge !== false });
       return this.createExercise(input);
@@ -4077,7 +4138,7 @@ export default class TPSHealthPlugin extends Plugin {
     });
   }
 
-  private resolveExistingExerciseFile(path: string | undefined, name: string): TFile | null {
+  private async resolveExistingExerciseFile(path: string | undefined, name: string): Promise<TFile | null> {
     if (path) {
       const byPath = this.app.vault.getAbstractFileByPath(path);
       if (byPath instanceof TFile) {
@@ -4086,7 +4147,7 @@ export default class TPSHealthPlugin extends Plugin {
       }
       logger.flowWarn("Exercise", "upsert-resolve:path-missing", { path, name });
     }
-    const existing = this.findExercise(name);
+    const existing = (await this.getExerciseSearchIndex()).byName.get(normalizeLookup(name)) || null;
     if (existing?.sourcePath) {
       const file = this.app.vault.getAbstractFileByPath(existing.sourcePath);
       if (file instanceof TFile) {
@@ -7592,6 +7653,10 @@ export default class TPSHealthPlugin extends Plugin {
 
   private findExercise(name: string): ExerciseItem | null {
     const normalized = normalizeLookup(name);
+    const signature = this.exerciseSearchIndexSettingsSignature();
+    if (this.exerciseSearchIndex && !this.exerciseSearchIndexDirty && this.exerciseSearchIndex.signature === signature) {
+      return this.exerciseSearchIndex.byName.get(normalized) || null;
+    }
     for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter || {};
@@ -7600,7 +7665,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
       const isExercise = tags.includes(this.settings.exerciseTag) ||
         fm.tpsType === "health-exercise" ||
-        file.path.startsWith(`${this.settings.exercisesFolder}/`);
+        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
       if (normalizeLookup(String(fm.name || file.basename)) === normalized) {
         return this.exerciseFromFrontmatter(file, fm);
