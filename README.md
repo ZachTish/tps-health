@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.15.4
+
+- The workout exercise picker no longer waits for a complete vault catalog before it becomes usable. It paints its search field, loading state, and explicit Cancel action immediately; typing paints `Use “name”` before background search finishes.
+- Picker-created exercises use Obsidian's exact link index and the current cached exercise catalog when available, then create directly without triggering another full-vault scan. This keeps Add exercise responsive while mobile metadata is still resolving.
+- Background exercise discovery now yields before its first metadata lookup and after every 12 files instead of every 40. One malformed metadata entry is skipped instead of rejecting the whole picker search.
+- Mobile no longer automatically opens the keyboard when the picker appears. Search failures are shown inside the still-usable modal, and the create/cancel path remains available instead of leaving a click-blocking overlay with no recovery action.
+- This is a backward-compatible reliability patch with no API, settings, or note-schema migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation covers a catalog that cannot be scanned, exact existing-note reuse, direct new-note creation, fail-open modal contracts, the full declared suite, and a deployed blank-workout → immediate Create → inserted exercise flow in the isolated test vault. Final hashes are in the release notes.
+
 ## 0.15.3
 
 - Adding an exercise can no longer hand Obsidian a doubled-slash note path when an exercise folder setting ends in `/`. Health canonicalizes every configured entity folder at load/save and again at the exercise-note write boundary.

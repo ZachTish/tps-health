@@ -5205,8 +5205,8 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "done"/);
   assert.match(mainSource, /logger\.flowError\("WorkoutLayoutModal", "failed"/);
   assert.match(mainSource, /logger\.flow\("WorkoutLayoutModal", "cancel"/);
-  assert.match(mainSource, /async addSetForExerciseToActiveWorkout\(exercise: string, after\?: WorkoutSetLineSource\): Promise<void>/);
-  assert.match(mainSource, /async addSetForExerciseToWorkoutFile\(filePath: string, exercise: string, after\?: WorkoutSetLineSource, options: \{ focusAfter\?: boolean \} = \{\}\): Promise<ExerciseItem \| null>/);
+  assert.match(mainSource, /async addSetForExerciseToActiveWorkout\([\s\S]*options: \{ skipCatalogBuild\?: boolean \} = \{\},[\s\S]*\): Promise<void>/);
+  assert.match(mainSource, /async addSetForExerciseToWorkoutFile\([\s\S]*options: \{ focusAfter\?: boolean; skipCatalogBuild\?: boolean \} = \{\},[\s\S]*\): Promise<ExerciseItem \| null>/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:create-workout-missing"/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "placeholder:missing-file"/);
   assert.match(mainSource, /logger\.flow\("WorkoutSet", "placeholder:open-modal"/);
@@ -5272,7 +5272,7 @@ test("workout starts use existing templates and blank starts open a clean Daily 
   assert.match(mainSource, /logger\.flowError\("WorkoutExercisePicker", "choose:failed", error/);
   assert.match(mainSource, /new Notice\(`Could not add \$\{exercise\}: \$\{errorMessage\}`\)/);
   assert.match(mainSource, /status\.setText\("Adding…"\)/);
-  assert.match(mainSource, /\{ focusAfter: false \}/);
+  assert.match(mainSource, /focusAfter: false,\s+skipCatalogBuild: true/);
   assert.match(mainSource, /focusLatestWorkoutSetAfterPicker/);
   assert.doesNotMatch(mainSource, /\.setName\("Superset group"\)/);
   assert.doesNotMatch(mainSource, /\.setName\("Dropset group"\)/);
@@ -7955,7 +7955,7 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
     mainSource.indexOf("async createWorkoutPlan"),
   );
   assert.match(exerciseMethod, /for \(let fileIndex = 0; fileIndex < files\.length; fileIndex\+\+\)/);
-  assert.match(exerciseMethod, /fileIndex % 40 === 0[\s\S]+window\.setTimeout\(resolve, 0\)/);
+  assert.match(exerciseMethod, /fileIndex % 12 === 0[\s\S]+window\.setTimeout\(resolve, 0\)/);
   assert.match(exerciseMethod, /this\.exerciseSearchIndex = built/);
   assert.match(workoutPlanMethod, /for \(const file of files\)/);
   assert.doesNotMatch(exerciseMethod, /\.map\(\(file\) => \(\{ file, cache:/);
@@ -7995,10 +7995,10 @@ test("exercise picker indexing yields to the UI, reuses its catalog, and normali
     const first = await plugin.searchExercises("responsive");
     assert.deepEqual(first.map((item) => item.name), ["Responsive Curl"]);
     assert.equal(metadataLookups, 85);
-    assert.equal(uiYields, 2, "large catalogs must yield between bounded scan chunks");
+    assert.equal(uiYields, 8, "large catalogs must yield before scanning and between small bounded chunks");
     await plugin.searchExercises("curl");
     assert.equal(metadataLookups, 85, "subsequent picker queries must reuse the catalog");
-    assert.equal(uiYields, 2);
+    assert.equal(uiYields, 8);
   } finally {
     window.setTimeout = originalSetTimeout;
   }
@@ -8008,6 +8008,57 @@ test("exercise picker indexing yields to the UI, reuses its catalog, and normali
   const created = await plugin.createExercise({ name: "Normalized Folder Curl" });
   assert.equal(created.sourcePath, "_assets/exercise/Normalized Folder Curl.md");
   assert.doesNotMatch(created.sourcePath, /\/\//);
+});
+
+test("exercise picker creation remains usable without waiting for the vault catalog", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    exercisesFolder: "Health/Exercises",
+    exerciseTag: "#exercise",
+    enableLogging: false,
+  };
+  const TFile = globalThis.__TPSHealthTestTFile;
+  fake.files.set("Elsewhere/Existing Curl.md", [
+    "---",
+    "kind: exercise",
+    "name: Existing Curl",
+    "---",
+    "",
+  ].join("\n"));
+  fake.app.metadataCache.getFirstLinkpathDest = (name) => name === "Existing Curl"
+    ? new TFile("Elsewhere/Existing Curl.md")
+    : null;
+  let catalogScans = 0;
+  fake.app.vault.getMarkdownFiles = () => {
+    catalogScans++;
+    throw new Error("responsive picker must not scan the whole catalog");
+  };
+
+  const existing = await plugin.findOrCreateExercise({ name: "Existing Curl" }, { skipCatalogBuild: true });
+  assert.equal(existing.sourcePath, "Elsewhere/Existing Curl.md");
+  const created = await plugin.findOrCreateExercise({ name: "New Mobile Curl" }, { skipCatalogBuild: true });
+  assert.equal(created.sourcePath, "Health/Exercises/New Mobile Curl.md");
+  assert.equal(catalogScans, 0);
+});
+
+test("workout exercise picker paints fail-open controls before background search", () => {
+  const pickerSource = mainSource.slice(
+    mainSource.indexOf("class WorkoutExercisePickerModal extends Modal"),
+    mainSource.indexOf("class WorkoutFileSetModal extends Modal"),
+  );
+  assert.match(pickerSource, /tps-health-workout-picker-actions/);
+  assert.match(pickerSource, /text: "Cancel"/);
+  assert.match(pickerSource, /renderMatches\(query, \[\]\)/);
+  assert.match(pickerSource, /window\.setTimeout\(\(\) => \{[\s\S]*this\.plugin\.searchExercises\(query\)\.then/);
+  assert.match(pickerSource, /search:failed/);
+  assert.match(pickerSource, /skipCatalogBuild: true/);
+  assert.match(pickerSource, /if \(!Platform\.isMobile && !Platform\.isMobileApp\)/);
+  assert.doesNotMatch(pickerSource, /addEventListener\("pointerup"/);
+  assert.match(stylesSource, /\.tps-health-workout-picker-actions[\s\S]*min-height: 36px/);
 });
 
 test("exact exercise lookup reuses one coherent metadata snapshot per scanned file", async () => {

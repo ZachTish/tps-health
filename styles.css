@@ -2085,6 +2085,17 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   color: var(--text-muted);
 }
 
+.tps-health-workout-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.tps-health-workout-picker-actions button {
+  min-height: 36px;
+  min-width: 88px;
+}
+
 .tps-health-workout-set-editor {
   align-items: stretch;
   background: color-mix(in srgb, var(--background-secondary) 78%, transparent);

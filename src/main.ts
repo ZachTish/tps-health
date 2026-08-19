@@ -2055,7 +2055,11 @@ export default class TPSHealthPlugin extends Plugin {
     });
   }
 
-  async addSetForExerciseToActiveWorkout(exercise: string, after?: WorkoutSetLineSource): Promise<void> {
+  async addSetForExerciseToActiveWorkout(
+    exercise: string,
+    after?: WorkoutSetLineSource,
+    options: { skipCatalogBuild?: boolean } = {},
+  ): Promise<void> {
     const active = this.getActiveWorkoutState();
     const exerciseName = exercise.trim();
     if (!exerciseName || exerciseName === "Exercise") {
@@ -2063,7 +2067,7 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     if (active?.target === "daily-note") {
-      const savedExercise = await this.findOrCreateExercise({ name: exerciseName });
+      const savedExercise = await this.findOrCreateExercise({ name: exerciseName }, options);
       await this.addExercisePlaceholderToDailyWorkout(active.dailyNotePath, active.id, savedExercise.name, savedExercise.sourcePath);
       return;
     }
@@ -2090,7 +2094,10 @@ export default class TPSHealthPlugin extends Plugin {
     // The Daily Note is the canonical live-workout surface. Keep the
     // dedicated session note in sync without navigating away from the card
     // the user is actively editing.
-    const savedExercise = await this.addSetForExerciseToWorkoutFile(file.path, exerciseName, after, { focusAfter: false });
+    const savedExercise = await this.addSetForExerciseToWorkoutFile(file.path, exerciseName, after, {
+      focusAfter: false,
+      skipCatalogBuild: options.skipCatalogBuild,
+    });
     const refreshedActive = this.getActiveWorkoutState();
     if (refreshedActive?.dailyNotePath && refreshedActive.id) {
       await this.addExercisePlaceholderToDailyWorkout(
@@ -2122,10 +2129,15 @@ export default class TPSHealthPlugin extends Plugin {
     });
   }
 
-  async addSetForExerciseToWorkoutFile(filePath: string, exercise: string, after?: WorkoutSetLineSource, options: { focusAfter?: boolean } = {}): Promise<ExerciseItem | null> {
+  async addSetForExerciseToWorkoutFile(
+    filePath: string,
+    exercise: string,
+    after?: WorkoutSetLineSource,
+    options: { focusAfter?: boolean; skipCatalogBuild?: boolean } = {},
+  ): Promise<ExerciseItem | null> {
     const exerciseName = exercise.trim();
     const savedExercise = exerciseName && exerciseName !== "Exercise"
-      ? await this.findOrCreateExercise({ name: exerciseName })
+      ? await this.findOrCreateExercise({ name: exerciseName }, options)
       : null;
     await this.serializeWorkoutMutation(filePath, "add-exercise-set", () => this.addSetForExerciseToWorkoutFileNow(
       filePath,
@@ -4030,32 +4042,37 @@ export default class TPSHealthPlugin extends Plugin {
     let archived = 0;
     let foodLike = 0;
     let recognized = 0;
+    let failed = 0;
     for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-      if (fileIndex > 0 && fileIndex % 40 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (fileIndex % 12 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       const file = files[fileIndex];
-      const cache = this.app.metadataCache.getFileCache(file);
-      const tags = cache?.tags?.map((tag) => tag.tag) || [];
-      const fm = cache?.frontmatter || {};
-      if (isArchivedHealthPath(file.path)) {
-        archived++;
-        continue;
+      try {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const tags = cache?.tags?.map((tag) => tag.tag) || [];
+        const fm = cache?.frontmatter || {};
+        if (isArchivedHealthPath(file.path)) {
+          archived++;
+          continue;
+        }
+        if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
+          foodLike++;
+          continue;
+        }
+        const isExercise = tags.includes(this.settings.exerciseTag) ||
+          fm.kind === "exercise" ||
+          fm.tpsType === "health-exercise" ||
+          fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+        if (!isExercise) continue;
+        recognized++;
+        const item = this.exerciseFromFrontmatter(file, fm);
+        items.push(item);
+        const key = normalizeLookup(item.name);
+        if (key && !byName.has(key)) byName.set(key, item);
+      } catch {
+        failed++;
       }
-      if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
-        foodLike++;
-        continue;
-      }
-      const isExercise = tags.includes(this.settings.exerciseTag) ||
-        fm.kind === "exercise" ||
-        fm.tpsType === "health-exercise" ||
-        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
-      if (!isExercise) continue;
-      recognized++;
-      const item = this.exerciseFromFrontmatter(file, fm);
-      items.push(item);
-      const key = normalizeLookup(item.name);
-      if (key && !byName.has(key)) byName.set(key, item);
     }
-    logger.flow("ExerciseIndex", "build:done", { files: files.length, archived, foodLike, recognized, items: items.length });
+    logger.flow("ExerciseIndex", "build:done", { files: files.length, archived, foodLike, recognized, failed, items: items.length });
     return { signature, items, byName, scannedFiles: files.length, archived, foodLike, recognized };
   }
 
@@ -4112,13 +4129,43 @@ export default class TPSHealthPlugin extends Plugin {
     };
   }
 
-  async findOrCreateExercise(input: CreateExerciseInput): Promise<ExerciseItem> {
-    const existing = (await this.getExerciseSearchIndex()).byName.get(normalizeLookup(input.name)) || null;
+  private exactLinkedExercise(name: string): ExerciseItem | null {
+    const normalized = normalizeLookup(name);
+    const resolver = (this.app.metadataCache as any)?.getFirstLinkpathDest;
+    if (!normalized || typeof resolver !== "function") return null;
+    const file = resolver.call(this.app.metadataCache, name.trim(), "");
+    if (!(file instanceof TFile) || isArchivedHealthPath(file.path)) return null;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const fm = cache?.frontmatter || {};
+    const tags = cache?.tags?.map((tag) => tag.tag) || [];
+    if (hasFoodIdentitySignal(this.settings, file, fm, tags)) return null;
+    const recognized = tags.includes(this.settings.exerciseTag) ||
+      fm.kind === "exercise" ||
+      fm.tpsType === "health-exercise" ||
+      fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+    if (!recognized) return null;
+    const item = this.exerciseFromFrontmatter(file, fm);
+    return normalizeLookup(item.name) === normalized || normalizeLookup(file.basename) === normalized ? item : null;
+  }
+
+  async findOrCreateExercise(
+    input: CreateExerciseInput,
+    options: { skipCatalogBuild?: boolean } = {},
+  ): Promise<ExerciseItem> {
+    const normalized = normalizeLookup(input.name);
+    const direct = this.exactLinkedExercise(input.name);
+    const signature = this.exerciseSearchIndexSettingsSignature();
+    const cached = this.exerciseSearchIndex && !this.exerciseSearchIndexDirty && this.exerciseSearchIndex.signature === signature
+      ? this.exerciseSearchIndex.byName.get(normalized) || null
+      : null;
+    const existing = direct || cached || (options.skipCatalogBuild
+      ? null
+      : (await this.getExerciseSearchIndex()).byName.get(normalized) || null);
     if (existing) {
       logger.flow("Exercise", "find-or-create:hit", { path: existing.sourcePath || "", name: existing.name });
       return existing;
     }
-    logger.flow("Exercise", "find-or-create:create", { name: input.name });
+    logger.flow("Exercise", "find-or-create:create", { name: input.name, route: options.skipCatalogBuild ? "responsive-picker" : "catalog" });
     return this.createExercise(input);
   }
 
@@ -13561,6 +13608,7 @@ class SetModal extends Modal {
 
 class WorkoutExercisePickerModal extends Modal {
   private token = 0;
+  private searchTimer: number | null = null;
 
   constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string, private workoutId = "") {
     super(app);
@@ -13577,6 +13625,12 @@ class WorkoutExercisePickerModal extends Modal {
     });
     const results = this.contentEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
     const status = this.contentEl.createEl("p", { cls: "tps-health-status", text: "Choose an exercise" });
+    const actions = this.contentEl.createDiv({ cls: "tps-health-workout-picker-actions" });
+    const cancel = actions.createEl("button", {
+      text: "Cancel",
+      attr: { type: "button" },
+    });
+    cancel.addEventListener("click", () => this.close());
     let choosing = false;
     const choose = async (name: string) => {
       if (choosing) return;
@@ -13589,11 +13643,14 @@ class WorkoutExercisePickerModal extends Modal {
         if (!exercise) throw new Error("Exercise name was empty.");
         logger.flow("WorkoutExercisePicker", "choose:start", { path: this.filePath, exercise });
         if (this.workoutId) {
-          await this.plugin.addSetForExerciseToActiveWorkout(exercise);
+          await this.plugin.addSetForExerciseToActiveWorkout(exercise, undefined, { skipCatalogBuild: true });
         } else if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
           await this.plugin.logSet({ exercise, createExerciseNote: true });
         } else {
-          await this.plugin.addSetForExerciseToWorkoutFile(this.filePath, exercise, undefined, { focusAfter: false });
+          await this.plugin.addSetForExerciseToWorkoutFile(this.filePath, exercise, undefined, {
+            focusAfter: false,
+            skipCatalogBuild: true,
+          });
         }
         status.setText(`Added ${exercise}`);
         logger.flow("WorkoutExercisePicker", "choose:done", { path: this.filePath, exercise });
@@ -13615,42 +13672,71 @@ class WorkoutExercisePickerModal extends Modal {
         results.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = false);
       }
     };
-    const render = async () => {
-      const query = input.value.trim();
-      const token = ++this.token;
-      const matches = await this.plugin.searchExercises(query);
-      if (token !== this.token) return;
+    const renderMatches = (query: string, matches: ExerciseItem[]) => {
       results.empty();
-      const names = matches.map((item) => item.name.trim()).filter(Boolean).slice(0, 14);
-      if (query && !names.some((name) => name.toLowerCase() === query.toLowerCase())) names.unshift(query);
-      for (const name of names) {
+      const exact = matches.some((item) => item.name.trim().toLowerCase() === query.toLowerCase());
+      if (query && !exact) {
+        const create = results.createEl("button", {
+          text: `Use “${query}”`,
+          cls: "tps-health-workout-exercise-choice tps-health-workout-exercise-choice--create",
+          attr: { type: "button" },
+        });
+        create.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void choose(query);
+        });
+      }
+      for (const item of matches.slice(0, 14)) {
+        const name = item.name.trim();
+        if (!name) continue;
         const button = results.createEl("button", {
-          text: name === query && !matches.some((item) => item.name.toLowerCase() === query.toLowerCase()) ? `Use “${name}”` : name,
+          text: name,
           cls: "tps-health-workout-exercise-choice",
           attr: { type: "button" },
         });
-        const select = (event: Event) => {
+        button.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
           void choose(name);
-        };
-        button.addEventListener("pointerup", select);
-        button.addEventListener("click", select);
+        });
       }
     };
-    input.addEventListener("input", () => void render());
+    const render = () => {
+      const query = input.value.trim();
+      const token = ++this.token;
+      renderMatches(query, []);
+      status.setText(query ? "Searching saved exercises…" : "Loading saved exercises…");
+      if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
+      this.searchTimer = window.setTimeout(() => {
+        this.searchTimer = null;
+        void this.plugin.searchExercises(query).then((matches) => {
+          if (token !== this.token) return;
+          renderMatches(query, matches);
+          status.setText(matches.length ? "Choose an exercise" : query ? "Create this exercise or keep typing" : "No saved exercises yet");
+        }).catch((error) => {
+          if (token !== this.token) return;
+          const message = logger.errorSummary(error).replace(/\s+/g, " ").slice(0, 120);
+          logger.flowError("WorkoutExercisePicker", "search:failed", error, { query });
+          status.setText(`Saved exercises unavailable${message ? `: ${message}` : ""}. You can still add this name or cancel.`);
+        });
+      }, 100);
+    };
+    input.addEventListener("input", render);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && input.value.trim()) {
         event.preventDefault();
         void choose(input.value);
       }
     });
-    void render();
-    window.setTimeout(() => input.focus(), 0);
+    render();
+    if (!Platform.isMobile && !Platform.isMobileApp) window.setTimeout(() => input.focus(), 0);
   }
 
   onClose(): void {
     this.token++;
+    if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
+    this.searchTimer = null;
     this.contentEl.empty();
   }
 }
