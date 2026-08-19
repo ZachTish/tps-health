@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.15.5
+
+- Opening **Add exercise** now performs zero vault-catalog work. The picker renders a usable search field, cancel action, and create-by-name path without scheduling a background scan merely because the modal opened.
+- Typed exercise searches inspect only the configured exercise folder and filename-matching candidates instead of reading metadata for every Markdown file in the vault. Existing result order and exercise identity rules remain unchanged.
+- Every typed search owns an abort signal. A newer query, closing the picker, or unloading its modal cancels the prior scan before further metadata work, so stale discovery cannot keep Obsidian's renderer pinned after the picker is gone.
+- This is a backward-compatible emergency reliability patch with no settings, API, or note-schema migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation covers zero-work modal opening, bounded candidate inspection, prompt cancellation, existing-note reuse, normalized exercise creation, the full declared suite, a separate production-mode build, and test-vault runtime verification. Final artifact hashes are recorded in the release notes.
+
 ## 0.15.4
 
 - The workout exercise picker no longer waits for a complete vault catalog before it becomes usable. It paints its search field, loading state, and explicit Cancel action immediately; typing paints `Use “name”` before background search finishes.

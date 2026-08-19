@@ -5158,9 +5158,9 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flow\("Exercise", "active-workout-names:no-active"/);
   assert.match(mainSource, /logger\.flowWarn\("Exercise", "active-workout-names:missing-file"/);
   assert.match(mainSource, /logger\.flow\("Exercise", "active-workout-names:done"/);
-  assert.match(mainSource, /logger\.flow\("Exercise", "search:done", \{ query, \.\.\.stats \}\)/);
-  assert.match(mainSource, /const index = await this\.getExerciseSearchIndex\(\)/);
-  assert.match(mainSource, /queryMiss: index\.items\.length - results\.length/);
+  assert.match(mainSource, /logger\.flow\("Exercise", "search:empty", \{ cached: cached\.length \}\)/);
+  assert.match(mainSource, /const candidates = files\.filter/);
+  assert.match(mainSource, /vaultFiles: files\.length,[\s\S]*candidates: candidates\.length,[\s\S]*inspected,[\s\S]*recognized/);
   assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "active-workout" \}\)/);
   assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "workout-file", path: file\.path \}\)/);
   assert.match(mainSource, /private async resolveExistingExerciseFile\(path: string \| undefined, name: string\): Promise<TFile \| null>/);
@@ -7886,7 +7886,7 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
     {
       query: "nEeDlE",
       logMessage: "[TPS Health] [Exercise] search:done",
-      stats: { scanned: 8, archived: 1, foodLike: 1, recognized: 5, queryMiss: 1, returned: 4 },
+      stats: { vaultFiles: 8, candidates: 7, inspected: 7, recognized: 4, returned: 4 },
       search: (query) => plugin.searchExercises(query),
       cases: [
         { path: "Health/Exercises/Zulu Needle.md", cache: { frontmatter: { name: "Zulu Needle", category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 } }, expected: exerciseResult("Health/Exercises/Zulu Needle.md", "Zulu Needle", { category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 }) },
@@ -7936,7 +7936,11 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
       const { files, lookups } = installScenario(scenario);
       const results = await scenario.search(scenario.query);
       assert.deepEqual(results, scenario.cases.flatMap(({ expected }) => expected ? [expected] : []));
-      assert.deepEqual(lookups, files.map((file) => file.path));
+      if (scenario.logMessage === "[TPS Health] [Exercise] search:done") {
+        assert.deepEqual(lookups, files.filter((file) => file.path.startsWith("Health/Exercises/") || /needle/i.test(file.basename)).map((file) => file.path));
+      } else {
+        assert.deepEqual(lookups, files.map((file) => file.path));
+      }
       const logCall = logCalls.find(([message]) => message === scenario.logMessage);
       assert.deepEqual(logCall?.[1], { query: scenario.query, ...scenario.stats });
     }
@@ -7962,7 +7966,7 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
   assert.doesNotMatch(workoutPlanMethod, /\.map\(\(file\) => \(\{ file, cache:/);
 });
 
-test("exercise picker indexing yields to the UI, reuses its catalog, and normalizes configured folders", async () => {
+test("exercise picker search inspects only relevant files, cancels promptly, and normalizes configured folders", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -7994,11 +7998,16 @@ test("exercise picker indexing yields to the UI, reuses its catalog, and normali
   try {
     const first = await plugin.searchExercises("responsive");
     assert.deepEqual(first.map((item) => item.name), ["Responsive Curl"]);
-    assert.equal(metadataLookups, 85);
-    assert.equal(uiYields, 8, "large catalogs must yield before scanning and between small bounded chunks");
+    assert.equal(metadataLookups, 1, "unrelated vault files must not be opened for metadata inspection");
+    assert.equal(uiYields, 1, "the bounded candidate scan must yield before metadata work");
     await plugin.searchExercises("curl");
-    assert.equal(metadataLookups, 85, "subsequent picker queries must reuse the catalog");
-    assert.equal(uiYields, 8);
+    assert.equal(metadataLookups, 2);
+    assert.equal(uiYields, 2);
+
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(() => plugin.searchExercises("responsive", { signal: controller.signal }), (error) => error?.name === "AbortError");
+    assert.equal(metadataLookups, 2, "cancelled searches must stop before metadata inspection");
   } finally {
     window.setTimeout = originalSetTimeout;
   }
@@ -8045,7 +8054,7 @@ test("exercise picker creation remains usable without waiting for the vault cata
   assert.equal(catalogScans, 0);
 });
 
-test("workout exercise picker paints fail-open controls before background search", () => {
+test("workout exercise picker performs no catalog work on open and cancels typed searches", () => {
   const pickerSource = mainSource.slice(
     mainSource.indexOf("class WorkoutExercisePickerModal extends Modal"),
     mainSource.indexOf("class WorkoutFileSetModal extends Modal"),
@@ -8053,7 +8062,11 @@ test("workout exercise picker paints fail-open controls before background search
   assert.match(pickerSource, /tps-health-workout-picker-actions/);
   assert.match(pickerSource, /text: "Cancel"/);
   assert.match(pickerSource, /renderMatches\(query, \[\]\)/);
-  assert.match(pickerSource, /window\.setTimeout\(\(\) => \{[\s\S]*this\.plugin\.searchExercises\(query\)\.then/);
+  assert.match(pickerSource, /if \(!query\) \{[\s\S]*Type to search or create an exercise[\s\S]*return;/);
+  assert.match(pickerSource, /new AbortController\(\)/);
+  assert.match(pickerSource, /this\.plugin\.searchExercises\(query, \{ signal: controller\.signal \}\)\.then/);
+  assert.match(pickerSource, /this\.searchAbort\?\.abort\(\)/);
+  assert.match(pickerSource, /error\.name === "AbortError"/);
   assert.match(pickerSource, /search:failed/);
   assert.match(pickerSource, /skipCatalogBuild: true/);
   assert.match(pickerSource, /if \(!Platform\.isMobile && !Platform\.isMobileApp\)/);

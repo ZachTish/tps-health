@@ -3988,20 +3988,57 @@ export default class TPSHealthPlugin extends Plugin {
     return this.logFoodFromInput({ ...input, item });
   }
 
-  async searchExercises(query: string): Promise<ExerciseItem[]> {
-    const lowered = query.toLowerCase();
-    const index = await this.getExerciseSearchIndex();
-    const results = index.items.filter((item) => item.name.toLowerCase().includes(lowered));
-    const stats = {
-      scanned: index.scannedFiles,
-      archived: index.archived,
-      foodLike: index.foodLike,
-      recognized: index.recognized,
-      queryMiss: index.items.length - results.length,
+  async searchExercises(query: string, options: { signal?: AbortSignal } = {}): Promise<ExerciseItem[]> {
+    const normalizedQuery = normalizeLookup(query);
+    const signature = this.exerciseSearchIndexSettingsSignature();
+    if (!normalizedQuery) {
+      const cached = this.exerciseSearchIndex && !this.exerciseSearchIndexDirty && this.exerciseSearchIndex.signature === signature
+        ? this.exerciseSearchIndex.items.slice(0, 14)
+        : [];
+      logger.flow("Exercise", "search:empty", { cached: cached.length });
+      return cached;
+    }
+    const signal = options.signal;
+    if (signal?.aborted) throw new DOMException("Exercise search was cancelled", "AbortError");
+    const files = this.app.vault.getMarkdownFiles();
+    const candidates = files.filter((file) => fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder) ||
+      normalizeLookup(file.basename).includes(normalizedQuery));
+    const results: ExerciseItem[] = [];
+    const seen = new Set<string>();
+    let inspected = 0;
+    let recognized = 0;
+    for (let fileIndex = 0; fileIndex < candidates.length; fileIndex++) {
+      if (signal?.aborted) throw new DOMException("Exercise search was cancelled", "AbortError");
+      if (fileIndex % 12 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (signal?.aborted) throw new DOMException("Exercise search was cancelled", "AbortError");
+      const file = candidates[fileIndex];
+      inspected++;
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache?.frontmatter || {};
+      const tags = cache?.tags?.map((tag) => tag.tag) || [];
+      if (isArchivedHealthPath(file.path) || hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
+      const isExercise = tags.includes(this.settings.exerciseTag) ||
+        fm.kind === "exercise" ||
+        fm.tpsType === "health-exercise" ||
+        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+      if (!isExercise) continue;
+      recognized++;
+      const item = this.exerciseFromFrontmatter(file, fm);
+      if (!normalizeLookup(item.name).includes(normalizedQuery) && !normalizeLookup(file.basename).includes(normalizedQuery)) continue;
+      const key = normalizeLookup(item.sourcePath || item.name);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      results.push(item);
+    }
+    logger.flow("Exercise", "search:done", {
+      query,
+      vaultFiles: files.length,
+      candidates: candidates.length,
+      inspected,
+      recognized,
       returned: results.length,
-    };
-    logger.flow("Exercise", "search:done", { query, ...stats });
-    return results;
+    });
+    return results.slice(0, 50);
   }
 
   private exerciseSearchIndexSettingsSignature(): string {
@@ -13609,6 +13646,7 @@ class SetModal extends Modal {
 class WorkoutExercisePickerModal extends Modal {
   private token = 0;
   private searchTimer: number | null = null;
+  private searchAbort: AbortController | null = null;
 
   constructor(app: App, private plugin: TPSHealthPlugin, private filePath: string, private workoutId = "") {
     super(app);
@@ -13706,19 +13744,31 @@ class WorkoutExercisePickerModal extends Modal {
       const query = input.value.trim();
       const token = ++this.token;
       renderMatches(query, []);
-      status.setText(query ? "Searching saved exercises…" : "Loading saved exercises…");
       if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+      this.searchAbort?.abort();
+      this.searchAbort = null;
+      if (!query) {
+        status.setText("Type to search or create an exercise");
+        return;
+      }
+      status.setText("Searching saved exercises…");
+      const controller = new AbortController();
+      this.searchAbort = controller;
       this.searchTimer = window.setTimeout(() => {
         this.searchTimer = null;
-        void this.plugin.searchExercises(query).then((matches) => {
+        void this.plugin.searchExercises(query, { signal: controller.signal }).then((matches) => {
           if (token !== this.token) return;
           renderMatches(query, matches);
           status.setText(matches.length ? "Choose an exercise" : query ? "Create this exercise or keep typing" : "No saved exercises yet");
         }).catch((error) => {
+          if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
           if (token !== this.token) return;
           const message = logger.errorSummary(error).replace(/\s+/g, " ").slice(0, 120);
           logger.flowError("WorkoutExercisePicker", "search:failed", error, { query });
           status.setText(`Saved exercises unavailable${message ? `: ${message}` : ""}. You can still add this name or cancel.`);
+        }).finally(() => {
+          if (this.searchAbort === controller) this.searchAbort = null;
         });
       }, 100);
     };
@@ -13737,6 +13787,8 @@ class WorkoutExercisePickerModal extends Modal {
     this.token++;
     if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
     this.searchTimer = null;
+    this.searchAbort?.abort();
+    this.searchAbort = null;
     this.contentEl.empty();
   }
 }
