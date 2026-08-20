@@ -1,5 +1,15 @@
 # TPS Health
 
+## 0.15.8
+
+- Describe now guarantees an editable tray row for every non-empty top-level food phrase. Gemini, saved-food lookup, provider search, history lookup, and the final estimate may all fail without dropping the item or returning an empty search screen.
+- Named prepared dishes stay atomic when their ingredients include quantities. For example, `diet coke, honeycrisp apple, and a ham sandwich with 56g ham and 1 slice velveeta cheese` produces three rows; the ham and cheese inform the sandwich estimate instead of becoming separate foods.
+- Gemini extraction is rejected when it fragments a locally identified composite dish. New durable-stage IDs prevent an older fragmented response from being reused after updating.
+- Every Describe result—including nutrition copied from a saved or provider food—is converted to a `custom-inline` estimate before it enters the tray. Describe never creates a reusable food, recipe, or meal note; editing and logging remain one-off operations.
+- When no usable nutrition survives review, repair, local matching, or the dedicated Gemini estimate, a conservative food-category estimate is generated locally. Clearly zero-calorie drinks remain valid zero-calorie rows; arbitrary foods receive nonzero editable calories and macros rather than an empty food.
+- The resumable Describe checkpoint advances to version 2. Existing completed pending trays remain owned by the normal pending-food draft; incomplete version-1 AI checkpoints are safely rebuilt. No vault-note, settings, or public-API migration is required. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: 187 declared checks passed, one credential-gated live USDA check was skipped, and zero failed. The exact three-food composite prompt and a total Gemini/history/local/remote outage both finish with inline tray items and zero fake-vault file writes. The final production-mode build deployed byte-identical artifacts only to the isolated test runtime. UI reload was intentionally not attempted because the only open Obsidian window was the production vault, which was inspected only far enough to identify it and then left untouched.
+
 ## 0.15.7
 
 - Completed food logs now use the same compact two-line row in Reading mode and Live Preview: food/calories on top, serving/metric amount/macros below, and one small trailing action.

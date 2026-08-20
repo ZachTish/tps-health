@@ -2900,14 +2900,16 @@ test("AI Describe reviews every extracted item while the no-Gateway fallback rem
   assert.match(aiDescribe, /taskId: "health\.describe-food\.review"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.repair"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.estimate"/);
-  assert.match(aiDescribe, /source: "custom-inline"/);
+  assert.match(mainSource, /function describeSelectionItem[\s\S]+source: "custom-inline"/);
   assert.match(aiDescribe, /searchLocalFoods\(query, loggedStats\)/);
   assert.doesNotMatch(aiDescribe, /createFoodFromInput|findOrCreateFoodNote/);
-  assert.match(legacyDescribe, /const loggedStats = await this\.getLoggedFoodStats\(""\)/);
-  assert.match(legacyDescribe, /mapWithConcurrency\(parts, 3, async \(part\) =>/);
-  assert.match(legacyDescribe, /this\.searchLocalFoods\(part\.query, loggedStats\)/);
+  assert.match(legacyDescribe, /loggedStats = await this\.getLoggedFoodStats\(""\)/);
+  assert.match(legacyDescribe, /mapWithConcurrency\(extraction\.foods, 3, async \(food\) =>/);
+  assert.match(legacyDescribe, /this\.searchLocalFoods\(query, loggedStats\)/);
   assert.match(legacyDescribe, /remoteQueriesUsed < DESCRIBE_REMOTE_QUERY_BUDGET/);
-  assert.match(legacyDescribe, /this\.searchFoods\(part\.query, loggedStats\)/);
+  assert.match(legacyDescribe, /this\.searchFoods\(query, loggedStats\)/);
+  assert.match(legacyDescribe, /const selectionItems = plannedFoods\.map\(describeSelectionItem\)/);
+  assert.doesNotMatch(legacyDescribe, /selectionItems: found\.map/);
   assert.match(mainSource, /const DESCRIBE_REMOTE_QUERY_BUDGET = 4/);
   assert.match(mainSource, /async function mapWithConcurrency<T, R>\(items: T\[\], concurrency: number/);
   assert.match(mainSource, /Array\.from\(\{ length: Math\.min\(Math\.max\(1, concurrency\), items\.length\) \}/);
@@ -3022,6 +3024,93 @@ test("AI Describe replaces an empty result with a final Gemini estimate after da
   assert.equal(selection?.item?.nutrition?.calories, 240);
   assert.equal(selection?.item?.nutrition?.proteinG, 8);
   assert.equal(selection?.item?.confidence, 0.42, "a coherent low-confidence estimate should remain editable instead of becoming an empty food");
+});
+
+test("AI Describe keeps a measured sandwich together and creates only inline tray items", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe composite vault";
+  const requests = [];
+  fake.app.tpsAiGateway = {
+    completeStructured: async (request) => {
+      requests.push(request);
+      if (request.taskId === "health.describe-food.extract") return {
+        data: {
+          mealName: "Lunch",
+          foods: [
+            { itemId: "item-1", label: "Diet Coke", quantity: 1, unit: "can", estimatedWeightG: 355 },
+            { itemId: "item-2", label: "Honeycrisp apple", quantity: 1, unit: "apple", estimatedWeightG: 242 },
+            { itemId: "item-3", label: "ham sandwich", quantity: 1, unit: "sandwich", estimatedWeightG: 150 },
+            { itemId: "item-4", label: "56 g ham", quantity: 56, unit: "g", estimatedWeightG: 56 },
+            { itemId: "item-5", label: "Velveeta cheese", quantity: 1, unit: "slice", estimatedWeightG: 20 },
+          ],
+        },
+        provider: "gemini", model: "test", traceId: "fragmented-extract", attempts: 1,
+      };
+      assert.equal(request.taskId, "health.describe-food.review");
+      const reviewedExtraction = JSON.parse(request.messages[1].content).extraction;
+      assert.equal(reviewedExtraction.foods.length, 3, "local top-level extraction must reject AI fragmentation of sandwich ingredients");
+      return {
+        data: {
+          mealName: "Lunch",
+          foods: [
+            { ...reviewedExtraction.foods[0], label: "Diet Coke", confidence: 0.95, calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 40 },
+            { ...reviewedExtraction.foods[1], label: "Honeycrisp apple, large", estimatedWeightG: 242, confidence: 0.9, calories: 126, proteinG: 0.7, carbsG: 33.4, fatG: 0.5, fiberG: 5.8, sugarG: 25.2, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 2 },
+            { ...reviewedExtraction.foods[2], label: "Ham sandwich with Velveeta", estimatedWeightG: 150, confidence: 0.78, calories: 330, proteinG: 20, carbsG: 36, fatG: 12, fiberG: 2, sugarG: 4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 1100 },
+          ],
+        },
+        provider: "gemini", model: "test", traceId: "review", attempts: 1,
+      };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  const filesBefore = fake.files.size;
+  await plugin.openFoodDescriber("diet coke, honeycrisp apple, and a ham sandwich with 56g ham and 1 slice velveeta cheese");
+  const selections = plugin.settings.pendingFoodLogDraft?.selectionItems || [];
+  assert.equal(selections.length, 3);
+  assert.deepEqual(selections.map((entry) => entry.item.name), ["Diet Coke", "Honeycrisp apple, large", "Ham sandwich with Velveeta"]);
+  assert.ok(selections.every((entry) => entry.item.source === "custom-inline" && !entry.item.sourcePath));
+  assert.equal(selections[2].item.nutrition?.calories, 330);
+  assert.equal(fake.files.size, filesBefore, "Describe must not create reusable food or meal files");
+  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.extract", "health.describe-food.review"]);
+});
+
+test("Describe still creates one editable inline tray item when AI and every search route fail", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe total fallback vault";
+  fake.app.tpsAiGateway = { completeStructured: async () => { throw new Error("provider offline"); } };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  plugin.getLoggedFoodStats = async () => { throw new Error("history unavailable"); };
+  plugin.searchLocalFoods = async () => { throw new Error("index unavailable"); };
+  plugin.searchFoods = async () => { throw new Error("providers unavailable"); };
+  const filesBefore = fake.files.size;
+  await plugin.openFoodDescriber("mystery lunch special");
+  const selections = plugin.settings.pendingFoodLogDraft?.selectionItems || [];
+  assert.equal(selections.length, 1);
+  assert.equal(selections[0].item.name, "mystery lunch special");
+  assert.equal(selections[0].item.source, "custom-inline");
+  assert.equal(selections[0].item.nutrition?.calories, 200);
+  assert.ok((selections[0].item.nutrition?.proteinG || 0) > 0);
+  assert.equal(fake.files.size, filesBefore);
 });
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {

@@ -8,7 +8,7 @@ const source = readFileSync(new URL("../src/describe-food.ts", import.meta.url),
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
 const compiled = transformSync(source, { loader: "ts", format: "esm", target: "es2020" }).code;
-const { assessFoodPlausibility, describeFoodEstimateIssues, describeFoodPlanFromReview, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodExtraction, isUsableDescribeFoodPlan, isUsableDescribeFoodReview, parseFoodDescription } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { assessFoodPlausibility, describeFoodEstimateIssues, describeFoodPlanFromReview, describeFoodPlanSignature, describePortionGramsPerUnit, isUsableDescribeFoodExtraction, isUsableDescribeFoodPlan, isUsableDescribeFoodReview, localDescribeFoodEstimate, parseFoodDescription } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
 test("Describe food splits a natural meal into reviewable foods", () => {
   assert.deepEqual(parseFoodDescription("I had 2 eggs, 1 slice toast with butter, and 12 oz coffee with milk"), [
@@ -29,6 +29,24 @@ test("Describe food keeps four yogurts and a large Honeycrisp apple as two expli
     { original: "4 yogurts", query: "yogurts", quantity: 4 },
     { original: "a large honeycrisp apple", query: "large honeycrisp apple", quantity: 1 },
   ]);
+});
+
+test("Describe keeps measured ingredients inside one named sandwich row", () => {
+  assert.deepEqual(parseFoodDescription("diet coke, honeycrisp apple, and a ham sandwich with 56g ham and 1 slice velveeta cheese"), [
+    { original: "diet coke", query: "diet coke", quantity: 1 },
+    { original: "honeycrisp apple", query: "honeycrisp apple", quantity: 1 },
+    { original: "a ham sandwich with 56g ham and 1 slice velveeta cheese", query: "ham sandwich with 56g ham and 1 slice velveeta cheese", quantity: 1 },
+  ]);
+});
+
+test("Describe always has a coherent local estimate for an unmatched non-empty item", () => {
+  const arbitrary = localDescribeFoodEstimate({ itemId: "item-1", label: "mystery lunch special", quantity: 1, unit: "serving", estimatedWeightG: 100 });
+  assert.equal(arbitrary.estimatedNutritionForAmount.calories, 200);
+  assert.ok(arbitrary.estimatedNutritionForAmount.proteinG > 0);
+  assert.deepEqual(describeFoodEstimateIssues(arbitrary), ["low-confidence"]);
+  const dietCoke = localDescribeFoodEstimate({ itemId: "item-2", label: "Diet Coke", quantity: 1, unit: "can", estimatedWeightG: 355 });
+  assert.equal(dietCoke.estimatedNutritionForAmount.calories, 0);
+  assert.deepEqual(describeFoodEstimateIssues(dietCoke), []);
 });
 
 test("Describe food plausibility accepts weight and calorie density near the expected food range", () => {
@@ -156,8 +174,8 @@ test("Describe reviews and repairs every extracted item before preparing editabl
   assert.match(describeMethod, /Rechecking item/);
   assert.match(describeMethod, /Estimating item/);
   assert.match(describeMethod, /unresolvedDescribeFood/);
-  assert.match(describeMethod, /source: \"custom-inline\"/);
-  assert.match(describeMethod, /nutritionBasis: \"estimated-serving\"/);
+  assert.match(mainSource, /function describeSelectionItem[\s\S]+source: "custom-inline"/);
+  assert.match(mainSource, /function describeSelectionItem[\s\S]+nutritionBasis: "estimated-serving"/);
   assert.match(describeMethod, /noteCreation: false/);
   assert.doesNotMatch(describeMethod, /createFoodFromInput|findOrCreateFoodNote/);
   assert.match(mainSource, /captured\.selection\.item\.source !== \"custom-inline\"/);
@@ -178,10 +196,11 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
 });
 
 test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract-v3` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v3` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v3-\$\{index \+ 1\}` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v1-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract-v4` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v4` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v4-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v2-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /version: 2 as const/);
   assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);
   assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);

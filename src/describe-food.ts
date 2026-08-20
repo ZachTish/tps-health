@@ -272,6 +272,26 @@ const UNIT_ALIASES: Record<string, string> = {
   piece: "piece", pieces: "piece",
 };
 
+const COMPOSITE_DISH_PATTERN = /\b(?:sandwich|burger|wrap|burrito|taco|pizza|salad|bowl|omelet|smoothie|casserole|soup|stew)\b/i;
+
+function splitTopLevelFoodParts(value: string): string[] {
+  const primaryParts = value
+    .split(/\s*(?:[,;\n]+|\s+plus\s+)\s*/i)
+    .map((part) => part.trim().replace(/^(?:and|plus)\s+/i, ""))
+    .filter(Boolean);
+  const parts = primaryParts.flatMap((part) => {
+    // Ingredient quantities after a named dish describe that dish; they are
+    // not additional top-level foods. This keeps "a ham sandwich with 56 g
+    // ham and 1 slice cheese" as one editable tray row.
+    if (COMPOSITE_DISH_PATTERN.test(part) && /\bwith\b/i.test(part)) return [part];
+    return part
+      .split(/\s+and\s+(?=(?:\d|an?\s|some\s))/i)
+      .map((candidate) => candidate.trim())
+      .filter(Boolean);
+  });
+  return parts.length ? parts : [value.trim() || "Food estimate"];
+}
+
 function numberFromToken(value: string): number {
   const fraction = value.match(/^(\d+)\/(\d+)$/);
   if (fraction) return Number(fraction[1]) / Number(fraction[2]);
@@ -286,10 +306,7 @@ export function parseFoodDescription(value: string): DescribedFoodPart[] {
     .replace(/\s+/g, " ");
   if (!cleaned) return [];
 
-  return cleaned
-    .split(/\s*(?:,|;|\n|\s+and\s+(?=(?:\d|an?\s|some\s))|\s+plus\s+)\s*/i)
-    .map((original) => original.trim().replace(/^(?:and|plus)\s+/i, ""))
-    .filter(Boolean)
+  return splitTopLevelFoodParts(cleaned)
     .map((original) => {
       const amountMatch = original.match(/^(\d+(?:\.\d+)?|\d+\/\d+)\s+(.+)$/);
       const amount = amountMatch ? numberFromToken(amountMatch[1]) : 1;
@@ -302,4 +319,55 @@ export function parseFoodDescription(value: string): DescribedFoodPart[] {
         .trim();
       return { original, query: query || original, quantity: amount, ...(unit ? { unit } : {}) };
     });
+}
+
+function roundedNutrition(value: number): number {
+  return Math.round(Math.max(0, value) * 10) / 10;
+}
+
+export function localDescribeFoodEstimate(food: DescribeExtractedFood): DescribePlannedFood {
+  const label = food.label.trim() || "Food estimate";
+  const normalized = label.toLowerCase();
+  const weight = Math.max(0.1, Number(food.estimatedWeightG) || 100);
+  const zeroNutrition = /\b(?:diet|zero(?:[- ]?(?:sugar|calorie|cal))?)\b/.test(normalized)
+    && /\b(?:soda|cola|coke|pepsi|drink|beverage|seltzer|sparkling water)\b/.test(normalized);
+  const water = /^(?:plain\s+)?(?:water|ice(?: cubes?)?)$/.test(normalized);
+  let per100 = { calories: 200, proteinG: 8, carbsG: 25, fatG: 8, fiberG: 2, sugarG: 5, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 300 };
+  let confidence = 0.25;
+  if (zeroNutrition || water) {
+    per100 = { calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 5 };
+    confidence = 0.78;
+  } else if (/\bapples?\b/.test(normalized)) {
+    per100 = { calories: 52, proteinG: 0.3, carbsG: 13.8, fatG: 0.2, fiberG: 2.4, sugarG: 10.4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 1 };
+    confidence = 0.58;
+  } else if (/\b(?:sandwich|burger|wrap|burrito)\b/.test(normalized)) {
+    per100 = { calories: 220, proteinG: 13, carbsG: 24, fatG: 8, fiberG: 1.5, sugarG: 3, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 700 };
+    confidence = 0.38;
+  } else if (/\byogurts?\b/.test(normalized)) {
+    per100 = { calories: 80, proteinG: 6, carbsG: 9, fatG: 2.2, fiberG: 0, sugarG: 7, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 60 };
+    confidence = 0.42;
+  } else if (/\beggs?\b/.test(normalized)) {
+    per100 = { calories: 143, proteinG: 12.6, carbsG: 0.7, fatG: 9.5, fiberG: 0, sugarG: 0.4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 142 };
+    confidence = 0.5;
+  }
+  const scale = weight / 100;
+  return {
+    itemId: food.itemId,
+    label,
+    quantity: food.quantity,
+    unit: food.unit,
+    estimatedWeightG: weight,
+    confidence,
+    estimatedNutritionForAmount: {
+      calories: roundedNutrition(per100.calories * scale),
+      proteinG: roundedNutrition(per100.proteinG * scale),
+      carbsG: roundedNutrition(per100.carbsG * scale),
+      fatG: roundedNutrition(per100.fatG * scale),
+      fiberG: roundedNutrition(per100.fiberG * scale),
+      sugarG: roundedNutrition(per100.sugarG * scale),
+      sugarAlcoholG: roundedNutrition(per100.sugarAlcoholG * scale),
+      alcoholG: roundedNutrition(per100.alcoholG * scale),
+      sodiumMg: roundedNutrition(per100.sodiumMg * scale),
+    },
+  };
 }
