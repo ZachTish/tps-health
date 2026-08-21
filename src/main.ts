@@ -3,7 +3,7 @@ import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/v
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
-import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
+import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
 import { buildHealthPropertyCatalog } from "./health-property-catalog";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine } from "./format";
 import { resolveFoodLogDateKey } from "./food-log-date";
@@ -37,6 +37,20 @@ interface FoodLogDateContext {
   isToday: boolean;
   foodLogTarget?: FoodLogTarget;
   focusAfterLog?: boolean;
+}
+
+type FoodDuplicateMatchReason = "barcode" | "name" | "alias";
+
+interface FoodDuplicateCandidate {
+  item: FoodItem;
+  reason: FoodDuplicateMatchReason;
+}
+
+type FoodDuplicateResolutionAction = FoodDuplicateStrategy | "cancel";
+
+interface FoodDuplicateResolution {
+  action: FoodDuplicateResolutionAction;
+  candidate?: FoodDuplicateCandidate;
 }
 
 interface CoreDailyNoteSettings {
@@ -528,6 +542,7 @@ export default class TPSHealthPlugin extends Plugin {
   private gcmWorkoutTimerReconcileInFlight: Promise<void> | null = null;
   private workoutMutationQueues = new Map<string, Promise<unknown>>();
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
+  private foodIdentityMutationQueues = new Map<string, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
   private workoutActionBarRefreshTimer: number | null = null;
   private foodLogNutritionRepairTimer: number | null = null;
@@ -3026,14 +3041,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async createFoodNote(type: FoodNoteType, name: string, nutrition: Nutrition, servingAmount = 1, servingUnit = "serving"): Promise<void> {
-    await this.createFoodNoteFromItem({
-      id: id(type),
+    await this.createFoodFromInput({
+      type,
       name,
-      source: type === "recipe" ? "custom-note" : "manual",
       servingAmount,
       servingUnit,
       nutrition: nutritionWithMacroCalories(nutrition),
-    }, type);
+    });
     new Notice(`Created ${type}`);
   }
 
@@ -3351,6 +3365,10 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async findOrCreateFoodNote(item: FoodItem): Promise<FoodItem> {
+    return this.serializeFoodIdentityMutation(item, "find-or-create", () => this.findOrCreateFoodNoteNow(item));
+  }
+
+  private async findOrCreateFoodNoteNow(item: FoodItem): Promise<FoodItem> {
     if (item.sourcePath) {
       const source = this.app.vault.getAbstractFileByPath(item.sourcePath);
       if (source instanceof TFile && isFoodLikeMarkdownFile(this, source, this.app.metadataCache.getFileCache(source))) {
@@ -3393,6 +3411,49 @@ export default class TPSHealthPlugin extends Plugin {
     const brandless = candidates.find((item) => !normalizeLookup(item.brand || ""));
     if (brandless) return brandless;
     return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  findPotentialFoodDuplicates(item: FoodItem, excludePath = ""): FoodDuplicateCandidate[] {
+    const normalizedExcludePath = normalizePath(excludePath || "");
+    const candidates = this.getLocalFoodIndex().items
+      .map((candidate) => {
+        if (!candidate.sourcePath || normalizePath(candidate.sourcePath) === normalizedExcludePath) return null;
+        const file = this.app.vault.getAbstractFileByPath(candidate.sourcePath);
+        if (!(file instanceof TFile)) return null;
+        const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+        if (foodNoteTypeFromFrontmatter(frontmatter, file, this.settings) !== "food") return null;
+        const reason = foodDuplicateMatchReason(item, candidate);
+        return reason ? { item: candidate, reason } : null;
+      })
+      .filter((candidate): candidate is FoodDuplicateCandidate => Boolean(candidate))
+      .sort((left, right) => foodDuplicateReasonPriority(left.reason) - foodDuplicateReasonPriority(right.reason)
+        || String(left.item.sourcePath || "").localeCompare(String(right.item.sourcePath || "")));
+    logger.flow("FoodDuplicate", candidates.length ? "candidates:found" : "candidates:none", {
+      name: item.name,
+      brand: item.brand || "",
+      barcode: item.barcode ? maskBarcode(item.barcode) : "",
+      excludePath: normalizedExcludePath,
+      count: candidates.length,
+      reasons: candidates.map((candidate) => candidate.reason).join(","),
+    });
+    return candidates;
+  }
+
+  private async serializeFoodIdentityMutation<T>(item: FoodItem, operation: string, mutation: () => Promise<T>): Promise<T> {
+    const identityKey = foodIdentityMutationKey(item);
+    const queuedBehindExisting = this.foodIdentityMutationQueues.has(identityKey);
+    const previous = this.foodIdentityMutationQueues.get(identityKey) || Promise.resolve();
+    logger.flow("FoodDuplicate", "mutation:queued", { identityKey, operation, queuedBehindExisting });
+    const run = previous.catch(() => undefined).then(async () => {
+      logger.flow("FoodDuplicate", "mutation:start", { identityKey, operation });
+      return mutation();
+    });
+    this.foodIdentityMutationQueues.set(identityKey, run);
+    try {
+      return await run;
+    } finally {
+      if (this.foodIdentityMutationQueues.get(identityKey) === run) this.foodIdentityMutationQueues.delete(identityKey);
+    }
   }
 
   findRecipeIngredientFoodByName(name: string): FoodItem | null {
@@ -3811,11 +3872,21 @@ export default class TPSHealthPlugin extends Plugin {
   async createFoodFromInput(input: CreateFoodInput): Promise<FoodItem> {
     const type = input.type || "food";
     const recipeIngredients = isRecipeLikeFoodType(type) ? input.ingredients || input.notes : input.ingredients;
-    const item = foodItemFromInput({
+    const normalizedInput: CreateFoodInput = {
       ...input,
       ingredients: recipeIngredients,
       notes: isRecipeLikeFoodType(type) && !input.ingredients ? undefined : input.notes,
-    });
+    };
+    if (type === "food") {
+      const duplicateStrategy = input.duplicateStrategy || "reuse";
+      return this.upsertFoodFromInput({
+        ...normalizedInput,
+        type,
+        duplicateStrategy,
+        merge: duplicateStrategy !== "create",
+      });
+    }
+    const item = foodItemFromInput(normalizedInput);
     return this.createFoodNoteFromItem({
       ...item,
       brand: input.brand,
@@ -3830,23 +3901,66 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async upsertFoodFromInput(input: UpsertFoodInput, options: { expectedRecipeBody?: string } = {}): Promise<FoodItem> {
-    const replaceAliases = Object.prototype.hasOwnProperty.call(input, "aliases");
-    const replaceRecipeBody = Object.prototype.hasOwnProperty.call(input, "ingredients");
     const item = foodItemFromInput(input);
     const type = input.type || "food";
-    const file = this.resolveExistingFoodFile(input.path, item);
+    const update = () => this.upsertFoodFromInputNow(input, options, item, type);
+    return type === "food"
+      ? this.serializeFoodIdentityMutation(item, `upsert-${input.duplicateStrategy || "legacy"}`, update)
+      : update();
+  }
+
+  private async upsertFoodFromInputNow(
+    input: UpsertFoodInput,
+    options: { expectedRecipeBody?: string },
+    requestedItem: FoodItem,
+    type: FoodNoteType,
+  ): Promise<FoodItem> {
+    let replaceAliases = Object.prototype.hasOwnProperty.call(input, "aliases");
+    const replaceRecipeBody = Object.prototype.hasOwnProperty.call(input, "ingredients");
+    const duplicateStrategy = type === "food" ? input.duplicateStrategy : undefined;
+    const forceCreate = duplicateStrategy === "create" || (!duplicateStrategy && input.merge === false);
+    let file: TFile | null = null;
+    if (!forceCreate && duplicateStrategy && input.path) {
+      const requestedFile = this.app.vault.getAbstractFileByPath(input.path);
+      if (!(requestedFile instanceof TFile)) {
+        throw new Error(`The selected duplicate food no longer exists: ${input.path}`);
+      }
+      file = requestedFile;
+    } else if (!forceCreate && duplicateStrategy) {
+      const candidate = this.findPotentialFoodDuplicates(requestedItem)[0];
+      if (candidate?.item.sourcePath) {
+        const candidateFile = this.app.vault.getAbstractFileByPath(candidate.item.sourcePath);
+        if (candidateFile instanceof TFile) file = candidateFile;
+      }
+    } else if (!forceCreate) {
+      file = this.resolveExistingFoodFile(input.path, requestedItem);
+    }
     const openRequested = input.openFile === true;
     const openReason = openRequested ? "requested" : input.openFile === false ? "openFile=false" : "not requested";
-    if (!file || input.merge === false) {
-      logger.flow("Food", "upsert:create", { name: item.name, requestedPath: input.path || "", merge: input.merge !== false, openRequested, openReason });
-      const created = await this.createFoodNoteFromItem(item, type, replaceAliases);
+    if (!file || forceCreate) {
+      logger.flow("Food", "upsert:create", { name: requestedItem.name, requestedPath: input.path || "", merge: input.merge !== false, duplicateStrategy: duplicateStrategy || "legacy", openRequested, openReason });
+      const created = await this.createFoodNoteFromItem(requestedItem, type, replaceAliases);
       if (openRequested) await this.openPath(created.sourcePath);
       return created;
     }
-    const update = () => this.updateFoodNote(file, item, type, replaceAliases, replaceRecipeBody, options.expectedRecipeBody);
+    const current = this.foodFromFrontmatter(file, this.app.metadataCache.getFileCache(file)?.frontmatter || {});
+    if (duplicateStrategy === "reuse") {
+      logger.flow("FoodDuplicate", "resolution:reuse", { path: file.path, requestedName: requestedItem.name, existingName: current.name });
+      if (openRequested) await this.openPath(file.path);
+      return current;
+    }
+    const item = duplicateStrategy === "combine"
+      ? combineFoodDuplicateItems(current, requestedItem)
+      : requestedItem;
+    if (duplicateStrategy === "combine") {
+      replaceAliases = true;
+      logger.flow("FoodDuplicate", "resolution:combine", { path: file.path, requestedName: requestedItem.name, existingName: current.name });
+    }
+    const resolvedFile = file;
+    const updateNote = () => this.updateFoodNote(resolvedFile, item, type, replaceAliases, replaceRecipeBody, options.expectedRecipeBody);
     const normalizedItem = isRecipeLikeFoodType(type)
-      ? await this.serializeRecipeMutation(file.path, "food-note-update", update)
-      : await update();
+      ? await this.serializeRecipeMutation(file.path, "food-note-update", updateNote)
+      : await updateNote();
     const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings);
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
     if (!replaceAliases) delete itemFrontmatter.aliases;
@@ -3859,7 +3973,7 @@ export default class TPSHealthPlugin extends Plugin {
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
-    logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, openRequested, openReason });
+    logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, duplicateStrategy: duplicateStrategy || "legacy", openRequested, openReason });
     if (openRequested) await this.openPath(file.path);
     return updated;
   }
@@ -13127,11 +13241,16 @@ class BarcodeFoodReviewModal extends Modal {
     }));
     new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg || 0)).onChange((value) => nutrition.sodiumMg = numberOrUndefined(value)));
     updateCaloriePreview();
+    let submitting = false;
     new Setting(this.contentEl)
       .addButton((button) => button
         .setButtonText(this.onSaved ? "Create and add" : "Create food")
         .setCta()
         .onClick(async () => {
+          if (submitting) {
+            logger.flowWarn("FoodLogModal", "barcode-review:suppressed-active", { name, barcode: maskBarcode(this.item.barcode || "") });
+            return;
+          }
           if (!name) {
             logger.flowWarn("FoodLogModal", "barcode-review:missing-name", { barcode: maskBarcode(this.item.barcode || ""), source: this.item.source });
             new Notice("Name is required");
@@ -13143,15 +13262,31 @@ class BarcodeFoodReviewModal extends Modal {
             return;
           }
           logger.flow("FoodLogModal", "barcode-review:submit", { name, source: this.item.source, barcode: maskBarcode(this.item.barcode || "") });
+          submitting = true;
+          button.setDisabled(true);
           try {
-            const saved = await this.plugin.findOrCreateFoodNote({
+            const reviewedItem: FoodItem = {
               ...this.item,
               name,
               brand: brand || undefined,
               servingAmount,
               servingUnit,
               nutrition: preserveLabelCalories ? { ...nutrition } : nutritionWithMacroCalories(nutrition),
-            });
+            };
+            const candidates = this.plugin.findPotentialFoodDuplicates(reviewedItem);
+            const resolution = candidates.length
+              ? await chooseFoodDuplicateResolution(this.app, reviewedItem, candidates)
+              : null;
+            if (resolution?.action === "cancel") return;
+            const saved = resolution
+              ? await this.plugin.upsertFoodFromInput({
+                ...reviewedItem,
+                type: "food",
+                path: resolution.action === "create" ? undefined : resolution.candidate?.item.sourcePath,
+                duplicateStrategy: resolution.action,
+                merge: resolution.action !== "create",
+              })
+              : await this.plugin.findOrCreateFoodNote(reviewedItem);
             logger.flow("FoodLogModal", "barcode-review:done", { name: saved.name, sourcePath: saved.sourcePath || "", barcode: maskBarcode(saved.barcode || this.item.barcode || "") });
             this.close();
             if (this.onSaved) await this.onSaved(saved);
@@ -13159,6 +13294,9 @@ class BarcodeFoodReviewModal extends Modal {
           } catch (error) {
             logger.flowError("FoodLogModal", "barcode-review:failed", error, { name, barcode: maskBarcode(this.item.barcode || "") });
             throw error;
+          } finally {
+            submitting = false;
+            button.setDisabled(false);
           }
         }));
   }
@@ -14252,6 +14390,82 @@ function chooseFoodEditLinkScope(app: App, entityLabel: string): Promise<FoodEdi
   return new Promise((resolve) => new FoodEditLinkScopeModal(app, entityLabel, resolve).open());
 }
 
+class FoodDuplicateResolutionModal extends Modal {
+  private resolved = false;
+  private selectedPath = this.candidates[0]?.item.sourcePath || "";
+
+  constructor(
+    app: App,
+    private incoming: FoodItem,
+    private candidates: FoodDuplicateCandidate[],
+    private resolve: (choice: FoodDuplicateResolution) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-duplicate-frame");
+    this.contentEl.addClass("tps-health-modal");
+    this.contentEl.createEl("h2", { text: "Possible duplicate food" });
+    this.contentEl.createDiv({
+      cls: "tps-health-status",
+      text: `TPS Health found ${this.candidates.length === 1 ? "a saved food" : `${this.candidates.length} saved foods`} that may match ${this.incoming.name}. Choose the note to use, then decide how to handle it. Nothing will be deleted.`,
+    });
+    const list = this.contentEl.createDiv({ cls: "tps-health-food-duplicate-list", attr: { role: "radiogroup", "aria-label": "Possible duplicate foods" } });
+    const radioName = `tps-health-food-duplicate-${id("choice")}`;
+    for (const [index, candidate] of this.candidates.entries()) {
+      const item = candidate.item;
+      const choice = list.createEl("label", { cls: "tps-health-food-duplicate-choice" });
+      const radio = choice.createEl("input", { attr: { type: "radio", name: radioName, value: item.sourcePath || "" } });
+      radio.checked = index === 0;
+      radio.addEventListener("change", () => {
+        if (radio.checked) this.selectedPath = item.sourcePath || "";
+      });
+      const details = choice.createDiv({ cls: "tps-health-food-duplicate-details" });
+      details.createDiv({ cls: "tps-health-food-duplicate-name", text: [item.name, item.brand].filter(Boolean).join(" · ") });
+      const nutrition = item.nutrition || {};
+      details.createDiv({
+        cls: "tps-health-food-duplicate-meta",
+        text: `${candidate.reason === "barcode" ? "Same barcode" : candidate.reason === "alias" ? "Matching alias" : "Same name"} · ${foodServingLabel(item)} · ${round(nutrition.calories || 0)} kcal · P ${round(nutrition.proteinG || 0)}g · C ${round(nutrition.carbsG || 0)}g · F ${round(nutrition.fatG || 0)}g`,
+      });
+      details.createDiv({ cls: "tps-health-food-duplicate-path", text: item.sourcePath || "Saved food" });
+    }
+    const explanation = this.contentEl.createDiv({ cls: "tps-health-food-duplicate-help" });
+    explanation.createEl("p", { text: "Use existing leaves the saved note unchanged. Combine updates that note with the reviewed serving and nutrition while preserving its aliases and identity metadata. Keep separate creates another note intentionally." });
+    const actions = this.contentEl.createDiv({ cls: "tps-health-modal-actions tps-health-food-duplicate-actions" });
+    const cancel = actions.createEl("button", { text: "Cancel", attr: { type: "button" } });
+    cancel.addEventListener("click", () => this.finish("cancel"));
+    const keepSeparate = actions.createEl("button", { text: "Keep separate", attr: { type: "button" } });
+    keepSeparate.addEventListener("click", () => this.finish("create"));
+    const combine = actions.createEl("button", { text: "Combine into existing", attr: { type: "button" } });
+    combine.addEventListener("click", () => this.finish("combine"));
+    const reuse = actions.createEl("button", { text: "Use existing", cls: "mod-cta", attr: { type: "button" } });
+    reuse.addEventListener("click", () => this.finish("reuse"));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.resolved) this.resolve({ action: "cancel" });
+  }
+
+  private finish(action: FoodDuplicateResolutionAction): void {
+    if (this.resolved) return;
+    const candidate = this.candidates.find((entry) => entry.item.sourcePath === this.selectedPath) || this.candidates[0];
+    if (action !== "cancel" && action !== "create" && !candidate) return;
+    this.resolved = true;
+    this.resolve({ action, candidate });
+    this.close();
+  }
+}
+
+function chooseFoodDuplicateResolution(
+  app: App,
+  incoming: FoodItem,
+  candidates: FoodDuplicateCandidate[],
+): Promise<FoodDuplicateResolution> {
+  return new Promise((resolve) => new FoodDuplicateResolutionModal(app, incoming, candidates, resolve).open());
+}
+
 const CUSTOM_FOOD_NUTRITION_FIELDS: Array<keyof Nutrition> = [
   "calories",
   "proteinG",
@@ -14603,7 +14817,13 @@ class CustomFoodModal extends Modal {
       renderIngredients();
     }
     updateCaloriePreview();
-    new Setting(this.contentEl).addButton((button) => button.setButtonText(this.inlineOnly || this.editPath ? "Save" : "Create").setCta().onClick(async () => {
+    let submitting = false;
+    new Setting(this.contentEl).addButton((button) => {
+      button.setButtonText(this.inlineOnly || this.editPath ? "Save" : "Create").setCta().onClick(async () => {
+      if (submitting) {
+        logger.flowWarn("CustomFoodModal", "submit:suppressed-active", { type: this.type, name, editPath: this.editPath || "" });
+        return;
+      }
       if (!name) {
         logger.flowWarn("CustomFoodModal", "submit:missing-name", { type: this.type, editPath: this.editPath || "" });
         new Notice("Name is required");
@@ -14644,6 +14864,8 @@ class CustomFoodModal extends Modal {
         logAfterCreate: this.logAfterCreate,
         hasOnSaved: !!this.onSaved,
       });
+      submitting = true;
+      button.setDisabled(true);
       try {
         if (this.inlineOnly) {
           const saved: FoodItem = normalizeFoodMetricServing({
@@ -14681,7 +14903,7 @@ class CustomFoodModal extends Modal {
             servingMl: this.baseFood?.servingMl,
             nutritionBasis: this.baseFood?.nutritionBasis,
           };
-        const saved = await this.plugin.upsertFoodFromInput({
+        const upsertInput: UpsertFoodInput = {
           type: this.type,
           path: createNewVersion ? undefined : this.editPath,
           name,
@@ -14699,7 +14921,30 @@ class CustomFoodModal extends Modal {
           notes: this.baseFood?.notes,
           nutrition,
           merge: !createNewVersion,
-        }, createNewVersion || !isRecipeLikeFoodType(this.type) ? {} : { expectedRecipeBody: originalRecipeSourceBody });
+        };
+        if (this.type === "food" && !this.editPath && !createNewVersion) {
+          const incoming = foodItemFromInput(upsertInput);
+          const candidates = this.plugin.findPotentialFoodDuplicates(incoming);
+          const resolution = candidates.length
+            ? await chooseFoodDuplicateResolution(this.app, incoming, candidates)
+            : { action: "reuse" as const };
+          logger.flow("FoodDuplicate", "resolution:selected", {
+            action: resolution.action,
+            name: incoming.name,
+            candidatePath: resolution.candidate?.item.sourcePath || "",
+            candidateReason: resolution.candidate?.reason || "",
+          });
+          if (resolution.action === "cancel") return;
+          upsertInput.duplicateStrategy = resolution.action;
+          upsertInput.merge = resolution.action !== "create";
+          if (resolution.candidate?.item.sourcePath && resolution.action !== "create") {
+            upsertInput.path = resolution.candidate.item.sourcePath;
+          }
+        }
+        const saved = await this.plugin.upsertFoodFromInput(
+          upsertInput,
+          createNewVersion || !isRecipeLikeFoodType(this.type) ? {} : { expectedRecipeBody: originalRecipeSourceBody },
+        );
         logger.flow("CustomFoodModal", "submit:done", {
           type: this.type,
           name: saved.name,
@@ -14732,8 +14977,12 @@ class CustomFoodModal extends Modal {
           hasOnSaved: !!this.onSaved,
         });
         throw error;
+      } finally {
+        submitting = false;
+        button.setDisabled(false);
       }
-    }));
+      });
+    });
   }
 
   onClose(): void {
@@ -17496,6 +17745,55 @@ function foodDedupeKey(item: FoodItem): string {
   return brand ? `name-brand:${name}|${brand}` : `name:${name}`;
 }
 
+function foodIdentityMutationKey(_item: FoodItem): string {
+  // Food-note mutations are uncommon and short. One catalog queue closes the
+  // race where one request has a barcode and another only has a renamed alias.
+  return "saved-food-catalog";
+}
+
+function foodDuplicateReasonPriority(reason: FoodDuplicateMatchReason): number {
+  return reason === "barcode" ? 0 : reason === "name" ? 1 : 2;
+}
+
+function foodDuplicateMatchReason(incoming: FoodItem, candidate: FoodItem): FoodDuplicateMatchReason | null {
+  const incomingBarcode = incoming.barcode ? openFoodFactsBarcodeCacheKey(incoming.barcode) : "";
+  const candidateBarcode = candidate.barcode ? openFoodFactsBarcodeCacheKey(candidate.barcode) : "";
+  if (incomingBarcode && candidateBarcode) {
+    if (incomingBarcode === candidateBarcode) return "barcode";
+    // Distinct valid package identifiers are usually separate sizes or
+    // variants. Do not offer a destructive-looking merge based on name alone.
+    return null;
+  }
+  const incomingBrand = normalizeLookup(incoming.brand || "");
+  const candidateBrand = normalizeLookup(candidate.brand || "");
+  if (incomingBrand && candidateBrand && incomingBrand !== candidateBrand) return null;
+  const incomingName = normalizeLookup(incoming.name);
+  const candidateName = normalizeLookup(candidate.name);
+  if (!incomingName || !candidateName) return null;
+  if (incomingName === candidateName) return "name";
+  const incomingAliases = new Set((incoming.aliases || []).map(normalizeLookup).filter(Boolean));
+  const candidateAliases = new Set((candidate.aliases || []).map(normalizeLookup).filter(Boolean));
+  return incomingAliases.has(candidateName) || candidateAliases.has(incomingName) ? "alias" : null;
+}
+
+function combineFoodDuplicateItems(existing: FoodItem, incoming: FoodItem): FoodItem {
+  const merged = mergeFoodCandidateMetadata(incoming, existing);
+  return normalizeFoodMetricServing({
+    ...merged,
+    id: existing.id,
+    source: "custom-note",
+    sourcePath: existing.sourcePath,
+    // The explicitly reviewed incoming serving and nutrition stay coherent;
+    // the existing note contributes identity metadata, aliases, and notes.
+    servingAmount: incoming.servingAmount,
+    servingUnit: incoming.servingUnit,
+    servingGrams: incoming.servingGrams,
+    servingMl: incoming.servingMl,
+    nutritionBasis: incoming.nutritionBasis,
+    nutrition: incoming.nutrition,
+  });
+}
+
 function mergeEnrichedFoodSearchItem(searchItem: FoodItem, detailItem: FoodItem): FoodItem {
   const useDetailServing = foodServingPairQuality(detailItem) > foodServingPairQuality(searchItem);
   const merged = mergeFoodCandidateMetadata(searchItem, detailItem);
@@ -18310,11 +18608,16 @@ function workoutDailyTaskLine(marker: string, completed = false): string {
     .trim() || "Workout";
   const startedAt = readStringField(marker, "startedAt");
   const scheduled = startedAt ? ` [scheduled:: ${startedAt}]` : "";
-  return `- [${completed ? "x" : " "}] [[#Workout|${title}]]${scheduled} <!-- tps-health:workout-task [workoutId:: ${workoutId}] -->`;
+  return `- [${completed ? "x" : " "}] [[#Workout|${title}]]${scheduled} [kind:: workout] [workoutId:: ${workoutId}]`;
 }
 
 function isWorkoutDailyTaskLine(line: string, workoutId = ""): boolean {
-  if (!/^\s*-\s+\[[ xX]\]\s+/.test(line) || !/<!--\s*tps-health:workout-task(?=\s|-->)[\s\S]*-->\s*$/i.test(line)) return false;
+  if (!/^\s*-\s+\[[ xX]\]\s+/.test(line)) return false;
+  const legacyIdentity = /<!--\s*tps-health:workout-task(?=\s|-->)[\s\S]*-->\s*$/i.test(line);
+  const inlineIdentity = normalizeLookup(readStringField(line, "kind") || "") === "workout"
+    && Boolean(readStringField(line, "workoutId"))
+    && /\[\[#Workout(?:\||\]\])/i.test(line);
+  if (!legacyIdentity && !inlineIdentity) return false;
   return !workoutId || readStringField(line, "workoutId") === workoutId;
 }
 
@@ -18462,7 +18765,9 @@ export function repairWorkoutDailyBlockContent(
   const existingTaskIndex = workoutDailyTaskIndex(lines, workoutId);
   const originalBlockStart = existingTaskIndex >= 0 && existingTaskIndex < startIndex ? existingTaskIndex : startIndex;
   const existingTask = existingTaskIndex >= 0 ? lines[existingTaskIndex] : "";
-  const taskLine = workoutDailyTaskLine(lines[anchorIndex], /^\s*-\s+\[[xX]\]/.test(existingTask));
+  let taskLine = workoutDailyTaskLine(lines[anchorIndex], /^\s*-\s+\[[xX]\]/.test(existingTask));
+  const existingTaskId = readStringField(existingTask, "tpsId");
+  if (existingTaskId) taskLine = upsertDataviewField(taskLine, "tpsId", existingTaskId);
   const explicitEnd = explicitWorkoutDailyEndIndex(lines, anchorIndex);
   let blockLines: string[];
   let remaining: string[];

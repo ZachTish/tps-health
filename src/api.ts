@@ -14,6 +14,8 @@ export interface LogFoodInput {
   createFoodNote?: boolean;
 }
 
+export type FoodDuplicateStrategy = "reuse" | "combine" | "create";
+
 export interface CreateFoodInput {
   type?: FoodNoteType;
   name: string;
@@ -33,6 +35,12 @@ export interface CreateFoodInput {
   sourceImagePath?: string;
   confidence?: number;
   notes?: string;
+  /**
+   * Controls what happens when TPS Health finds the same saved food by a
+   * canonical barcode or compatible name/alias. The default is `reuse` for
+   * direct creates and the historical merge behavior for upserts.
+   */
+  duplicateStrategy?: FoodDuplicateStrategy;
 }
 
 export interface UpsertFoodInput extends CreateFoodInput {

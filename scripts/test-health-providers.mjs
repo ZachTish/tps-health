@@ -3837,6 +3837,91 @@ test("custom food creation validates manual input and writes deterministic food 
   assert.equal(writes.filter((write) => write.op === "create" && write.path.endsWith("Untitled food.md")).length, 0);
 });
 
+test("duplicate food writes are serialized and require an explicit reuse, combine, or keep-separate strategy", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    foodsFolder: "Health/Foods",
+    recipesFolder: "Health/Recipes",
+    customFoodTag: "#tps/food",
+    recipeTag: "#tps/recipe",
+    foodTemplatePath: "",
+  };
+  const baseInput = {
+    name: "Protected Yogurt",
+    brand: "Test Dairy",
+    barcode: "012345678905",
+    servingAmount: 150,
+    servingUnit: "g",
+    nutritionBasis: "labeled-serving",
+    nutrition: { calories: 100, proteinG: 12, carbsG: 9, fatG: 2 },
+  };
+
+  const [first, raced] = await Promise.all([
+    plugin.createFoodFromInput(baseInput),
+    plugin.createFoodFromInput(baseInput),
+  ]);
+  assert.equal(first.sourcePath, raced.sourcePath, "concurrent default creates reuse the first saved food");
+  assert.equal(fake.writes.filter((write) => write.op === "create" && write.path.endsWith("Protected Yogurt.md")).length, 1);
+
+  const candidates = plugin.findPotentialFoodDuplicates({
+    ...first,
+    id: "incoming",
+    name: "Protected Yogurt Cup",
+    source: "manual",
+    sourcePath: undefined,
+  });
+  assert.equal(candidates[0]?.reason, "barcode");
+  assert.equal(candidates[0]?.item.sourcePath, first.sourcePath);
+
+  const reused = await plugin.upsertFoodFromInput({
+    ...baseInput,
+    nutrition: { calories: 999, proteinG: 99, carbsG: 99, fatG: 99 },
+    duplicateStrategy: "reuse",
+  });
+  assert.equal(reused.sourcePath, first.sourcePath);
+  assert.equal(reused.nutrition.calories, 102, "reuse leaves the existing note unchanged");
+
+  const combined = await plugin.upsertFoodFromInput({
+    ...baseInput,
+    name: "Protected Yogurt Cup",
+    aliases: ["Morning yogurt"],
+    nutrition: { calories: 110, proteinG: 13, carbsG: 10, fatG: 2 },
+    duplicateStrategy: "combine",
+  });
+  assert.equal(combined.sourcePath, first.sourcePath);
+  assert.equal(combined.nutrition.calories, 110);
+  assert.ok(combined.aliases.includes("Protected Yogurt"), "combine preserves the old display name as an alias");
+  assert.ok(combined.aliases.includes("Morning yogurt"));
+  assert.equal(fake.files.has("Health/Foods/Protected Yogurt Cup.md"), false, "combine updates the selected note instead of creating another");
+
+  const separate = await plugin.upsertFoodFromInput({
+    ...baseInput,
+    name: "Protected Yogurt Cup",
+    duplicateStrategy: "create",
+    merge: false,
+  });
+  assert.notEqual(separate.sourcePath, combined.sourcePath);
+  assert.equal(fake.files.has(separate.sourcePath), true, "keep separate is an explicit new note");
+});
+
+test("custom food duplicate review exposes accessible non-destructive choices on desktop and mobile", () => {
+  assert.match(mainSource, /class FoodDuplicateResolutionModal extends Modal/);
+  assert.match(mainSource, /role: "radiogroup", "aria-label": "Possible duplicate foods"/);
+  assert.match(mainSource, /text: "Use existing"/);
+  assert.match(mainSource, /text: "Combine into existing"/);
+  assert.match(mainSource, /text: "Keep separate"/);
+  assert.match(mainSource, /Nothing will be deleted/);
+  assert.match(mainSource, /const candidates = this\.plugin\.findPotentialFoodDuplicates\(reviewedItem\)/, "barcode and Nutrition Facts reviews use the same duplicate decision");
+  assert.match(mainSource, /duplicateStrategy: resolution\.action/);
+  assert.match(mainSource, /let submitting = false;[\s\S]+?"submit:suppressed-active"[\s\S]+?button\.setDisabled\(true\)/);
+  assert.match(stylesSource, /\.tps-health-food-duplicate-choice:focus-within/);
+  assert.match(stylesSource, /\.tps-health-food-duplicate-actions button \{\s+flex: 1 1 calc\(50% - 4px\);\s+min-height: 44px;/);
+});
+
 test("food, recipe, meal, and log-created notes keep identity tags in frontmatter instead of the body", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -4293,8 +4378,8 @@ test("health source keeps optional workout notes while making the Daily Note wor
   assert.match(mainSource, /logger\.flow\("Food", "upsert-resolve:miss"/);
   assert.match(mainSource, /const openRequested = input\.openFile === true/);
   assert.match(mainSource, /const openReason = openRequested \? "requested" : input\.openFile === false \? "openFile=false" : "not requested"/);
-  assert.match(mainSource, /logger\.flow\("Food", "upsert:create", \{ name: item\.name, requestedPath: input\.path \|\| "", merge: input\.merge !== false, openRequested, openReason \}\)/);
-  assert.match(mainSource, /logger\.flow\("Food", "upsert:merge", \{ path: file\.path, name: item\.name, type, openRequested, openReason \}\)/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert:create", \{ name: requestedItem\.name, requestedPath: input\.path \|\| "", merge: input\.merge !== false, duplicateStrategy: duplicateStrategy \|\| "legacy", openRequested, openReason \}\)/);
+  assert.match(mainSource, /logger\.flow\("Food", "upsert:merge", \{ path: file\.path, name: item\.name, type, duplicateStrategy: duplicateStrategy \|\| "legacy", openRequested, openReason \}\)/);
   assert.match(mainSource, /logger\.flowWarn\(log\.scope, `\$\{log\.event\}:timeout`/);
   assert.match(mainSource, /logger\.flow\("FoodSearch", "usda:done"/);
   assert.match(mainSource, /logger\.flow\("Barcode", "lookup-candidate:v2-miss"/);
@@ -5102,8 +5187,9 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
     "",
   ].join("\n");
   const repairedTop = repairWorkoutDailyBlockContent(legacyWorkout, "workout-test", "before-first-h2");
-  assert.match(repairedTop, /- \[ \] \[\[#Workout\|Old title\]\] <!-- tps-health:workout-task \[workoutId:: workout-test\] -->/);
-  assert.equal((repairedTop.match(/tps-health:workout-task/g) || []).length, 1, "one workout owns one linked Daily Note task");
+  assert.match(repairedTop, /- \[ \] \[\[#Workout\|Old title\]\] \[kind:: workout\] \[workoutId:: workout-test\]/);
+  assert.equal((repairedTop.match(/\[kind:: workout\]/g) || []).length, 1, "one workout owns one linked Daily Note task");
+  assert.doesNotMatch(repairedTop, /tps-health:workout-task/, "repaired tasks migrate away from visible HTML comments");
   assert.ok(repairedTop.indexOf("## Workout") < repairedTop.indexOf("## Scheduled"));
   assert.doesNotMatch(repairedTop, /^## Workout —/m, "legacy titles move into the control card instead of duplicating the Daily Note heading");
   assert.ok(repairedTop.indexOf("tps-health:workout-end [workoutId:: workout-test]") < repairedTop.indexOf("## Scheduled"));
@@ -5123,14 +5209,16 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
     "",
     "- [ ] Existing task",
     "",
-    "- [ ] [[#Workout|EOF Workout]] <!-- tps-health:workout-task [workoutId:: workout-eof] -->",
+    "- [ ] [[#Workout|EOF Workout]] [tpsId:: timer-eof] <!-- tps-health:workout-task [workoutId:: workout-eof] -->",
     "## Workout",
     "<!-- tps-health:workout EOF Workout [workoutId:: workout-eof] [startedAt:: 2026-08-19T12:25:08.272Z] [status:: active] -->",
     "<!-- tps-health:workout-end [workoutId:: workout-eof] -->",
   ].join("\n");
   const repairedEofWorkout = repairWorkoutDailyBlockContent(eofWorkout, "workout-eof", "bottom");
   assert.match(repairedEofWorkout, /^- \[ \] Existing task$/m, "repairing an EOF workout preserves earlier daily-note content");
-  assert.equal((repairedEofWorkout.match(/tps-health:workout-task/g) || []).length, 1);
+  assert.equal((repairedEofWorkout.match(/\[kind:: workout\]/g) || []).length, 1);
+  assert.doesNotMatch(repairedEofWorkout, /tps-health:workout-task/);
+  assert.match(repairedEofWorkout, /\[workoutId:: workout-eof\] \[tpsId:: timer-eof\]/, "repair preserves the GCM timer identity while migrating the task marker");
   assert.equal((repairedEofWorkout.match(/^## Workout$/gm) || []).length, 1);
   assert.equal((repairedEofWorkout.match(/tps-health:workout EOF Workout/g) || []).length, 1);
   assert.equal((repairedEofWorkout.match(/tps-health:workout-end/g) || []).length, 1);
@@ -6682,7 +6770,7 @@ test("create from food search upserts canonical local foods instead of creating 
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.doesNotMatch(mainSource, /\$\{item\.name\} copy/);
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, await this\.plugin\.enrichFoodSearchItem\(item\), this\.dateContext\)\.open\(\)/);
-  assert.match(mainSource, /const saved = await this\.plugin\.upsertFoodFromInput\(\{/);
+  assert.match(mainSource, /const upsertInput: UpsertFoodInput = \{[\s\S]+?const saved = await this\.plugin\.upsertFoodFromInput\(/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "submit:done"/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "edit:done"/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "log-modal:open"/);
@@ -7153,8 +7241,9 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.doesNotMatch(fake.files.get(workoutPath), /## Sets|### Bench press/);
   const dailyWorkoutPath = "Daily/2026-07-06.md";
   assert.match(fake.files.get(dailyWorkoutPath), /## Workout\n/);
-  assert.match(fake.files.get(dailyWorkoutPath), /- \[ \] \[\[#Workout\|Blank Active QA\]\] \[scheduled:: 2026-07-06T10:00:00\.000Z\] <!-- tps-health:workout-task \[workoutId:: workout-/);
-  assert.equal((fake.files.get(dailyWorkoutPath).match(/tps-health:workout-task/g) || []).length, 1);
+  assert.match(fake.files.get(dailyWorkoutPath), /- \[ \] \[\[#Workout\|Blank Active QA\]\] \[scheduled:: 2026-07-06T10:00:00\.000Z\] \[kind:: workout\] \[workoutId:: workout-/);
+  assert.equal((fake.files.get(dailyWorkoutPath).match(/\[kind:: workout\]/g) || []).length, 1);
+  assert.doesNotMatch(fake.files.get(dailyWorkoutPath), /tps-health:workout-task/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout .*?\[workoutId:: workout-/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout-end \[workoutId:: workout-/);
   assert.doesNotMatch(fake.files.get(dailyWorkoutPath), /^## Scheduled$/m, "Health must not create a second GCM time-tracking section");
@@ -7209,7 +7298,7 @@ test("blank active workouts can log sets with rest and save repeated planned set
 
   await plugin.finishWorkout({ endedAt: "2026-07-06T10:20:00.000Z" });
   const completedDailyWorkout = fake.files.get(dailyWorkoutPath);
-  const completedTaskLine = completedDailyWorkout.split("\n").find((line) => line.includes("tps-health:workout-task"));
+  const completedTaskLine = completedDailyWorkout.split("\n").find((line) => line.includes("[kind:: workout]"));
   assert.match(completedTaskLine, /^- \[x\] \[\[#Workout\|Blank Active QA\]\]/);
   const completedMarkerLine = completedDailyWorkout.split("\n").find((line) => /<!-- tps-health:workout /.test(line));
   assert.match(completedMarkerLine, /\[status:: complete\]/);
@@ -7265,7 +7354,7 @@ test("legacy GCM workout cleanup stays lossless and current workouts start one n
   const dailyPath = "Daily/2026-08-18.md";
   const current = legacy.replace(
     "## Workout",
-    "- [ ] [[#Workout|Legacy Workout]] <!-- tps-health:workout-task [workoutId:: workout-legacy] -->\n## Workout",
+    "- [ ] [[#Workout|Legacy Workout]] [kind:: workout] [workoutId:: workout-legacy]\n## Workout",
   );
   fake.files.set(dailyPath, current);
   const plugin = new TPSHealthPlugin(fake.app);
@@ -7294,7 +7383,7 @@ test("legacy GCM workout cleanup stays lossless and current workouts start one n
 
   await plugin["ensureGcmWorkoutTimer"]();
   assert.equal(startCall?.[0]?.type, "task");
-  assert.match(startCall?.[0]?.rawLine || "", /tps-health:workout-task/);
+  assert.match(startCall?.[0]?.rawLine || "", /\[kind:: workout\].*\[workoutId:: workout-legacy\]/);
   assert.deepEqual(startCall?.[2], { notesMode: "none", start: "2026-08-18T16:59:00.000Z" });
   assert.equal(fake.files.get(dailyPath), current, "Health does not create or rewrite a GCM notes workspace");
 });
@@ -7860,7 +7949,7 @@ test("workout GCM timer matching is scoped to the protected workout task id", as
   installDeterministicBrowserGlobals();
   const { workoutGcmTimerMatches } = await importPluginWithObsidianStub();
   const lines = [
-    "- [ ] [[#Workout|Push]] [tpsId:: timer-push] <!-- tps-health:workout-task [workoutId:: workout-push] -->",
+    "- [ ] [[#Workout|Push]] [kind:: workout] [workoutId:: workout-push] [tpsId:: timer-push]",
     "- [ ] Other timer [tpsId:: timer-other]",
   ];
   const timers = [
@@ -7869,6 +7958,8 @@ test("workout GCM timer matching is scoped to the protected workout task id", as
   ];
   assert.deepEqual(workoutGcmTimerMatches(lines, "workout-push", timers).map((timer) => timer.id), ["tt-push"]);
   assert.deepEqual(workoutGcmTimerMatches([lines[1], lines[0]], "workout-push", timers).map((timer) => timer.id), ["tt-push"], "stable tpsId rebases a moved task");
+  const legacyLine = "- [ ] [[#Workout|Push]] [tpsId:: timer-push] <!-- tps-health:workout-task [workoutId:: workout-push] -->";
+  assert.deepEqual(workoutGcmTimerMatches([legacyLine], "workout-push", [{ id: "legacy", targetId: "timer-push", targetLineNumber: 0 }]).map((timer) => timer.id), ["legacy"], "legacy comment identity remains readable");
 });
 
 test("blank workout start activates its Daily Note in Live Preview when GCM opens a background leaf", async () => {

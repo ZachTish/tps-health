@@ -916,6 +916,74 @@ body.is-phone .tps-health-selection-controls {
   min-height: var(--interactive-normal);
 }
 
+.modal.tps-health-food-duplicate-frame {
+  width: min(640px, calc(100vw - 32px));
+}
+
+.tps-health-food-duplicate-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+}
+
+.tps-health-food-duplicate-choice {
+  align-items: flex-start;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 10px;
+}
+
+.tps-health-food-duplicate-choice:has(input:checked) {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.tps-health-food-duplicate-choice:focus-within {
+  outline: 2px solid var(--background-modifier-border-focus);
+  outline-offset: 2px;
+}
+
+.tps-health-food-duplicate-choice input {
+  margin-top: 3px;
+}
+
+.tps-health-food-duplicate-details {
+  min-width: 0;
+}
+
+.tps-health-food-duplicate-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.tps-health-food-duplicate-meta,
+.tps-health-food-duplicate-path,
+.tps-health-food-duplicate-help {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tps-health-food-duplicate-path {
+  color: var(--text-faint);
+  margin-top: 3px;
+}
+
+.tps-health-food-duplicate-help p {
+  margin: 10px 0 0;
+}
+
+.tps-health-food-duplicate-actions {
+  align-items: stretch;
+}
+
 .tps-health-log-summary {
   align-items: center;
   border: 1px solid var(--background-modifier-border);
@@ -2896,6 +2964,15 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
   .tps-health-modal .setting-item-control input {
     min-width: 100%;
+  }
+
+  .tps-health-food-duplicate-list {
+    max-height: min(36dvh, 300px);
+  }
+
+  .tps-health-food-duplicate-actions button {
+    flex: 1 1 calc(50% - 4px);
+    min-height: 44px;
   }
 }
 
