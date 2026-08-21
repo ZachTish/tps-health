@@ -2150,6 +2150,65 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   border-left: 3px solid var(--color-purple);
 }
 
+.tps-health-workout-set-row.is-dropset,
+.tps-health-workout-set-editor.is-dropset {
+  border-right: 2px solid var(--color-orange);
+}
+
+.tps-health-workout-set-identity {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tps-health-workout-group-badge {
+  border: 1px solid color-mix(in srgb, currentColor 38%, transparent);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 1px 4px;
+  text-transform: uppercase;
+}
+
+.tps-health-workout-group-badge.is-superset {
+  color: var(--color-purple);
+}
+
+.tps-health-workout-group-badge.is-dropset {
+  color: var(--color-orange);
+  display: block;
+  margin-top: 1px;
+}
+
+.tps-health-workout-group-choices {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+}
+
+.tps-health-workout-group-choice {
+  align-items: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  min-height: 40px;
+  padding: 7px 9px;
+}
+
+.tps-health-workout-group-choice input {
+  flex: 0 0 auto;
+}
+
+.tps-health-workout-group-create-input {
+  width: 100%;
+}
+
 .tps-health-workout-set-editor {
   background: transparent;
   border: 0;
@@ -3087,8 +3146,8 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-workout-set-row.is-superset,
 .tps-health-workout-set-editor.is-superset {
-  border-left-width: 1px;
-  border-left-color: var(--background-modifier-border);
+  border-left-width: 3px;
+  border-left-color: var(--color-purple);
 }
 
 .tps-health-workout-set-editor,

@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.16.0
+
+- Supersets are now explicit exercise groups. **Create/Edit superset** lists every other exercise in the current workout and can add a new exercise; it no longer assumes the exercise immediately above. Every linked exercise keeps one stable `superset` ID, receives a compact visible group badge/rail in Reading mode and Live Preview, and remains editable from any member exercise.
+- Drop sets are now explicit set-level chains. **Create/Edit drop set** lists the other sets in that exercise and can add a new set. The selected root stays the root, linked sets are marked as drops, and removing a group clears link-generated drop metadata without changing unrelated sets.
+- Completing a set now follows the workout sequence: finish the current drop-set chain, rotate to the next open set in the linked superset exercise, then return to the first exercise for the next round. Stable set IDs drive focus, so reordered rows do not redirect completion to a different set.
+- An active Health workout is again an active GCM time-tracking session, but it targets Health's existing linked workout task and uses GCM's no-workspace mode. It creates no `## Scheduled`, `## Time Tracking`, duplicate workout heading, or notes block. Startup reuses the exact timer by `tpsId`; finish/discard stops only that workout timer by session ID and leaves unrelated timers running.
+- The chooser and group styling are mobile-first, use bounded scroll areas and usable touch targets, and add no settings or workout Markdown migration. Existing `superset` and `dropSet` IDs continue to work. TPS Global Context Menu 1.35.0 or newer is required for no-workspace timer ownership; workouts still function normally when GCM time tracking is unavailable or disabled. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: the full declared suite passed with 189 checks and one credential-gated live USDA skip. Test-vault Live Preview QA started a blank workout, logged multiple exercises, linked an arbitrary two-exercise superset, linked an explicit two-set drop chain, confirmed the compact badges/controls at desktop width, and discarded every synthetic workout artifact to Obsidian's recoverable trash. Reading-mode rendering, completion traversal, exact timer ownership, reload recovery, and mobile CSS contracts are covered by the automated suite.
+
 ## 0.15.8
 
 - Describe now guarantees an editable tray row for every non-empty top-level food phrase. Gemini, saved-food lookup, provider search, history lookup, and the final estimate may all fail without dropping the item or returning an empty search screen.

@@ -525,6 +525,7 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutFileSnapshots = new Map<string, string>();
   private processingWorkoutFiles = new Set<string>();
   private startWorkoutInFlight: Promise<string> | null = null;
+  private gcmWorkoutTimerReconcileInFlight: Promise<void> | null = null;
   private workoutMutationQueues = new Map<string, Promise<unknown>>();
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
@@ -777,7 +778,7 @@ export default class TPSHealthPlugin extends Plugin {
       this.scheduleFoodLogNutritionRepair("layout-ready", 500);
       void (async () => {
         await this.repairActiveDailyWorkoutBlock();
-        await this.detachLegacyGcmWorkoutTimer();
+        await this.ensureGcmWorkoutTimer();
       })().catch((error) => {
         logger.flowError("Workout", "daily-boundary-repair:failed", error, {
           path: this.settings.activeWorkoutDailyNotePath,
@@ -1823,6 +1824,7 @@ export default class TPSHealthPlugin extends Plugin {
       logTarget,
       planPath: plan?.sourcePath || "",
     });
+    await this.ensureGcmWorkoutTimer();
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
     const dailyFile = dailyNotePath ? this.app.vault.getAbstractFileByPath(dailyNotePath) : null;
     let openResult: WorkoutOpenResult = {
@@ -1916,7 +1918,7 @@ export default class TPSHealthPlugin extends Plugin {
     if (dailyNotePath && workoutId) await this.completeDailyWorkoutLine(dailyNotePath, workoutId, endedAt, nextEligibleDate);
     const planPath = typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : this.settings.activeWorkoutPlanPath;
     if (planPath) await this.updateWorkoutPlanCompletion(planPath, endedAt, cooldownDays, path || dailyNotePath, nextEligibleDate);
-    await this.detachLegacyGcmWorkoutTimer(endedAt);
+    await this.stopGcmWorkoutTimer(this.getActiveWorkoutState(), endedAt);
     await this.clearActiveWorkoutState();
     logger.flow("Workout", "finish:done", {
       workoutId,
@@ -1948,6 +1950,7 @@ export default class TPSHealthPlugin extends Plugin {
       dailyNotePath: active.dailyNotePath,
       setCount: active.setCount,
     });
+    await this.stopGcmWorkoutTimer(active);
     if (active.dailyNotePath && active.id) {
       const dailyFile = this.app.vault.getAbstractFileByPath(active.dailyNotePath);
       if (dailyFile instanceof TFile) {
@@ -1962,7 +1965,6 @@ export default class TPSHealthPlugin extends Plugin {
       }
     }
     const workoutFile = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-    await this.detachLegacyGcmWorkoutTimer();
     let workoutNoteTrashFailed = false;
     if (workoutFile instanceof TFile && workoutFile.path !== active.dailyNotePath) {
       try {
@@ -2570,110 +2572,169 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("WorkoutSet", "duplicate:add", { path: file.path, sourceLine: source.lineNumber, line: lineNumber, exercise: data?.exercise || "Exercise" });
   }
 
-  async linkWorkoutExerciseWithPrevious(source: WorkoutSetLineSource): Promise<void> {
-    await this.switchRenderedWorkoutToLivePreview(source.filePath);
-    await this.serializeWorkoutMutation(source.filePath, "superset-link", () => this.linkWorkoutExerciseWithPreviousNow(source));
-  }
-
-  private async linkWorkoutExerciseWithPreviousNow(source: WorkoutSetLineSource): Promise<void> {
+  async openWorkoutSupersetLinker(source: WorkoutSetLineSource): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(source.filePath);
     if (!(file instanceof TFile)) {
-      logger.flowWarn("WorkoutSet", "superset-link:missing-file", { path: source.filePath, sourceLine: source.lineNumber });
+      logger.flowWarn("WorkoutSet", "superset-picker:missing-file", { path: source.filePath, sourceLine: source.lineNumber });
       new Notice("Workout note was not found.");
       return;
     }
-    const content = await this.readWorkoutMutationContent(file, "superset-link", readStringField(source.line, "setId") || "");
+    const content = await this.readWorkoutMutationContent(file, "superset-picker", readStringField(source.line, "setId") || "");
     const lines = content.split("\n");
-    const resolvedLine = this.resolveWorkoutSetSource(lines, source, "superset-link");
+    const resolvedLine = this.resolveWorkoutSetSource(lines, source, "superset-picker");
     if (resolvedLine == null) return;
     const current = workoutSetDataAtLine(lines, resolvedLine);
-    if (!current) {
-      logger.flowWarn("WorkoutSet", "superset-link:missing-source", { path: file.path, sourceLine: source.lineNumber });
-      new Notice("Select a set line to link its exercise.");
-      return;
-    }
-    const currentBlock = workoutSetBlockIndexes(lines, resolvedLine, current.exercise);
-    const blockStart = currentBlock.length ? Math.min(...currentBlock) : resolvedLine;
-    let previousIndex = -1;
-    for (let index = blockStart - 1; index >= 0; index--) {
-      const previous = workoutSetDataAtLine(lines, index);
-      if (!previous || previous.exercise === current.exercise) continue;
-      previousIndex = index;
-      break;
-    }
-    const previous = previousIndex >= 0 ? workoutSetDataAtLine(lines, previousIndex) : null;
-    if (!previous) {
-      logger.flowWarn("WorkoutSet", "superset-link:no-previous-exercise", { path: file.path, sourceLine: source.lineNumber, exercise: current.exercise });
-      new Notice("No exercise above this one to link as a superset.");
-      return;
-    }
-    const previousBlock = workoutSetBlockIndexes(lines, previousIndex, previous.exercise);
-    const groupId = current.supersetGroupId || previous.supersetGroupId || nextWorkoutGroupId(lines, "superset");
-    for (const index of [...previousBlock, ...currentBlock]) {
-      lines[index] = upsertDataviewField(lines[index], "superset", groupId);
-    }
-    await this.writeWorkoutMutationContent(file, lines.join("\n"), "superset-link");
-    await this.cacheWorkoutFile(file);
-    logger.flow("WorkoutSet", "superset-link:done", {
-      path: file.path,
-      previousExercise: previous.exercise,
-      exercise: current.exercise,
-      groupId,
-      changedLines: previousBlock.length + currentBlock.length,
-    });
-    new Notice(`Linked ${previous.exercise} + ${current.exercise} as superset ${groupId}`);
+    if (!current) return;
+    const exercises = workoutExerciseGroups(lines).filter((entry) => entry.exercise !== current.exercise);
+    new WorkoutGroupLinkModal(this.app, {
+      kind: "superset",
+      title: `Superset ${current.exercise}`,
+      description: "Choose the other exercises that should rotate with this exercise.",
+      choices: exercises.map((entry) => ({
+        id: entry.exercise,
+        label: entry.exercise,
+        checked: Boolean(current.supersetGroupId && entry.supersetGroupId === current.supersetGroupId),
+      })),
+      allowCreate: true,
+      createLabel: "Add a new exercise",
+      createPlaceholder: "Exercise name",
+      onSubmit: async (selected, created) => {
+        if (created) {
+          const active = this.getActiveWorkoutState();
+          if (active && (active.dailyNotePath === source.filePath || active.path === source.filePath)) {
+            await this.addSetForExerciseToActiveWorkout(created, undefined, { skipCatalogBuild: true });
+          } else {
+            await this.addSetForExerciseToWorkoutFile(source.filePath, created, undefined, { focusAfter: false, skipCatalogBuild: true });
+          }
+        }
+        await this.applyWorkoutSupersetLinks(source, [...selected, ...(created ? [created] : [])]);
+      },
+    }).open();
   }
 
-  async linkWorkoutSetWithPreviousDropSet(source: WorkoutSetLineSource): Promise<void> {
+  async applyWorkoutSupersetLinks(source: WorkoutSetLineSource, selectedExercises: string[]): Promise<void> {
     await this.switchRenderedWorkoutToLivePreview(source.filePath);
-    await this.serializeWorkoutMutation(source.filePath, "dropset-link", () => this.linkWorkoutSetWithPreviousDropSetNow(source));
+    await this.serializeWorkoutMutation(source.filePath, "superset-link", async () => {
+      const file = this.app.vault.getAbstractFileByPath(source.filePath);
+      if (!(file instanceof TFile)) return;
+      const content = await this.readWorkoutMutationContent(file, "superset-link", readStringField(source.line, "setId") || "");
+      const lines = content.split("\n");
+      const resolvedLine = this.resolveWorkoutSetSource(lines, source, "superset-link");
+      if (resolvedLine == null) return;
+      const current = workoutSetDataAtLine(lines, resolvedLine);
+      if (!current) return;
+      const selected = new Set([current.exercise, ...selectedExercises].map((value) => value.trim()).filter(Boolean));
+      const groupId = current.supersetGroupId || nextWorkoutGroupId(lines, "superset");
+      for (let index = 0; index < lines.length; index++) {
+        const data = workoutSetDataAtLine(lines, index);
+        if (!data) continue;
+        if ((current.supersetGroupId && data.supersetGroupId === current.supersetGroupId) || selected.has(data.exercise)) {
+          lines[index] = removeDataviewField(lines[index], "superset");
+        }
+      }
+      if (selected.size > 1) {
+        for (let index = 0; index < lines.length; index++) {
+          const data = workoutSetDataAtLine(lines, index);
+          if (data && selected.has(data.exercise)) lines[index] = upsertDataviewField(lines[index], "superset", groupId);
+        }
+      }
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "superset-link");
+      await this.cacheWorkoutFile(file);
+      logger.flow("WorkoutSet", "superset-link:done", { path: file.path, exercise: current.exercise, linkedExercises: selected.size, groupId: selected.size > 1 ? groupId : "" });
+      new Notice(selected.size > 1 ? `Saved superset ${groupId}` : "Removed superset link");
+    });
   }
 
-  private async linkWorkoutSetWithPreviousDropSetNow(source: WorkoutSetLineSource): Promise<void> {
+  async openWorkoutDropSetLinker(source: WorkoutSetLineSource): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(source.filePath);
     if (!(file instanceof TFile)) {
-      logger.flowWarn("WorkoutSet", "dropset-link:missing-file", { path: source.filePath, sourceLine: source.lineNumber });
+      logger.flowWarn("WorkoutSet", "dropset-picker:missing-file", { path: source.filePath, sourceLine: source.lineNumber });
       new Notice("Workout note was not found.");
       return;
     }
-    const content = await this.readWorkoutMutationContent(file, "dropset-link", readStringField(source.line, "setId") || "");
+    const content = await this.readWorkoutMutationContent(file, "dropset-picker", readStringField(source.line, "setId") || "");
     const lines = content.split("\n");
-    const resolvedLine = this.resolveWorkoutSetSource(lines, source, "dropset-link");
+    const resolvedLine = this.resolveWorkoutSetSource(lines, source, "dropset-picker");
     if (resolvedLine == null) return;
     const current = workoutSetDataAtLine(lines, resolvedLine);
-    if (!current) {
-      logger.flowWarn("WorkoutSet", "dropset-link:missing-source", { path: file.path, sourceLine: source.lineNumber });
-      new Notice("Select a set line to link as a dropset.");
-      return;
-    }
-    let previousIndex = -1;
-    for (let index = resolvedLine - 1; index >= 0; index--) {
-      const previous = workoutSetDataAtLine(lines, index);
-      if (!previous) continue;
-      if (previous.exercise !== current.exercise) break;
-      previousIndex = index;
-      break;
-    }
-    const previous = previousIndex >= 0 ? workoutSetDataAtLine(lines, previousIndex) : null;
-    if (!previous) {
-      logger.flowWarn("WorkoutSet", "dropset-link:no-previous-set", { path: file.path, sourceLine: source.lineNumber, exercise: current.exercise });
-      new Notice("No set above this one for the same exercise.");
-      return;
-    }
-    const groupId = current.dropSetGroupId || previous.dropSetGroupId || nextWorkoutGroupId(lines, "dropSet");
-    lines[previousIndex] = upsertDataviewField(lines[previousIndex], "dropSet", groupId);
-    lines[resolvedLine] = upsertDataviewField(lines[resolvedLine], "dropSet", groupId);
-    lines[resolvedLine] = upsertDataviewField(lines[resolvedLine], "setType", current.setType && current.setType !== "normal" ? current.setType : "drop");
-    await this.writeWorkoutMutationContent(file, lines.join("\n"), "dropset-link");
-    await this.cacheWorkoutFile(file);
-    logger.flow("WorkoutSet", "dropset-link:done", {
-      path: file.path,
-      exercise: current.exercise,
-      previousLine: previousIndex,
-      line: resolvedLine,
-      groupId,
+    if (!current) return;
+    const choices = workoutSetBlockIndexes(lines, resolvedLine, current.exercise)
+      .filter((index) => index !== resolvedLine)
+      .map((index) => {
+        const data = workoutSetDataAtLine(lines, index)!;
+        return {
+          id: readStringField(lines[index], "setId") || "",
+          label: `Set ${workoutSetPresentation(lines, index, data).setOrdinal || 1} · ${data.details || "enter values"}`,
+          checked: Boolean(current.dropSetGroupId && data.dropSetGroupId === current.dropSetGroupId),
+        };
+      })
+      .filter((choice) => Boolean(choice.id));
+    new WorkoutGroupLinkModal(this.app, {
+      kind: "dropset",
+      title: `Drop sets for ${current.exercise}`,
+      description: "Choose one or more sets to perform immediately after this set.",
+      choices,
+      allowCreate: true,
+      createLabel: "Add a new set",
+      onSubmit: (selected, created) => this.applyWorkoutDropSetLinks(source, selected, Boolean(created)),
+    }).open();
+  }
+
+  async applyWorkoutDropSetLinks(source: WorkoutSetLineSource, selectedSetIds: string[], addNewSet = false): Promise<void> {
+    await this.switchRenderedWorkoutToLivePreview(source.filePath);
+    await this.serializeWorkoutMutation(source.filePath, "dropset-link", async () => {
+      const file = this.app.vault.getAbstractFileByPath(source.filePath);
+      if (!(file instanceof TFile)) return;
+      const content = await this.readWorkoutMutationContent(file, "dropset-link", readStringField(source.line, "setId") || "");
+      const lines = content.split("\n");
+      const resolvedLine = this.resolveWorkoutSetSource(lines, source, "dropset-link");
+      if (resolvedLine == null) return;
+      const current = workoutSetDataAtLine(lines, resolvedLine);
+      if (!current) return;
+      const currentSetId = readStringField(lines[resolvedLine], "setId");
+      const selected = new Set([currentSetId, ...selectedSetIds].filter(Boolean));
+      if (addNewSet) {
+        const block = workoutSetBlockIndexes(lines, resolvedLine, current.exercise);
+        const last = block.length ? Math.max(...block) : resolvedLine;
+        const recent = workoutSetDataAtLine(lines, last) || current;
+        const added = workoutSetMarkdownLine(workoutSetPlaceholderLine(current.exercise, current.exercisePath), {
+          exercise: current.exercise,
+          exercisePath: current.exercisePath,
+          reps: recent.reps ?? 0,
+          weight: recent.weight ?? 0,
+          weightUnit: recent.unit || "lb",
+          restSeconds: recent.restSeconds,
+          setType: "drop",
+          completed: false,
+        });
+        lines.splice(last + 1, 0, `${lines[last]?.match(/^\s*/)?.[0] || ""}${added}`);
+        selected.add(readStringField(added, "setId"));
+      }
+      const groupId = current.dropSetGroupId || nextWorkoutGroupId(lines, "dropSet");
+      for (let index = 0; index < lines.length; index++) {
+        const data = workoutSetDataAtLine(lines, index);
+        if (!data || data.exercise !== current.exercise) continue;
+        const setId = readStringField(lines[index], "setId");
+        if ((current.dropSetGroupId && data.dropSetGroupId === current.dropSetGroupId) || selected.has(setId)) {
+          lines[index] = removeDataviewField(lines[index], "dropSet");
+          if (current.dropSetGroupId && data.dropSetGroupId === current.dropSetGroupId && data.setType === "drop") {
+            lines[index] = removeDataviewField(lines[index], "setType");
+          }
+        }
+      }
+      if (selected.size > 1) {
+        for (let index = 0; index < lines.length; index++) {
+          const setId = readStringField(lines[index], "setId");
+          if (!selected.has(setId)) continue;
+          lines[index] = upsertDataviewField(lines[index], "dropSet", groupId);
+          if (setId !== currentSetId) lines[index] = upsertDataviewField(lines[index], "setType", "drop");
+        }
+      }
+      await this.writeWorkoutMutationContent(file, lines.join("\n"), "dropset-link");
+      await this.cacheWorkoutFile(file);
+      logger.flow("WorkoutSet", "dropset-link:done", { path: file.path, exercise: current.exercise, linkedSets: selected.size, groupId: selected.size > 1 ? groupId : "" });
+      new Notice(selected.size > 1 ? `Saved drop set ${groupId}` : "Removed drop-set link");
     });
-    new Notice(`Linked ${current.exercise} dropset ${groupId}`);
   }
 
   private activeWorkoutFile(): TFile | null {
@@ -5448,6 +5509,7 @@ export default class TPSHealthPlugin extends Plugin {
       completedLastPlannedSet,
     });
     const updatedContent = lines.join("\n");
+    const nextLinkedSetIndex = performsSet ? nextLinkedWorkoutSetIndex(lines, targetLineNumber) : null;
     if (updatedContent === content) {
       logger.flow("WorkoutSet", "line:update-unchanged", { path: file.path, setId: sourceSetId, line: targetLineNumber });
       return;
@@ -5462,6 +5524,16 @@ export default class TPSHealthPlugin extends Plugin {
         }
       } else {
         await this.updateWorkoutTaskCompletionFrontmatter(file, performedAt, performedSetCount, restSeconds);
+      }
+      if (nextLinkedSetIndex != null) {
+        const nextSetId = readStringField(lines[nextLinkedSetIndex], "setId");
+        logger.flow("WorkoutSet", "focus:linked-next", {
+          path: file.path,
+          fromLine: targetLineNumber,
+          toLine: nextLinkedSetIndex,
+          toSetId: nextSetId,
+        });
+        await this.focusWorkoutSetLine(file, nextLinkedSetIndex, nextSetId);
       }
       if (completedLastPlannedSet) this.promptFinishWorkoutAfterLastSet(file);
     }
@@ -5902,60 +5974,74 @@ export default class TPSHealthPlugin extends Plugin {
       || plugins?.getPlugin?.("tps-global-context-menu")?.api;
   }
 
-  private async detachLegacyGcmWorkoutTimer(endedAt = isoNow()): Promise<void> {
-    const active = this.getActiveWorkoutState();
-    if (!active) return;
-    const targetPath = active.path || active.dailyNotePath;
-    const targetFile = targetPath ? this.app.vault.getAbstractFileByPath(targetPath) : null;
-    const timeTracking = this.getGcmApi()?.timeTracking;
-    if (
-      !(targetFile instanceof TFile)
-      || typeof timeTracking?.getActiveTimersForFile !== "function"
-      || typeof timeTracking?.stopActiveTimerForFile !== "function"
-    ) return;
+  private async ensureGcmWorkoutTimer(): Promise<void> {
+    if (this.gcmWorkoutTimerReconcileInFlight) return this.gcmWorkoutTimerReconcileInFlight;
+    const run = this.ensureGcmWorkoutTimerOnce();
+    this.gcmWorkoutTimerReconcileInFlight = run;
     try {
-      const timers = await timeTracking.getActiveTimersForFile(targetFile);
-      const title = active.title.trim().toLocaleLowerCase();
-      const matching = Array.isArray(timers)
-        ? timers.filter((timer) => String(timer?.title || "").trim().toLocaleLowerCase() === title)
-        : [];
-      if (timers.length !== 1 || matching.length !== 1) {
-        if (timers.length) logger.flow("GCM", "legacy-workout-timer:skip", {
-          path: targetFile.path,
-          activeTimers: timers.length,
-          titleMatches: matching.length,
-        });
+      await run;
+    } finally {
+      if (this.gcmWorkoutTimerReconcileInFlight === run) this.gcmWorkoutTimerReconcileInFlight = null;
+    }
+  }
+
+  private async ensureGcmWorkoutTimerOnce(): Promise<void> {
+    const active = this.getActiveWorkoutState();
+    const dailyFile = active?.dailyNotePath ? this.app.vault.getAbstractFileByPath(active.dailyNotePath) : null;
+    const timeTracking = this.getGcmApi()?.timeTracking;
+    if (!active || !(dailyFile instanceof TFile) || typeof timeTracking?.startTimer !== "function" || typeof timeTracking?.getActiveTimersForFile !== "function") return;
+    if (typeof timeTracking.isEnabled === "function" && !timeTracking.isEnabled()) {
+      logger.flow("GCM", "workout-timer:disabled", { workoutId: active.id, path: dailyFile.path });
+      return;
+    }
+    try {
+      const content = await this.app.vault.cachedRead(dailyFile);
+      const lines = content.split("\n");
+      const taskIndex = workoutDailyTaskIndex(lines, active.id);
+      if (taskIndex < 0) return;
+      const timers = await timeTracking.getActiveTimersForFile(dailyFile);
+      const matching = workoutGcmTimerMatches(lines, active.id, Array.isArray(timers) ? timers : []);
+      if (matching.length) {
+        if (matching.length > 1 && typeof timeTracking.stopTimerById === "function") {
+          for (const duplicate of matching.slice(1)) await timeTracking.stopTimerById(String(duplicate.id || ""), active.startedAt);
+        }
+        logger.flow("GCM", "workout-timer:reused", { workoutId: active.id, path: dailyFile.path, matches: matching.length });
         return;
       }
-      const timer = matching[0];
-      const notesPath = String(timer?.notesPath || "").trim();
-      const notesBlockId = String(timer?.notesBlockId || "").trim();
-      const notesHeading = String(timer?.notesHeading || "").trim();
-      const notesFile = notesPath ? this.app.vault.getAbstractFileByPath(notesPath) : null;
-      if (notesFile instanceof TFile && notesBlockId) {
-        await this.serializeWorkoutMutation(notesFile.path, "remove-legacy-workout-timer-workspace", async () => {
-          const content = await this.readWorkoutMutationContent(notesFile, "remove-legacy-workout-timer-workspace");
-          const updated = removeEmptyWorkoutTimerWorkspace(content, notesBlockId, notesHeading);
-          if (updated !== content) {
-            await this.writeWorkoutMutationContent(notesFile, updated, "remove-legacy-workout-timer-workspace");
-          }
-        });
+      const started = await timeTracking.startTimer({
+        file: dailyFile,
+        type: "task",
+        lineNumber: taskIndex,
+        rawLine: lines[taskIndex],
+        title: active.title || "Workout",
+      }, undefined, {
+        notesMode: "none",
+        start: active.startedAt || undefined,
+      });
+      const refreshed = (await this.app.vault.cachedRead(dailyFile)).split("\n");
+      const startedMatches = workoutGcmTimerMatches(refreshed, active.id, started ? [started] : []);
+      if (!startedMatches.length) {
+        logger.flowWarn("GCM", "workout-timer:not-started", { workoutId: active.id, path: dailyFile.path, returnedTimerId: String(started?.id || "") });
+        return;
       }
-      const parsedEnd = new Date(endedAt);
-      await timeTracking.stopActiveTimerForFile(
-        targetFile,
-        Number.isFinite(parsedEnd.getTime()) ? parsedEnd : endedAt,
-      );
-      logger.flow("GCM", "legacy-workout-timer:detached", {
-        path: targetFile.path,
-        notesPath,
-        removedWorkspace: notesFile instanceof TFile && Boolean(notesBlockId),
-      });
+      logger.flow("GCM", "workout-timer:started", { workoutId: active.id, path: dailyFile.path, timerId: String(started.id || ""), notesMode: "none" });
     } catch (error) {
-      logger.flowWarn("GCM", "legacy-workout-timer:failed", {
-        path: targetFile.path,
-        error: logger.errorSummary(error),
-      });
+      logger.flowWarn("GCM", "workout-timer:start-failed", { workoutId: active.id, path: dailyFile.path, error: logger.errorSummary(error) });
+    }
+  }
+
+  private async stopGcmWorkoutTimer(active: ReturnType<TPSHealthPlugin["getActiveWorkoutState"]>, endedAt = isoNow()): Promise<void> {
+    const dailyFile = active?.dailyNotePath ? this.app.vault.getAbstractFileByPath(active.dailyNotePath) : null;
+    const timeTracking = this.getGcmApi()?.timeTracking;
+    if (!active || !(dailyFile instanceof TFile) || typeof timeTracking?.getActiveTimersForFile !== "function" || typeof timeTracking?.stopTimerById !== "function") return;
+    try {
+      const lines = (await this.app.vault.cachedRead(dailyFile)).split("\n");
+      const timers = await timeTracking.getActiveTimersForFile(dailyFile);
+      const matching = workoutGcmTimerMatches(lines, active.id, Array.isArray(timers) ? timers : []);
+      for (const timer of matching) await timeTracking.stopTimerById(String(timer.id || ""), endedAt);
+      logger.flow("GCM", "workout-timer:stopped", { workoutId: active.id, path: dailyFile.path, timers: matching.length });
+    } catch (error) {
+      logger.flowWarn("GCM", "workout-timer:stop-failed", { workoutId: active.id, path: dailyFile.path, error: logger.errorSummary(error) });
     }
   }
 
@@ -9574,6 +9660,23 @@ interface WorkoutSetLineSource {
   line: string;
 }
 
+interface WorkoutGroupLinkChoice {
+  id: string;
+  label: string;
+  checked?: boolean;
+}
+
+interface WorkoutGroupLinkModalOptions {
+  kind: "superset" | "dropset";
+  title: string;
+  description: string;
+  choices: WorkoutGroupLinkChoice[];
+  allowCreate?: boolean;
+  createLabel?: string;
+  createPlaceholder?: string;
+  onSubmit: (selected: string[], created?: string) => Promise<void> | void;
+}
+
 interface ResolvedFoodLogServing {
   servings: number;
   inputQuantity: number;
@@ -11182,6 +11285,7 @@ function renderWorkoutSetChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: 
       item.toggleClass("is-exercise-start", Boolean(chip.exerciseStart));
       item.toggleClass("is-exercise-end", Boolean(chip.exerciseEnd));
       if (chip.supersetGroupId) item.addClass("is-superset");
+      if (chip.dropSetGroupId) item.addClass("is-dropset");
       item.appendChild(element);
     } catch (error) {
       logger.flowError("WorkoutSet", "render-loop:failed", error, { path: sourcePath });
@@ -11225,6 +11329,7 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
   chip.toggleClass("is-exercise-start", Boolean(data.exerciseStart));
   chip.toggleClass("is-exercise-end", Boolean(data.exerciseEnd));
   chip.toggleClass("is-superset", Boolean(data.supersetGroupId));
+  chip.toggleClass("is-dropset", Boolean(data.dropSetGroupId));
   chip.setAttribute("aria-label", `${data.exercise || "Workout"} set ${data.setOrdinal || 1}`);
   chip.addEventListener("click", (event) => event.stopPropagation());
   chip.addEventListener("mousedown", (event) => event.stopPropagation());
@@ -11478,8 +11583,8 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
     }
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("Copy set").setIcon("copy").onClick(() => void plugin.duplicateWorkoutSetBelow(source)));
-    menu.addItem((item) => item.setTitle("Link exercise as superset").onClick(() => void plugin.linkWorkoutExerciseWithPrevious(source)));
-    menu.addItem((item) => item.setTitle("Link previous set as drop set").onClick(() => void plugin.linkWorkoutSetWithPreviousDropSet(source)));
+    menu.addItem((item) => item.setTitle(data.supersetGroupId ? "Edit superset…" : "Create superset…").onClick(() => void plugin.openWorkoutSupersetLinker(source)));
+    menu.addItem((item) => item.setTitle(data.dropSetGroupId ? "Edit drop set…" : "Create drop set…").onClick(() => void plugin.openWorkoutDropSetLinker(source)));
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("Delete set").setIcon("trash").onClick(() => void plugin.deleteWorkoutSetLine(source)));
     menu.showAtMouseEvent(event);
@@ -11494,9 +11599,23 @@ function workoutSetEditorElement(plugin: TPSHealthPlugin, data: WorkoutSetChipDa
   const identity = document.createElement("span");
   identity.className = "tps-health-workout-set-identity";
   identity.append(exercise);
+  if (data.supersetGroupId) {
+    const badge = document.createElement("span");
+    badge.className = "tps-health-workout-group-badge is-superset";
+    badge.textContent = `Super ${data.supersetGroupId}`;
+    badge.setAttribute("title", `Superset ${data.supersetGroupId}`);
+    identity.append(badge);
+  }
   header.append(identity, actions);
   const metrics = document.createElement("span");
   metrics.className = "tps-health-workout-set-metrics";
+  if (data.dropSetGroupId) {
+    const badge = document.createElement("span");
+    badge.className = "tps-health-workout-group-badge is-dropset";
+    badge.textContent = `Drop ${data.dropSetGroupId}`;
+    badge.setAttribute("title", `Drop-set chain ${data.dropSetGroupId}`);
+    setBadge.append(badge);
+  }
   metrics.append(setBadge, previous, weightControl, repsControl, restControl, perform);
   const gridHeader = document.createElement("span");
   gridHeader.className = "tps-health-workout-set-grid-header";
@@ -11621,6 +11740,57 @@ function workoutSetBlockIndexes(lines: string[], seedIndex: number, exercise: st
     indexes.push(index);
   }
   return indexes;
+}
+
+function workoutExerciseGroups(lines: string[]): Array<{ exercise: string; indexes: number[]; supersetGroupId?: string }> {
+  const groups: Array<{ exercise: string; indexes: number[]; supersetGroupId?: string }> = [];
+  const byExercise = new Map<string, { exercise: string; indexes: number[]; supersetGroupId?: string }>();
+  for (let index = 0; index < lines.length; index++) {
+    const data = workoutSetDataAtLine(lines, index);
+    if (!data) continue;
+    let group = byExercise.get(data.exercise);
+    if (!group) {
+      group = { exercise: data.exercise, indexes: [], supersetGroupId: data.supersetGroupId };
+      byExercise.set(data.exercise, group);
+      groups.push(group);
+    }
+    group.indexes.push(index);
+    if (!group.supersetGroupId && data.supersetGroupId) group.supersetGroupId = data.supersetGroupId;
+  }
+  return groups;
+}
+
+export function nextLinkedWorkoutSetIndex(lines: string[], completedIndex: number): number | null {
+  const completed = workoutSetDataAtLine(lines, completedIndex);
+  if (!completed) return null;
+  const open = (index: number) => Boolean(workoutSetDataAtLine(lines, index) && !isPerformedWorkoutSetLine(lines[index]));
+  if (completed.dropSetGroupId) {
+    for (let index = completedIndex + 1; index < lines.length; index++) {
+      const data = workoutSetDataAtLine(lines, index);
+      if (!data || data.exercise !== completed.exercise) continue;
+      if (data.dropSetGroupId === completed.dropSetGroupId && open(index)) return index;
+    }
+    for (let index = 0; index < completedIndex; index++) {
+      const data = workoutSetDataAtLine(lines, index);
+      if (data?.exercise === completed.exercise && data.dropSetGroupId === completed.dropSetGroupId && open(index)) return index;
+    }
+  }
+  const exercises = workoutExerciseGroups(lines);
+  const currentExerciseIndex = exercises.findIndex((entry) => entry.exercise === completed.exercise);
+  if (completed.supersetGroupId && currentExerciseIndex >= 0) {
+    const linked = exercises.filter((entry) => entry.supersetGroupId === completed.supersetGroupId);
+    const currentLinkedIndex = linked.findIndex((entry) => entry.exercise === completed.exercise);
+    for (let offset = 1; offset < linked.length; offset++) {
+      const exercise = linked[(currentLinkedIndex + offset) % linked.length];
+      const next = exercise.indexes.find(open);
+      if (next != null) return next;
+    }
+    const nextCurrent = linked[currentLinkedIndex]?.indexes.find(open);
+    if (nextCurrent != null) return nextCurrent;
+  }
+  for (let index = completedIndex + 1; index < lines.length; index++) if (open(index)) return index;
+  for (let index = 0; index < completedIndex; index++) if (open(index)) return index;
+  return null;
 }
 
 function nextWorkoutGroupId(lines: string[], field: "superset" | "dropSet"): string {
@@ -14571,6 +14741,74 @@ class CustomFoodModal extends Modal {
   }
 }
 
+class WorkoutGroupLinkModal extends Modal {
+  constructor(app: App, private options: WorkoutGroupLinkModalOptions) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.contentEl.empty();
+    this.modalEl.addClass("tps-health-modal-frame", "tps-health-workout-group-modal");
+    this.contentEl.addClass("tps-health-modal");
+    this.contentEl.createEl("h2", { text: this.options.title });
+    this.contentEl.createEl("p", { text: this.options.description, cls: "tps-health-status" });
+    const list = this.contentEl.createDiv({ cls: "tps-health-workout-group-choices" });
+    const checkboxes = new Map<string, HTMLInputElement>();
+    for (const choice of this.options.choices) {
+      const label = list.createEl("label", { cls: "tps-health-workout-group-choice" });
+      const checkbox = label.createEl("input", { attr: { type: "checkbox" } });
+      checkbox.checked = Boolean(choice.checked);
+      label.createSpan({ text: choice.label });
+      checkboxes.set(choice.id, checkbox);
+    }
+    let createCheckbox: HTMLInputElement | null = null;
+    let createInput: HTMLInputElement | null = null;
+    if (this.options.allowCreate) {
+      const label = list.createEl("label", { cls: "tps-health-workout-group-choice is-create" });
+      createCheckbox = label.createEl("input", { attr: { type: "checkbox" } });
+      label.createSpan({ text: this.options.createLabel || "Add new" });
+      if (this.options.createPlaceholder) {
+        createInput = list.createEl("input", {
+          cls: "tps-health-workout-group-create-input",
+          attr: { type: "text", placeholder: this.options.createPlaceholder, "aria-label": this.options.createPlaceholder },
+        });
+        createInput.disabled = true;
+        createCheckbox.addEventListener("change", () => {
+          if (!createInput) return;
+          createInput.disabled = !createCheckbox?.checked;
+          if (createCheckbox?.checked) createInput.focus();
+        });
+      }
+    }
+    const status = this.contentEl.createEl("p", { cls: "tps-health-status" });
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((button) => button.setButtonText("Save links").setCta().onClick(async () => {
+        const selected = Array.from(checkboxes).filter(([, checkbox]) => checkbox.checked).map(([value]) => value);
+        const created = createCheckbox?.checked ? (createInput ? createInput.value.trim() : "add") : "";
+        if (createCheckbox?.checked && createInput && !created) {
+          status.setText("Enter a name for the new exercise.");
+          createInput.focus();
+          return;
+        }
+        this.modalEl.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input").forEach((control) => control.disabled = true);
+        status.setText("Saving links…");
+        try {
+          await this.options.onSubmit(selected, created || undefined);
+          this.close();
+        } catch (error) {
+          logger.flowError("WorkoutGroup", `${this.options.kind}:save-failed`, error);
+          status.setText("Could not save these links.");
+          this.modalEl.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input").forEach((control) => control.disabled = false);
+        }
+      }));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 class FinishWorkoutPromptModal extends Modal {
   constructor(app: App, private onFinish: () => Promise<void>, private onAddSet: () => void, private onDismiss: () => void) {
     super(app);
@@ -15038,8 +15276,8 @@ function workoutSetMarkdownLine(original: string, draft: Partial<WorkoutSet> & {
   const preserved = dataviewFieldsExcept(original, new Set(["exercise", "exercisepath", "reps", "weight", "unit", "perarm", "settype", "superset", "dropset", "rest", "reststartedat"]));
   if (preserved.length) line += ` ${preserved.join(" ")}`;
   const setType = normalizeWorkoutSetType(draft.setType);
-  const supersetGroupId = (draft.supersetGroupId || "").trim();
-  const dropSetGroupId = (draft.dropSetGroupId || "").trim();
+  const supersetGroupId = (draft.supersetGroupId !== undefined ? draft.supersetGroupId : readStringField(original, "superset") || "").trim();
+  const dropSetGroupId = (draft.dropSetGroupId !== undefined ? draft.dropSetGroupId : readStringField(original, "dropSet") || "").trim();
   if (draft.perArm) line = upsertDataviewField(line, "perArm", "true");
   if (setType && setType !== "normal") line = upsertDataviewField(line, "setType", setType);
   if (supersetGroupId) line = upsertDataviewField(line, "superset", supersetGroupId);
@@ -15264,6 +15502,11 @@ function replaceDataviewField(line: string, key: string, value: string | number)
 
 function upsertDataviewField(line: string, key: string, value: string | number): string {
   return replaceDataviewField(line, key, value);
+}
+
+function removeDataviewField(line: string, key: string): string {
+  const pattern = new RegExp(`\\s*\\[${escapeRegExp(key)}::\\s*[^\\]]*\\]`, "gi");
+  return line.replace(pattern, "").replace(/\s+$/, "");
 }
 
 export function upsertWorkoutDailyMarkerField(line: string, key: string, value: string | number): string {
@@ -18077,6 +18320,20 @@ function isWorkoutDailyTaskLine(line: string, workoutId = ""): boolean {
 
 function workoutDailyTaskIndex(lines: readonly string[], workoutId: string): number {
   return lines.findIndex((line) => isWorkoutDailyTaskLine(line, workoutId));
+}
+
+export function workoutGcmTimerMatches(lines: readonly string[], workoutId: string, timers: any[]): any[] {
+  return timers.filter((timer) => {
+    const preferred = Number(timer?.targetLineNumber ?? timer?.lineNumber);
+    const targetId = String(timer?.targetId || "").trim();
+    if (targetId) {
+      const byId = lines.findIndex((line) => readStringField(line, "tpsId") === targetId);
+      if (byId >= 0) return isWorkoutDailyTaskLine(lines[byId], workoutId);
+    }
+    return Number.isInteger(preferred) && preferred >= 0 && preferred < lines.length
+      ? isWorkoutDailyTaskLine(lines[preferred], workoutId)
+      : false;
+  });
 }
 
 function isWorkoutDailyMarkerLine(line: string): boolean {
