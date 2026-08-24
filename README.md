@@ -1,5 +1,10 @@
 # TPS Health
 
+## 0.18.1
+
+- The activity logger now describes the active storage contract accurately. Native mode says it creates one typed activity record and does not rewrite the Daily Note body; Legacy mode retains the existing Daily Note wording.
+- This is a backward-compatible presentation fix discovered during live POC activity logging. Stored records, schemas, goals, provider behavior, and Legacy mode are unchanged. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.18.0
 
 - Adds an opt-in **Native Markdown records** storage mode while preserving existing Daily Note/body logging as the default. Food, activity, workout-session, and workout-exercise entries become ordinary versioned Markdown records through GCM's native-record API.

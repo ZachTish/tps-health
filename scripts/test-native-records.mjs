@@ -152,6 +152,8 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(settingsSource, /Native TPS records/u);
   assert.match(mainSource, /this\.nativeRecordService\.createFoodEntry\(entry\)/u);
   assert.match(mainSource, /this\.nativeRecordService\.createActivityEntry\(entry\)/u);
+  assert.match(mainSource, /this\.plugin\.nativeRecordService\?\.isEnabled\(\)/u);
+  assert.match(mainSource, /Create one typed activity record\. The Daily Note body is not rewritten\./u);
   assert.match(mainSource, /return this\.startNativeWorkout/u);
   assert.match(mainSource, /return this\.logNativeWorkoutSet\(set, path\)/u);
   assert.match(mainSource, /storage: "native-record-index"/u);

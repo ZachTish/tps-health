@@ -13723,7 +13723,12 @@ class ActivityLogModal extends Modal {
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal", "tps-health-activity-log-frame");
     this.contentEl.createEl("h2", { text: "Log activity" });
-    this.contentEl.createEl("p", { text: "Record an activity directly in your daily note. No separate note is created.", cls: "tps-health-status" });
+    this.contentEl.createEl("p", {
+      text: this.plugin.nativeRecordService?.isEnabled()
+        ? "Create one typed activity record. The Daily Note body is not rewritten."
+        : "Record an activity directly in your daily note. No separate note is created.",
+      cls: "tps-health-status",
+    });
     let activity = "Walking";
     let activityType = "walking";
     let durationMinutes = "";
