@@ -3548,3 +3548,104 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 .tps-health-meal-ingredient-actions button {
   flex: 1 1 0;
 }
+.tps-health-native-daily {
+  --tps-health-native-metric-color: var(--interactive-accent);
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: var(--background-secondary);
+  box-sizing: border-box;
+}
+
+.tps-health-native-daily-header,
+.tps-health-native-daily-metric-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tps-health-native-daily-heading {
+  min-width: 0;
+}
+
+.tps-health-native-daily-title {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.tps-health-native-daily-summary,
+.tps-health-native-daily-target,
+.tps-health-native-daily-empty,
+.tps-health-native-daily-message {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.tps-health-native-daily-calories {
+  flex: 0 0 auto;
+  color: var(--text-normal);
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+}
+
+.tps-health-native-daily-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 10px;
+}
+
+.tps-health-native-daily-metric {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tps-health-native-daily-metric-label,
+.tps-health-native-daily-metric-value {
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.tps-health-native-daily-metric-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-native-daily-metric-value {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+}
+
+.tps-health-native-daily-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+}
+
+.tps-health-native-daily-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tps-health-native-metric-color);
+  transition: width 140ms ease-out;
+}
+
+.tps-health-native-daily-metric.is-above .tps-health-native-daily-progress-fill {
+  background: var(--text-error);
+}
+
+@media (max-width: 480px) {
+  .tps-health-native-daily {
+    padding: 12px;
+  }
+
+  .tps-health-native-daily-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+}

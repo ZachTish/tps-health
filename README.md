@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.19.0
+
+- Native-record Daily Notes can now render a compact nutrition dashboard with the `tps-health-daily` fenced block. It reads the incremental typed-record index, shows the day's entry count and calories, and compares food totals with the configured calorie, protein, carbohydrate, fat, fiber, sugar, alcohol, and sodium goals.
+- The dashboard reacts to native food-record creation, editing, deletion, and rename without scanning Daily Notes or duplicating macro data into their bodies. Activity-only goals are intentionally omitted from this food dashboard.
+- The Native POC Daily Note template now places the dashboard beside a core `Daily Health.base` embed filtered by the embedding note's date, so totals and the individual typed food entries are both visible.
+- Existing Daily Notes opt in by adding an empty `tps-health-daily` fenced block. Legacy storage behavior, record schemas, food logging, goal settings, and the public API remain backward compatible. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.18.1
 
 - The activity logger now describes the active storage contract accurately. Native mode says it creates one typed activity record and does not rewrite the Daily Note body; Legacy mode retains the existing Daily Note wording.
@@ -382,6 +389,17 @@ All Health food, barcode, recipe, and workout modals use `tps-keyboard-aware-mod
 TPS Health treats daily notes as the durable health log and uses linked notes for reusable foods, recipes, and workout sessions.
 
 See `DESIGN.md` for the broader researched workflow model covering food, recipes, meals, exercises, routines, serving sizes, and AI-assisted command flows.
+
+## Native Daily Note dashboard
+
+In **Native Markdown records** mode, Health stores nutrition on the `food-entry` record and does not copy a summary into the Daily Note. Add this fenced block to a Daily Note template to render the day from the incremental native-record index:
+
+````markdown
+```tps-health-daily
+```
+````
+
+The containing file must resolve through Core Daily Notes. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
 
 ## Daily Note Lines
 

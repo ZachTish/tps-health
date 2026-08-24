@@ -13,6 +13,7 @@ import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
 import { HealthNativeRecordService } from "./native-records";
+import { buildNativeDailyDashboardModel, formatNativeDailyMetricValue, type NativeDailyDashboardModel } from "./native-daily-dashboard";
 import {
   DEFAULT_SETTINGS,
   ActivityLogEntry,
@@ -786,6 +787,21 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorExtension(createWorkoutDailyHeaderExtension(this));
     this.registerEditorExtension(createWorkoutSetChipExtension(this));
     this.registerEditorExtension(createFoodLogChipExtension(this));
+    if (typeof (this as any).registerMarkdownCodeBlockProcessor === "function") {
+      this.registerMarkdownCodeBlockProcessor("tps-health-daily", async (_source, el, ctx) => {
+        const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
+        const dateContext = file instanceof TFile ? await this.getDailyNoteDateContext(file) : null;
+        if (!dateContext) {
+          renderNativeDailyDashboardMessage(el, "This Health dashboard must be embedded in a configured Daily Note.");
+          return;
+        }
+        if (!this.nativeRecordService?.isEnabled()) {
+          renderNativeDailyDashboardMessage(el, "Enable Native Markdown records in TPS Health to use this dashboard.");
+          return;
+        }
+        ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext.dateIso));
+      });
+    }
     this.registerMarkdownPostProcessor((root, ctx) => {
       ctx.addChild(new TPSHealthRenderedControlsChild(root, this, ctx));
     });
@@ -10351,6 +10367,90 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
     } catch (error) {
       logger.flowError("RenderedControls", "postprocessor:failed", error, { sourcePath: this.ctx.sourcePath });
     }
+  }
+}
+
+class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
+  private refreshTimer: number | null = null;
+
+  constructor(containerEl: HTMLElement, private plugin: TPSHealthPlugin, private dateIso: string) {
+    super(containerEl);
+  }
+
+  onload(): void {
+    const scheduleRefresh = () => {
+      if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = window.setTimeout(() => {
+        this.refreshTimer = null;
+        void this.render();
+      }, 40);
+    };
+    this.registerEvent(this.plugin.app.metadataCache.on("changed", (file) => {
+      const frontmatter = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (frontmatter?.kind === "food-entry") scheduleRefresh();
+    }));
+    this.registerEvent(this.plugin.app.vault.on("create", scheduleRefresh));
+    this.registerEvent(this.plugin.app.vault.on("delete", scheduleRefresh));
+    this.registerEvent(this.plugin.app.vault.on("rename", scheduleRefresh));
+    this.register(() => {
+      if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    });
+    void this.render();
+  }
+
+  private async render(): Promise<void> {
+    try {
+      const totals = await this.plugin.getDailyFoodMacroTotals(this.dateIso);
+      renderNativeDailyDashboard(this.containerEl, buildNativeDailyDashboardModel(totals, this.plugin.getMetricRenderConfigs()));
+    } catch (error) {
+      logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateIso });
+      renderNativeDailyDashboardMessage(this.containerEl, "TPS Health could not load this day's nutrition totals.");
+    }
+  }
+}
+
+function renderNativeDailyDashboardMessage(container: HTMLElement, message: string): void {
+  container.empty();
+  const root = container.createDiv({ cls: "tps-health-native-daily tps-health-native-daily--message" });
+  root.createDiv({ cls: "tps-health-native-daily-message", text: message });
+}
+
+function renderNativeDailyDashboard(container: HTMLElement, model: NativeDailyDashboardModel): void {
+  container.empty();
+  const root = container.createDiv({ cls: "tps-health-native-daily" });
+  const header = root.createDiv({ cls: "tps-health-native-daily-header" });
+  const heading = header.createDiv({ cls: "tps-health-native-daily-heading" });
+  heading.createDiv({ cls: "tps-health-native-daily-title", text: "Daily nutrition" });
+  heading.createDiv({
+    cls: "tps-health-native-daily-summary",
+    text: model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
+  });
+  header.createDiv({
+    cls: "tps-health-native-daily-calories",
+    text: `${formatNativeDailyMetricValue(model.calories)} kcal`,
+  });
+
+  if (!model.entryCount) {
+    root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });
+    return;
+  }
+
+  const metrics = root.createDiv({ cls: "tps-health-native-daily-metrics" });
+  for (const metric of model.metrics) {
+    const card = metrics.createDiv({ cls: `tps-health-native-daily-metric is-${metric.state}` });
+    card.setAttr("data-property-key", metric.propertyKey);
+    if (metric.color) card.style.setProperty("--tps-health-native-metric-color", metric.color);
+    const line = card.createDiv({ cls: "tps-health-native-daily-metric-line" });
+    line.createSpan({ cls: "tps-health-native-daily-metric-label", text: metric.label });
+    line.createSpan({
+      cls: "tps-health-native-daily-metric-value",
+      text: `${formatNativeDailyMetricValue(metric.value)} ${metric.unit}`,
+    });
+    const track = card.createDiv({ cls: "tps-health-native-daily-progress", attr: { "aria-hidden": "true" } });
+    const fill = track.createDiv({ cls: "tps-health-native-daily-progress-fill" });
+    fill.style.width = `${Math.round(metric.progress * 100)}%`;
+    card.createDiv({ cls: "tps-health-native-daily-target", text: metric.targetLabel });
   }
 }
 
