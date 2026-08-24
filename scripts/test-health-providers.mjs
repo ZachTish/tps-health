@@ -59,6 +59,7 @@ async function importPluginWithObsidianStub() {
       }
     }
     globalThis.__TPSHealthTestTFile = TFile;
+    export class TFolder { constructor(path = "") { this.path = path; } }
     export class Plugin {
       constructor(app) { this.app = app; this.__pluginData = null; }
       addCommand() {}
@@ -74,6 +75,7 @@ async function importPluginWithObsidianStub() {
       open() { globalThis.__TPSHealthTestOpenedModals?.push(this); }
       close() { this.__closed = true; globalThis.__TPSHealthTestClosedModals?.push(this); }
     }
+    export class FuzzySuggestModal extends Modal { setPlaceholder() { return this; } }
     export class Menu {
       addItem(callback) {
         callback?.({ setTitle() { return this; }, setIcon() { return this; }, onClick() { return this; } });
@@ -84,6 +86,7 @@ async function importPluginWithObsidianStub() {
     export class Notice { constructor(message) { globalThis.__TPSHealthTestNotices?.push(String(message)); } }
     export class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = {}; } display() {} }
     export class Setting { constructor() {} setName() { return this; } setDesc() { return this; } addText() { return this; } addButton() { return this; } }
+    export class TextComponent { setValue() { return this; } getValue() { return ""; } }
     export class SecretComponent { constructor() {} setValue() { return this; } onChange() { return this; } }
     export class MarkdownView {}
     globalThis.__TPSHealthTestMarkdownView = MarkdownView;
@@ -3793,13 +3796,13 @@ test("unsupported serving units fail closed instead of becoming a full serving",
   assert.equal(totals.proteinG, 0);
 });
 
-test("custom food creation validates manual input and writes deterministic food notes", async () => {
+test("custom food creation validates manual input and writes to the configured destination", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const { app, files, writes } = createFakeHealthApp();
   const plugin = new TPSHealthPlugin(app);
   plugin.settings = {
-    foodsFolder: "Health/Foods",
+    foodsFolder: "Inbox/Health QA Foods",
     recipesFolder: "Health/Recipes",
     customFoodTag: "#tps/food",
     recipeTag: "#tps/recipe",
@@ -3814,9 +3817,9 @@ test("custom food creation validates manual input and writes deterministic food 
   });
 
   assert.equal(created.name, "Manual Shake");
-  assert.equal(created.sourcePath, "Health/Foods/Manual Shake.md");
-  assert.equal(files.has("Health/Foods/Manual Shake.md"), true);
-  const content = files.get("Health/Foods/Manual Shake.md");
+  assert.equal(created.sourcePath, "Inbox/Health QA Foods/Manual Shake.md");
+  assert.equal(files.has("Inbox/Health QA Foods/Manual Shake.md"), true);
+  const content = files.get("Inbox/Health QA Foods/Manual Shake.md");
   assert.match(content, /kind: ["']?food["']?/);
   assert.match(content, /name: "Manual Shake"/);
   assert.match(content, /servingAmount: 250/);

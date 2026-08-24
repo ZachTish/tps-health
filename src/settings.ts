@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, SecretComponent, Setting } from "obsidian";
+import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTi
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
 type OptionalDisclosureId = "custom-goals" | "templates" | "provider-credentials";
+type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exercisesFolder" | "foodsFolder" | "recipesFolder";
 
 interface HealthSettingsDestination {
   id: HealthSettingsPage;
@@ -56,6 +57,27 @@ const createSettingsGroup = (
   }
   return section.createDiv({ cls: "tps-health-settings-group-content" });
 };
+
+class HealthFolderSuggestModal extends FuzzySuggestModal<TFolder> {
+  constructor(app: App, private readonly onChooseFolder: (folder: TFolder) => void) {
+    super(app);
+    this.setPlaceholder("Choose a vault folder");
+  }
+
+  getItems(): TFolder[] {
+    return this.app.vault.getAllLoadedFiles()
+      .filter((entry): entry is TFolder => entry instanceof TFolder && Boolean(entry.path.replace(/^\/+|\/+$/g, "")))
+      .sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  getItemText(folder: TFolder): string {
+    return folder.path;
+  }
+
+  onChooseItem(folder: TFolder): void {
+    this.onChooseFolder(folder);
+  }
+}
 
 export class TPSHealthSettingTab extends PluginSettingTab {
   plugin: TPSHealthPlugin;
@@ -469,52 +491,11 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       "Reusable note folders",
       "Stable health entities live in these folders and can be linked from daily logs.",
     );
-    new Setting(folders)
-      .setName("Workouts folder")
-      .setDesc("Canonical workout note files created by Start workout.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.workoutsFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutsFolder = value.trim() || DEFAULT_SETTINGS.workoutsFolder;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(folders)
-      .setName("Workout plans folder")
-      .setDesc("Reusable workout/routine notes live here. Session logs stay in the workouts folder.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.workoutPlansFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutPlansFolder = value.trim() || DEFAULT_SETTINGS.workoutPlansFolder;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(folders)
-      .setName("Exercises folder")
-      .addText((text) => text
-        .setValue(this.plugin.settings.exercisesFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.exercisesFolder = value.trim() || DEFAULT_SETTINGS.exercisesFolder;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(folders)
-      .setName("Foods folder")
-      .addText((text) => text
-        .setValue(this.plugin.settings.foodsFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.foodsFolder = value.trim() || DEFAULT_SETTINGS.foodsFolder;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(folders)
-      .setName("Recipes folder")
-      .addText((text) => text
-        .setValue(this.plugin.settings.recipesFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.recipesFolder = value.trim() || DEFAULT_SETTINGS.recipesFolder;
-          await this.plugin.saveSettings();
-        }));
+    this.addLibraryFolderSetting(folders, "workoutsFolder", "Workouts destination", "Canonical workout notes created by Start workout. Existing notes are not moved.");
+    this.addLibraryFolderSetting(folders, "workoutPlansFolder", "Workout plans destination", "Reusable workout/routine notes. Session logs stay in the workouts destination. Existing notes are not moved.");
+    this.addLibraryFolderSetting(folders, "exercisesFolder", "Exercises destination", "New exercise notes are created here. Existing exercise notes remain where they are.");
+    this.addLibraryFolderSetting(folders, "foodsFolder", "Foods destination", "New food notes are created here. Recipes and meals use their separate destination. Existing food notes remain where they are.");
+    this.addLibraryFolderSetting(folders, "recipesFolder", "Recipes destination", "New recipe and meal notes are created here. Existing notes are not moved.");
 
     const identification = createSettingsGroup(
       page,
@@ -680,6 +661,52 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.foodTemplatePath = value.trim();
           await this.plugin.saveSettings();
         }));
+  }
+
+  private addLibraryFolderSetting(
+    parent: HTMLElement,
+    key: LibraryFolderSettingKey,
+    name: string,
+    description: string,
+  ): void {
+    let input!: TextComponent;
+    let committedValue = this.plugin.settings[key];
+    const fallback = DEFAULT_SETTINGS[key];
+    const commit = async (rawValue: string): Promise<void> => {
+      const candidate = rawValue.trim() || fallback;
+      if (candidate === committedValue) {
+        input.setValue(committedValue);
+        return;
+      }
+      committedValue = candidate;
+      this.plugin.settings[key] = candidate;
+      await this.plugin.saveSettings();
+      committedValue = this.plugin.settings[key];
+      input.setValue(committedValue);
+      logger.flow("Settings", "library-folder:changed", { key, path: committedValue });
+    };
+
+    const setting = new Setting(parent)
+      .setName(name)
+      .setDesc(`${description} Type a new vault-relative path or choose an existing folder.`)
+      .addText((text) => {
+        input = text;
+        text.inputEl.dataset.tpsHealthLibraryFolder = key;
+        text.setValue(committedValue);
+        text.inputEl.addEventListener("change", () => void commit(text.getValue()));
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void commit(text.getValue());
+          text.inputEl.blur();
+        });
+      });
+    setting.addExtraButton((button) => button
+      .setIcon("folder-search")
+      .setTooltip(`Choose ${name.toLowerCase()}`)
+      .onClick(() => {
+        new HealthFolderSuggestModal(this.app, (folder) => void commit(folder.path)).open();
+      }));
   }
 
   private renderIntegrationsPage(page: HTMLElement): void {

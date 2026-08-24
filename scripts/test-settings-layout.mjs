@@ -91,7 +91,14 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "enableLogging",
   ];
   for (const key of preferenceKeys) {
-    assert.match(settingsSource, new RegExp(`this\\.plugin\\.settings\\.${key}\\b`), `${key} must remain connected to the settings UI`);
+    const folderHelperBinding = ["workoutsFolder", "workoutPlansFolder", "exercisesFolder", "foodsFolder", "recipesFolder"].includes(key)
+      ? new RegExp(`addLibraryFolderSetting\\(folders, "${key}"`)
+      : null;
+    assert.match(
+      settingsSource,
+      folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
+      `${key} must remain connected to the settings UI`,
+    );
   }
   assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag[\s\S]+?DEFAULT_SETTINGS\.exerciseTag/);
   assert.match(settingsSource, /\.setName\("Food frontmatter key"\)/);
@@ -114,6 +121,34 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeWorkoutPath|activeWorkoutId|pendingFoodLogDraft|rollupHeading)/);
+});
+
+test("Reusable entity destinations can be typed atomically or selected from existing vault folders", () => {
+  assert.match(settingsSource, /class HealthFolderSuggestModal extends FuzzySuggestModal<TFolder>/);
+  assert.match(settingsSource, /getAllLoadedFiles\(\)[\s\S]+entry instanceof TFolder/);
+  assert.ok(settingsSource.includes('entry.path.replace(/^\\/+|\\/+$/g, "")'), "the vault root must not appear as a selectable entity folder");
+  assert.match(settingsSource, /\.setPlaceholder\("Choose a vault folder"\)/);
+  for (const [key, label] of [
+    ["workoutsFolder", "Workouts destination"],
+    ["workoutPlansFolder", "Workout plans destination"],
+    ["exercisesFolder", "Exercises destination"],
+    ["foodsFolder", "Foods destination"],
+    ["recipesFolder", "Recipes destination"],
+  ]) {
+    assert.match(settingsSource, new RegExp(`addLibraryFolderSetting\\(folders, "${key}", "${label}"`));
+  }
+  const helperSource = settingsSource.slice(
+    settingsSource.indexOf("private addLibraryFolderSetting"),
+    settingsSource.indexOf("private renderIntegrationsPage"),
+  );
+  assert.match(helperSource, /dataset\.tpsHealthLibraryFolder = key/);
+  assert.match(helperSource, /addEventListener\("change", \(\) => void commit\(text\.getValue\(\)\)\)/);
+  assert.match(helperSource, /event\.key !== "Enter"/);
+  assert.match(helperSource, /setIcon\("folder-search"\)/);
+  assert.match(helperSource, /new HealthFolderSuggestModal\(this\.app/);
+  assert.match(settingsSource, /Existing exercise notes remain where they are/);
+  assert.match(settingsSource, /Existing food notes remain where they are/);
+  assert.doesNotMatch(helperSource, /\.onChange\(async \(value\)/, "folder paths must not persist partial values on every keystroke");
 });
 
 test("USDA rerenders retain disclosure, scroll, and reachable focus", () => {

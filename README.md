@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.17.1
+
+- Reusable note destinations are now reliable settings controls instead of raw per-keystroke saves. A typed vault-relative path commits as one value when the field is finished or Enter is pressed, so an intermediate character sequence cannot become the destination.
+- **Workouts destination**, **Workout plans destination**, **Exercises destination**, **Foods destination**, and **Recipes destination** each include a searchable folder button for choosing an existing vault folder. New paths can still be typed and are created lazily when the first entity is written.
+- Exercise and food creation continue to resolve the current normalized setting at the write boundary. Existing reusable notes are intentionally not moved or rewritten when a destination changes, and recipe/meal notes continue to use the recipes destination.
+- This is a backward-compatible settings reliability patch with no settings-schema, note-format, or public-API migration. Obsidian 1.12.0 remains the minimum supported version.
+- Validation: the declared suite passed with 192 checks, one credential-gated live USDA check skipped, and zero failures. Focused coverage verifies atomic folder controls, the searchable picker contract, configured food/exercise creation paths, TypeScript, and the final test-vault UI flow.
+
 ## 0.17.0
 
 - Creating or scanning a food now checks saved food notes by canonical barcode, exact compatible name, and direct name/alias matches. A possible duplicate opens an explicit mobile-safe review with **Use existing**, **Combine into existing**, **Keep separate**, and **Cancel** instead of silently overwriting a note or creating another copy.
