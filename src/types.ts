@@ -6,6 +6,7 @@ export type FoodLogTarget = "daily-note" | "single-file";
 export type WorkoutLogTarget = "session-note" | "daily-note" | "both";
 export type WorkoutDailyNotePlacement = "after-frontmatter" | "before-first-h2" | "bottom";
 export type ActivitySource = "manual" | "workout" | "apple-health";
+export type HealthStorageMode = "legacy" | "native-records";
 export type WorkoutSetNotation = "compact" | "verbose";
 export type HealthEntityIdentificationMode = "metadata-folder-tag" | "folder" | "tag" | "metadata";
 export type WorkflowRecurrenceMode = "completion-triggered";
@@ -30,6 +31,7 @@ export interface HealthGoal {
 
 export interface TPSHealthSettings {
   settingsVersion: number;
+  storageMode: HealthStorageMode;
   workoutsFolder: string;
   workoutPlansFolder: string;
   exercisesFolder: string;
@@ -263,6 +265,7 @@ export interface WorkoutSession {
 
 export const DEFAULT_SETTINGS: TPSHealthSettings = {
   settingsVersion: TPS_HEALTH_SCHEMA_VERSION,
+  storageMode: "legacy",
   workoutsFolder: "Health/Workouts",
   workoutPlansFolder: "Health/Workout Plans",
   exercisesFolder: "Health/Exercises",

@@ -249,6 +249,23 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderDailyLoggingPage(page: HTMLElement): void {
+    const architecture = createSettingsGroup(
+      page,
+      "Data architecture",
+      "Choose where completed Health logs are stored. Existing content is never migrated or deleted automatically.",
+    );
+    new Setting(architecture)
+      .setName("Health storage")
+      .setDesc("Native records writes one typed Markdown file per food, activity, workout, and performed exercise. It requires GCM native-record mode and a reload after changing this setting.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("legacy", "Legacy Daily Note/body logs")
+        .addOption("native-records", "Native TPS records")
+        .setValue(this.plugin.settings.storageMode)
+        .onChange(async (value) => {
+          this.plugin.settings.storageMode = value === "native-records" ? "native-records" : "legacy";
+          await this.plugin.saveSettings();
+        }));
+
     const dailyNotes = createSettingsGroup(
       page,
       "Daily notes",

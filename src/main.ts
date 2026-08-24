@@ -12,6 +12,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
+import { HealthNativeRecordService } from "./native-records";
 import {
   DEFAULT_SETTINGS,
   ActivityLogEntry,
@@ -524,6 +525,7 @@ export function restoredFoodLogDraftConsumedDateInput(
 
 export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
+  nativeRecordService!: HealthNativeRecordService;
   private dailyNoteSettingsSnapshot: CoreDailyNoteSettings = { format: "YYYY-MM-DD", folder: "" };
   private settingsSavePromise: Promise<void> | null = null;
   private settingsSavePending = false;
@@ -624,6 +626,8 @@ export default class TPSHealthPlugin extends Plugin {
     }
     await this.getDailyNoteSettings();
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
+    this.nativeRecordService = new HealthNativeRecordService(this);
+    this.nativeRecordService.setup();
     this.api = this.createApi();
     this.api.homeActions = createTPSHealthHomeActionProvider(this);
     (this.app as any).tpsHealth = this.api;
@@ -730,6 +734,32 @@ export default class TPSHealthPlugin extends Plugin {
       id: "open-workout-log-base",
       name: "Open Activity Log base",
       callback: () => this.traceCommand("open-workout-log-base", () => this.openActivityLogBase()),
+    });
+    this.addCommand({
+      id: "preview-native-record-import",
+      name: "Native records: Preview legacy Health import",
+      callback: () => this.traceCommand("preview-native-record-import", async () => {
+        const plan = await this.nativeRecordService.planLegacyImport();
+        new Notice(
+          `Legacy Health import preview: ${plan.candidates} records (${plan.foodEntries} food, ${plan.activityEntries} activity, ${plan.workoutSessions} workouts, ${plan.workoutExercises} exercise groups); ${plan.existing} already exist; ${plan.unresolvedLines} unresolved. No files were changed.`,
+          12000,
+        );
+      }),
+    });
+    this.addCommand({
+      id: "import-native-health-records",
+      name: "Native records: Copy legacy Health logs",
+      checkCallback: (checking) => {
+        if (!this.nativeRecordService?.isEnabled()) return false;
+        if (!checking) void this.traceCommand("import-native-health-records", async () => {
+          const plan = await this.nativeRecordService.planLegacyImport();
+          const message = `Create ${plan.candidates - plan.existing} native Health records from legacy logs? Existing notes will not be edited or deleted.`;
+          if (typeof window.confirm === "function" && !window.confirm(message)) return;
+          const result = await this.nativeRecordService.importLegacyRecords();
+          new Notice(`Native Health import: ${result.created} created, ${result.skipped} already present, ${result.failed} failed. Legacy source files were preserved.`, 12000);
+        });
+        return true;
+      },
     });
     this.addCommand({
       id: "scan-food-barcode",
@@ -1710,7 +1740,6 @@ export default class TPSHealthPlugin extends Plugin {
       : durationMinutes != null
         ? new Date(Date.parse(completedDate) - durationMinutes * 60_000).toISOString()
         : completedDate;
-    const dailyFile = await this.getOrCreateDailyNoteForDate(input.dailyNoteDate || completedDate);
     const entry: ActivityLogEntry = {
       id: id("activity"),
       activity,
@@ -1726,8 +1755,27 @@ export default class TPSHealthPlugin extends Plugin {
       sourceId: String(input.sourceId || "").trim() || undefined,
       device: String(input.device || "").trim() || undefined,
       note: String(input.note || "").trim() || undefined,
-      dailyNotePath: dailyFile.path,
     };
+    if (this.nativeRecordService?.isEnabled()) {
+      logger.flow("ActivityLog", "write:start", {
+        activity: entry.activity,
+        activityType: entry.activityType,
+        source: entry.source,
+        storage: "native-records",
+      });
+      const record = await this.nativeRecordService.createActivityEntry(entry);
+      logger.flow("ActivityLog", "write:done", {
+        activityId: entry.id,
+        activityType: entry.activityType,
+        source: entry.source,
+        recordPath: record.path,
+        storage: "native-records",
+      });
+      new Notice(`Logged ${entry.activity}`);
+      return entry;
+    }
+    const dailyFile = await this.getOrCreateDailyNoteForDate(input.dailyNoteDate || completedDate);
+    entry.dailyNotePath = dailyFile.path;
     logger.flow("ActivityLog", "write:start", {
       activity: entry.activity,
       activityType: entry.activityType,
@@ -1777,6 +1825,9 @@ export default class TPSHealthPlugin extends Plugin {
     const plan = await this.resolveWorkoutPlanForStart(input);
     const title = input.title || `${plan?.name || "Workout"} ${window.moment(startedAt).format("YYYY-MM-DD HH.mm")}`;
     const cooldownDays = input.cooldownDays ?? plan?.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
+    if (this.nativeRecordService?.isEnabled()) {
+      return this.startNativeWorkout({ input, startedAt, dailyNoteDate, plan, title, cooldownDays });
+    }
     const requestedLogTarget = normalizeWorkoutLogTarget(input.logTarget || this.settings.workoutLogTarget);
     const logTarget: WorkoutLogTarget = requestedLogTarget === "daily-note" ? "daily-note" : "both";
     const workoutId = id("workout");
@@ -1866,6 +1917,48 @@ export default class TPSHealthPlugin extends Plugin {
     return path || dailyNotePath;
   }
 
+  private async startNativeWorkout(context: {
+    input: StartWorkoutInput;
+    startedAt: string;
+    dailyNoteDate: string;
+    plan: WorkoutPlanItem | null;
+    title: string;
+    cooldownDays: number;
+  }): Promise<string> {
+    const workoutId = id("workout");
+    const record = await this.nativeRecordService.createWorkoutSession({
+      title: context.title,
+      startedAt: context.startedAt,
+      scheduled: context.startedAt,
+      workoutDate: isoDateKey(context.dailyNoteDate),
+      workoutPlanPath: context.plan?.sourcePath,
+      cooldownDays: context.cooldownDays,
+      targetGapDays: context.cooldownDays,
+      allDay: false,
+    }, workoutId);
+    this.settings.activeWorkoutPath = record.path;
+    this.settings.activeWorkoutId = workoutId;
+    this.settings.activeWorkoutTarget = "both";
+    this.settings.activeWorkoutDailyNotePath = "";
+    this.settings.activeWorkoutPlanPath = context.plan?.sourcePath || "";
+    this.settings.activeWorkoutTitle = context.title;
+    this.settings.activeWorkoutStartedAt = context.startedAt;
+    this.settings.activeWorkoutCooldownDays = context.cooldownDays;
+    this.settings.lastSetEndedAt = "";
+    this.settings.activeWorkoutSetCount = 0;
+    await this.saveSettings();
+    await this.ensureGcmWorkoutTimer();
+    if (context.input.openFile !== false) await this.openWorkoutFile(record.file);
+    logger.flow("Workout", "start:done", {
+      workoutId,
+      path: record.path,
+      storage: "native-records",
+      planPath: context.plan?.sourcePath || "",
+    });
+    new Notice("Started workout");
+    return record.path;
+  }
+
   async finishWorkout(input: FinishWorkoutInput = {}): Promise<void> {
     const path = this.settings.activeWorkoutPath;
     const dailyNotePath = this.settings.activeWorkoutDailyNotePath;
@@ -1873,6 +1966,10 @@ export default class TPSHealthPlugin extends Plugin {
     if (!path && !dailyNotePath) {
       logger.flowWarn("Workout", "finish:no-active-workout");
       new Notice("No active workout");
+      return;
+    }
+    if (this.nativeRecordService?.isEnabled()) {
+      await this.finishNativeWorkout(path, workoutId, input);
       return;
     }
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
@@ -1944,6 +2041,37 @@ export default class TPSHealthPlugin extends Plugin {
     new Notice("Finished workout");
   }
 
+  private async finishNativeWorkout(path: string, workoutId: string, input: FinishWorkoutInput): Promise<void> {
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    if (!(file instanceof TFile)) {
+      await this.clearActiveWorkoutState();
+      throw new Error("Active native workout session was missing.");
+    }
+    const endedAt = input.endedAt || isoNow();
+    const startedAt = this.settings.activeWorkoutStartedAt || endedAt;
+    const durationSeconds = workoutDurationSeconds(startedAt, endedAt);
+    const durationMinutes = durationSeconds != null ? Math.max(1, Math.round(durationSeconds / 60)) : undefined;
+    const cooldownDays = input.cooldownDays ?? this.settings.activeWorkoutCooldownDays ?? this.settings.defaultWorkoutCooldownDays;
+    const nextEligibleDate = cooldownDays > 0 ? addDaysIsoDate(endedAt, cooldownDays) : undefined;
+    await this.nativeRecordService.finishWorkout(file, {
+      endedAt,
+      completedDate: endedAt,
+      durationSeconds,
+      timeEstimate: durationMinutes,
+      setCount: this.settings.activeWorkoutSetCount,
+      cooldownDays,
+      targetGapDays: cooldownDays,
+      nextEligibleDate,
+    });
+    if (this.settings.activeWorkoutPlanPath) {
+      await this.updateWorkoutPlanCompletion(this.settings.activeWorkoutPlanPath, endedAt, cooldownDays, path, nextEligibleDate);
+    }
+    await this.stopGcmWorkoutTimer(this.getActiveWorkoutState(), endedAt);
+    await this.clearActiveWorkoutState();
+    logger.flow("Workout", "finish:done", { workoutId, path, storage: "native-records" });
+    new Notice("Finished workout");
+  }
+
   openDiscardWorkoutConfirmation(): void {
     if (!this.getActiveWorkoutState()) {
       new Notice("No active workout");
@@ -1965,6 +2093,19 @@ export default class TPSHealthPlugin extends Plugin {
       dailyNotePath: active.dailyNotePath,
       setCount: active.setCount,
     });
+    if (this.nativeRecordService?.isEnabled()) {
+      const file = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
+      if (!(file instanceof TFile)) {
+        await this.clearActiveWorkoutState();
+        throw new Error("Active native workout session was missing.");
+      }
+      await this.stopGcmWorkoutTimer(active);
+      await this.nativeRecordService.discardWorkout(file);
+      await this.clearActiveWorkoutState();
+      logger.flow("Workout", "discard:done", { workoutId: active.id, path: active.path, storage: "native-records" });
+      new Notice("Discarded workout");
+      return;
+    }
     await this.stopGcmWorkoutTimer(active);
     if (active.dailyNotePath && active.id) {
       const dailyFile = this.app.vault.getAbstractFileByPath(active.dailyNotePath);
@@ -2052,6 +2193,14 @@ export default class TPSHealthPlugin extends Plugin {
     const exerciseName = exercise.trim();
     if (!exerciseName || exerciseName === "Exercise") {
       if (active) new WorkoutExercisePickerModal(this.app, this, active.dailyNotePath || active.path, active.id).open();
+      return;
+    }
+    if (this.nativeRecordService?.isEnabled()) {
+      const sessionFile = active?.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
+      if (!(sessionFile instanceof TFile)) throw new Error("Active native workout session was not found.");
+      const savedExercise = await this.findOrCreateExercise({ name: exerciseName }, options);
+      await this.nativeRecordService.ensureWorkoutExercise(sessionFile, savedExercise.name, savedExercise.sourcePath);
+      new SetModal(this.app, this).open();
       return;
     }
     if (active?.target === "daily-note") {
@@ -2814,6 +2963,7 @@ export default class TPSHealthPlugin extends Plugin {
       new Notice("Start a workout before logging sets");
       throw new Error("Start a workout before logging sets");
     }
+    if (this.nativeRecordService?.isEnabled()) return this.logNativeWorkoutSet(set, path);
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
     if (path && !(file instanceof TFile)) {
       logger.flowWarn("WorkoutSet", "log:missing-active-file", { path, exercise: set.exercise });
@@ -2884,6 +3034,52 @@ export default class TPSHealthPlugin extends Plugin {
       logTarget,
       setCount,
       restSeconds,
+    });
+    new Notice("Logged set");
+    return savedSet;
+  }
+
+  private async logNativeWorkoutSet(set: LogSetInput, sessionPath: string): Promise<WorkoutSet> {
+    const sessionFile = this.app.vault.getAbstractFileByPath(sessionPath);
+    if (!(sessionFile instanceof TFile)) {
+      await this.clearActiveWorkoutState();
+      throw new Error("Active native workout session was missing.");
+    }
+    const endedAt = set.completedDate || isoNow();
+    const previousEnd = this.settings.lastSetEndedAt ? Date.parse(this.settings.lastSetEndedAt) : NaN;
+    const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
+    const startedTimestamp = Date.parse(startedAt);
+    const exercise = set.createExerciseNote === false
+      ? this.findExercise(set.exercise)
+      : await this.findOrCreateExercise({ name: set.exercise });
+    const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
+      ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
+      : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
+    const savedSet: WorkoutSet = {
+      ...set,
+      id: id("set"),
+      createdDate: set.createdDate || startedAt,
+      completedDate: endedAt,
+      startedAt,
+      endedAt,
+      restSeconds,
+      restStartedAt: set.restStartedAt || endedAt,
+      exercisePath: exercise?.sourcePath,
+      workoutPath: sessionPath,
+      workoutPlanPath: this.settings.activeWorkoutPlanPath || undefined,
+      setType: set.setType || exercise?.defaultSetType || "normal",
+    };
+    const result = await this.nativeRecordService.appendWorkoutSet(sessionFile, savedSet);
+    this.settings.lastSetEndedAt = endedAt;
+    this.settings.activeWorkoutSetCount = Number(result.session.frontmatter.setCount) || (this.settings.activeWorkoutSetCount + 1);
+    await this.saveSettings();
+    logger.flow("WorkoutSet", "log:done", {
+      setId: savedSet.id,
+      exercise: savedSet.exercise,
+      workoutPath: sessionPath,
+      exerciseRecordPath: result.exercise.path,
+      setCount: this.settings.activeWorkoutSetCount,
+      storage: "native-records",
     });
     new Notice("Logged set");
     return savedSet;
@@ -2961,7 +3157,6 @@ export default class TPSHealthPlugin extends Plugin {
     const loggedItem = persistFoodNote ? await this.findOrCreateFoodNote(item) : normalizeFoodMetricServing(item);
     const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
     const consumedAt = completedDate || isoNow();
-    const dailyFile = await this.getOrCreateDailyNoteForDate(consumedAt);
     const entry: FoodLogEntry = {
       id: id("food"),
       createdDate: isoNow(),
@@ -2975,9 +3170,33 @@ export default class TPSHealthPlugin extends Plugin {
       amount: resolvedServing.amount,
       amountUnit: resolvedServing.amountUnit,
       section,
-      dailyNotePath: dailyFile.path,
     };
     const target = targetOverride || this.settings.foodLogTarget;
+    if (this.nativeRecordService?.isEnabled()) {
+      logger.flow("FoodLog", "write:resolved", {
+        food: loggedItem.name,
+        source: loggedItem.source,
+        sourcePath: loggedItem.sourcePath || "",
+        target: "native-records",
+        requestedQuantity: quantity,
+        requestedUnit: unit,
+        servings: resolvedServing.servings,
+        amount: resolvedServing.amount ?? "",
+        amountUnit: resolvedServing.amountUnit || "",
+      });
+      const record = await this.nativeRecordService.createFoodEntry(entry);
+      this.markFoodUsageIndexDirty();
+      logger.flow("FoodLog", "write:done", {
+        foodId: entry.id,
+        food: loggedItem.name,
+        recordPath: record.path,
+        storage: "native-records",
+      });
+      new Notice("Logged food");
+      return entry;
+    }
+    const dailyFile = await this.getOrCreateDailyNoteForDate(consumedAt);
+    entry.dailyNotePath = dailyFile.path;
     logger.flow("FoodLog", "write:resolved", {
       food: loggedItem.name,
       source: loggedItem.source,
@@ -4264,6 +4483,11 @@ export default class TPSHealthPlugin extends Plugin {
     if (!active) {
       logger.flow("Exercise", "active-workout-names:no-active");
       return [];
+    }
+    if (this.nativeRecordService?.isEnabled()) {
+      const names = this.nativeRecordService.getWorkoutExerciseNames(active.id);
+      logger.flow("Exercise", "active-workout-names:done", { path: active.path, returned: names.length, storage: "native-records" });
+      return names;
     }
     const activeSourcePath = active.path || active.dailyNotePath;
     const file = activeSourcePath ? this.app.vault.getAbstractFileByPath(activeSourcePath) : null;
@@ -6088,6 +6312,10 @@ export default class TPSHealthPlugin extends Plugin {
       || plugins?.getPlugin?.("tps-global-context-menu")?.api;
   }
 
+  getGcmNativeRecordsApi(): any {
+    return this.getGcmApi()?.nativeRecords;
+  }
+
   private async ensureGcmWorkoutTimer(): Promise<void> {
     if (this.gcmWorkoutTimerReconcileInFlight) return this.gcmWorkoutTimerReconcileInFlight;
     const run = this.ensureGcmWorkoutTimerOnce();
@@ -6101,7 +6329,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async ensureGcmWorkoutTimerOnce(): Promise<void> {
     const active = this.getActiveWorkoutState();
-    const dailyFile = active?.dailyNotePath ? this.app.vault.getAbstractFileByPath(active.dailyNotePath) : null;
+    const timerPath = this.nativeRecordService?.isEnabled() ? active?.path : active?.dailyNotePath;
+    const dailyFile = timerPath ? this.app.vault.getAbstractFileByPath(timerPath) : null;
     const timeTracking = this.getGcmApi()?.timeTracking;
     if (!active || !(dailyFile instanceof TFile) || typeof timeTracking?.startTimer !== "function" || typeof timeTracking?.getActiveTimersForFile !== "function") return;
     if (typeof timeTracking.isEnabled === "function" && !timeTracking.isEnabled()) {
@@ -6109,6 +6338,17 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     try {
+      if (this.nativeRecordService?.isEnabled()) {
+        const timers = await timeTracking.getActiveTimersForFile(dailyFile);
+        if (Array.isArray(timers) && timers.length > 0) return;
+        await timeTracking.startTimer({
+          file: dailyFile,
+          type: "note",
+          title: active.title || "Workout",
+        }, undefined, { notesMode: "none", start: active.startedAt || undefined });
+        logger.flow("GCM", "workout-timer:started", { workoutId: active.id, path: dailyFile.path, targetType: "note", notesMode: "none" });
+        return;
+      }
       const content = await this.app.vault.cachedRead(dailyFile);
       const lines = content.split("\n");
       const taskIndex = workoutDailyTaskIndex(lines, active.id);
@@ -6145,12 +6385,18 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async stopGcmWorkoutTimer(active: ReturnType<TPSHealthPlugin["getActiveWorkoutState"]>, endedAt = isoNow()): Promise<void> {
-    const dailyFile = active?.dailyNotePath ? this.app.vault.getAbstractFileByPath(active.dailyNotePath) : null;
+    const timerPath = this.nativeRecordService?.isEnabled() ? active?.path : active?.dailyNotePath;
+    const dailyFile = timerPath ? this.app.vault.getAbstractFileByPath(timerPath) : null;
     const timeTracking = this.getGcmApi()?.timeTracking;
     if (!active || !(dailyFile instanceof TFile) || typeof timeTracking?.getActiveTimersForFile !== "function" || typeof timeTracking?.stopTimerById !== "function") return;
     try {
-      const lines = (await this.app.vault.cachedRead(dailyFile)).split("\n");
       const timers = await timeTracking.getActiveTimersForFile(dailyFile);
+      if (this.nativeRecordService?.isEnabled()) {
+        for (const timer of Array.isArray(timers) ? timers : []) await timeTracking.stopTimerById(String(timer.id || ""), endedAt);
+        logger.flow("GCM", "workout-timer:stopped", { workoutId: active.id, path: dailyFile.path, timers: Array.isArray(timers) ? timers.length : 0 });
+        return;
+      }
+      const lines = (await this.app.vault.cachedRead(dailyFile)).split("\n");
       const matching = workoutGcmTimerMatches(lines, active.id, Array.isArray(timers) ? timers : []);
       for (const timer of matching) await timeTracking.stopTimerById(String(timer.id || ""), endedAt);
       logger.flow("GCM", "workout-timer:stopped", { workoutId: active.id, path: dailyFile.path, timers: matching.length });
@@ -7107,6 +7353,16 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedDate = String(dateIso || "").trim();
     if (!window.moment(normalizedDate, "YYYY-MM-DD", true).isValid()) {
       throw new Error("Daily food macro totals require a YYYY-MM-DD date.");
+    }
+    if (this.nativeRecordService?.isEnabled()) {
+      const totals = this.nativeRecordService.getDailyFoodTotals(normalizedDate);
+      logger.flow("FoodMacroTotals", "read", {
+        dateIso: normalizedDate,
+        sourceFiles: 0,
+        entryCount: totals.entryCount,
+        storage: "native-record-index",
+      });
+      return { dateIso: normalizedDate, ...totals };
     }
 
     const configuredFoodLogPath = normalizePath(this.settings.foodLogFilePath || DEFAULT_SETTINGS.foodLogFilePath).replace(/^\/+/, "");

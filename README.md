@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.18.0
+
+- Adds an opt-in **Native Markdown records** storage mode while preserving existing Daily Note/body logging as the default. Food, activity, workout-session, and workout-exercise entries become ordinary versioned Markdown records through GCM's native-record API.
+- Nutrition, serving quantities, goals, activity minutes, workout aggregates, and atomic exercise-set lists are stored as typed frontmatter. Bodies remain empty unless the user adds notes, and warm dashboard totals use the incremental record index rather than rescanning Daily Note bodies.
+- Existing food search, barcode/description review, serving edits, macro goals, quick-add, workout controls, plans, rest timers, and dashboards continue to use the Health UI. Native workout timers target the session record rather than generating a Daily Note log block.
+- **Native records: Preview legacy Health import** reports copy-only totals. **Native records: Copy legacy Health logs** creates deterministic records for recognized legacy food/activity/workout lines, is idempotent, and never edits or deletes the source notes.
+- Native mode requires GCM 1.38.0 or newer. Existing settings remain valid and Legacy mode requires no migration. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.17.1
 
 - Reusable note destinations are now reliable settings controls instead of raw per-keystroke saves. A typed vault-relative path commits as one value when the field is finished or Enter is pressed, so an intermediate character sequence cannot become the destination.

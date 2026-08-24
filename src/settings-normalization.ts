@@ -12,6 +12,7 @@ const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
 const REST_TIMER_MODES = ["count-up", "count-down"];
 const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
 const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["metadata-folder-tag", "folder", "tag", "metadata"];
+const HEALTH_STORAGE_MODES = ["legacy", "native-records"];
 const HEALTH_GOAL_KINDS: HealthGoalKind[] = ["min", "max", "range", "counter"];
 
 export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
@@ -27,6 +28,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.exercisesFolder = folderSetting(settings.exercisesFolder, DEFAULT_SETTINGS.exercisesFolder);
   settings.foodsFolder = folderSetting(settings.foodsFolder, DEFAULT_SETTINGS.foodsFolder);
   settings.recipesFolder = folderSetting(settings.recipesFolder, DEFAULT_SETTINGS.recipesFolder);
+  if (!HEALTH_STORAGE_MODES.includes(settings.storageMode)) settings.storageMode = DEFAULT_SETTINGS.storageMode;
   settings.workoutTemplatePath = optionalStringSetting(settings.workoutTemplatePath);
   settings.workoutPlanTemplatePath = optionalStringSetting(settings.workoutPlanTemplatePath);
   settings.exerciseTemplatePath = optionalStringSetting(settings.exerciseTemplatePath);
