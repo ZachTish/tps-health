@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.20.2
+
+- Date-scoped Daily Note food loggers no longer restore, replace, or clear an unrelated saved tray opened from a context-free command. A saved general tray and a Daily Note tray remain isolated in both directions, including after a successful log.
+- Core Daily Notes root-folder settings now normalize Obsidian Mobile's `.` root sentinel as the vault root. A root `YYYY-MM-DD` note therefore renders the native Health dashboard instead of incorrectly reporting that it is not a configured Daily Note.
+- Food logging, activity logging, and workout creation retain the explicitly selected Daily Note date. The record schema, public API, default legacy mode, and minimum Obsidian 1.12.0 compatibility are unchanged.
+
 ## 0.20.1
 
 - Native food, activity, and workout records now derive their `date` property from the user's local calendar day instead of slicing the UTC timestamp. An evening log no longer falls into tomorrow's Daily Note merely because its UTC timestamp crossed midnight.
@@ -420,7 +426,7 @@ In **Native Markdown records** mode, Health stores nutrition on the `food-entry`
 ```
 ````
 
-The containing file must resolve through Core Daily Notes. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
 
 ## Daily Note Lines
 
