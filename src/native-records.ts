@@ -22,6 +22,7 @@ interface NativeRecordsApi {
   create(kind: NativeHealthKind, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<NativeRecordHandle>;
   resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<NativeRecordHandle | null>;
   update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<NativeRecordHandle | null>;
+  rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<NativeRecordHandle | null>;
   inspect?(frontmatter: unknown): {
     id: string;
     kind: string;
@@ -106,6 +107,14 @@ export interface NativeIdentityNormalizationResult {
   skipped: number;
 }
 
+export interface NativeFilenameNormalizationResult {
+  inspected: number;
+  renamed: number;
+  unchanged: number;
+  failed: number;
+  renamedPaths: Record<string, string>;
+}
+
 export interface NativeHealthRecordChange {
   path: string;
   kinds: NativeHealthKind[];
@@ -134,6 +143,58 @@ const FOOD_NUTRITION_KEYS = [
   'calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg',
 ] as const;
 const FOOD_PROJECTION_DEBOUNCE_MS = 120;
+
+const strictDateKey = (...values: unknown[]): string => {
+  for (const value of values) {
+    const resolved = dateKey(value);
+    if (/^\d{4}-\d{2}-\d{2}$/u.test(resolved)) return resolved;
+  }
+  return '';
+};
+
+const readableTitle = (...values: unknown[]): string => {
+  for (const value of values) {
+    const resolved = String(value || '').replace(/\s+/gu, ' ').trim();
+    if (resolved) return resolved;
+  }
+  return '';
+};
+
+const workoutTitleWithoutRepeatedDate = (title: string, date: string): string => {
+  if (!title || !date) return title;
+  const escaped = date.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return title
+    .replace(new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'u'), ' ')
+    .replace(/\s+/gu, ' ')
+    .trim() || title;
+};
+
+/**
+ * Stable TPS identity lives in frontmatter. Physical filenames are a readable
+ * projection for people, links, and file-based consumers.
+ */
+export function buildNativeHealthRecordFileName(
+  kind: NativeHealthKind,
+  properties: Record<string, unknown>,
+  workoutContext: { date?: unknown } = {},
+): string {
+  if (kind === 'food-entry') {
+    const date = strictDateKey(properties.date, properties.completedDate, properties.createdDate);
+    const title = readableTitle(properties.foodName, properties.title, 'Food');
+    return [date, title].filter(Boolean).join(' - ');
+  }
+  if (kind === 'workout-session') {
+    const date = strictDateKey(properties.date, properties.workoutDate, properties.startedAt, properties.createdDate);
+    const title = workoutTitleWithoutRepeatedDate(readableTitle(properties.title, 'Workout'), date);
+    return [date, title].filter(Boolean).join(' - ');
+  }
+  if (kind === 'workout-exercise') {
+    const date = strictDateKey(workoutContext.date, properties.date, properties.createdDate);
+    const exercise = readableTitle(properties.exercise, properties.title, 'Exercise');
+    return [date, exercise].filter(Boolean).join(' - ');
+  }
+  return '';
+}
 
 const numberValue = (value: unknown): number => {
   const parsed = Number(value);
@@ -313,7 +374,7 @@ export class HealthNativeRecordService {
     const nutrition = entry.nutritionOverride || entry.item.nutrition || {};
     const authoredQuantity = positiveNumber(entry.servingQuantity, entry.quantity);
     const authoredUnit = String(entry.servingUnit || entry.unit || 'serving').trim() || 'serving';
-    const record = await this.requireApi().create('food-entry', {
+    const properties = {
       title: entry.item.name,
       status: 'complete',
       completedDate: entry.completedDate || entry.createdDate,
@@ -336,9 +397,12 @@ export class HealthNativeRecordService {
       sodiumMg: numberValue(nutrition.sodiumMg),
       note: entry.note,
       tags: ['health', 'food-log'],
-    }, {
+    };
+    const api = this.requireApi();
+    const record = await api.create('food-entry', properties, {
       id: entry.id,
       now: new Date(entry.createdDate),
+      fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('food-entry', properties) : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-food-log' },
     });
     this.trackHandle(record);
@@ -375,15 +439,18 @@ export class HealthNativeRecordService {
 
   async createWorkoutSession(properties: Record<string, unknown>, recordId: string): Promise<NativeRecordHandle> {
     const startedAt = String(properties.startedAt || new Date().toISOString());
-    const record = await this.requireApi().create('workout-session', {
+    const recordProperties = {
       ...properties,
       status: 'active',
       date: dateKey(properties.workoutDate || startedAt),
       setCount: 0,
       tags: ['health', 'workout'],
-    }, {
+    };
+    const api = this.requireApi();
+    const record = await api.create('workout-session', recordProperties, {
       id: recordId,
       now: new Date(startedAt),
+      fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('workout-session', recordProperties) : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-start' },
     });
     this.trackHandle(record);
@@ -486,7 +553,7 @@ export class HealthNativeRecordService {
     if (existing) return existing;
     const exerciseOrder = this.getWorkoutExerciseRecords(session)
       .reduce((maximum, record) => Math.max(maximum, numberValue(record.frontmatter.exerciseOrder)), 0) + 1;
-    const created = await api.create('workout-exercise', {
+    const properties = {
       title: name,
       workout: this.recordLink(session.path),
       exercise: name,
@@ -497,7 +564,13 @@ export class HealthNativeRecordService {
       totalReps: 0,
       totalVolume: 0,
       tags: ['health', 'workout-exercise'],
-    }, { cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' } });
+    };
+    const created = await api.create('workout-exercise', properties, {
+      fileName: Number(api.version) >= 3
+        ? buildNativeHealthRecordFileName('workout-exercise', properties, { date: session.frontmatter.date || session.frontmatter.workoutDate || session.frontmatter.startedAt })
+        : undefined,
+      cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' },
+    });
     this.trackHandle(created);
     return created;
   }
@@ -740,6 +813,67 @@ export class HealthNativeRecordService {
     return { inspected: records.length, updated, skipped };
   }
 
+  /**
+   * Explicitly replace only opaque ID filenames. User-renamed files are left
+   * untouched, and GCM owns atomic renames, link updates, and collision suffixes.
+   */
+  async normalizeNativeRecordFilenames(): Promise<NativeFilenameNormalizationResult> {
+    const api = this.requireApi();
+    if (Number(api.version) < 3 || typeof api.rename !== 'function') {
+      throw new Error('Readable Health filenames require TPS Global Context Menu 1.43.1 or newer.');
+    }
+    const records = [...this.recordsByPath.values()]
+      .filter((record) => record.kind === 'food-entry' || record.kind === 'workout-session' || record.kind === 'workout-exercise')
+      .sort((left, right) => left.file.path.localeCompare(right.file.path) || left.id.localeCompare(right.id));
+    const targets = records.map((record) => {
+      const session = record.kind === 'workout-exercise'
+        ? this.getKindRecords('workout-session').filter((candidate) => this.recordBelongsToWorkout(record, candidate))
+        : [];
+      const sessionDate = session.length === 1
+        ? session[0].frontmatter.date || session[0].frontmatter.workoutDate || session[0].frontmatter.startedAt
+        : undefined;
+      return {
+        record,
+        opaque: record.file.basename === record.id,
+        fileName: buildNativeHealthRecordFileName(record.kind, record.frontmatter, { date: sessionDate }),
+      };
+    });
+    let renamed = 0;
+    let unchanged = 0;
+    let failed = 0;
+    const renamedPaths: Record<string, string> = {};
+    for (const target of targets) {
+      if (!target.opaque || target.record.file.basename !== target.record.id) {
+        unchanged += 1;
+        continue;
+      }
+      if (!target.fileName) {
+        failed += 1;
+        continue;
+      }
+      const oldPath = target.record.file.path;
+      try {
+        const result = await api.rename(target.record.file, target.fileName, {
+          kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-readable-filenames',
+        });
+        if (!result) {
+          failed += 1;
+          continue;
+        }
+        if (result.path === oldPath) unchanged += 1;
+        else {
+          this.removePath(oldPath, false);
+          this.trackHandle(result);
+          renamedPaths[target.record.id] = result.path;
+          renamed += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+    return { inspected: records.length, renamed, unchanged, failed, renamedPaths };
+  }
+
   /** Read-only migration inventory. Legacy source files are never changed. */
   async planLegacyImport(): Promise<LegacyHealthImportPlan> {
     const candidates = await this.collectLegacyCandidates();
@@ -786,23 +920,30 @@ export class HealthNativeRecordService {
       }
       try {
         const properties = { ...candidate.properties };
+        let workoutSession: NativeRecordHandle | null = null;
         if (candidate.kind === 'workout-exercise') {
-          const session = candidate.workoutReferenceId
+          workoutSession = candidate.workoutReferenceId
             ? this.findRecordById(candidate.workoutReferenceId) || await api.resolve(candidate.workoutReferenceId)
             : null;
-          if (!session || session.kind !== 'workout-session') {
+          if (!workoutSession || workoutSession.kind !== 'workout-session') {
             failed += 1;
             continue;
           }
-          properties.workout = this.recordLink(session.path);
+          properties.workout = this.recordLink(workoutSession.path);
         }
-        const record = await api.create(candidate.kind, {
+        const persistedProperties = {
           ...properties,
           legacySourcePath: candidate.sourcePath,
           legacySourceLine: candidate.lineNumber,
           legacyImportedAt: new Date().toISOString(),
-        }, {
+        };
+        const record = await api.create(candidate.kind, persistedProperties, {
           id: candidate.id,
+          fileName: Number(api.version) >= 3
+            ? buildNativeHealthRecordFileName(candidate.kind, persistedProperties, {
+              date: workoutSession?.frontmatter.date || workoutSession?.frontmatter.workoutDate || workoutSession?.frontmatter.startedAt,
+            }) || undefined
+            : undefined,
           cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-legacy-import' },
         });
         this.trackHandle(record);

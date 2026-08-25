@@ -256,7 +256,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     new Setting(architecture)
       .setName("Health storage")
-      .setDesc("Native records writes one typed Markdown file per food, activity, workout, and performed exercise. It requires GCM native-record mode and a reload after changing this setting.")
+      .setDesc("Native records writes one typed Markdown file per food, activity, workout, and performed exercise. GCM 1.43.1 or newer gives new food and workout records readable date-and-title filenames. Reload after changing this setting.")
       .addDropdown((dropdown) => dropdown
         .addOption("legacy", "Legacy Daily Note/body logs")
         .addOption("native-records", "Native TPS records")

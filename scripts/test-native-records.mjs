@@ -47,7 +47,7 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { HealthNativeRecordService, deriveNativeFoodEntryProjection, parseLegacyInlineFields } = await loadModule();
+const { HealthNativeRecordService, buildNativeHealthRecordFileName, deriveNativeFoodEntryProjection, parseLegacyInlineFields } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const nativeWorkoutSurfaceSource = readFileSync(new URL('../src/native-workout-surface.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
@@ -58,16 +58,35 @@ function createHarness(options = {}) {
   const files = new Map();
   const frontmatters = new Map();
   const contents = new Map();
+  const createCalls = [];
   let generated = 0;
   const vaultEvents = new Map();
+  const recordFolder = (kind) => ({
+    'food-entry': 'food-entries',
+    'activity-entry': 'activity-entries',
+    'workout-session': 'workout-sessions',
+    'workout-exercise': 'workout-exercises',
+  })[kind] || `${kind}s`;
+  const availablePath = (kind, fileName, current = null) => {
+    const stem = String(fileName || '').replace(/\.md$/u, '');
+    const preferred = `_records/${recordFolder(kind)}/${stem}.md`;
+    if (!files.has(preferred) || files.get(preferred) === current) return preferred;
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = `_records/${recordFolder(kind)}/${stem} (${suffix}).md`;
+      if (!files.has(candidate) || files.get(candidate) === current) return candidate;
+    }
+    throw new Error('No filename available.');
+  };
   const api = {
     version: options.apiVersion || 1,
     isEnabled: () => true,
     async create(kind, properties, options = {}) {
       const id = String(options.id || `${kind}-${++generated}`);
+      createCalls.push({ kind, properties: { ...properties }, options: { ...options } });
+      const path = availablePath(kind, options.fileName || id);
       const file = new (class TFile {
         constructor(path) { this.path = path; this.name = path.split('/').pop(); this.extension = 'md'; this.basename = this.name.replace(/\.md$/u, ''); }
-      })(`_records/${kind}s/${id}.md`);
+      })(path);
       const frontmatter = { ...properties, tpsId: id, tpsSchemaVersion: 1, kind, title: properties.title, createdDate: new Date().toISOString(), modifiedDate: new Date().toISOString() };
       files.set(file.path, file);
       frontmatters.set(file, frontmatter);
@@ -91,6 +110,20 @@ function createHarness(options = {}) {
       frontmatter.modifiedDate = new Date().toISOString();
       frontmatters.set(current.file, frontmatter);
       return { ...current, frontmatter };
+    },
+    async rename(reference, fileName) {
+      const current = await this.resolve(reference);
+      if (!current) return null;
+      const oldPath = current.file.path;
+      const nextPath = availablePath(current.kind, fileName, current.file);
+      if (nextPath !== oldPath) {
+        files.delete(oldPath);
+        current.file.path = nextPath;
+        current.file.name = nextPath.split('/').pop();
+        current.file.basename = current.file.name.replace(/\.md$/u, '');
+        files.set(nextPath, current.file);
+      }
+      return { ...current, path: current.file.path, file: current.file, frontmatter: { ...frontmatters.get(current.file) } };
     },
     inspect(frontmatter) {
       const identityTag = Array.isArray(frontmatter?.tags)
@@ -148,8 +181,130 @@ function createHarness(options = {}) {
   const emitVault = (name, ...args) => {
     for (const listener of vaultEvents.get(name) || []) listener(...args);
   };
-  return { service, api, files, frontmatters, contents, addLegacyFile, addFrontmatterFile, emitVault };
+  return { service, api, files, frontmatters, contents, createCalls, addLegacyFile, addFrontmatterFile, emitVault };
 }
+
+test('native Health filenames use the record date and plain human title', () => {
+  assert.equal(buildNativeHealthRecordFileName('food-entry', {
+    date: '2026-08-25', foodName: 'Honeycrisp apple, large', title: 'Ignored fallback',
+  }), '2026-08-25 - Honeycrisp apple, large');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    date: '2026-08-25', title: 'Workout 2026-08-25 06.16',
+  }), '2026-08-25 - Workout 06.16', 'the generated workout date is not duplicated');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    workoutDate: '2026-08-25', title: 'Leg day',
+  }), '2026-08-25 - Leg day');
+  assert.equal(buildNativeHealthRecordFileName('workout-exercise', {
+    title: 'Leg curl', exercise: 'Leg curl',
+  }, { date: '2026-08-25' }), '2026-08-25 - Leg curl');
+});
+
+test('GCM API v3 receives readable filenames while stable record IDs remain authoritative', async () => {
+  const { service, createCalls } = createHarness({ apiVersion: 3 });
+  const firstFood = await service.createFoodEntry({
+    id: 'food-one', createdDate: '2026-08-25T12:00:00.000Z', completedDate: '2026-08-25T12:00:00.000Z',
+    item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const secondFood = await service.createFoodEntry({
+    id: 'food-two', createdDate: '2026-08-25T13:00:00.000Z', completedDate: '2026-08-25T13:00:00.000Z',
+    item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const session = await service.createWorkoutSession({
+    title: 'Workout 2026-08-25 06.16', startedAt: '2026-08-25T11:16:00.000Z', workoutDate: '2026-08-25',
+  }, 'workout-one');
+  const exercise = await service.ensureWorkoutExercise(session, 'Leg curl');
+
+  assert.equal(firstFood.id, 'food-one');
+  assert.equal(firstFood.path, '_records/food-entries/2026-08-25 - Apple.md');
+  assert.equal(secondFood.path, '_records/food-entries/2026-08-25 - Apple (2).md', 'GCM owns deterministic collision suffixes');
+  assert.equal(session.id, 'workout-one');
+  assert.equal(session.path, '_records/workout-sessions/2026-08-25 - Workout 06.16.md');
+  assert.equal(exercise.path, '_records/workout-exercises/2026-08-25 - Leg curl.md');
+  assert.deepEqual(createCalls.map((call) => call.options.fileName), [
+    '2026-08-25 - Apple',
+    '2026-08-25 - Apple',
+    '2026-08-25 - Workout 06.16',
+    '2026-08-25 - Leg curl',
+  ]);
+});
+
+test('readable filename migration renames only opaque ID paths and is idempotent', async () => {
+  const { service, api, addFrontmatterFile } = createHarness({ apiVersion: 1 });
+  const food = await service.createFoodEntry({
+    id: 'food-old', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
+    item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const session = await service.createWorkoutSession({
+    title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z', workoutDate: '2026-08-24',
+  }, 'workout-old');
+  const exercise = await service.ensureWorkoutExercise(session, 'Bench press');
+  const customFrontmatter = {
+    tpsId: 'food-custom', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Apple', foodName: 'Apple', date: '2026-08-24',
+  };
+  const custom = addFrontmatterFile('_records/food-entries/My custom apple.md', customFrontmatter);
+  service.indexFile(custom, customFrontmatter);
+
+  assert.equal(food.file.basename, 'food-old');
+  assert.equal(session.file.basename, 'workout-old');
+  assert.equal(exercise.file.basename, exercise.id);
+  api.version = 3;
+  const first = await service.normalizeNativeRecordFilenames();
+  assert.deepEqual(first, {
+    inspected: 4,
+    renamed: 3,
+    unchanged: 1,
+    failed: 0,
+    renamedPaths: {
+      'food-old': '_records/food-entries/2026-08-24 - Apple.md',
+      'workout-old': '_records/workout-sessions/2026-08-24 - Strength.md',
+      [exercise.id]: '_records/workout-exercises/2026-08-24 - Bench press.md',
+    },
+  });
+  assert.equal(food.path, '_records/food-entries/food-old.md', 'prior immutable handles are not treated as live path authority');
+  assert.equal(food.file.path, '_records/food-entries/2026-08-24 - Apple.md');
+  assert.equal(session.file.path, '_records/workout-sessions/2026-08-24 - Strength.md');
+  assert.equal(exercise.file.path, '_records/workout-exercises/2026-08-24 - Bench press.md');
+  assert.equal(custom.path, '_records/food-entries/My custom apple.md', 'a user-owned filename is preserved');
+  assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
+    inspected: 4, renamed: 0, unchanged: 4, failed: 0, renamedPaths: {},
+  });
+});
+
+test('readable filename migration preserves a manual rename that lands while the batch is running', async () => {
+  const { service, api, files } = createHarness({ apiVersion: 1 });
+  await service.createFoodEntry({
+    id: 'food-a', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
+    item: { id: 'apple-a', name: 'Apple A', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const later = await service.createFoodEntry({
+    id: 'food-b', createdDate: '2026-08-24T13:00:00.000Z', completedDate: '2026-08-24T13:00:00.000Z',
+    item: { id: 'apple-b', name: 'Apple B', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  api.version = 3;
+  const rename = api.rename.bind(api);
+  let injected = false;
+  api.rename = async (...args) => {
+    const result = await rename(...args);
+    if (!injected) {
+      injected = true;
+      files.delete(later.file.path);
+      later.file.path = '_records/food-entries/My manual apple.md';
+      later.file.name = 'My manual apple.md';
+      later.file.basename = 'My manual apple';
+      files.set(later.file.path, later.file);
+    }
+    return result;
+  };
+
+  assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
+    inspected: 2,
+    renamed: 1,
+    unchanged: 1,
+    failed: 0,
+    renamedPaths: { 'food-a': '_records/food-entries/2026-08-24 - Apple A.md' },
+  });
+  assert.equal(later.file.path, '_records/food-entries/My manual apple.md');
+});
 
 test('native food projection derives every macro from the consumed amount and linked serving', () => {
   const food = {
@@ -522,10 +677,15 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /storage: "native-record-index"/u);
   assert.match(mainSource, /Preview legacy Health import/u);
   assert.match(mainSource, /Copy legacy Health logs/u);
+  assert.match(mainSource, /Native records: Apply readable Health filenames/u);
+  assert.match(mainSource, /normalizeNativeRecordFilenames\(\)/u);
+  assert.match(mainSource, /result\.renamedPaths\[\(this\.settings\.activeWorkoutId \|\| ""\)\.trim\(\)\]/u);
+  assert.match(mainSource, /this\.settings\.activeWorkoutPath = activeWorkoutPath;[\s\S]*?await this\.saveSettings\(\);/u);
+  assert.match(settingsSource, /GCM 1\.43\.1 or newer gives new food and workout records readable date-and-title filenames/u);
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {
-  const { service, addLegacyFile, contents } = createHarness();
+  const { service, addLegacyFile, contents, files } = createHarness({ apiVersion: 3 });
   const legacy = [
     '- Apple <!-- [type:: foodLog] [food:: Apple] [foodId:: food-old-1] [servings:: 2] [unit:: serving] [cal:: 190] [protein:: 1] [carbs:: 50] [fat:: 0.6] [fiber:: 8.8] [sodium:: 4] [completedDate:: 2026-08-23T12:00:00.000Z] -->',
     '- Walk <!-- [type:: activityLog] [activity:: Walk] [activityType:: walking] [activityId:: activity-old-1] [source:: manual] [durationMinutes:: 30] [startedAt:: 2026-08-23T08:00:00.000Z] [completedDate:: 2026-08-23T08:30:00.000Z] -->',
@@ -546,6 +706,9 @@ test('legacy Health import is deterministic, typed, copy-only, and idempotent', 
   const first = await service.importLegacyRecords();
   assert.equal(first.created, 4);
   assert.equal(first.failed, 0);
+  assert.equal(files.has('_records/food-entries/2026-08-23 - Apple.md'), true);
+  assert.equal(files.has('_records/workout-sessions/2026-08-23 - Strength.md'), true);
+  assert.equal(files.has('_records/workout-exercises/2026-08-23 - Bench.md'), true);
   assert.equal(contents.get('2026-08-23.md'), before, 'copy import preserves legacy bytes');
   const second = await service.importLegacyRecords();
   assert.equal(second.created, 0);

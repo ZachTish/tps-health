@@ -786,6 +786,26 @@ export default class TPSHealthPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "normalize-native-health-filenames",
+      name: "Native records: Apply readable Health filenames",
+      checkCallback: (checking) => {
+        const nativeRecords = this.getGcmNativeRecordsApi();
+        if (!this.nativeRecordService?.isEnabled() || Number(nativeRecords?.version) < 3 || typeof nativeRecords?.rename !== "function") return false;
+        if (!checking) void this.traceCommand("normalize-native-health-filenames", async () => {
+          const message = "Rename opaque food-log and workout record files to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and manually renamed files are left unchanged.";
+          if (typeof window.confirm === "function" && !window.confirm(message)) return;
+          const result = await this.nativeRecordService.normalizeNativeRecordFilenames();
+          const activeWorkoutPath = result.renamedPaths[(this.settings.activeWorkoutId || "").trim()];
+          if (activeWorkoutPath) {
+            this.settings.activeWorkoutPath = activeWorkoutPath;
+            await this.saveSettings();
+          }
+          new Notice(`Health filenames: ${result.renamed} renamed, ${result.unchanged} already readable or user-named, ${result.failed} failed.`, 12000);
+        });
+        return true;
+      },
+    });
+    this.addCommand({
       id: "scan-food-barcode",
       name: "Scan food barcode",
       callback: () => this.traceCommand("scan-food-barcode", async () => {
