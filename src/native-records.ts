@@ -21,6 +21,12 @@ interface NativeRecordsApi {
   create(kind: NativeHealthKind, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<NativeRecordHandle>;
   resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<NativeRecordHandle | null>;
   update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<NativeRecordHandle | null>;
+  inspect?(frontmatter: unknown): {
+    id: string;
+    kind: string;
+    schemaVersion: number;
+    frontmatter: Record<string, unknown>;
+  } | null;
 }
 
 interface IndexedHealthRecord {
@@ -844,10 +850,20 @@ export class HealthNativeRecordService {
   private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null): void {
     this.removePath(file.path);
     const resolved = frontmatter || this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
-    const kind = String(resolved?.kind || '') as NativeHealthKind;
-    const recordId = String(resolved?.tpsId || '').trim();
-    if (!recordId || Number(resolved?.tpsSchemaVersion) !== 1 || !HEALTH_KINDS.has(kind)) return;
-    const record = { file, frontmatter: { ...resolved }, id: recordId, kind };
+    const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
+    const inspected = Number(api?.version) >= 2 && typeof api?.inspect === 'function'
+      ? api.inspect(resolved)
+      : null;
+    const kind = String(inspected?.kind || resolved?.kind || '') as NativeHealthKind;
+    const recordId = String(inspected?.id || resolved?.tpsId || '').trim();
+    const schemaVersion = Number(inspected?.schemaVersion || resolved?.tpsSchemaVersion);
+    if (!recordId || schemaVersion !== 1 || !HEALTH_KINDS.has(kind)) return;
+    const record = {
+      file,
+      frontmatter: { ...(inspected?.frontmatter || resolved) },
+      id: recordId,
+      kind,
+    };
     this.recordsByPath.set(file.path, record);
     const paths = this.pathsByKind.get(kind) || new Set<string>();
     paths.add(file.path);

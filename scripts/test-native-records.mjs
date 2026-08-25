@@ -39,13 +39,13 @@ const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.ur
 const typesSource = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
-function createHarness() {
+function createHarness(options = {}) {
   const files = new Map();
   const frontmatters = new Map();
   const contents = new Map();
   let generated = 0;
   const api = {
-    version: 1,
+    version: options.apiVersion || 1,
     isEnabled: () => true,
     async create(kind, properties, options = {}) {
       const id = String(options.id || `${kind}-${++generated}`);
@@ -76,6 +76,17 @@ function createHarness() {
       frontmatters.set(current.file, frontmatter);
       return { ...current, frontmatter };
     },
+    inspect(frontmatter) {
+      const identityTag = Array.isArray(frontmatter?.tags)
+        ? frontmatter.tags.find((tag) => String(tag).startsWith('tps/record/v1/'))
+        : null;
+      if (!identityTag) return null;
+      const [, , , kind, ...idParts] = String(identityTag).split('/');
+      const id = idParts.join('/');
+      return id && kind
+        ? { id, kind, schemaVersion: 1, frontmatter: { ...frontmatter, tpsId: id, tpsSchemaVersion: 1, kind } }
+        : null;
+    },
   };
   const plugin = {
     settings: { storageMode: 'native-records' },
@@ -104,6 +115,21 @@ function createHarness() {
   };
   return { service, api, files, frontmatters, contents, addLegacyFile };
 }
+
+test('native Health indexing follows GCM API v2 tag identity without physical ID/schema properties', () => {
+  const { service } = createHarness({ apiVersion: 2 });
+  const file = { path: 'food-tagged.md', name: 'food-tagged.md', extension: 'md', basename: 'food-tagged' };
+  service.indexFile(file, {
+    tags: ['food-log', 'tps/record/v1/food-entry/food-tagged'],
+    title: 'Tagged food',
+    date: '2026-08-25',
+    calories: 325,
+  });
+  const indexed = service.recordsByPath.get(file.path);
+  assert.equal(indexed?.id, 'food-tagged');
+  assert.equal(indexed?.kind, 'food-entry');
+  assert.equal(indexed?.frontmatter.calories, 325);
+});
 
 test('native food and activity records keep typed quantities and indexed daily macro totals', async () => {
   const { service } = createHarness();

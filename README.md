@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.23.3
+
+- Native Health indexing now consumes GCM `nativeRecords` API v2 identity inspection. Food, activity, workout-session, and workout-exercise records remain available when a vault stores stable record identity in a tag instead of physical `tpsId`/`tpsSchemaVersion` properties.
+- GCM v1 property identity remains supported as the compatibility fallback. Health does not rewrite identity fields itself and never reads a tag prefix from GCM settings directly; GCM remains the sole record-envelope owner.
+- Health domain properties such as calories, quantity, sets, and workout aggregates remain typed user data. This patch changes only how Health recognizes the owning record and requires no Health setting or data migration.
+- Minimum supported Obsidian remains 1.12.0.
+
 ## 0.23.2
 
 - Native Health dashboards now recognize explicitly typed Daily Notes (`kind: dailynote`) by an exact ISO `date` or `scheduled` property when Templater, Notebook Navigator, or another reviewed workflow owns a different file path scheme than Core Daily Notes.
