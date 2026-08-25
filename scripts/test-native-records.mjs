@@ -47,7 +47,7 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { HealthNativeRecordService, parseLegacyInlineFields } = await loadModule();
+const { HealthNativeRecordService, deriveNativeFoodEntryProjection, parseLegacyInlineFields } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const nativeWorkoutSurfaceSource = readFileSync(new URL('../src/native-workout-surface.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
@@ -122,6 +122,10 @@ function createHarness(options = {}) {
       },
       metadataCache: {
         getFileCache: (file) => ({ frontmatter: frontmatters.get(file) }),
+        getFirstLinkpathDest: (linkpath) => {
+          const normalized = String(linkpath || '').replace(/^\[\[|\]\]$/gu, '').replace(/\.md$/u, '');
+          return [...files.values()].find((candidate) => candidate.path.replace(/\.md$/u, '') === normalized) || null;
+        },
         on: () => ({}),
       },
     },
@@ -136,11 +140,50 @@ function createHarness(options = {}) {
     contents.set(path, content);
     return file;
   };
+  const addFrontmatterFile = (path, frontmatter) => {
+    const file = addLegacyFile(path, '');
+    frontmatters.set(file, { ...frontmatter });
+    return file;
+  };
   const emitVault = (name, ...args) => {
     for (const listener of vaultEvents.get(name) || []) listener(...args);
   };
-  return { service, api, files, frontmatters, contents, addLegacyFile, emitVault };
+  return { service, api, files, frontmatters, contents, addLegacyFile, addFrontmatterFile, emitVault };
 }
+
+test('native food projection derives every macro from the consumed amount and linked serving', () => {
+  const food = {
+    servingAmount: 1,
+    servingUnit: '5.3 oz cup',
+    servingGrams: 150,
+    calories: 80,
+    proteinG: 12,
+    carbsG: 9,
+    fatG: 0,
+    fiberG: 1.5,
+    sugarG: 7,
+    sodiumMg: 45,
+  };
+  assert.deepEqual(deriveNativeFoodEntryProjection({ quantity: 3, unit: 'serving' }, food), {
+    servings: 3,
+    amount: 450,
+    amountUnit: 'g',
+    nutrition: {
+      calories: 240,
+      proteinG: 36,
+      carbsG: 27,
+      fatG: 0,
+      fiberG: 4.5,
+      sugarG: 21,
+      sugarAlcoholG: 0,
+      alcoholG: 0,
+      sodiumMg: 135,
+    },
+  });
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 300, unit: 'g' }, food)?.servings, 2);
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 2, unit: '5.3 oz cups' }, food)?.servings, 2);
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 2, unit: 'ml' }, food), null, 'an incompatible unit fails closed');
+});
 
 test('native Health indexing follows GCM API v2 tag identity without physical ID/schema properties', () => {
   const { service } = createHarness({ apiVersion: 2 });
@@ -158,12 +201,16 @@ test('native Health indexing follows GCM API v2 tag identity without physical ID
 });
 
 test('native food and activity records keep typed quantities and indexed daily macro totals', async () => {
-  const { service } = createHarness();
+  const { service, addFrontmatterFile } = createHarness();
+  addFrontmatterFile('Apple.md', {
+    kind: 'food', servingAmount: 1, servingUnit: 'apple', servingGrams: 180,
+    calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2,
+  });
   await service.createFoodEntry({
     id: 'food-1',
     createdDate: '2026-08-24T12:00:00.000Z',
     completedDate: '2026-08-24T12:15:00.000Z',
-    item: { id: 'apple', name: 'Apple', source: 'manual', nutrition: { calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2 } },
+    item: { id: 'apple', name: 'Apple', source: 'manual', sourcePath: 'Apple.md', nutrition: { calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2 } },
     quantity: 1,
     unit: 'serving',
     nutritionOverride: { calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2 },
@@ -185,6 +232,8 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.equal(totals.sodiumMg, 802);
   const foodRecord = [...service.recordsByPath.values()].find((record) => record.id === 'food-1');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'tpsId is the only food-record identity');
+  assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingQuantity'), false, 'new records keep one authored quantity field');
+  assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingUnit'), false, 'new records keep one authored unit field');
 
   const activity = await service.createActivityEntry({
     id: 'activity-1', activity: 'Walk', activityType: 'walking', startedAt: '2026-08-24T07:00:00.000Z', completedDate: '2026-08-24T07:30:00.000Z', durationMinutes: 30, source: 'manual',
@@ -194,6 +243,67 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.deepEqual(service.getDailyActivityTotals('2026-08-24'), {
     dateIso: '2026-08-24', entryCount: 1, durationMinutes: 30, caloriesBurned: 0, steps: 0,
   });
+});
+
+test('a Base quantity edit immediately updates indexed totals and persists Base-compatible macro projections', async () => {
+  const { service, api, addFrontmatterFile, frontmatters } = createHarness();
+  addFrontmatterFile('Yogurt.md', {
+    kind: 'food', servingAmount: 1, servingUnit: 'cup', servingGrams: 150,
+    calories: 80, proteinG: 12, carbsG: 9, fatG: 0, fiberG: 0, sugarG: 7, sodiumMg: 45,
+  });
+  const created = await service.createFoodEntry({
+    id: 'food-yogurt',
+    createdDate: '2026-08-25T17:20:00.000Z',
+    completedDate: '2026-08-25T17:20:00.000Z',
+    item: { id: 'yogurt', name: 'Yogurt', source: 'custom-note', sourcePath: 'Yogurt.md' },
+    quantity: 1.25,
+    unit: 'serving',
+    servingQuantity: 1.25,
+    servingUnit: 'cup',
+    nutritionOverride: { calories: 100, proteinG: 15, carbsG: 11.25, sugarG: 8.75, sodiumMg: 56.25 },
+  });
+  assert.equal(created.frontmatter.quantity, 1.25);
+  assert.equal(created.frontmatter.unit, 'cup');
+
+  const authored = { ...(await api.resolve(created.file)).frontmatter, quantity: 3, unit: 'cup' };
+  frontmatters.set(created.file, authored);
+  service.indexFile(created.file, authored);
+
+  const immediate = service.getDailyFoodTotals('2026-08-25');
+  assert.equal(immediate.calories, 240, 'dashboard totals do not wait for the projection write');
+  assert.equal(immediate.proteinG, 36);
+  assert.equal(immediate.carbsG, 27);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const persisted = await api.resolve(created.file);
+  assert.equal(persisted.frontmatter.quantity, 3);
+  assert.equal(persisted.frontmatter.unit, 'cup');
+  assert.equal(persisted.frontmatter.amount, 450);
+  assert.equal(persisted.frontmatter.amountUnit, 'g');
+  assert.equal(persisted.frontmatter.calories, 240);
+  assert.equal(persisted.frontmatter.proteinG, 36);
+  assert.equal(persisted.frontmatter.carbsG, 27);
+  assert.equal(persisted.frontmatter.sodiumMg, 135);
+});
+
+test('editing a linked food definition recalculates only its indexed food entries', async () => {
+  const { service, api, addFrontmatterFile, frontmatters } = createHarness();
+  const foodFile = addFrontmatterFile('Protein.md', {
+    kind: 'food', servingAmount: 1, servingUnit: 'bar', calories: 200, proteinG: 20, carbsG: 20,
+  });
+  const created = await service.createFoodEntry({
+    id: 'food-protein', createdDate: '2026-08-25T12:00:00.000Z', completedDate: '2026-08-25T12:00:00.000Z',
+    item: { id: 'protein', name: 'Protein', source: 'custom-note', sourcePath: 'Protein.md' },
+    quantity: 2, unit: 'serving', nutritionOverride: { calories: 400, proteinG: 40, carbsG: 40 },
+  });
+  const revisedFood = { ...frontmatters.get(foodFile), calories: 210, proteinG: 22 };
+  frontmatters.set(foodFile, revisedFood);
+  service.indexFile(foodFile, revisedFood);
+  assert.equal(service.getDailyFoodTotals('2026-08-25').calories, 420);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const persisted = await api.resolve(created.file);
+  assert.equal(persisted.frontmatter.calories, 420);
+  assert.equal(persisted.frontmatter.proteinG, 44);
+  assert.equal(persisted.frontmatter.carbsG, 40);
 });
 
 test('a vault modify refreshes the exact record before MetadataCache catches up', async () => {

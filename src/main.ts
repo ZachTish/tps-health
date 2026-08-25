@@ -992,6 +992,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   onunload(): void {
     logger.flow("Lifecycle", "unload");
+    this.nativeRecordService?.dispose();
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
     this.removeWorkoutActionBars();
     this.clearGcmFoodLogButtonRegistration();

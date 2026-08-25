@@ -1,6 +1,7 @@
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { isoDateKey } from './format';
+import * as logger from './logger';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
 export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 2;
@@ -129,6 +130,10 @@ interface LegacyHealthCandidate {
 }
 
 const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 'workout-session', 'workout-exercise']);
+const FOOD_NUTRITION_KEYS = [
+  'calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg',
+] as const;
+const FOOD_PROJECTION_DEBOUNCE_MS = 120;
 
 const numberValue = (value: unknown): number => {
   const parsed = Number(value);
@@ -147,13 +152,103 @@ function wikilinkPath(value: unknown): string {
   return path && !/\.[^/]+$/u.test(path) ? `${path}.md` : path;
 }
 
+interface NativeFoodEntryProjection {
+  servings: number;
+  amount?: number;
+  amountUnit?: 'g' | 'ml';
+  nutrition: Record<(typeof FOOD_NUTRITION_KEYS)[number], number>;
+}
+
+const positiveNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const stableNumber = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
+
+const normalizedUnit = (value: unknown): string => String(value || 'serving')
+  .trim()
+  .toLocaleLowerCase()
+  .replace(/\s+/gu, ' ') || 'serving';
+
+const singularUnit = (value: string): string => value.length > 1 && value.endsWith('s') ? value.slice(0, -1) : value;
+
+function metricAmount(quantity: number, unit: string): { amount: number; unit: 'g' | 'ml' } | null {
+  if (['g', 'gram', 'grams'].includes(unit)) return { amount: quantity, unit: 'g' };
+  if (['ml', 'milliliter', 'milliliters'].includes(unit)) return { amount: quantity, unit: 'ml' };
+  if (['oz', 'ounce', 'ounces'].includes(unit)) return { amount: quantity * 28.3495, unit: 'g' };
+  if (['fl oz', 'fluid ounce', 'fluid ounces'].includes(unit)) return { amount: quantity * 29.5735, unit: 'ml' };
+  if (['cup', 'cups'].includes(unit)) return { amount: quantity * 240, unit: 'ml' };
+  return null;
+}
+
+function foodMetricServing(food: Record<string, unknown>): { amount: number; unit: 'g' | 'ml' } | null {
+  const grams = positiveNumber(food.servingGrams);
+  if (grams) return { amount: grams, unit: 'g' };
+  const ml = positiveNumber(food.servingMl);
+  if (ml) return { amount: ml, unit: 'ml' };
+  const amount = positiveNumber(food.servingAmount, 1);
+  return metricAmount(amount, normalizedUnit(food.servingUnit));
+}
+
+/**
+ * Derive a native food-entry's nutrition from its linked food definition and
+ * authored consumption amount. The entry never owns an independent macro
+ * value; persisted macro fields are only Base-compatible projections.
+ */
+export function deriveNativeFoodEntryProjection(
+  entry: Record<string, unknown>,
+  food: Record<string, unknown>,
+): NativeFoodEntryProjection | null {
+  if (entry.quantity == null || String(entry.quantity).trim() === '') return null;
+  const quantity = Number(entry.quantity);
+  if (!Number.isFinite(quantity) || quantity < 0) return null;
+  const unit = normalizedUnit(entry.unit);
+  const metricServing = foodMetricServing(food);
+  const directMetric = metricAmount(quantity, unit);
+  const servingAmount = positiveNumber(food.servingAmount, 1);
+  const servingUnit = normalizedUnit(food.servingUnit);
+  const sameServingUnit = unit === servingUnit || singularUnit(unit) === singularUnit(servingUnit);
+  let servings = 0;
+  let amount: number | undefined;
+  let amountUnit: 'g' | 'ml' | undefined;
+  if (unit === 'serving' || sameServingUnit) {
+    servings = unit === 'serving' ? quantity : quantity / servingAmount;
+    if (metricServing) {
+      amount = servings * metricServing.amount;
+      amountUnit = metricServing.unit;
+    }
+  } else if (directMetric) {
+    if (!metricServing || directMetric.unit !== metricServing.unit) return null;
+    servings = directMetric.amount / metricServing.amount;
+    amount = directMetric.amount;
+    amountUnit = directMetric.unit;
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(servings) || servings < 0) return null;
+  const nutrition = Object.fromEntries(FOOD_NUTRITION_KEYS.map((key) => (
+    [key, stableNumber(numberValue(food[key]) * servings)]
+  ))) as NativeFoodEntryProjection['nutrition'];
+  return {
+    servings: stableNumber(servings),
+    amount: amount == null ? undefined : stableNumber(amount),
+    amountUnit,
+    nutrition,
+  };
+}
+
 /** Incremental frontmatter index plus the narrow GCM native-record bridge. */
 export class HealthNativeRecordService {
   readonly version = TPS_HEALTH_NATIVE_RECORDS_VERSION;
   private readonly recordsByPath = new Map<string, IndexedHealthRecord>();
   private readonly pathsByKind = new Map<NativeHealthKind, Set<string>>();
+  private readonly entryPathsByFoodPath = new Map<string, Set<string>>();
+  private readonly foodDefinitionsByPath = new Map<string, Record<string, unknown>>();
   private readonly changeListeners = new Set<(change: NativeHealthRecordChange) => void>();
   private readonly refreshGenerations = new Map<string, number>();
+  private readonly foodProjectionTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
+  private readonly foodProjectionGenerations = new Map<string, number>();
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
 
@@ -179,9 +274,13 @@ export class HealthNativeRecordService {
       if (file instanceof TFile) void this.refreshFile(file);
     }));
     this.plugin.registerEvent(vault.on('delete', (file) => {
-      if (file instanceof TFile) this.removePath(file.path);
+      if (file instanceof TFile) {
+        this.foodDefinitionsByPath.delete(file.path);
+        this.removePath(file.path);
+      }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
+      this.foodDefinitionsByPath.delete(oldPath);
       this.removePath(oldPath);
       if (file instanceof TFile) this.indexFile(file);
     }));
@@ -189,6 +288,12 @@ export class HealthNativeRecordService {
 
   isEnabled(): boolean {
     return this.plugin.settings.storageMode === 'native-records';
+  }
+
+  dispose(): void {
+    for (const timer of this.foodProjectionTimers.values()) globalThis.clearTimeout(timer);
+    this.foodProjectionTimers.clear();
+    this.foodProjectionGenerations.clear();
   }
 
   onRecordsChanged(listener: (change: NativeHealthRecordChange) => void): () => void {
@@ -206,6 +311,8 @@ export class HealthNativeRecordService {
 
   async createFoodEntry(entry: FoodLogEntry): Promise<NativeRecordHandle> {
     const nutrition = entry.nutritionOverride || entry.item.nutrition || {};
+    const authoredQuantity = positiveNumber(entry.servingQuantity, entry.quantity);
+    const authoredUnit = String(entry.servingUnit || entry.unit || 'serving').trim() || 'serving';
     const record = await this.requireApi().create('food-entry', {
       title: entry.item.name,
       status: 'complete',
@@ -214,10 +321,8 @@ export class HealthNativeRecordService {
       foodPath: this.recordLink(entry.item.sourcePath),
       foodName: entry.item.name,
       brand: entry.item.brand,
-      quantity: entry.quantity,
-      unit: entry.unit,
-      servingQuantity: entry.servingQuantity,
-      servingUnit: entry.servingUnit,
+      quantity: authoredQuantity,
+      unit: authoredUnit,
       amount: entry.amount,
       amountUnit: entry.amountUnit,
       calories: numberValue(nutrition.calories),
@@ -893,6 +998,8 @@ export class HealthNativeRecordService {
   private rebuild(): void {
     this.recordsByPath.clear();
     this.pathsByKind.clear();
+    this.entryPathsByFoodPath.clear();
+    this.foodDefinitionsByPath.clear();
     const vault = this.plugin.app.vault;
     if (typeof vault?.getMarkdownFiles !== 'function') return;
     for (const file of vault.getMarkdownFiles()) this.indexFile(file);
@@ -910,12 +1017,20 @@ export class HealthNativeRecordService {
     const recordId = String(inspected?.id || resolved?.tpsId || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion || resolved?.tpsSchemaVersion);
     if (!recordId || schemaVersion !== 1 || !HEALTH_KINDS.has(kind)) {
+      if (resolved && this.entryPathsByFoodPath.has(file.path)) {
+        this.foodDefinitionsByPath.set(file.path, { ...resolved });
+        this.refreshLinkedFoodEntries(file.path);
+      }
       if (previous) this.emitChange(file.path, previous, null);
       return;
     }
+    const rawFrontmatter = { ...(inspected?.frontmatter || resolved) };
+    const projected = kind === 'food-entry'
+      ? this.projectFoodEntry(rawFrontmatter, file.path)
+      : null;
     const record = {
       file,
-      frontmatter: { ...(inspected?.frontmatter || resolved) },
+      frontmatter: projected?.frontmatter || rawFrontmatter,
       id: recordId,
       kind,
     };
@@ -923,6 +1038,15 @@ export class HealthNativeRecordService {
     const paths = this.pathsByKind.get(kind) || new Set<string>();
     paths.add(file.path);
     this.pathsByKind.set(kind, paths);
+    if (kind === 'food-entry') {
+      const foodPath = this.resolveFoodSourcePath(record.frontmatter.foodPath, file.path);
+      if (foodPath) {
+        const entries = this.entryPathsByFoodPath.get(foodPath) || new Set<string>();
+        entries.add(file.path);
+        this.entryPathsByFoodPath.set(foodPath, entries);
+      }
+      if (projected?.needsPersist) this.scheduleFoodEntryProjection(file.path);
+    }
     this.emitChange(file.path, previous, record);
   }
 
@@ -930,6 +1054,21 @@ export class HealthNativeRecordService {
     const record = this.recordsByPath.get(path);
     this.recordsByPath.delete(path);
     if (!record) return;
+    if (record.kind === 'food-entry') {
+      const foodPath = this.resolveFoodSourcePath(record.frontmatter.foodPath, record.file.path);
+      const entries = foodPath ? this.entryPathsByFoodPath.get(foodPath) : null;
+      entries?.delete(path);
+      if (foodPath && (!entries || entries.size === 0)) {
+        this.entryPathsByFoodPath.delete(foodPath);
+        this.foodDefinitionsByPath.delete(foodPath);
+      }
+      if (notify) {
+        const timer = this.foodProjectionTimers.get(path);
+        if (timer) globalThis.clearTimeout(timer);
+        this.foodProjectionTimers.delete(path);
+        this.foodProjectionGenerations.delete(path);
+      }
+    }
     const paths = this.pathsByKind.get(record.kind);
     paths?.delete(path);
     if (!paths || paths.size === 0) this.pathsByKind.delete(record.kind);
@@ -951,6 +1090,125 @@ export class HealthNativeRecordService {
       // MetadataCache remains the safe eventual fallback for transient reads.
     } finally {
       if (this.refreshGenerations.get(file.path) === generation) this.refreshGenerations.delete(file.path);
+    }
+  }
+
+  private resolveFoodSourcePath(value: unknown, sourcePath: string): string {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/^\[\[([^\]|#^]+)(?:[|#^][^\]]*)?\]\]$/u);
+    const linkpath = String(match?.[1] || raw).trim();
+    const metadataCache = this.plugin.app.metadataCache as unknown as {
+      getFirstLinkpathDest?: (linkpath: string, sourcePath: string) => TFile | null;
+    };
+    const destination = metadataCache.getFirstLinkpathDest?.(linkpath, sourcePath);
+    return destination instanceof TFile ? destination.path : wikilinkPath(linkpath);
+  }
+
+  private foodDefinitionForEntry(entry: Record<string, unknown>, sourcePath: string): {
+    path: string;
+    frontmatter: Record<string, unknown>;
+  } | null {
+    const foodPath = this.resolveFoodSourcePath(entry.foodPath, sourcePath);
+    if (!foodPath) return null;
+    const cached = this.foodDefinitionsByPath.get(foodPath);
+    if (cached) return { path: foodPath, frontmatter: cached };
+    const file = this.plugin.app.vault.getAbstractFileByPath(foodPath);
+    if (!(file instanceof TFile)) return null;
+    const frontmatter = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!frontmatter) return null;
+    const copy = { ...frontmatter };
+    this.foodDefinitionsByPath.set(foodPath, copy);
+    return { path: foodPath, frontmatter: copy };
+  }
+
+  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string): {
+    frontmatter: Record<string, unknown>;
+    needsPersist: boolean;
+  } | null {
+    const food = this.foodDefinitionForEntry(frontmatter, sourcePath);
+    if (!food) return null;
+    const projection = deriveNativeFoodEntryProjection(frontmatter, food.frontmatter);
+    if (!projection) return null;
+    const updates: Record<string, unknown> = {
+      amount: projection.amount ?? null,
+      amountUnit: projection.amountUnit ?? null,
+      ...projection.nutrition,
+    };
+    const next = { ...frontmatter };
+    let needsPersist = false;
+    for (const [key, value] of Object.entries(updates)) {
+      if (value == null) {
+        if (Object.prototype.hasOwnProperty.call(next, key)) {
+          delete next[key];
+          needsPersist = true;
+        }
+        continue;
+      }
+      if (next[key] !== value) needsPersist = true;
+      next[key] = value;
+    }
+    return { frontmatter: next, needsPersist };
+  }
+
+  private refreshLinkedFoodEntries(foodPath: string): void {
+    for (const entryPath of [...(this.entryPathsByFoodPath.get(foodPath) || [])]) {
+      const previous = this.recordsByPath.get(entryPath);
+      if (!previous || previous.kind !== 'food-entry') continue;
+      const projected = this.projectFoodEntry(previous.frontmatter, entryPath);
+      if (!projected) continue;
+      const current = { ...previous, frontmatter: projected.frontmatter };
+      this.recordsByPath.set(entryPath, current);
+      this.emitChange(entryPath, previous, current);
+      if (projected.needsPersist) this.scheduleFoodEntryProjection(entryPath);
+    }
+  }
+
+  private scheduleFoodEntryProjection(path: string): void {
+    const previousTimer = this.foodProjectionTimers.get(path);
+    if (previousTimer) globalThis.clearTimeout(previousTimer);
+    const generation = (this.foodProjectionGenerations.get(path) || 0) + 1;
+    this.foodProjectionGenerations.set(path, generation);
+    const timer = globalThis.setTimeout(() => {
+      this.foodProjectionTimers.delete(path);
+      void this.persistFoodEntryProjection(path, generation);
+    }, FOOD_PROJECTION_DEBOUNCE_MS);
+    this.foodProjectionTimers.set(path, timer);
+  }
+
+  private async persistFoodEntryProjection(path: string, generation: number): Promise<void> {
+    if (this.foodProjectionGenerations.get(path) !== generation || !this.isEnabled()) return;
+    try {
+      const indexed = this.recordsByPath.get(path);
+      if (!indexed || indexed.kind !== 'food-entry') return;
+      const current = await this.requireApi().resolve(indexed.file);
+      if (this.foodProjectionGenerations.get(path) !== generation) return;
+      if (!current || current.kind !== 'food-entry') return;
+      const projected = this.projectFoodEntry(current.frontmatter, current.path);
+      if (!projected?.needsPersist) return;
+      const updates: Record<string, unknown> = {
+        amount: projected.frontmatter.amount ?? null,
+        amountUnit: projected.frontmatter.amountUnit ?? null,
+      };
+      for (const key of FOOD_NUTRITION_KEYS) updates[key] = projected.frontmatter[key];
+      const updated = await this.requireApi().update(current.file, updates, {
+        kind: 'automation',
+        sourcePluginId: this.plugin.manifest.id,
+        surface: 'health-food-projection',
+      });
+      if (!updated) return;
+      this.trackHandle(updated);
+      logger.flow('NativeFoodProjection', 'reconcile:done', {
+        path,
+        foodPath: this.resolveFoodSourcePath(updated.frontmatter.foodPath, path),
+        quantity: numberValue(updated.frontmatter.quantity),
+        unit: String(updated.frontmatter.unit || ''),
+        changedKeys: ['amount', 'amountUnit', ...FOOD_NUTRITION_KEYS],
+      });
+    } catch (error) {
+      logger.flowError('NativeFoodProjection', 'reconcile:failed', error, { path });
+    } finally {
+      if (this.foodProjectionGenerations.get(path) === generation) this.foodProjectionGenerations.delete(path);
     }
   }
 
