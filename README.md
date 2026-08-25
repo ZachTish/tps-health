@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.23.6
+
+- Daily Note Health sections are now independently embeddable. `tps-health-macros` renders only food totals and **Add food**; `tps-health-activity` renders only activity/workout totals and **Log activity** / **Start workout**.
+- The older `tps-health-daily` block remains a backward-compatible combined renderer, so existing Daily Notes do not break. New templates should use the two explicit section blocks when their placement and references must be independent.
+- Each independent section subscribes only to its own record kinds. Food changes do not rerender Activity, and activity/workout changes do not rerender Macros.
+- On phones, Health sections now consume the same full-bleed width, transform, border, and callout overrides as core Base embeds. This removes the extra Markdown-column inset without hard-coding a device margin.
+- Existing records, settings, public APIs, Legacy storage, and minimum Obsidian 1.12.0 compatibility remain unchanged.
+
 ## 0.23.5
 
 - The native Daily Note dashboard is now two separate Base-style, full-width regions: **Macros** owns food totals and **Add food**, while **Activity** owns activity/workout totals and **Log activity** / **Start workout**.
@@ -500,14 +508,17 @@ See `DESIGN.md` for the broader researched workflow model covering food, recipes
 
 ## Native Daily Note dashboard
 
-In **Native Markdown records** mode, Health stores nutrition on the `food-entry` record and does not copy a summary into the Daily Note. Add this fenced block to a Daily Note template to render the day from the incremental native-record index:
+In **Native Markdown records** mode, Health stores nutrition and activity on typed records and does not copy a summary into the Daily Note. Add the two independently embeddable fenced blocks to a Daily Note template:
 
 ````markdown
-```tps-health-daily
+```tps-health-macros
+```
+
+```tps-health-activity
 ```
 ````
 
-The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders two independent, full-width Base-style blocks: **Macros** summarizes configured food metrics and exposes **Add food**; **Activity** summarizes typed activity/workout duration and exposes **Log activity** and **Start workout**. Activity is never mixed into the macro table. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. Each section uses that note's date, not today's wall-clock date. **Macros** summarizes configured food metrics and exposes **Add food**; **Activity** summarizes typed activity/workout duration and exposes **Log activity** and **Start workout**. Each processor subscribes only to its own record kinds and can be placed, referenced, or omitted independently. Activity is never mixed into the macro table. On phones, both use core Bases' full-bleed embed variables so their outer edge aligns with adjacent Base sections. Existing notes may keep `tps-health-daily`, which renders both sections as a compatibility wrapper. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced blocks contain no stored totals, and Source mode therefore remains ordinary literal Markdown.
 
 Health indexes each native record as an immutable per-file projection. A create, edit, rename, or delete rereads only the affected Markdown file, emits the exact record kinds and dates that changed, and refreshes only matching mounted dashboards. The authoritative file read closes the delay between a successful Base/frontmatter edit and MetadataCache convergence; MetadataCache remains a fallback rather than the dashboard's refresh clock. No full-vault rescan runs for a warm dashboard update.
 

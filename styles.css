@@ -3799,6 +3799,17 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   display: block;
 }
 
+/* Match Core Bases' phone-only full-bleed embed contract. */
+.is-phone .tps-health-native-daily-host {
+  transform: var(--bases-embed-transform, none);
+  width: var(--bases-embed-width, 100%);
+}
+
+.is-phone .tps-health-native-daily {
+  border-radius: var(--bases-embed-border-radius, var(--radius-s));
+  border-width: var(--bases-embed-border-width, 1px);
+}
+
 .tps-health-native-daily-stack {
   display: grid;
   gap: var(--size-4-3);

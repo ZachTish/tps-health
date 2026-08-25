@@ -17,7 +17,7 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { buildNativeDailyDashboardModel, formatNativeDailyMetricValue } = await loadModule();
+const { buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
@@ -55,15 +55,33 @@ test('daily dashboard marks values beyond a maximum and clamps the progress bar'
   assert.equal(model.metrics[0].progress, 1);
 });
 
+test('activity builds independently from nutrition totals', () => {
+  const model = buildNativeDailyActivityModel(
+    { dateIso: '2026-08-24', entryCount: 2, durationMinutes: 50, caloriesBurned: 320, steps: 6400 },
+    [
+      { propertyKey: 'protein', label: 'Protein', unit: 'g', kind: 'min', min: 125 },
+      { propertyKey: 'activity', label: 'Activity', unit: 'min', kind: 'min', min: 45 },
+    ],
+  );
+  assert.equal(model.entryCount, 2);
+  assert.equal(model.durationMinutes, 50);
+  assert.deepEqual(model.metrics.map((metric) => [metric.propertyKey, metric.value]), [['activity', 50]]);
+});
+
 test('daily dashboard formats whole and fractional values without noisy precision', () => {
   assert.equal(formatNativeDailyMetricValue(126), '126');
   assert.equal(formatNativeDailyMetricValue(0.70000001), '0.7');
   assert.equal(formatNativeDailyMetricValue(Number.NaN), '0');
 });
 
-test('Health registers the Daily Note renderer and keeps all styling plugin-namespaced', () => {
-  assert.match(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-daily"/u);
+test('Health registers independently embeddable macro and activity renderers plus the compatibility renderer', () => {
+  assert.match(mainSource, /registerNativeDailySection\("tps-health-macros", "macros"\)/u);
+  assert.match(mainSource, /registerNativeDailySection\("tps-health-activity", "activity"\)/u);
+  assert.match(mainSource, /registerNativeDailySection\("tps-health-daily", "combined"\)/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section\)/u);
   assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateContext\.dateIso\)/u);
+  assert.match(mainSource, /if \(this\.section === "activity"\) \{[\s\S]*?renderNativeDailyActivity\([\s\S]*?return;[\s\S]*?getDailyFoodMacroTotals/u);
+  assert.match(mainSource, /this\.section === "macros"[\s\S]*?\["food-entry"\][\s\S]*?this\.section === "activity"[\s\S]*?\["activity-entry", "workout-session"\]/u);
   assert.match(stylesSource, /\.tps-health-native-daily/u);
   assert.doesNotMatch(stylesSource, /(?:^|\n)\s*\.native-daily/u);
 });
@@ -81,12 +99,14 @@ test('daily dashboard uses a compact Base-like table and accessible toolbar', ()
   assert.match(stylesSource, /\.tps-health-native-daily-action\s*\{[\s\S]*?background:\s*transparent[\s\S]*?width:\s*30px/u);
   assert.match(stylesSource, /\.tps-health-native-daily-host\s*\{[\s\S]*?display:\s*block/u);
   assert.match(stylesSource, /\.tps-health-native-daily-host\s*,[\s\S]*?max-width:\s*none[\s\S]*?width:\s*100%/u);
+  assert.match(stylesSource, /\.is-phone \.tps-health-native-daily-host\s*\{[\s\S]*?transform:\s*var\(--bases-embed-transform, none\)[\s\S]*?width:\s*var\(--bases-embed-width, 100%\)/u);
+  assert.match(stylesSource, /\.is-phone \.tps-health-native-daily\s*\{[\s\S]*?border-radius:\s*var\(--bases-embed-border-radius,[\s\S]*?border-width:\s*var\(--bases-embed-border-width,/u);
   assert.match(stylesSource, /\.tps-health-native-daily-stack\s*\{[\s\S]*?display:\s*grid[\s\S]*?gap:/u);
   assert.doesNotMatch(mainSource, /button\.createSpan\(\{ text: label \}\)/u);
 });
 
 test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
-  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext\)/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section\)/u);
   assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /logActivity:\s*\(\) => this\.plugin\.openActivityLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /startWorkout:\s*\(\) => this\.plugin\.openWorkoutStarter\(\{ \.\.\.this\.dateContext \}\)/u);
