@@ -2630,7 +2630,7 @@ test("provider brand canonicalization is typo-tolerant, order-independent, and d
   }
 });
 
-test("White Claw Surge search combines a name-only brand with the provider generic name and has a reviewed fallback", async () => {
+test("provider search reconstructs split branded identities without product fallbacks or a known-brand entry", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
@@ -2643,39 +2643,44 @@ test("White Claw Surge search combines a name-only brand with the provider gener
       headers: {},
       json: {
         hits: [{
-          code: "0635985800781",
-          product_name: "White Claw",
-          generic_name: "Surge Hard Seltzer",
+          code: "0635985800996",
+          product_name: "North Harbor",
+          generic_name: "Storm Hard Seltzer",
           brands: null,
           categories: "Beverages, Alcoholic beverages, Hard seltzer",
           nutriments: {
             "energy-kcal_100g": 45.1,
             proteins_100g: 0,
-            carbohydrates_100g: 0.56,
+            carbohydrates_100g: 0,
             fat_100g: 0,
+            alcohol_100g: 8,
           },
         }],
       },
     };
   };
   try {
-    const online = await plugin.searchOpenFoodFacts("white claw surge");
-    assert.equal(online[0]?.name, "White Claw Surge Hard Seltzer");
-    assert.equal(online[0]?.brand, "White Claw");
-    assert.ok(online[0]?.aliases?.some((alias) => /surge hard seltzer/i.test(alias)));
-    assert.match(decodeURIComponent(requests[0].url), /q=white\+claw\+surge/);
+    const online = await plugin.searchOpenFoodFacts("north harbor storm");
+    assert.equal(online[0]?.name, "North Harbor Storm Hard Seltzer");
+    assert.equal(online[0]?.brand, undefined, "a missing provider brand must not be guessed from a hardcoded brand list");
+    assert.equal(online[0]?.nutrition?.alcoholG, 8, "alcohol-only products must survive the provider nutrition guard");
+    assert.ok(online[0]?.aliases?.some((alias) => /storm hard seltzer/i.test(alias)));
+    assert.match(decodeURIComponent(requests[0].url), /q=north\+harbor\+storm/);
     assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:/);
 
-    const reordered = await plugin.searchOpenFoodFacts("surge white claw");
+    const reordered = await plugin.searchOpenFoodFacts("storm north harbor");
     assert.equal(reordered[0]?.id, online[0]?.id);
-    assert.equal(requests.length, 1, "reordered brand and product tokens should share the provider cache key");
+    assert.match(decodeURIComponent(requests[1].url), /q=storm\+north\+harbor/);
+    assert.doesNotMatch(decodeURIComponent(requests[1].url), /brands:/);
 
-    const local = await plugin.searchLocalFoods("surge white claw seltzer");
-    const fallback = local.find((item) => item.name === "White Claw Surge Hard Seltzer, 12 oz");
-    assert.equal(fallback?.brand, "White Claw");
-    assert.equal(fallback?.servingMl, 355);
-    assert.equal(fallback?.nutrition?.calories, 160);
-    assert.equal(fallback?.nutrition?.alcoholG, 22.4);
+    plugin.searchCustomFoods = async () => [];
+    plugin.searchUsdaFoods = async () => [];
+    plugin.getLoggedFoodStats = async () => new Map();
+    const ranked = await plugin.searchFoods("north harbor storm");
+    assert.equal(ranked[0]?.name, "North Harbor Storm Hard Seltzer", "the reconstructed provider result must survive final search ranking");
+
+    const local = await plugin.searchLocalFoods("north harbor storm seltzer");
+    assert.equal(local.some((item) => /north harbor/i.test(item.name)), false, "the fix must not add a curated product fallback");
   } finally {
     delete globalThis.__TPSHealthTestRequestUrl;
   }
@@ -8940,7 +8945,7 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /aliases\.add\(`\$\{first\} cereal`\)/);
   assert.match(mainSource, /function foodSearchFields\(item: FoodItem\): Array<unknown>/);
   assert.match(mainSource, /function foodFactsProductSearchFields\(product: any\): Array<unknown>/);
-  assert.match(mainSource, /function foodFactsProductAliases\(product: any\): string\[\] \| undefined/);
+  assert.match(mainSource, /function foodFactsProductAliases\(product: any, matchQuery = ""\): string\[\] \| undefined/);
   assert.match(mainSource, /replace\(\/\\bsugar\[\\s-\]\*free\\b\/g, "sugar free"\)/);
   assert.match(mainSource, /isRelevantFoodResult\(query, \[item\.name, item\.brand, item\.aliases\?\.join\(" "\)\]\)/);
   assert.match(mainSource, /isRelevantFoodResult\(query, foodSearchFields\(item\)\)/);

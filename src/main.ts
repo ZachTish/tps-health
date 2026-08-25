@@ -4887,10 +4887,10 @@ export default class TPSHealthPlugin extends Plugin {
     this.assertOpenFoodFactsSearchResponse(response, "search");
     const hits = Array.isArray(response.json?.hits) ? response.json.hits : [];
     return hits
-      .filter((product: any) => foodFactsProductName(product))
+      .filter((product: any) => foodFactsProductName(product, matchQuery))
       .filter((product: any) => hasMacroData(product.nutriments))
       .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
-      .map((product: any) => this.foodFactsSearchProductToItem(product))
+      .map((product: any) => this.foodFactsSearchProductToItem(product, matchQuery))
       .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
   }
 
@@ -4911,10 +4911,10 @@ export default class TPSHealthPlugin extends Plugin {
     this.assertOpenFoodFactsSearchResponse(response, "legacy");
     const products = Array.isArray(response.json?.products) ? response.json.products : [];
     return products
-      .filter((product: any) => foodFactsProductName(product))
+      .filter((product: any) => foodFactsProductName(product, matchQuery))
       .filter((product: any) => hasMacroData(product.nutriments))
       .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
-      .map((product: any) => this.foodFactsSearchProductToItem(product))
+      .map((product: any) => this.foodFactsSearchProductToItem(product, matchQuery))
       .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
   }
 
@@ -4928,16 +4928,16 @@ export default class TPSHealthPlugin extends Plugin {
     if (response.status < 200 || response.status >= 300) throw new Error(`Open Food Facts ${route} search returned HTTP ${response.status}`);
   }
 
-  private foodFactsSearchProductToItem(product: any): FoodItem {
+  private foodFactsSearchProductToItem(product: any, matchQuery = ""): FoodItem {
     const brand = foodFactsProductBrand(product);
     const serving = foodFactsServing(product);
     const basis = foodFactsNutritionBasis(product, serving);
     const itemServing = foodFactsItemServing(serving, basis);
     return normalizeFoodMetricServing({
       id: String(product.code || id("off")),
-      name: foodFactsProductName(product),
+      name: foodFactsProductName(product, matchQuery),
       brand,
-      aliases: foodFactsProductAliases(product),
+      aliases: foodFactsProductAliases(product, matchQuery),
       barcode: product.code ? String(product.code) : undefined,
       imageUrl: product.image_small_url || product.image_thumb_url || undefined,
       ingredients: product.ingredients_text ? String(product.ingredients_text) : undefined,
@@ -16150,6 +16150,8 @@ function hasMacroData(nutriments: any): boolean {
     proteinG: numberOrUndefined(nutriments.proteins_serving) ?? numberOrUndefined(nutriments.proteins_100g),
     carbsG: numberOrUndefined(nutriments.carbohydrates_serving) ?? numberOrUndefined(nutriments.carbohydrates_100g),
     fatG: numberOrUndefined(nutriments.fat_serving) ?? numberOrUndefined(nutriments.fat_100g),
+    sugarAlcoholG: numberOrUndefined(nutriments.polyols_serving) ?? numberOrUndefined(nutriments.polyols_100g),
+    alcoholG: numberOrUndefined(nutriments.alcohol_serving) ?? numberOrUndefined(nutriments.alcohol_100g),
   });
 }
 
@@ -16856,15 +16858,55 @@ function foodFactsProductSearchFields(product: any): Array<unknown> {
   ];
 }
 
-function foodFactsProductName(product: any): string {
+function foodFactsProductName(product: any, matchQuery = ""): string {
   const productName = firstFoodFactsText(product?.product_name, product?.product_name_en);
   const genericName = firstFoodFactsText(product?.generic_name, product?.generic_name_en);
   const brand = foodFactsProductBrand(product);
-  if (productName && brand && genericName && normalizeLookup(productName) === normalizeLookup(brand)) {
-    const normalizedGeneric = normalizeLookup(genericName);
-    if (normalizedGeneric && !normalizedGeneric.includes(normalizeLookup(brand))) return `${brand} ${genericName}`;
+  if (productName && genericName) {
+    const productIsBrand = brand && normalizeLookup(productName) === normalizeLookup(brand);
+    if (productIsBrand || foodFactsSplitIdentityMatchesQuery(productName, genericName, matchQuery)) {
+      return mergeFoodIdentityNames(productName, genericName);
+    }
   }
   return productName || genericName;
+}
+
+function foodFactsSplitIdentityMatchesQuery(productName: string, genericName: string, query: string): boolean {
+  const queryTokens = foodSearchTokens(query);
+  const productTokens = foodSearchTokens(productName);
+  const genericTokens = foodSearchTokens(genericName);
+  if (queryTokens.length < 2 || !productTokens.length || !genericTokens.length) return false;
+  const productHaystack = normalizeLookup(productName);
+  const productHaystackTokens = foodSearchHaystackTokens(productHaystack);
+  const genericHaystack = normalizeLookup(genericName);
+  const genericHaystackTokens = foodSearchHaystackTokens(genericHaystack);
+  const combinedHaystack = `${productHaystack} ${genericHaystack}`.trim();
+  const combinedHaystackTokens = foodSearchHaystackTokens(combinedHaystack);
+  const matches = (token: string, haystack: string, haystackTokens: Set<string>) => foodSearchTokenVariants(token)
+    .some((variant) => haystack.includes(variant) || haystackTokens.has(variant) || foodSearchHasFuzzyTokenMatch(variant, haystackTokens));
+  if (!queryTokens.every((token) => matches(token, combinedHaystack, combinedHaystackTokens))) return false;
+  const productMatches = queryTokens.filter((token) => matches(token, productHaystack, productHaystackTokens));
+  const genericMatches = queryTokens.filter((token) => matches(token, genericHaystack, genericHaystackTokens));
+  return productMatches.some((token) => !genericMatches.includes(token))
+    && genericMatches.some((token) => !productMatches.includes(token));
+}
+
+function mergeFoodIdentityNames(productName: string, genericName: string): string {
+  const productWords = productName.trim().split(/\s+/).filter(Boolean);
+  const genericWords = genericName.trim().split(/\s+/).filter(Boolean);
+  const normalizedProduct = normalizeLookup(productName);
+  const normalizedGeneric = normalizeLookup(genericName);
+  if (!normalizedProduct) return genericName.trim();
+  if (!normalizedGeneric || normalizedProduct === normalizedGeneric || normalizedProduct.includes(normalizedGeneric)) return productName.trim();
+  if (normalizedGeneric.includes(normalizedProduct)) return genericName.trim();
+  let overlap = 0;
+  const maxOverlap = Math.min(productWords.length, genericWords.length);
+  for (let count = 1; count <= maxOverlap; count++) {
+    const productSuffix = normalizeLookup(productWords.slice(-count).join(" "));
+    const genericPrefix = normalizeLookup(genericWords.slice(0, count).join(" "));
+    if (productSuffix === genericPrefix) overlap = count;
+  }
+  return [...productWords, ...genericWords.slice(overlap)].join(" ");
 }
 
 function firstFoodFactsText(...values: unknown[]): string {
@@ -16879,26 +16921,12 @@ function foodFactsProductBrand(product: any): string | undefined {
   const explicit = Array.isArray(product?.brands)
     ? product.brands.map((value: unknown) => String(value || "").trim()).filter(Boolean).join(", ")
     : String(product?.brands || "").trim();
-  if (explicit) return explicit;
-  const identity = normalizeLookup([
-    product?.product_name,
-    product?.product_name_en,
-    product?.generic_name,
-    product?.generic_name_en,
-    product?.abbreviated_product_name,
-    product?.abbreviated_product_name_en,
-  ].filter(Boolean).join(" "));
-  if (!identity) return undefined;
-  const paddedIdentity = ` ${identity} `;
-  const inferred = Array.from(COMMON_FOOD_BRANDS)
-    .filter((brand) => paddedIdentity.includes(` ${normalizeLookup(brand)} `))
-    .sort((left, right) => right.length - left.length)[0];
-  return inferred ? titleCase(inferred) : undefined;
+  return explicit || undefined;
 }
 
-function foodFactsProductAliases(product: any): string[] | undefined {
+function foodFactsProductAliases(product: any, matchQuery = ""): string[] | undefined {
   const aliases = new Map<string, string>();
-  const primaryName = normalizeLookup(foodFactsProductName(product));
+  const primaryName = normalizeLookup(foodFactsProductName(product, matchQuery));
   const primaryBrand = normalizeLookup(Array.isArray(product.brands) ? product.brands.join(" ") : String(product.brands || ""));
   const fields = [
     product.product_name,
@@ -17570,7 +17598,6 @@ const COMMON_FOOD_BRANDS = new Set([
   "pepsi",
   "michelob ultra",
   "michelob",
-  "white claw",
   "dr pepper",
   "lays",
   "doritos",
@@ -17682,7 +17709,6 @@ const CURATED_COMMON_FOODS: CuratedCommonFood[] = [
   { name: "Fairlife 2% Ultra-Filtered Milk", brand: "Fairlife", aliases: ["fairlife milk", "fair life", "ultra filtered milk"], servingUnit: "1 cup", servingMl: 240, nutrition: { calories: 120, proteinG: 13, carbsG: 6, fatG: 4.5, sugarG: 6, sodiumMg: 120 } },
   { name: "Fairlife Fat Free Ultra-Filtered Milk", brand: "Fairlife", aliases: ["fairlife fat free", "fairlife skim", "fairlife milk"], servingUnit: "1 cup", servingMl: 240, nutrition: { calories: 80, proteinG: 13, carbsG: 6, fatG: 0, sugarG: 6, sodiumMg: 120 } },
   { name: "Michelob Ultra Organic Seltzer Signature Collection", brand: "Michelob Ultra", aliases: ["michelob ultra seltzer", "michelob seltzer", "ultra organic seltzer", "michelob ultra hard seltzer", "signature collection hard seltzer"], barcodes: ["018200202636", "0018200202636"], servingUnit: "can", servingMl: 355, nutrition: { calories: 80, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, alcoholG: 11.2, sodiumMg: 5 } },
-  { name: "White Claw Surge Hard Seltzer, 12 oz", brand: "White Claw", aliases: ["white claw surge", "white claw surge seltzer", "white claw hard seltzer surge", "surge hard seltzer", "surge seltzer"], servingUnit: "can", servingMl: 355, nutrition: { calories: 160, proteinG: 0, carbsG: 2, fatG: 0, fiberG: 0, sugarG: 2, alcoholG: 22.4, sodiumMg: 30 } },
   { name: "Quest Tortilla Style Protein Chips, Nacho Cheese", brand: "Quest", aliases: ["quest protein chips", "quest chips", "protein chips", "protein doritos", "doritos protein chips", "nacho protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 18, carbsG: 5, fatG: 5, fiberG: 1, sodiumMg: 340 } },
   { name: "Quest Tortilla Style Protein Chips, Loaded Taco", brand: "Quest", aliases: ["quest protein chips taco", "quest chips taco", "protein chips taco", "protein doritos", "doritos protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 19, carbsG: 5, fatG: 4.5, fiberG: 1, sodiumMg: 340 } },
   { name: "Quest Tortilla Style Protein Chips, Chili Lime", brand: "Quest", aliases: ["quest protein chips chili lime", "quest chips chili lime", "protein chips chili lime", "protein doritos", "doritos protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 19, carbsG: 5, fatG: 4.5, fiberG: 1, sodiumMg: 330 } },
