@@ -8996,6 +8996,23 @@ test("daily note destinations follow Core Daily Notes without Health-owned overr
   }, "Obsidian Mobile's dot sentinel must resolve to the vault root");
   assert.ok(await plugin.getFoodLogDateContextForFile(new TFile("2026-08-15.md")), "a root Daily Note must remain recognized with the mobile dot sentinel");
 
+  fake.files.set("2026/20260825.md", [
+    "---",
+    "kind: dailynote",
+    "scheduled: 2026-08-25 00:00:00",
+    "title: Tue, Aug 25 2026",
+    "---",
+    "",
+    "```tps-health-daily",
+    "```",
+  ].join("\n"));
+  const templaterDaily = await plugin.getFoodLogDateContextForFile(new TFile("2026/20260825.md"));
+  assert.equal(templaterDaily?.dateIso, "2026-08-25", "an explicitly typed Daily Note must retain its date when Templater or Navigator owns the path scheme");
+  fake.files.set("2026/Unrelated.md", "---\nkind: project\nscheduled: 2026-08-25 00:00:00\n---\n");
+  assert.equal(await plugin.getFoodLogDateContextForFile(new TFile("2026/Unrelated.md")), null, "scheduled notes without the Daily Note kind must remain excluded");
+  fake.files.set("2026/Invalid Daily.md", "---\nkind: dailynote\nscheduled: tomorrow\n---\n");
+  assert.equal(await plugin.getFoodLogDateContextForFile(new TFile("2026/Invalid Daily.md")), null, "Daily Note fallback recognition requires an exact ISO date property");
+
   corePlugin.instance.options = { format: "YYYY/MM/DD", folder: "Core Daily" };
   const created = await plugin.getOrCreateDailyNoteForDate("2026-08-15");
   assert.equal(created.path, "Core Daily/2026/08/15.md");

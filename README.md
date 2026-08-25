@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.23.2
+
+- Native Health dashboards now recognize explicitly typed Daily Notes (`kind: dailynote`) by an exact ISO `date` or `scheduled` property when Templater, Notebook Navigator, or another reviewed workflow owns a different file path scheme than Core Daily Notes.
+- Core Daily Notes path matching remains the first authority. The fallback is deliberately narrow: an unrelated scheduled note, an untyped date-shaped note, or a Daily Note without a valid ISO date remains excluded.
+- Date-scoped **Add food**, **Log activity**, and **Start workout** actions use the resolved frontmatter date, so a readable-title or year-folder Daily Note cannot silently fall back to today.
+- Existing notes, native records, settings, Legacy mode, and public APIs require no migration. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.23.1
 
 - Active Native-record workouts now use a persistent, directly editable set table. Reps, weight, unit, per-arm behavior, RPE, rest, and set type can be changed in place; confirmed edits keep the set's stable ID and recalculate workout totals atomically.

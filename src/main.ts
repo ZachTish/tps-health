@@ -6332,21 +6332,32 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedFolder = normalizePath(folder).replace(/^\/+|\/+$/g, "");
     const normalizedPath = normalizePath(file.path).replace(/^\/+/, "").replace(/\.md$/i, "");
     const folderPrefix = normalizedFolder ? `${normalizedFolder}/` : "";
-    if (folderPrefix && !normalizedPath.startsWith(folderPrefix)) {
+    const pathIsInFolder = !folderPrefix || normalizedPath.startsWith(folderPrefix);
+    const dateValue = pathIsInFolder ? (folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath) : "";
+    const parsed = window.moment(dateValue, format, true);
+    if (pathIsInFolder && parsed.isValid() && parsed.format(format) === dateValue) {
+      return {
+        hasDateContext: !!dateContext,
+        path: file.path,
+        reason: dateContext ? "matched" : "matched-but-missing-context",
+        format,
+        ...summarizeDateContext(dateContext),
+      };
+    }
+    const frontmatterDateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter);
+    if (frontmatterDateIso) {
+      return {
+        hasDateContext: !!dateContext,
+        path: file.path,
+        reason: dateContext ? "frontmatter-daily-note" : "frontmatter-daily-note-missing-context",
+        dateIso: frontmatterDateIso,
+        ...summarizeDateContext(dateContext),
+      };
+    }
+    if (!pathIsInFolder) {
       return { hasDateContext: false, path: file.path, reason: "folder-mismatch", expectedFolder: normalizedFolder, parent: file.parent?.path || "" };
     }
-    const dateValue = folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath;
-    const parsed = window.moment(dateValue, format, true);
-    if (!parsed.isValid() || parsed.format(format) !== dateValue) {
-      return { hasDateContext: false, path: file.path, reason: "date-format-mismatch", format, dateValue };
-    }
-    return {
-      hasDateContext: !!dateContext,
-      path: file.path,
-      reason: dateContext ? "matched" : "matched-but-missing-context",
-      format,
-      ...summarizeDateContext(dateContext),
-    };
+    return { hasDateContext: false, path: file.path, reason: "date-format-mismatch", format, dateValue };
   }
 
   private async getDailyNoteDateContext(file: TFile | null | undefined): Promise<FoodLogDateContext | null> {
@@ -6355,14 +6366,25 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedFolder = normalizePath(folder).replace(/^\/+|\/+$/g, "");
     const normalizedPath = normalizePath(file.path).replace(/^\/+/, "").replace(/\.md$/i, "");
     const folderPrefix = normalizedFolder ? `${normalizedFolder}/` : "";
-    if (folderPrefix && !normalizedPath.startsWith(folderPrefix)) return null;
-    const dateValue = folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath;
-    const parsed = window.moment(dateValue, format, true);
-    if (!parsed.isValid() || parsed.format(format) !== dateValue) return null;
+    if (!folderPrefix || normalizedPath.startsWith(folderPrefix)) {
+      const dateValue = folderPrefix ? normalizedPath.slice(folderPrefix.length) : normalizedPath;
+      const parsed = window.moment(dateValue, format, true);
+      if (parsed.isValid() && parsed.format(format) === dateValue) {
+        const today = window.moment();
+        return {
+          dateIso: parsed.format("YYYY-MM-DD"),
+          label: parsed.format(format),
+          isToday: parsed.isSame(today, "day"),
+        };
+      }
+    }
+    const dateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter);
+    if (!dateIso) return null;
+    const parsed = window.moment(dateIso, "YYYY-MM-DD", true);
     const today = window.moment();
     return {
-      dateIso: parsed.format("YYYY-MM-DD"),
-      label: parsed.format(format),
+      dateIso,
+      label: dateIso,
       isToday: parsed.isSame(today, "day"),
     };
   }
@@ -20002,6 +20024,20 @@ function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext:
 function normalizeCoreDailyNoteFolder(value: string): string {
   const normalized = normalizePath(value || "").replace(/^\/+|\/+$/g, "");
   return normalized === "." ? "" : normalized;
+}
+
+function dailyNoteDateIsoFromFrontmatter(frontmatter: Record<string, unknown> | null | undefined): string {
+  const kind = String(frontmatter?.kind || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (kind !== "dailynote") return "";
+  for (const key of ["date", "scheduled"] as const) {
+    const value = frontmatter?.[key];
+    if (typeof value !== "string") continue;
+    const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})(?:$|[T\s])/);
+    if (!match) continue;
+    const parsed = window.moment(match[1], "YYYY-MM-DD", true);
+    if (parsed.isValid() && parsed.format("YYYY-MM-DD") === match[1]) return match[1];
+  }
+  return "";
 }
 
 function foodLogNutritionForLine(line: string, plugin?: TPSHealthPlugin): Nutrition {
