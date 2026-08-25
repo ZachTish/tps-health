@@ -2580,7 +2580,7 @@ test("Open Food Facts exact-product 429 opens the shared circuit while cached su
   }
 });
 
-test("provider brand canonicalization is typo-tolerant for long brands, order-independent, and safe for ordinary food words", async () => {
+test("provider brand canonicalization is typo-tolerant, order-independent, and does not require a populated brand field", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
@@ -2616,13 +2616,66 @@ test("provider brand canonicalization is typo-tolerant for long brands, order-in
     assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:\"quest\"/);
 
     assert.equal((await plugin.searchOpenFoodFacts("kirklnad pretzel"))[0]?.name, "Peanut Butter Pretzel Nuggets");
-    assert.match(decodeURIComponent(requests[1].url), /q=brands:\"kirkland\"\+pretzel/);
+    assert.match(decodeURIComponent(requests[1].url), /q=kirkland\+pretzel/);
+    assert.doesNotMatch(decodeURIComponent(requests[1].url), /brands:/);
 
     assert.equal((await plugin.searchOpenFoodFacts("pretzel kirkland"))[0]?.name, "Peanut Butter Pretzel Nuggets");
     assert.equal(requests.length, 2, "the corrected typo and reordered exact brand should share one provider cache key");
 
     await plugin.searchOpenFoodFacts("breyers vanilla");
-    assert.match(decodeURIComponent(requests[2].url), /q=brands:\"breyers\"\+vanilla/);
+    assert.match(decodeURIComponent(requests[2].url), /q=breyers\+vanilla/);
+    assert.doesNotMatch(decodeURIComponent(requests[2].url), /brands:/);
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("White Claw Surge search combines a name-only brand with the provider generic name and has a reviewed fallback", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  const requests = [];
+  globalThis.__TPSHealthTestRequestUrl = async (options) => {
+    requests.push(options);
+    return {
+      status: 200,
+      headers: {},
+      json: {
+        hits: [{
+          code: "0635985800781",
+          product_name: "White Claw",
+          generic_name: "Surge Hard Seltzer",
+          brands: null,
+          categories: "Beverages, Alcoholic beverages, Hard seltzer",
+          nutriments: {
+            "energy-kcal_100g": 45.1,
+            proteins_100g: 0,
+            carbohydrates_100g: 0.56,
+            fat_100g: 0,
+          },
+        }],
+      },
+    };
+  };
+  try {
+    const online = await plugin.searchOpenFoodFacts("white claw surge");
+    assert.equal(online[0]?.name, "White Claw Surge Hard Seltzer");
+    assert.equal(online[0]?.brand, "White Claw");
+    assert.ok(online[0]?.aliases?.some((alias) => /surge hard seltzer/i.test(alias)));
+    assert.match(decodeURIComponent(requests[0].url), /q=white\+claw\+surge/);
+    assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:/);
+
+    const reordered = await plugin.searchOpenFoodFacts("surge white claw");
+    assert.equal(reordered[0]?.id, online[0]?.id);
+    assert.equal(requests.length, 1, "reordered brand and product tokens should share the provider cache key");
+
+    const local = await plugin.searchLocalFoods("surge white claw seltzer");
+    const fallback = local.find((item) => item.name === "White Claw Surge Hard Seltzer, 12 oz");
+    assert.equal(fallback?.brand, "White Claw");
+    assert.equal(fallback?.servingMl, 355);
+    assert.equal(fallback?.nutrition?.calories, 160);
+    assert.equal(fallback?.nutrition?.alcoholG, 22.4);
   } finally {
     delete globalThis.__TPSHealthTestRequestUrl;
   }
