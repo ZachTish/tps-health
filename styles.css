@@ -3592,6 +3592,41 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   font-weight: var(--font-semibold);
 }
 
+.tps-health-native-daily-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tps-health-native-daily-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--button-radius);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.tps-health-native-daily-action:hover {
+  background: var(--interactive-hover);
+}
+
+.tps-health-native-daily-action svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+
 .tps-health-native-daily-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
@@ -3647,5 +3682,11 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
   .tps-health-native-daily-metrics {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .tps-health-native-daily-action {
+    min-height: 44px;
   }
 }

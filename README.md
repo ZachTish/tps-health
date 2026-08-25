@@ -1,12 +1,26 @@
 # TPS Health
 
-## 0.19.2
+## 0.20.2
 
 - Removes the White Claw Surge curated product introduced in 0.19.1. Search correctness no longer depends on a product-specific fallback or on adding the product's brand to the known-brand list.
 - Open Food Facts results now reconstruct a useful display identity when a multi-word query spans the provider's separate `product_name` and `generic_name` fields. This is query-aware and works for brands the plugin has never seen, while avoiding an invented brand value when the provider omitted one.
 - Branded alcohol products with alcohol nutrition but zero protein, carbohydrate, and fat now survive provider filtering. Multi-word relevance and final ranking still require every query token across the provider's identity fields, with existing fuzzy matching applied after retrieval.
 - This is a backward-compatible search reliability patch with no settings, storage, or API migration. Minimum supported Obsidian remains 1.12.0. The final generalized regression uses a fictional unknown brand and explicitly verifies that no curated result exists.
 - Validation: the final versioned suite passed 203 checks (202 passed and one credential-gated live USDA check skipped). TypeScript, the mandatory separate production build, test-vault deployment, and exact source/runtime artifact comparison passed; the existing Hot Reload marker provides the test-vault reload path. Production was not accessed.
+
+## 0.20.1
+
+- Native food, activity, and workout records now derive their `date` property from the user's local calendar day instead of slicing the UTC timestamp. An evening log no longer falls into tomorrow's Daily Note merely because its UTC timestamp crossed midnight.
+- A date explicitly selected through a Daily Health section remains authoritative, and date-only values are preserved without timezone parsing. UTC `createdDate`, `completedDate`, `startedAt`, and `endedAt` timestamps remain unchanged for ordering and synchronization.
+- This is a backward-compatible data-routing fix. Existing schemas, settings, legacy storage, public APIs, and minimum Obsidian 1.12.0 compatibility remain unchanged.
+
+## 0.20.0
+
+- The native-record Daily Note card is now an active date-scoped Health section instead of a passive nutrition report. **Add food**, **Log activity**, and **Start workout** open Health's full existing workflows for the date resolved from the containing Daily Note.
+- Logging from a past or future Daily Note preserves that exact date context through the reviewed modal and normal native-record write path; it does not silently fall back to today or introduce a second record writer.
+- The three actions wrap cleanly in narrow panes and use 44 px touch targets on coarse-pointer devices. The summary, goal progress, empty state, incremental refresh, and core `Daily Health.base` table remain unchanged.
+- This establishes the POC sectional mini-app contract: domain plugins own compact create/summary cards while ordinary typed records and core Bases remain authoritative for storage, filtering, sorting, and individual rows. Calendar, Time Tracking, and Finances sections are documented as separate future plugin slices rather than being coupled into Health.
+- Existing Daily Notes, settings, record schemas, legacy storage behavior, and public APIs remain backward compatible. Minimum supported Obsidian remains 1.12.0.
 
 ## 0.19.1
 

@@ -132,6 +132,54 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.equal(activity.frontmatter.date, '2026-08-24');
 });
 
+test('native record dates follow the local calendar day instead of the UTC day', async (t) => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = 'America/Chicago';
+  t.after(() => {
+    if (previousTimezone == null) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  });
+
+  const { service } = createHarness();
+  const food = await service.createFoodEntry({
+    id: 'food-evening',
+    createdDate: '2026-08-25T00:33:03.127Z',
+    completedDate: '2026-08-25T00:32:00.000Z',
+    item: { id: 'seltzer', name: 'Hard Seltzer', source: 'manual', nutrition: { calories: 61.4 } },
+    quantity: 1,
+    unit: 'serving',
+  });
+  assert.equal(food.frontmatter.date, '2026-08-24', '7:32 PM Central remains on the Aug 24 Daily Note');
+
+  const dateOnlyFood = await service.createFoodEntry({
+    id: 'food-date-only',
+    createdDate: '2026-08-24',
+    completedDate: '2026-08-24',
+    item: { id: 'apple', name: 'Apple', source: 'manual', nutrition: { calories: 95 } },
+    quantity: 1,
+    unit: 'serving',
+  });
+  assert.equal(dateOnlyFood.frontmatter.date, '2026-08-24', 'date-only input is never shifted by timezone parsing');
+
+  const activity = await service.createActivityEntry({
+    id: 'activity-evening',
+    activity: 'Walk',
+    activityType: 'walking',
+    startedAt: '2026-08-25T00:02:00.000Z',
+    completedDate: '2026-08-25T00:32:00.000Z',
+    durationMinutes: 30,
+    source: 'manual',
+  });
+  assert.equal(activity.frontmatter.date, '2026-08-24');
+
+  const workout = await service.createWorkoutSession({
+    title: 'Evening workout',
+    startedAt: '2026-08-25T00:32:00.000Z',
+    workoutDate: '2026-08-24',
+  }, 'workout-evening');
+  assert.equal(workout.frontmatter.date, '2026-08-24', 'an explicit Daily Note workout date wins');
+});
+
 test('native workout session stores one exercise record with an atomic set list and aggregates', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-1');

@@ -1,5 +1,6 @@
 import { TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
+import { isoDateKey } from './format';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
 export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 1;
@@ -63,9 +64,7 @@ const numberValue = (value: unknown): number => {
 
 const dateKey = (value: unknown): string => {
   const raw = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(raw)) return raw;
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : '';
+  return raw ? isoDateKey(raw) : '';
 };
 
 /** Incremental frontmatter index plus the narrow GCM native-record bridge. */
@@ -178,7 +177,7 @@ export class HealthNativeRecordService {
       ...properties,
       status: 'active',
       workoutId: recordId,
-      date: dateKey(startedAt),
+      date: dateKey(properties.workoutDate || startedAt),
       exerciseRecordIds: [],
       setCount: 0,
       tags: ['health', 'workout'],

@@ -9,8 +9,12 @@ export function isoNow(): string {
 }
 
 export function isoDateKey(value: string): string {
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : value.slice(0, 10);
+  const raw = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) return raw.slice(0, 10);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
 }
 
 export function formatNutrition(nutrition?: Nutrition): string {
