@@ -7026,12 +7026,16 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(stylesSource, /\.tps-health-workout-exercise-add[\s\S]*width: 100%/);
   assert.match(mainSource, /scheduleWorkoutActionBars\(\)/);
   assert.match(mainSource, /ensureWorkoutActionBar\(view: MarkdownView \| null, file: TFile, source: "view" \| "active-workout" \| "active-view" = "view"\)/);
+  assert.match(mainSource, /const target = mobileFloating \? document\.body : host!/);
+  assert.doesNotMatch(mainSource, /host!\.querySelector<HTMLElement>\("\.markdown-source-view, \.markdown-preview-view, \.markdown-rendered"\)/);
   assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "refresh:scheduled"/);
   assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "refresh:done"/);
   assert.match(mainSource, /logger\.flowError\("WorkoutActionBar", "refresh:failed"/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutActionBar", "render:no-host"/);
   assert.match(mainSource, /logger\.flow\("WorkoutActionBar", "render:done"/);
   assert.match(mainSource, /new WorkoutExercisePickerModal\(this\.app, this, file\.path, activeForFile \? this\.settings\.activeWorkoutId : ""\)\.open\(\)/);
+  assert.match(mainSource, /constructor\(app: App, private plugin: TPSHealthPlugin, private initialExercise = ""\)/);
+  assert.match(mainSource, /setPlaceholder\("Bench press, run, plank\.\.\."\)\.setValue\(exercise\)/);
   assert.match(mainSource, /async logSetToWorkoutFile\(filePath: string, set: LogSetInput\): Promise<WorkoutSet>/);
   assert.match(mainSource, /logger\.flowWarn\("WorkoutSet", "log-file:missing-file"/);
   assert.match(mainSource, /logger\.flow\("WorkoutSet", "log-file:done"/);
@@ -7172,6 +7176,11 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(mainSource, /private resolveMobileWorkoutActionBarTarget\(\): \{ file: TFile; source: "active-view" \} \| null/);
   assert.match(mainSource, /private findActiveWorkoutFileFromState\(\): TFile \| null/);
   assert.match(mainSource, /logger\.flow\("Workout", "active-file:recovered"/);
+  assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:wrong-native-kind"/);
+  assert.match(mainSource, /isNativeWorkoutSessionFrontmatter\(fm, workoutId\)/);
+  assert.match(mainSource, /fm\.kind === "workout-session"/);
+  assert.match(mainSource, /getWorkoutProgress\(this\.settings\.activeWorkoutId\)/);
+  assert.match(mainSource, /applyWorkoutPlanToNativeSession\(record\.file, context\.plan\.sourcePath\)/);
   assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:missing"/);
   assert.doesNotMatch(mainSource, /return \{ file: active, source: "active-workout" \};/);
   assert.match(mainSource, /const view = this\.app\.workspace\.getActiveViewOfType\(MarkdownView\);/);
@@ -8378,6 +8387,10 @@ test("exercise picker search inspects only relevant files, cancels promptly, and
   const created = await plugin.createExercise({ name: "Normalized Folder Curl" });
   assert.equal(created.sourcePath, "_assets/exercise/Normalized Folder Curl.md");
   assert.doesNotMatch(created.sourcePath, /\/\//);
+  const createdContent = fake.files.get(created.sourcePath);
+  assert.equal(stripFrontmatter(createdContent).trim(), "", "an unconfigured exercise template must not invent body headings or placeholder content");
+  assert.deepEqual(parseFrontmatter(createdContent).tags, ["exercise"]);
+  assert.doesNotMatch(createdContent, /^## (?:Notes|Cues)$/mu);
 });
 
 test("exercise picker creation remains usable without waiting for the vault catalog", async () => {
@@ -8415,6 +8428,54 @@ test("exercise picker creation remains usable without waiting for the vault cata
   assert.equal(catalogScans, 0);
 });
 
+test("native active workout recovery selects only the session record", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-native-1",
+    activeWorkoutPath: "Records/Leg extension.md",
+    activeWorkoutTitle: "Strength",
+  };
+  plugin.nativeRecordService = { isEnabled: () => true, isWorkoutSession: () => false };
+  plugin.saveSettings = async () => {};
+  fake.files.set("Records/Leg extension.md", [
+    "---",
+    "kind: workout-exercise",
+    "workoutId: workout-native-1",
+    "title: Leg extension",
+    "---",
+  ].join("\n"));
+  fake.files.set("Workouts/Strength.md", [
+    "---",
+    "kind: workout-session",
+    "workoutId: workout-native-1",
+    "title: Strength",
+    "status: active",
+    "---",
+  ].join("\n"));
+
+  const recovered = plugin.activeWorkoutFile();
+  assert.equal(recovered?.path, "Workouts/Strength.md");
+  assert.equal(plugin.settings.activeWorkoutPath, "Workouts/Strength.md");
+
+  fake.files.set("Workouts/Strength duplicate.md", [
+    "---",
+    "kind: workout-session",
+    "workoutId: workout-native-1",
+    "title: Strength duplicate",
+    "status: active",
+    "---",
+  ].join("\n"));
+  plugin.settings.activeWorkoutPath = "Records/Leg extension.md";
+  const ambiguous = plugin.activeWorkoutFile();
+  assert.equal(ambiguous, null);
+  assert.equal(plugin.settings.activeWorkoutPath, "");
+});
+
 test("workout exercise picker performs no catalog work on open and cancels typed searches", () => {
   const pickerSource = mainSource.slice(
     mainSource.indexOf("class WorkoutExercisePickerModal extends Modal"),
@@ -8430,6 +8491,9 @@ test("workout exercise picker performs no catalog work on open and cancels typed
   assert.match(pickerSource, /error\.name === "AbortError"/);
   assert.match(pickerSource, /search:failed/);
   assert.match(pickerSource, /skipCatalogBuild: true/);
+  assert.match(pickerSource, /openNativeSetModal = this\.plugin\.nativeRecordService\?\.isEnabled\(\) === true/);
+  assert.match(pickerSource, /new SetModal\(this\.app, this\.plugin, exercise\)\.open\(\)/);
+  assert.match(pickerSource, /onClose\(\): void \{[\s\S]*this\.plugin\.scheduleWorkoutActionBars\(\)/);
   assert.match(pickerSource, /if \(!Platform\.isMobile && !Platform\.isMobileApp\)/);
   assert.doesNotMatch(pickerSource, /addEventListener\("pointerup"/);
   assert.match(stylesSource, /\.tps-health-workout-picker-actions[\s\S]*min-height: 36px/);

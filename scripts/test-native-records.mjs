@@ -189,7 +189,13 @@ test('native workout session stores one exercise record with an atomic set list 
   assert.equal(second.exercise.frontmatter.totalReps, 14);
   assert.equal(second.exercise.frontmatter.totalVolume, 1460);
   assert.equal(second.session.frontmatter.setCount, 2);
+  assert.equal(service.isWorkoutSession(session.path, 'workout-1'), true);
+  assert.equal(service.isWorkoutSession(second.exercise.path, 'workout-1'), false);
   assert.equal(service.getWorkoutExerciseNames('workout-1').length, 1);
+  assert.deepEqual(service.getWorkoutProgress('workout-1'), {
+    exerciseCount: 1,
+    setCount: 2,
+  });
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
 });

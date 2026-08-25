@@ -297,6 +297,29 @@ export class HealthNativeRecordService {
       .filter(Boolean);
   }
 
+  isWorkoutSession(path: string, workoutId = ''): boolean {
+    const record = this.recordsByPath.get(path);
+    if (!record || record.kind !== 'workout-session') return false;
+    const expectedId = workoutId.trim();
+    return !expectedId
+      || record.id === expectedId
+      || String(record.frontmatter.workoutId || '').trim() === expectedId;
+  }
+
+  getWorkoutProgress(workoutId: string): { exerciseCount: number; setCount: number } {
+    const exercises = this.getKindRecords('workout-exercise').filter((record) => (
+      record.frontmatter.archived !== true
+      && String(record.frontmatter.workoutId || '') === workoutId
+    ));
+    return {
+      exerciseCount: exercises.length,
+      setCount: exercises.reduce(
+        (sum, record) => sum + Math.max(0, numberValue(record.frontmatter.setCount)),
+        0,
+      ),
+    };
+  }
+
   getDailyFoodTotals(dateIso: string): Required<Nutrition> & { entryCount: number } {
     const records = this.getKindRecords('food-entry').filter((record) => (
       record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso

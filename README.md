@@ -1,5 +1,15 @@
 # TPS Health
 
+## 0.20.4
+
+- Native workout recovery now accepts only the matching `kind: workout-session` record. A `workout-exercise` record with the same `workoutId` can no longer become the active session after a stale path or reload.
+- Native workout-session notes now receive the same persistent mobile/desktop workout controls as legacy sessions. Their progress summary reads Health's incremental native-record index (`sets` and exercises) rather than scanning an intentionally empty Markdown body.
+- Starting from a saved workout plan preloads its exercises as linked native `workout-exercise` records. A plan preload failure leaves the newly started session usable and reports the failure instead of orphaning the workout.
+- Creating an exercise without a configured exercise template now writes only its Properties. TPS Health no longer invents `#tps/exercise`, `## Notes`, `## Cues`, or a placeholder bullet in the body. A configured custom template remains opt-in and unchanged; existing exercise-note bodies are not rewritten.
+- Native exercise/workout records remain ordinary Markdown files and are not tied to an `_records` location. GCM's record path policy may place them anywhere; TPS Health resolves them by typed identity and stable IDs.
+- This is a backward-compatible reliability patch. No settings or stored-record migration is required, and minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite passed 207 checks (206 passed and one credential-gated live USDA check skipped). TypeScript, the mandatory separate production build, exact source/runtime comparison, and an end-to-end native-workout UI flow passed in the isolated test vault; production was not accessed.
+
 ## 0.20.3
 
 - Removes the White Claw Surge curated product introduced in 0.19.1. Search correctness no longer depends on a product-specific fallback or on adding the product's brand to the known-brand list.

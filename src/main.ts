@@ -838,6 +838,9 @@ export default class TPSHealthPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.scheduleFoodLogNutritionRepair("layout-ready", 500);
       void (async () => {
+        if (this.nativeRecordService?.isEnabled() && this.getActiveWorkoutState()) {
+          this.activeWorkoutFile();
+        }
         await this.repairActiveDailyWorkoutBlock();
         await this.ensureGcmWorkoutTimer();
       })().catch((error) => {
@@ -1963,6 +1966,17 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
     await this.saveSettings();
+    if (context.plan?.sourcePath) {
+      try {
+        await this.applyWorkoutPlanToNativeSession(record.file, context.plan.sourcePath);
+      } catch (error) {
+        logger.flowError("WorkoutPlan", "apply-native:failed", error, {
+          sessionPath: record.path,
+          planPath: context.plan.sourcePath,
+        });
+        new Notice("Started workout, but its saved exercise plan could not be preloaded.");
+      }
+    }
     await this.ensureGcmWorkoutTimer();
     if (context.input.openFile !== false) await this.openWorkoutFile(record.file);
     logger.flow("Workout", "start:done", {
@@ -2216,7 +2230,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (!(sessionFile instanceof TFile)) throw new Error("Active native workout session was not found.");
       const savedExercise = await this.findOrCreateExercise({ name: exerciseName }, options);
       await this.nativeRecordService.ensureWorkoutExercise(sessionFile, savedExercise.name, savedExercise.sourcePath);
-      new SetModal(this.app, this).open();
+      this.scheduleWorkoutActionBars();
       return;
     }
     if (active?.target === "daily-note") {
@@ -2920,7 +2934,18 @@ export default class TPSHealthPlugin extends Plugin {
   private activeWorkoutFile(): TFile | null {
     const path = this.settings.activeWorkoutPath;
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (file instanceof TFile) return file;
+    if (file instanceof TFile) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+      const isExpectedNativeSession = !this.nativeRecordService?.isEnabled()
+        || isNativeWorkoutSessionFrontmatter(fm, this.settings.activeWorkoutId)
+        || this.nativeRecordService.isWorkoutSession(file.path, this.settings.activeWorkoutId);
+      if (isExpectedNativeSession) return file;
+      logger.flowWarn("Workout", "active-file:wrong-native-kind", {
+        path: file.path,
+        kind: typeof fm.kind === "string" ? fm.kind : "",
+        workoutId: this.settings.activeWorkoutId || "",
+      });
+    }
     if (!this.getActiveWorkoutState()) return null;
     const recovered = this.findActiveWorkoutFileFromState();
     if (recovered) {
@@ -2939,6 +2964,13 @@ export default class TPSHealthPlugin extends Plugin {
       workoutId: this.settings.activeWorkoutId || "",
       title: this.settings.activeWorkoutTitle || "",
     });
+    if (this.nativeRecordService?.isEnabled() && path) {
+      // Keep the retained workout identity available for a later metadata
+      // recovery, but never leave a wrong-kind record eligible for native
+      // workout controls or time tracking.
+      this.settings.activeWorkoutPath = "";
+      void this.saveSettings();
+    }
     return null;
   }
 
@@ -2947,9 +2979,20 @@ export default class TPSHealthPlugin extends Plugin {
     const title = (this.settings.activeWorkoutTitle || "").trim();
     const candidates = this.app.vault.getMarkdownFiles();
     if (workoutId) {
-      for (const file of candidates) {
+      const matches = candidates.filter((file) => {
         const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-        if (typeof fm.workoutId === "string" && fm.workoutId === workoutId) return file;
+        return this.nativeRecordService?.isEnabled()
+          ? isNativeWorkoutSessionFrontmatter(fm, workoutId)
+            || this.nativeRecordService.isWorkoutSession(file.path, workoutId)
+          : typeof fm.workoutId === "string" && fm.workoutId === workoutId;
+      });
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        logger.flowWarn("Workout", "active-file:ambiguous", {
+          workoutId,
+          matches: matches.length,
+        });
+        return null;
       }
     }
     if (title) {
@@ -3089,6 +3132,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.lastSetEndedAt = endedAt;
     this.settings.activeWorkoutSetCount = Number(result.session.frontmatter.setCount) || (this.settings.activeWorkoutSetCount + 1);
     await this.saveSettings();
+    this.scheduleWorkoutActionBars();
     logger.flow("WorkoutSet", "log:done", {
       setId: savedSet.id,
       exercise: savedSet.exercise,
@@ -6181,7 +6225,6 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async isWorkoutFile(file: TFile): Promise<boolean> {
-    if (file.path === this.settings.activeWorkoutPath) return true;
     return isWorkoutLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file));
   }
 
@@ -6345,7 +6388,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async ensureGcmWorkoutTimerOnce(): Promise<void> {
     const active = this.getActiveWorkoutState();
-    const timerPath = this.nativeRecordService?.isEnabled() ? active?.path : active?.dailyNotePath;
+    const nativeSession = this.nativeRecordService?.isEnabled() ? this.activeWorkoutFile() : null;
+    const timerPath = this.nativeRecordService?.isEnabled() ? nativeSession?.path : active?.dailyNotePath;
     const dailyFile = timerPath ? this.app.vault.getAbstractFileByPath(timerPath) : null;
     const timeTracking = this.getGcmApi()?.timeTracking;
     if (!active || !(dailyFile instanceof TFile) || typeof timeTracking?.startTimer !== "function" || typeof timeTracking?.getActiveTimersForFile !== "function") return;
@@ -6426,7 +6470,7 @@ export default class TPSHealthPlugin extends Plugin {
     window.setTimeout(() => this.updateGcmFoodLogButtonVisibility(), 50);
   }
 
-  private scheduleWorkoutActionBars(): void {
+  scheduleWorkoutActionBars(): void {
     const replacedPending = this.workoutActionBarRefreshTimer != null;
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
     logger.flow("WorkoutActionBar", "refresh:scheduled", { replacedPending });
@@ -6558,9 +6602,11 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("WorkoutActionBar", "render:no-host", { path: file.path, source });
       return null;
     }
-    const target = mobileFloating
-      ? document.body
-      : host!.querySelector<HTMLElement>(".markdown-source-view, .markdown-preview-view, .markdown-rendered") || host!;
+    // Markdown source/preview roots are replaced during mode switches and
+    // metadata rerenders. Mount desktop controls on the stable MarkdownView
+    // content root so Obsidian cannot discard them while the workout remains
+    // open; mobile continues to use its body-level floating host.
+    const target = mobileFloating ? document.body : host!;
     let bar = mobileFloating
       ? document.body.querySelector<HTMLElement>(":scope > .tps-health-workout-action-bar--mobile-floating")
       : target.querySelector<HTMLElement>(":scope > .tps-health-workout-action-bar");
@@ -6581,8 +6627,15 @@ export default class TPSHealthPlugin extends Plugin {
     } else {
       bar.removeAttribute("data-tps-hover-element");
     }
-    const activeForFile = this.settings.activeWorkoutPath === file.path;
-    const renderKey = `${file.path}|${mobileFloating ? "mobile" : "inline"}|${activeForFile ? "active" : "inactive"}|${source}|${this.settings.activeWorkoutSetCount || 0}`;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    const activeForFile = this.settings.activeWorkoutPath === file.path
+      && (!this.nativeRecordService?.isEnabled()
+        || isNativeWorkoutSessionFrontmatter(frontmatter, this.settings.activeWorkoutId)
+        || this.nativeRecordService.isWorkoutSession(file.path, this.settings.activeWorkoutId));
+    const nativeProgress = this.nativeRecordService?.isEnabled()
+      ? this.nativeRecordService.getWorkoutProgress(this.settings.activeWorkoutId)
+      : null;
+    const renderKey = `${file.path}|${mobileFloating ? "mobile" : "inline"}|${activeForFile ? "active" : "inactive"}|${source}|${this.settings.activeWorkoutSetCount || 0}|${nativeProgress?.exerciseCount || 0}|${nativeProgress?.setCount || 0}`;
     if (bar.dataset.renderKey === renderKey) return bar;
     bar.dataset.path = file.path;
     bar.dataset.renderKey = renderKey;
@@ -6603,23 +6656,30 @@ export default class TPSHealthPlugin extends Plugin {
       });
     }
     const summary = label.createSpan({ cls: "tps-health-workout-action-summary", text: "Workout • 0/0" });
-    const startedAt = String(this.app.metadataCache.getFileCache(file)?.frontmatter?.startedAt || "");
+    const startedAt = String(frontmatter.startedAt || "");
     const updateSummary = (performed = 0, total = 0) => {
       const started = Date.parse(startedAt);
       const elapsed = Number.isFinite(started) ? formatRestDuration(Math.max(0, Math.floor((Date.now() - started) / 1000))) : "--:--";
-      summary.setText(`${elapsed} • ${performed}/${total}`);
+      summary.setText(this.nativeRecordService?.isEnabled()
+        ? `${elapsed} • ${performed} sets • ${total} exercises`
+        : `${elapsed} • ${performed}/${total}`);
     };
-    updateSummary();
-    void this.app.vault.cachedRead(file).then((content) => {
-      const setLines = content.split("\n").filter((line) => isWorkoutSetLine(line));
-      updateSummary(setLines.filter((line) => isPerformedWorkoutSetLine(line)).length, setLines.length);
-    });
-    const timer = window.setInterval(() => {
-      if (!bar?.isConnected) window.clearInterval(timer);
-      else void this.app.vault.cachedRead(file).then((content) => {
+    const refreshSummary = () => {
+      if (this.nativeRecordService?.isEnabled()) {
+        const progress = this.nativeRecordService.getWorkoutProgress(this.settings.activeWorkoutId);
+        updateSummary(progress.setCount, progress.exerciseCount);
+        return Promise.resolve();
+      }
+      return this.app.vault.cachedRead(file).then((content) => {
         const setLines = content.split("\n").filter((line) => isWorkoutSetLine(line));
         updateSummary(setLines.filter((line) => isPerformedWorkoutSetLine(line)).length, setLines.length);
       });
+    };
+    updateSummary();
+    void refreshSummary();
+    const timer = window.setInterval(() => {
+      if (!bar?.isConnected) window.clearInterval(timer);
+      else void refreshSummary();
     }, 30000);
     bar.dataset.summaryTimer = String(timer);
     const actions = bar.createDiv({ cls: "tps-health-workout-action-buttons" });
@@ -7139,6 +7199,31 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("WorkoutPlan", "apply:done", { sessionPath, planPath, exercises: exercises.length, storage: "bullet" });
   }
 
+  private async applyWorkoutPlanToNativeSession(sessionFile: TFile, planPath: string): Promise<void> {
+    logger.flow("WorkoutPlan", "apply-native:start", { sessionPath: sessionFile.path, planPath });
+    const planFile = this.app.vault.getAbstractFileByPath(planPath);
+    if (!(planFile instanceof TFile)) {
+      logger.flowWarn("WorkoutPlan", "apply-native:missing-plan", { sessionPath: sessionFile.path, planPath });
+      return;
+    }
+    const exercises = this.extractWorkoutExerciseListFromPlan(await this.app.vault.read(planFile));
+    if (!exercises.length) {
+      logger.flowWarn("WorkoutPlan", "apply-native:no-exercises", { sessionPath: sessionFile.path, planPath });
+      return;
+    }
+    let added = 0;
+    for (const exerciseName of exercises) {
+      const exercise = await this.findOrCreateExercise({ name: wikilinkLabel(exerciseName) }, { skipCatalogBuild: true });
+      await this.nativeRecordService.ensureWorkoutExercise(sessionFile, exercise.name, exercise.sourcePath);
+      added++;
+    }
+    logger.flow("WorkoutPlan", "apply-native:done", {
+      sessionPath: sessionFile.path,
+      planPath,
+      exercises: added,
+    });
+  }
+
   private workoutPlanFromFrontmatter(file: TFile, fm: any): WorkoutPlanItem {
     return {
 	      id: file.path,
@@ -7261,6 +7346,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private defaultExerciseTemplate(input: CreateExerciseInput): string {
+    const configuredTag = normalizeHealthTag(this.settings.exerciseTag);
     return [
       "---",
       "kind: exercise",
@@ -7272,15 +7358,10 @@ export default class TPSHealthPlugin extends Plugin {
       `defaultRestSeconds: ${input.defaultRestSeconds || this.settings.defaultRestSeconds}`,
       input.defaultSetType ? `defaultSetType: ${input.defaultSetType}` : "defaultSetType: normal",
       input.recommendedRestDays != null ? `recommendedRestDays: ${input.recommendedRestDays}` : "",
+      configuredTag ? "tags:" : "tags: []",
+      configuredTag ? `  - "${escapeYamlString(configuredTag)}"` : "",
+      input.notes ? `notes: "${escapeYamlString(input.notes)}"` : "",
       "---",
-      "",
-      this.settings.exerciseTag,
-      "",
-      "## Notes",
-      input.notes || "",
-      "",
-      "## Cues",
-      "- ",
     ].filter((line) => line !== "").join("\n");
   }
 
@@ -14097,7 +14178,7 @@ class StartWorkoutModal extends Modal {
 
 class SetModal extends Modal {
 
-  constructor(app: App, private plugin: TPSHealthPlugin) {
+  constructor(app: App, private plugin: TPSHealthPlugin, private initialExercise = "") {
     super(app);
   }
 
@@ -14138,7 +14219,7 @@ class SetModal extends Modal {
         : `${active.title || "Active workout"} • no sets logged yet`,
       cls: "tps-health-status",
     });
-    let exercise = "";
+    let exercise = this.initialExercise.trim();
     let reps: number | undefined;
     let weight: number | undefined;
     let weightUnit = "lb";
@@ -14159,7 +14240,7 @@ class SetModal extends Modal {
     new Setting(this.contentEl).setName("Exercise").addText((text) => {
       exerciseInput = text.inputEl;
       text.inputEl.setAttr("list", exerciseList.id);
-      text.setPlaceholder("Bench press, run, plank...").onChange((value) => exercise = value.trim());
+      text.setPlaceholder("Bench press, run, plank...").setValue(exercise).onChange((value) => exercise = value.trim());
       text.inputEl.addEventListener("input", () => void renderExercisePicker(text.inputEl.value || ""));
     });
     const exercisePicker = this.contentEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
@@ -14220,7 +14301,7 @@ class SetModal extends Modal {
         create.addEventListener("click", () => pickExercise(query.trim()));
       }
     };
-    void renderExercisePicker();
+    void renderExercisePicker(exercise);
     new Setting(this.contentEl).setName("Reps").addText((text) => {
       repsInput = text.inputEl;
       text.inputEl.setAttr("inputmode", "decimal");
@@ -14314,11 +14395,12 @@ class SetModal extends Modal {
         await this.plugin.finishWorkout();
       this.close();
       }));
-    window.setTimeout(() => exerciseInput?.focus(), 0);
+    window.setTimeout(() => (exercise ? repsInput : exerciseInput)?.focus(), 0);
   }
 
   onClose(): void {
     this.contentEl.empty();
+    this.plugin.scheduleWorkoutActionBars();
   }
 }
 
@@ -14356,11 +14438,13 @@ class WorkoutExercisePickerModal extends Modal {
       results.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = true);
       status.setText("Adding…");
       let exercise = String(name || "").trim();
+      let openNativeSetModal = false;
       try {
         if (!exercise) throw new Error("Exercise name was empty.");
         logger.flow("WorkoutExercisePicker", "choose:start", { path: this.filePath, exercise });
         if (this.workoutId) {
           await this.plugin.addSetForExerciseToActiveWorkout(exercise, undefined, { skipCatalogBuild: true });
+          openNativeSetModal = this.plugin.nativeRecordService?.isEnabled() === true;
         } else if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
           await this.plugin.logSet({ exercise, createExerciseNote: true });
         } else {
@@ -14372,7 +14456,9 @@ class WorkoutExercisePickerModal extends Modal {
         status.setText(`Added ${exercise}`);
         logger.flow("WorkoutExercisePicker", "choose:done", { path: this.filePath, exercise });
         this.close();
-        if (!this.workoutId && this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
+        if (openNativeSetModal) {
+          window.setTimeout(() => new SetModal(this.app, this.plugin, exercise).open(), 0);
+        } else if (!this.workoutId && this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
           window.setTimeout(() => void this.plugin.focusLatestWorkoutSetAfterPicker(this.filePath), 0);
         }
       } catch (error) {
@@ -14469,6 +14555,7 @@ class WorkoutExercisePickerModal extends Modal {
     this.searchAbort?.abort();
     this.searchAbort = null;
     this.contentEl.empty();
+    this.plugin.scheduleWorkoutActionBars();
   }
 }
 
@@ -16390,10 +16477,17 @@ function isWorkoutLikeMarkdownPath(plugin: TPSHealthPlugin, path: string | null 
 }
 
 function isWorkoutLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?: any): boolean {
-  if (file.path === plugin.settings.activeWorkoutPath) return true;
   const resolvedCache = cache || plugin.app.metadataCache.getFileCache(file);
   const fm = resolvedCache?.frontmatter || {};
+  if (file.path === plugin.settings.activeWorkoutPath) {
+    if (plugin.settings.storageMode !== "native-records") return true;
+    if (
+      isNativeWorkoutSessionFrontmatter(fm, plugin.settings.activeWorkoutId)
+      || plugin.nativeRecordService?.isWorkoutSession(file.path, plugin.settings.activeWorkoutId)
+    ) return true;
+  }
   const explicitWorkoutMetadata = fm.kind === "workout" ||
+    fm.kind === "workout-session" ||
     fm.tpsType === "health-workout" ||
     hasCssClass(fm.cssclasses, "tps-health-workout");
   if (explicitWorkoutMetadata) return true;
@@ -16402,6 +16496,12 @@ function isWorkoutLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?:
     folder: fileIsInConfiguredFolder(file.path, plugin.settings.workoutsFolder),
     tag: hasConfiguredTag(resolvedCache, plugin.settings.workoutTag),
   });
+}
+
+function isNativeWorkoutSessionFrontmatter(frontmatter: any, workoutId = ""): boolean {
+  if (frontmatter?.kind !== "workout-session") return false;
+  const expectedId = String(workoutId || "").trim();
+  return !expectedId || String(frontmatter?.workoutId || "").trim() === expectedId;
 }
 
 function healthEntityMatches(mode: HealthEntityIdentificationMode, signals: { metadata: boolean; folder: boolean; tag: boolean }): boolean {
