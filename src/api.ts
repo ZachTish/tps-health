@@ -158,10 +158,11 @@ export interface HealthMetricRenderConfig {
   color?: string;
 }
 
-export type HealthPropertyCatalogType = "text" | "number" | "datetime" | "selector" | "list";
+export type HealthPropertyCatalogType = "text" | "number" | "datetime" | "selector" | "list" | "checkbox";
 
 export interface HealthPropertyCatalogScope {
   mode: "any" | "all";
+  kinds?: string[];
   tags?: string[];
   paths?: string[];
   properties?: Array<{
@@ -178,14 +179,15 @@ export interface HealthPropertyCatalogEntry {
   type: HealthPropertyCatalogType;
   icon?: string;
   options?: string[];
-  listItemType?: "text";
+  listItemType?: "text" | "link" | "tag";
   scope: HealthPropertyCatalogScope;
 }
 
 export interface HealthPropertyCatalog {
-  version: 1;
+  version: 2;
   food: HealthPropertyCatalogEntry[];
   dailyRollups: HealthPropertyCatalogEntry[];
+  nativeRecords: HealthPropertyCatalogEntry[];
 }
 
 export interface TPSHealthApiSchema {

@@ -765,6 +765,20 @@ export default class TPSHealthPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "normalize-native-health-identities",
+      name: "Native records: Consolidate Health identities",
+      checkCallback: (checking) => {
+        if (!this.nativeRecordService?.isEnabled()) return false;
+        if (!checking) void this.traceCommand("normalize-native-health-identities", async () => {
+          const message = "Replace legacy foodId/workoutId/exerciseRecordIds fields with the record's tpsId and typed workout links? No record bodies or set IDs will be removed.";
+          if (typeof window.confirm === "function" && !window.confirm(message)) return;
+          const result = await this.nativeRecordService.normalizeNativeRecordIdentities();
+          new Notice(`Health identity cleanup: ${result.updated} of ${result.inspected} records updated; ${result.skipped} need manual relationship repair.`, 12000);
+        });
+        return true;
+      },
+    });
+    this.addCommand({
       id: "scan-food-barcode",
       name: "Scan food barcode",
       callback: () => this.traceCommand("scan-food-barcode", async () => {

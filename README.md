@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.22.0
+
+- Health's GCM property catalog advances to version 2 and now describes the fields Health actually writes for `food-entry`, `activity-entry`, `workout-session`, `workout-exercise`, reusable `exercise`, and `workout-plan` notes. GCM can render these in its stacked Properties surface without exposing them on unrelated kinds.
+- Shared physical keys use neutral labels when they span reusable Health kinds: for example, `name` is shown as **Name**, while the distinct `foodName` field remains **Food name** on food-entry records.
+- Native Health record schema version 2 uses the record's `tpsId` as its single note identity. New food entries omit `foodId`; workout sessions omit `workoutId` and `exerciseRecordIds`; workout-exercise records use one `workout` wikilink plus `exerciseOrder` rather than duplicating the parent ID and path.
+- **Native records: Consolidate Health identities** explicitly upgrades legacy native records. It creates durable workout links/order before removing redundant aliases, preserves conflicting records for manual repair, and is idempotent.
+- Stable set IDs remain because each set is a distinct row inside the workout-exercise record. `sourceId` also remains where it identifies an external provider object rather than the local Markdown record.
+- Legacy readers and copy-only import remain compatible. No record is rewritten automatically, and Legacy storage mode is unchanged. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.21.0
 
 - Native workout-session notes now include a durable, compact workout table in Live Preview and Reading View. Each exercise has one stable group with `Set`, `Reps`, `Weight`, `RPE`, `Rest`, and `Type` columns plus exercise/set/rep/volume totals.
@@ -456,6 +465,10 @@ In **Native Markdown records** mode, Health stores nutrition on the `food-entry`
 ````
 
 The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+
+Native Health record schema version 2 uses one `tpsId` for each Markdown record. Relationship fields are not alternate identities: a `workout-exercise` points to its owning session through `workout: "[[...]]"` and carries an authored `exerciseOrder`; its atomic `sets` list retains stable per-set IDs because those rows must remain independently editable. External `sourceId` values remain available for future provider deduplication. Existing schema-version-1 aliases remain readable until the user runs **Native records: Consolidate Health identities**; the command never rewrites record bodies and preserves conflicting joins for manual review.
+
+Health publishes a version-2 property catalog to GCM. Native record and reusable exercise/workout-plan fields declare their exact owning `kind`, while legacy food and Daily Note rollup fields retain the configured tag/folder/frontmatter scopes. GCM's explicit **Install TPS task and Health fields** action imports or refreshes this catalog; Health does not silently mutate GCM settings.
 
 ## Daily Note Lines
 

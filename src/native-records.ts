@@ -3,7 +3,7 @@ import type TPSHealthPlugin from './main';
 import { isoDateKey } from './format';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
-export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 1;
+export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 2;
 
 type NativeHealthKind = 'food-entry' | 'activity-entry' | 'workout-session' | 'workout-exercise';
 
@@ -83,12 +83,19 @@ export interface LegacyHealthImportResult extends LegacyHealthImportPlan {
   failed: number;
 }
 
+export interface NativeIdentityNormalizationResult {
+  inspected: number;
+  updated: number;
+  skipped: number;
+}
+
 interface LegacyHealthCandidate {
   id: string;
   kind: NativeHealthKind;
   properties: Record<string, unknown>;
   sourcePath: string;
   lineNumber: number;
+  workoutReferenceId?: string;
 }
 
 const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 'workout-session', 'workout-exercise']);
@@ -102,6 +109,13 @@ const dateKey = (value: unknown): string => {
   const raw = String(value || '').trim();
   return raw ? isoDateKey(raw) : '';
 };
+
+function wikilinkPath(value: unknown): string {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^\[\[([^\]|#^]+)(?:[|#^][^\]]*)?\]\]$/u);
+  const path = String(match?.[1] || raw).trim().replace(/\\/gu, '/');
+  return path && !/\.[^/]+$/u.test(path) ? `${path}.md` : path;
+}
 
 /** Incremental frontmatter index plus the narrow GCM native-record bridge. */
 export class HealthNativeRecordService {
@@ -157,8 +171,7 @@ export class HealthNativeRecordService {
       status: 'complete',
       completedDate: entry.completedDate || entry.createdDate,
       date: dateKey(entry.completedDate || entry.createdDate),
-      foodId: entry.id,
-      foodPath: entry.item.sourcePath,
+      foodPath: this.recordLink(entry.item.sourcePath),
       foodName: entry.item.name,
       brand: entry.item.brand,
       quantity: entry.quantity,
@@ -220,9 +233,7 @@ export class HealthNativeRecordService {
     const record = await this.requireApi().create('workout-session', {
       ...properties,
       status: 'active',
-      workoutId: recordId,
       date: dateKey(properties.workoutDate || startedAt),
-      exerciseRecordIds: [],
       setCount: 0,
       tags: ['health', 'workout'],
     }, {
@@ -255,12 +266,7 @@ export class HealthNativeRecordService {
     }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' });
     if (!updatedExercise) throw new Error('Workout exercise record changed before the set could be saved.');
     this.trackHandle(updatedExercise);
-    const exerciseRecordIds = Array.from(new Set([
-      ...(Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds.map(String) : []),
-      updatedExercise.id,
-    ]));
     const updatedSession = await api.update(session.file, {
-      exerciseRecordIds,
       setCount: numberValue(session.frontmatter.setCount) + 1,
       lastSetEndedAt: set.completedDate || set.endedAt,
     }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' });
@@ -283,12 +289,14 @@ export class HealthNativeRecordService {
     if (!name) throw new Error('Workout exercise name is required.');
     const existing = this.findWorkoutExercise(session.id, name);
     if (existing) return existing;
+    const exerciseOrder = this.getWorkoutExerciseRecords(session)
+      .reduce((maximum, record) => Math.max(maximum, numberValue(record.frontmatter.exerciseOrder)), 0) + 1;
     const created = await api.create('workout-exercise', {
       title: name,
-      workoutId: session.id,
-      workoutPath: session.path,
+      workout: this.recordLink(session.path),
       exercise: name,
-      exercisePath,
+      exercisePath: this.recordLink(exercisePath),
+      exerciseOrder,
       sets: [],
       setCount: 0,
       totalReps: 0,
@@ -296,14 +304,6 @@ export class HealthNativeRecordService {
       tags: ['health', 'workout-exercise'],
     }, { cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' } });
     this.trackHandle(created);
-    const exerciseRecordIds = Array.from(new Set([
-      ...(Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds.map(String) : []),
-      created.id,
-    ]));
-    const updatedSession = await api.update(session.file, { exerciseRecordIds }, {
-      kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise',
-    });
-    if (updatedSession) this.trackHandle(updatedSession);
     return created;
   }
 
@@ -327,16 +327,19 @@ export class HealthNativeRecordService {
 
   findWorkoutExercise(workoutId: string, exercise: string): NativeRecordHandle | null {
     const key = exercise.trim().toLocaleLowerCase();
+    const session = this.findWorkoutSession(workoutId);
+    if (!session) return null;
     const matches = this.getKindRecords('workout-exercise').filter((record) => (
-      String(record.frontmatter.workoutId || '') === workoutId
+      this.recordBelongsToWorkout(record, session)
       && String(record.frontmatter.exercise || record.frontmatter.title || '').trim().toLocaleLowerCase() === key
     ));
     return matches.length === 1 ? this.toHandle(matches[0]) : null;
   }
 
   getWorkoutExerciseNames(workoutId: string): string[] {
-    return this.getKindRecords('workout-exercise')
-      .filter((record) => String(record.frontmatter.workoutId || '') === workoutId)
+    const session = this.findWorkoutSession(workoutId);
+    if (!session) return [];
+    return this.getWorkoutExerciseRecords(session)
       .map((record) => String(record.frontmatter.exercise || record.frontmatter.title || '').trim())
       .filter(Boolean);
   }
@@ -372,18 +375,19 @@ export class HealthNativeRecordService {
     ));
     if (sessionMatches.length !== 1) return null;
     const session = sessionMatches[0];
-    const workoutId = String(session.frontmatter.workoutId || session.id).trim();
+    const workoutId = session.id;
     if (!workoutId) return null;
     const order = new Map(
       (Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds : [])
         .map((value, index) => [String(value || ''), index] as const)
         .filter(([id]) => Boolean(id)),
     );
-    const exerciseRecords = this.getKindRecords('workout-exercise')
-      .filter((record) => record.frontmatter.archived !== true && String(record.frontmatter.workoutId || '') === workoutId)
+    const exerciseRecords = this.getWorkoutExerciseRecords(session)
       .sort((left, right) => {
-        const leftOrder = order.get(left.id) ?? Number.MAX_SAFE_INTEGER;
-        const rightOrder = order.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+        const authoredLeft = numberValue(left.frontmatter.exerciseOrder);
+        const authoredRight = numberValue(right.frontmatter.exerciseOrder);
+        const leftOrder = authoredLeft > 0 ? authoredLeft : (order.get(left.id) ?? Number.MAX_SAFE_INTEGER);
+        const rightOrder = authoredRight > 0 ? authoredRight : (order.get(right.id) ?? Number.MAX_SAFE_INTEGER);
         return leftOrder - rightOrder || left.id.localeCompare(right.id) || left.file.path.localeCompare(right.file.path);
       });
     const exercises = exerciseRecords.map((record): NativeWorkoutExerciseSnapshot => {
@@ -409,7 +413,7 @@ export class HealthNativeRecordService {
         id: record.id,
         path: record.file.path,
         name: String(record.frontmatter.exercise || record.frontmatter.title || record.file.basename).trim() || record.file.basename,
-        exercisePath: String(record.frontmatter.exercisePath || ''),
+        exercisePath: wikilinkPath(record.frontmatter.exercisePath),
         totalReps: sets.reduce((sum, set) => sum + set.reps, 0),
         totalVolume: sets.reduce((sum, set) => sum + set.reps * set.weight * (set.perArm ? 2 : 1), 0),
         sets,
@@ -440,6 +444,78 @@ export class HealthNativeRecordService {
       for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += numberValue(record.frontmatter[key]);
     }
     return { entryCount: records.length, ...totals };
+  }
+
+  /**
+   * Explicitly remove legacy note-level identity aliases after first replacing
+   * workout child-ID joins with one durable wikilink relationship.
+   */
+  async normalizeNativeRecordIdentities(): Promise<NativeIdentityNormalizationResult> {
+    const api = this.requireApi();
+    const records = [...this.recordsByPath.values()]
+      .sort((left, right) => left.file.path.localeCompare(right.file.path));
+    let updated = 0;
+    let skipped = 0;
+    for (const record of records) {
+      const updates: Record<string, unknown> = {};
+      if (record.kind === 'food-entry') {
+        const legacyFoodId = String(record.frontmatter.foodId || '').trim();
+        if (legacyFoodId && legacyFoodId !== record.id) {
+          skipped += 1;
+          continue;
+        }
+        if (legacyFoodId === record.id) updates.foodId = null;
+        const foodLink = this.recordLink(record.frontmatter.foodPath);
+        if (foodLink && foodLink !== record.frontmatter.foodPath) updates.foodPath = foodLink;
+      } else if (record.kind === 'workout-session') {
+        const legacyWorkoutId = String(record.frontmatter.workoutId || '').trim();
+        if (legacyWorkoutId && legacyWorkoutId !== record.id) {
+          skipped += 1;
+          continue;
+        }
+        if (legacyWorkoutId === record.id) updates.workoutId = null;
+        if (Object.prototype.hasOwnProperty.call(record.frontmatter, 'exerciseRecordIds')) updates.exerciseRecordIds = null;
+        const planLink = this.recordLink(record.frontmatter.workoutPlanPath);
+        if (planLink && planLink !== record.frontmatter.workoutPlanPath) updates.workoutPlanPath = planLink;
+      } else if (record.kind === 'workout-exercise') {
+        const legacyReference = String(record.frontmatter.workoutId || record.frontmatter.workoutPath || '').trim();
+        const linkedPath = wikilinkPath(record.frontmatter.workout);
+        const session = linkedPath
+          ? this.findWorkoutSession(linkedPath)
+          : this.findWorkoutSession(legacyReference);
+        if (!session) {
+          if (legacyReference) skipped += 1;
+          continue;
+        }
+        const workoutLink = this.recordLink(session.file.path);
+        if (workoutLink !== record.frontmatter.workout) updates.workout = workoutLink;
+        if (Object.prototype.hasOwnProperty.call(record.frontmatter, 'workoutId')) updates.workoutId = null;
+        if (Object.prototype.hasOwnProperty.call(record.frontmatter, 'workoutPath')) updates.workoutPath = null;
+        const exerciseLink = this.recordLink(record.frontmatter.exercisePath);
+        if (exerciseLink && exerciseLink !== record.frontmatter.exercisePath) updates.exercisePath = exerciseLink;
+        if (numberValue(record.frontmatter.exerciseOrder) <= 0) {
+          const legacyIds = Array.isArray(session.frontmatter.exerciseRecordIds)
+            ? session.frontmatter.exerciseRecordIds.map(String)
+            : [];
+          const legacyIndex = legacyIds.indexOf(record.id);
+          const siblings = this.getWorkoutExerciseRecords(session)
+            .slice()
+            .sort((left, right) => left.file.path.localeCompare(right.file.path));
+          updates.exerciseOrder = legacyIndex >= 0
+            ? legacyIndex + 1
+            : Math.max(1, siblings.findIndex((candidate) => candidate.id === record.id) + 1);
+        }
+      }
+      if (Object.keys(updates).length === 0) continue;
+      const result = await api.update(record.file, updates, {
+        kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-identity-normalization',
+      });
+      if (result) {
+        this.trackHandle(result);
+        updated += 1;
+      } else skipped += 1;
+    }
+    return { inspected: records.length, updated, skipped };
   }
 
   /** Read-only migration inventory. Legacy source files are never changed. */
@@ -487,8 +563,19 @@ export class HealthNativeRecordService {
         continue;
       }
       try {
+        const properties = { ...candidate.properties };
+        if (candidate.kind === 'workout-exercise') {
+          const session = candidate.workoutReferenceId
+            ? this.findRecordById(candidate.workoutReferenceId) || await api.resolve(candidate.workoutReferenceId)
+            : null;
+          if (!session || session.kind !== 'workout-session') {
+            failed += 1;
+            continue;
+          }
+          properties.workout = this.recordLink(session.path);
+        }
         const record = await api.create(candidate.kind, {
-          ...candidate.properties,
+          ...properties,
           legacySourcePath: candidate.sourcePath,
           legacySourceLine: candidate.lineNumber,
           legacyImportedAt: new Date().toISOString(),
@@ -531,8 +618,7 @@ export class HealthNativeRecordService {
               status: 'complete',
               completedDate,
               date: legacyDateKey(completedDate, String(fields.dailyNotePath || file.path)),
-              foodId: id,
-              foodPath: fields.foodPath,
+              foodPath: this.recordLink(fields.foodPath),
               foodName: fields.food,
               brand: fields.brand,
               quantity: legacyNumber(fields.servings ?? fields.qty),
@@ -569,9 +655,7 @@ export class HealthNativeRecordService {
               status: String(fields.status || 'complete'),
               activity: fields.activity,
               activityType: fields.activityType,
-              workoutId: isWorkout ? currentWorkoutId : undefined,
-              workoutPath: fields.workoutPath,
-              workoutPlanPath: fields.workoutPlanPath,
+              workoutPlanPath: this.recordLink(fields.workoutPlanPath),
               startedAt: fields.startedAt || fields.createdDate,
               completedDate: fields.completedDate,
               date: legacyDateKey(String(fields.completedDate || fields.startedAt || fields.createdDate || ''), file.path),
@@ -597,16 +681,19 @@ export class HealthNativeRecordService {
           const key = `${workoutId}\u0000${exercise.toLocaleLowerCase()}`;
           let candidate = exerciseGroups.get(key);
           if (!candidate) {
+            const exerciseOrder = [...exerciseGroups.values()]
+              .filter((existing) => existing.workoutReferenceId === workoutId).length + 1;
             candidate = {
               id: `legacy-exercise-${stableHash(key)}`,
               kind: 'workout-exercise',
               sourcePath: file.path,
               lineNumber: index,
+              workoutReferenceId: workoutId,
               properties: {
                 title: exercise,
-                workoutId,
                 exercise,
-                exercisePath: fields.exercisePath,
+                exercisePath: this.recordLink(fields.exercisePath),
+                exerciseOrder,
                 sets: [],
                 setCount: 0,
                 totalReps: 0,
@@ -644,6 +731,41 @@ export class HealthNativeRecordService {
     records.push(...exerciseGroups.values());
     records.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath) || a.lineNumber - b.lineNumber || a.id.localeCompare(b.id));
     return { records, unresolvedLines };
+  }
+
+  private recordLink(pathValue: unknown): string | undefined {
+    const path = wikilinkPath(pathValue);
+    if (!path) return undefined;
+    return `[[${path.replace(/\.md$/iu, '')}]]`;
+  }
+
+  private findWorkoutSession(reference: string): IndexedHealthRecord | null {
+    const key = String(reference || '').trim();
+    if (!key) return null;
+    const matches = this.getKindRecords('workout-session').filter((record) => (
+      record.frontmatter.archived !== true
+      && (record.id === key || record.file.path === key || String(record.frontmatter.workoutId || '').trim() === key)
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private recordBelongsToWorkout(record: IndexedHealthRecord, session: IndexedHealthRecord): boolean {
+    const linkedPath = wikilinkPath(record.frontmatter.workout);
+    return linkedPath === session.file.path
+      || String(record.frontmatter.workoutId || '').trim() === session.id
+      || wikilinkPath(record.frontmatter.workoutPath) === session.file.path;
+  }
+
+  private getWorkoutExerciseRecords(session: IndexedHealthRecord | NativeRecordHandle): IndexedHealthRecord[] {
+    const indexed = 'file' in session && this.recordsByPath.get(session.file.path);
+    const resolved = indexed || ({
+      file: session.file,
+      frontmatter: session.frontmatter,
+      id: session.id,
+      kind: 'workout-session' as const,
+    });
+    return this.getKindRecords('workout-exercise')
+      .filter((record) => record.frontmatter.archived !== true && this.recordBelongsToWorkout(record, resolved));
   }
 
   private findRecordById(id: string): NativeRecordHandle | null {

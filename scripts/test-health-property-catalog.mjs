@@ -26,6 +26,7 @@ const settings = (mode) => ({
 
 test('food property catalog follows the configured Health identification mode', () => {
   const combined = buildHealthPropertyCatalog(settings('metadata-folder-tag'));
+  assert.equal(combined.version, 2);
   const calories = combined.food.find((property) => property.key === 'calories');
   assert.deepEqual(calories.scope, {
     mode: 'any',
@@ -52,6 +53,19 @@ test('food property catalog follows the configured Health identification mode', 
     paths: undefined,
     properties: [{ key: 'healthEntity', value: 'pantry-item', operator: 'equals' }],
   });
+});
+
+test('catalog exposes kind-scoped native record and reusable exercise fields', () => {
+  const catalog = buildHealthPropertyCatalog(settings('tag'));
+  const byKey = (key) => catalog.nativeRecords.filter((property) => property.key === key);
+  assert.deepEqual(byKey('foodName')[0].scope.kinds, ['food-entry']);
+  assert.deepEqual(byKey('activity')[0].scope.kinds, ['activity-entry']);
+  assert.deepEqual(byKey('workout')[0].scope.kinds, ['workout-exercise']);
+  assert.equal(byKey('workout')[0].listItemType, 'link');
+  assert.deepEqual(byKey('primaryMuscles')[0].scope.kinds, ['exercise']);
+  assert.ok(byKey('status')[0].scope.kinds.includes('workout-session'));
+  assert.equal(catalog.food.find((property) => property.key === 'name').label, 'Name');
+  assert.ok(byKey('name').every((property) => property.label === 'Name'));
 });
 
 test('daily rollup properties are generated from configured goals and require their own rollup key', () => {

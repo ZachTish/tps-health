@@ -67,7 +67,12 @@ function createHarness() {
     async update(reference, updates) {
       const current = await this.resolve(reference);
       if (!current) return null;
-      const frontmatter = { ...current.frontmatter, ...updates, modifiedDate: new Date().toISOString() };
+      const frontmatter = { ...current.frontmatter };
+      for (const [key, value] of Object.entries(updates)) {
+        if (value == null) delete frontmatter[key];
+        else frontmatter[key] = value;
+      }
+      frontmatter.modifiedDate = new Date().toISOString();
       frontmatters.set(current.file, frontmatter);
       return { ...current, frontmatter };
     },
@@ -126,6 +131,8 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.equal(totals.proteinG, 40.5);
   assert.equal(totals.fiberG, 11.4);
   assert.equal(totals.sodiumMg, 802);
+  const foodRecord = [...service.recordsByPath.values()].find((record) => record.id === 'food-1');
+  assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'tpsId is the only food-record identity');
 
   const activity = await service.createActivityEntry({
     id: 'activity-1', activity: 'Walk', activityType: 'walking', startedAt: '2026-08-24T07:00:00.000Z', completedDate: '2026-08-24T07:30:00.000Z', durationMinutes: 30, source: 'manual',
@@ -185,11 +192,17 @@ test('native record dates follow the local calendar day instead of the UTC day',
 test('native workout session stores one exercise record with an atomic set list and aggregates', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-1');
+  assert.equal(Object.hasOwn(session.frontmatter, 'workoutId'), false);
+  assert.equal(Object.hasOwn(session.frontmatter, 'exerciseRecordIds'), false);
   await service.appendWorkoutSet(session.file, { id: 'set-1', exercise: 'Bench press', endedAt: '2026-08-24T08:05:00.000Z', reps: 8, weight: 100, weightUnit: 'lb' });
   const second = await service.appendWorkoutSet(session.file, { id: 'set-2', exercise: 'Bench press', endedAt: '2026-08-24T08:10:00.000Z', reps: 6, weight: 110, weightUnit: 'lb' });
   assert.equal(second.exercise.frontmatter.setCount, 2);
   assert.equal(second.exercise.frontmatter.totalReps, 14);
   assert.equal(second.exercise.frontmatter.totalVolume, 1460);
+  assert.equal(second.exercise.frontmatter.workout, `[[_records/workout-sessions/workout-1]]`);
+  assert.equal(second.exercise.frontmatter.exerciseOrder, 1);
+  assert.equal(Object.hasOwn(second.exercise.frontmatter, 'workoutId'), false);
+  assert.equal(Object.hasOwn(second.exercise.frontmatter, 'workoutPath'), false);
   assert.equal(second.session.frontmatter.setCount, 2);
   assert.equal(service.isWorkoutSession(session.path, 'workout-1'), true);
   assert.equal(service.isWorkoutSession(second.exercise.path, 'workout-1'), false);
@@ -229,6 +242,33 @@ test('native workout session stores one exercise record with an atomic set list 
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
+});
+
+test('explicit identity normalization replaces legacy workout joins before removing duplicate IDs', async () => {
+  const { service, api } = createHarness();
+  const food = await service.createFoodEntry({
+    id: 'food-old', createdDate: '2026-08-24T12:00:00.000Z', item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-old');
+  const exercise = await service.ensureWorkoutExercise(session, 'Bench press');
+  await api.update(food.file, { foodId: food.id });
+  await api.update(session.file, { workoutId: session.id, exerciseRecordIds: [exercise.id] });
+  await api.update(exercise.file, { workout: null, workoutId: session.id, workoutPath: session.path, exerciseOrder: null });
+  service.setup();
+
+  const result = await service.normalizeNativeRecordIdentities();
+  assert.deepEqual(result, { inspected: 3, updated: 3, skipped: 0 });
+  const normalizedFood = await api.resolve(food.file);
+  const normalizedSession = await api.resolve(session.file);
+  const normalizedExercise = await api.resolve(exercise.file);
+  assert.equal(Object.hasOwn(normalizedFood.frontmatter, 'foodId'), false);
+  assert.equal(Object.hasOwn(normalizedSession.frontmatter, 'workoutId'), false);
+  assert.equal(Object.hasOwn(normalizedSession.frontmatter, 'exerciseRecordIds'), false);
+  assert.equal(normalizedExercise.frontmatter.workout, `[[_records/workout-sessions/workout-old]]`);
+  assert.equal(normalizedExercise.frontmatter.exerciseOrder, 1);
+  assert.equal(Object.hasOwn(normalizedExercise.frontmatter, 'workoutId'), false);
+  assert.equal(Object.hasOwn(normalizedExercise.frontmatter, 'workoutPath'), false);
+  assert.deepEqual(await service.normalizeNativeRecordIdentities(), { inspected: 3, updated: 0, skipped: 0 }, 'cleanup is idempotent');
 });
 
 test('native workout sessions render one persistent table without rewriting the note body', () => {
