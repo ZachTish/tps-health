@@ -6,7 +6,7 @@
 - Open Food Facts results now reconstruct a useful display identity when a multi-word query spans the provider's separate `product_name` and `generic_name` fields. This is query-aware and works for brands the plugin has never seen, while avoiding an invented brand value when the provider omitted one.
 - Branded alcohol products with alcohol nutrition but zero protein, carbohydrate, and fat now survive provider filtering. Multi-word relevance and final ranking still require every query token across the provider's identity fields, with existing fuzzy matching applied after retrieval.
 - This is a backward-compatible search reliability patch with no settings, storage, or API migration. Minimum supported Obsidian remains 1.12.0. The final generalized regression uses a fictional unknown brand and explicitly verifies that no curated result exists.
-- Validation: the final versioned suite passed 203 checks (202 passed and one credential-gated live USDA check skipped). TypeScript, the mandatory separate production build, test-vault deployment, and exact source/runtime artifact comparison passed; the existing Hot Reload marker provides the test-vault reload path. Production was not accessed.
+- Validation: the final combined versioned suite passed 205 checks (204 passed and one credential-gated live USDA check skipped). TypeScript, the mandatory separate production build, test-vault deployment, and exact source/runtime artifact comparison passed; the existing Hot Reload marker provides the test-vault reload path. Production was not accessed.
 
 ## 0.20.1
 
