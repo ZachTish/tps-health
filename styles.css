@@ -3785,16 +3785,33 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 .tps-health-meal-ingredient-actions button {
   flex: 1 1 0;
 }
+.tps-health-native-daily-host,
+.tps-health-native-daily-stack,
+.tps-health-native-daily {
+  box-sizing: border-box;
+  justify-self: stretch;
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+}
+
+.tps-health-native-daily-host {
+  display: block;
+}
+
+.tps-health-native-daily-stack {
+  display: grid;
+  gap: var(--size-4-3);
+}
+
 .tps-health-native-daily {
   --tps-health-native-metric-color: var(--interactive-accent);
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
-  box-sizing: border-box;
   container-type: inline-size;
   display: grid;
   overflow: hidden;
-  width: 100%;
 }
 
 .tps-health-native-daily-header {

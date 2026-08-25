@@ -18,6 +18,19 @@ export interface NativeDailyDashboardModel {
   entryCount: number;
   calories: number;
   metrics: NativeDailyMetricModel[];
+  activity: NativeDailyActivityModel;
+}
+
+export interface NativeDailyActivityTotals {
+  dateIso: string;
+  entryCount: number;
+  durationMinutes: number;
+  caloriesBurned: number;
+  steps: number;
+}
+
+export interface NativeDailyActivityModel extends NativeDailyActivityTotals {
+  metrics: NativeDailyMetricModel[];
 }
 
 const metricValue = (totals: DailyFoodMacroTotals, propertyKey: string): number | null => {
@@ -73,6 +86,13 @@ const metricProgress = (value: number, metric: HealthMetricRenderConfig): number
 export function buildNativeDailyDashboardModel(
   totals: DailyFoodMacroTotals,
   configs: readonly HealthMetricRenderConfig[],
+  activityTotals: NativeDailyActivityTotals = {
+    dateIso: totals.dateIso,
+    entryCount: 0,
+    durationMinutes: 0,
+    caloriesBurned: 0,
+    steps: 0,
+  },
 ): NativeDailyDashboardModel {
   const metrics = configs.flatMap((config) => {
     const value = metricValue(totals, config.propertyKey);
@@ -94,6 +114,22 @@ export function buildNativeDailyDashboardModel(
     entryCount: totals.entryCount,
     calories: totals.calories,
     metrics,
+    activity: {
+      ...activityTotals,
+      metrics: configs.flatMap((config) => {
+        if (config.propertyKey !== "activity") return [];
+        return [{
+          propertyKey: config.propertyKey,
+          label: config.label,
+          value: activityTotals.durationMinutes,
+          unit: config.unit,
+          targetLabel: targetLabel(config),
+          progress: metricProgress(activityTotals.durationMinutes, config),
+          state: metricState(activityTotals.durationMinutes, config),
+          color: config.color,
+        }];
+      }),
+    },
   };
 }
 

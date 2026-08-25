@@ -22,7 +22,22 @@ async function loadModule() {
           loader: 'js',
           contents: `
             export class TFile {
+              static [Symbol.hasInstance](value) { return Boolean(value && value.extension && value.path); }
               constructor(path) { this.path = path; this.name = path.split('/').pop(); this.extension = this.name.split('.').pop(); this.basename = this.name.replace(/\\.[^.]+$/, ''); }
+            }
+            export function getFrontMatterInfo(content) {
+              const match = content.match(/^---\\s*\\r?\\n([\\s\\S]*?)\\r?\\n---(?:\\r?\\n|$)/);
+              return match ? { exists: true, frontmatter: match[1], from: 4, to: 4 + match[1].length, contentStart: match[0].length } : { exists: false, frontmatter: '', from: 0, to: 0, contentStart: 0 };
+            }
+            export function parseYaml(value) {
+              const result = {};
+              for (const line of value.split(/\\r?\\n/)) {
+                const match = line.match(/^([A-Za-z0-9_-]+):\\s*(.*)$/);
+                if (!match) continue;
+                const raw = match[2].trim();
+                result[match[1]] = /^-?\\d+(?:\\.\\d+)?$/.test(raw) ? Number(raw) : /^(true|false)$/.test(raw) ? raw === 'true' : raw.replace(/^['"]|['"]$/g, '');
+              }
+              return result;
             }
           `,
         }));
@@ -44,6 +59,7 @@ function createHarness(options = {}) {
   const frontmatters = new Map();
   const contents = new Map();
   let generated = 0;
+  const vaultEvents = new Map();
   const api = {
     version: options.apiVersion || 1,
     isEnabled: () => true,
@@ -95,7 +111,14 @@ function createHarness(options = {}) {
       vault: {
         getMarkdownFiles: () => [...files.values()],
         cachedRead: async (file) => contents.get(file.path) || '',
-        on: () => ({}),
+        read: async (file) => contents.get(file.path) || '',
+        getAbstractFileByPath: (path) => files.get(path) || null,
+        on: (name, callback) => {
+          const listeners = vaultEvents.get(name) || [];
+          listeners.push(callback);
+          vaultEvents.set(name, listeners);
+          return {};
+        },
       },
       metadataCache: {
         getFileCache: (file) => ({ frontmatter: frontmatters.get(file) }),
@@ -113,7 +136,10 @@ function createHarness(options = {}) {
     contents.set(path, content);
     return file;
   };
-  return { service, api, files, frontmatters, contents, addLegacyFile };
+  const emitVault = (name, ...args) => {
+    for (const listener of vaultEvents.get(name) || []) listener(...args);
+  };
+  return { service, api, files, frontmatters, contents, addLegacyFile, emitVault };
 }
 
 test('native Health indexing follows GCM API v2 tag identity without physical ID/schema properties', () => {
@@ -165,6 +191,35 @@ test('native food and activity records keep typed quantities and indexed daily m
   });
   assert.equal(activity.frontmatter.durationMinutes, 30);
   assert.equal(activity.frontmatter.date, '2026-08-24');
+  assert.deepEqual(service.getDailyActivityTotals('2026-08-24'), {
+    dateIso: '2026-08-24', entryCount: 1, durationMinutes: 30, caloriesBurned: 0, steps: 0,
+  });
+});
+
+test('a vault modify refreshes the exact record before MetadataCache catches up', async () => {
+  const { service, files, contents, emitVault } = createHarness();
+  const file = { path: 'food-live.md', name: 'food-live.md', extension: 'md', basename: 'food-live' };
+  files.set(file.path, file);
+  contents.set(file.path, [
+    '---',
+    'tpsId: food-live',
+    'tpsSchemaVersion: 1',
+    'kind: food-entry',
+    'date: 2026-08-24',
+    'calories: 210',
+    'proteinG: 18',
+    '---',
+  ].join('\n'));
+  const changes = [];
+  service.onRecordsChanged((change) => changes.push(change));
+
+  emitVault('modify', file);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(service.getDailyFoodTotals('2026-08-24').calories, 210);
+  assert.deepEqual(changes.at(-1), {
+    path: 'food-live.md', kinds: ['food-entry'], dates: ['2026-08-24'],
+  });
 });
 
 test('native record dates follow the local calendar day instead of the UTC day', async (t) => {

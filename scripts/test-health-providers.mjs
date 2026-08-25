@@ -103,6 +103,26 @@ async function importPluginWithObsidianStub() {
       if (el) el.dataset = { ...(el.dataset || {}), icon };
       return el;
     }
+    export function getFrontMatterInfo(content) {
+      const match = String(content || "").match(/^---\\s*\\r?\\n([\\s\\S]*?)\\r?\\n---(?:\\r?\\n|$)/);
+      return match
+        ? { exists: true, frontmatter: match[1], from: 4, to: 4 + match[1].length, contentStart: match[0].length }
+        : { exists: false, frontmatter: "", from: 0, to: 0, contentStart: 0 };
+    }
+    export function parseYaml(value) {
+      const result = {};
+      for (const line of String(value || "").split(/\\r?\\n/)) {
+        const match = line.match(/^([A-Za-z0-9_-]+):\\s*(.*)$/);
+        if (!match) continue;
+        const raw = match[2].trim();
+        result[match[1]] = /^-?\\d+(?:\\.\\d+)?$/.test(raw)
+          ? Number(raw)
+          : /^(true|false)$/.test(raw)
+            ? raw === "true"
+            : raw.replace(/^['"]|['"]$/g, "");
+      }
+      return result;
+    }
     export async function requestUrl(options) {
       if (typeof globalThis.__TPSHealthTestRequestUrl === "function") return globalThis.__TPSHealthTestRequestUrl(options);
       return { status: 200, headers: {}, json: {} };

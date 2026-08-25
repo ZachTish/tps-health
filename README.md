@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.23.5
+
+- The native Daily Note dashboard is now two separate Base-style, full-width regions: **Macros** owns food totals and **Add food**, while **Activity** owns activity/workout totals and **Log activity** / **Start workout**.
+- Native record changes refresh through an exact per-file read and date-scoped invalidation instead of waiting for MetadataCache convergence. Editing one food, activity, or workout record reparses only that file and updates only the affected Daily Note dashboard.
+- Activity totals include typed `activity-entry` and `workout-session` records, with configured activity progress kept out of the macro table. Empty and populated blocks retain stable layout and accessible labels.
+- Existing records, settings, public APIs, Legacy storage, and the fenced-block contract require no migration. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.23.4
 
 - The inline Daily Nutrition dashboard now mirrors the visual language of core Bases: a flat compact header, table icon, entry count, calorie summary, column-aligned metric rows, and thin progress indicators replace the oversized dashboard card.
@@ -500,7 +507,9 @@ In **Native Markdown records** mode, Health stores nutrition on the `food-entry`
 ```
 ````
 
-The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders two independent, full-width Base-style blocks: **Macros** summarizes configured food metrics and exposes **Add food**; **Activity** summarizes typed activity/workout duration and exposes **Log activity** and **Start workout**. Activity is never mixed into the macro table. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+
+Health indexes each native record as an immutable per-file projection. A create, edit, rename, or delete rereads only the affected Markdown file, emits the exact record kinds and dates that changed, and refreshes only matching mounted dashboards. The authoritative file read closes the delay between a successful Base/frontmatter edit and MetadataCache convergence; MetadataCache remains a fallback rather than the dashboard's refresh clock. No full-vault rescan runs for a warm dashboard update.
 
 Native Health record schema version 2 uses one `tpsId` for each Markdown record. Relationship fields are not alternate identities: a `workout-exercise` points to its owning session through `workout: "[[...]]"` and carries an authored `exerciseOrder`; its atomic `sets` list retains stable per-set IDs because those rows must remain independently editable. External `sourceId` values remain available for future provider deduplication. Existing schema-version-1 aliases remain readable until the user runs **Native records: Consolidate Health identities**; the command never rewrites record bodies and preserves conflicting joins for manual review.
 

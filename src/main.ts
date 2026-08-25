@@ -10603,6 +10603,7 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
 
 class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private refreshTimer: number | null = null;
+  private renderGeneration = 0;
 
   constructor(containerEl: HTMLElement, private plugin: TPSHealthPlugin, private dateContext: FoodLogDateContext) {
     super(containerEl);
@@ -10610,19 +10611,18 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 
   onload(): void {
     const scheduleRefresh = () => {
-      if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
+      if (this.refreshTimer != null) return;
       this.refreshTimer = window.setTimeout(() => {
         this.refreshTimer = null;
         void this.render();
-      }, 40);
+      }, 0);
     };
-    this.registerEvent(this.plugin.app.metadataCache.on("changed", (file) => {
-      const frontmatter = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
-      if (frontmatter?.kind === "food-entry") scheduleRefresh();
-    }));
-    this.registerEvent(this.plugin.app.vault.on("create", scheduleRefresh));
-    this.registerEvent(this.plugin.app.vault.on("delete", scheduleRefresh));
-    this.registerEvent(this.plugin.app.vault.on("rename", scheduleRefresh));
+    const unsubscribe = this.plugin.nativeRecordService?.onRecordsChanged((change) => {
+      if (!change.dates.includes(this.dateContext.dateIso)) return;
+      if (!change.kinds.some((kind) => kind === "food-entry" || kind === "activity-entry" || kind === "workout-session")) return;
+      scheduleRefresh();
+    });
+    if (unsubscribe) this.register(unsubscribe);
     this.register(() => {
       if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
@@ -10631,11 +10631,14 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   }
 
   private async render(): Promise<void> {
+    const generation = ++this.renderGeneration;
     try {
       const totals = await this.plugin.getDailyFoodMacroTotals(this.dateContext.dateIso);
+      const activityTotals = this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso);
+      if (generation !== this.renderGeneration) return;
       renderNativeDailyDashboard(
         this.containerEl,
-        buildNativeDailyDashboardModel(totals, this.plugin.getMetricRenderConfigs()),
+        buildNativeDailyDashboardModel(totals, this.plugin.getMetricRenderConfigs(), activityTotals),
         {
           addFood: () => this.plugin.openFoodLogger({ ...this.dateContext }),
           logActivity: () => this.plugin.openActivityLogger({ ...this.dateContext }),
@@ -10657,6 +10660,7 @@ interface NativeDailyDashboardActions {
 
 function renderNativeDailyDashboardMessage(container: HTMLElement, message: string): void {
   container.empty();
+  container.addClass("tps-health-native-daily-host");
   const root = container.createDiv({ cls: "tps-health-native-daily tps-health-native-daily--message" });
   root.createDiv({ cls: "tps-health-native-daily-message", text: message });
 }
@@ -10667,14 +10671,16 @@ function renderNativeDailyDashboard(
   actions: NativeDailyDashboardActions,
 ): void {
   container.empty();
-  const root = container.createDiv({ cls: "tps-health-native-daily" });
+  container.addClass("tps-health-native-daily-host");
+  const stack = container.createDiv({ cls: "tps-health-native-daily-stack" });
+  const root = stack.createDiv({ cls: "tps-health-native-daily" });
   root.setAttr("role", "region");
-  root.setAttr("aria-label", "Daily nutrition");
+  root.setAttr("aria-label", "Daily macros");
   const header = root.createDiv({ cls: "tps-health-native-daily-header" });
   const heading = header.createDiv({ cls: "tps-health-native-daily-heading" });
   const headingIcon = heading.createSpan({ cls: "tps-health-native-daily-heading-icon" });
   setIcon(headingIcon, "table-2");
-  heading.createSpan({ cls: "tps-health-native-daily-title", text: "Nutrition" });
+  heading.createSpan({ cls: "tps-health-native-daily-title", text: "Macros" });
   heading.createSpan({
     cls: "tps-health-native-daily-summary",
     text: model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
@@ -10686,7 +10692,7 @@ function renderNativeDailyDashboard(
 
   const actionBar = header.createDiv({
     cls: "tps-health-native-daily-actions",
-    attr: { role: "toolbar", "aria-label": "Nutrition actions" },
+    attr: { role: "toolbar", "aria-label": "Macro actions" },
   });
   const addAction = (label: string, icon: string, onClick: () => void) => {
     const button = actionBar.createEl("button", {
@@ -10697,43 +10703,72 @@ function renderNativeDailyDashboard(
     button.addEventListener("click", onClick);
   };
   addAction("Add food", "utensils", actions.addFood);
-  addAction("Log activity", "activity", actions.logActivity);
-  addAction("Start workout", "dumbbell", actions.startWorkout);
 
   if (!model.entryCount) {
     root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });
-    return;
+  } else {
+    renderNativeDailyMetrics(root, model.metrics, "Daily macro totals");
   }
 
+  const activity = stack.createDiv({ cls: "tps-health-native-daily tps-health-native-daily--activity" });
+  activity.setAttr("role", "region");
+  activity.setAttr("aria-label", "Daily activity");
+  const activityHeader = activity.createDiv({ cls: "tps-health-native-daily-header" });
+  const activityHeading = activityHeader.createDiv({ cls: "tps-health-native-daily-heading" });
+  const activityIcon = activityHeading.createSpan({ cls: "tps-health-native-daily-heading-icon" });
+  setIcon(activityIcon, "activity");
+  activityHeading.createSpan({ cls: "tps-health-native-daily-title", text: "Activity" });
+  activityHeading.createSpan({
+    cls: "tps-health-native-daily-summary",
+    text: model.activity.entryCount === 1 ? "1 activity" : `${model.activity.entryCount} activities`,
+  });
+  activityHeader.createSpan({
+    cls: "tps-health-native-daily-calories",
+    text: `${formatNativeDailyMetricValue(model.activity.durationMinutes)} min`,
+  });
+  const activityActions = activityHeader.createDiv({
+    cls: "tps-health-native-daily-actions",
+    attr: { role: "toolbar", "aria-label": "Activity actions" },
+  });
+  const addActivityAction = (label: string, icon: string, onClick: () => void) => {
+    const button = activityActions.createEl("button", {
+      cls: "tps-health-native-daily-action clickable-icon",
+      attr: { type: "button", "aria-label": label, title: label },
+    });
+    setIcon(button, icon);
+    button.addEventListener("click", onClick);
+  };
+  addActivityAction("Log activity", "activity", actions.logActivity);
+  addActivityAction("Start workout", "dumbbell", actions.startWorkout);
+  if (!model.activity.entryCount) {
+    activity.createDiv({ cls: "tps-health-native-daily-empty", text: "No activity logged for this day yet." });
+  } else {
+    renderNativeDailyMetrics(activity, model.activity.metrics, "Daily activity totals");
+  }
+}
+
+function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], ariaLabel: string): void {
   const metrics = root.createDiv({ cls: "tps-health-native-daily-metrics" });
   metrics.setAttr("role", "table");
-  metrics.setAttr("aria-label", "Daily nutrition totals");
+  metrics.setAttr("aria-label", ariaLabel);
   const metricHeader = metrics.createDiv({ cls: "tps-health-native-daily-metric-header" });
   metricHeader.setAttr("role", "row");
   metricHeader.createSpan({ text: "Metric", attr: { role: "columnheader" } });
   metricHeader.createSpan({ text: "Current", attr: { role: "columnheader" } });
   metricHeader.createSpan({ text: "Goal", attr: { role: "columnheader" } });
-  for (const metric of model.metrics) {
-    const card = metrics.createDiv({ cls: `tps-health-native-daily-metric is-${metric.state}` });
-    card.setAttr("data-property-key", metric.propertyKey);
-    card.setAttr("role", "row");
-    if (metric.color) card.style.setProperty("--tps-health-native-metric-color", metric.color);
-    card.createSpan({
-      cls: "tps-health-native-daily-metric-label",
-      text: metric.label,
-      attr: { role: "cell" },
-    });
-    card.createSpan({
+  for (const metric of metricModels) {
+    const row = metrics.createDiv({ cls: `tps-health-native-daily-metric is-${metric.state}` });
+    row.setAttr("data-property-key", metric.propertyKey);
+    row.setAttr("role", "row");
+    if (metric.color) row.style.setProperty("--tps-health-native-metric-color", metric.color);
+    row.createSpan({ cls: "tps-health-native-daily-metric-label", text: metric.label, attr: { role: "cell" } });
+    row.createSpan({
       cls: "tps-health-native-daily-metric-value",
       text: `${formatNativeDailyMetricValue(metric.value)} ${metric.unit}`,
       attr: { role: "cell" },
     });
-    card.createSpan({
-      cls: "tps-health-native-daily-target",
-      text: metric.targetLabel,
-      attr: { role: "cell" },
-    });
-    const track = card.createDiv({ cls: "tps-health-native-daily-progress", attr: { "aria-hidden": "true" } });
+    row.createSpan({ cls: "tps-health-native-daily-target", text: metric.targetLabel, attr: { role: "cell" } });
+    const track = row.createDiv({ cls: "tps-health-native-daily-progress", attr: { "aria-hidden": "true" } });
     const fill = track.createDiv({ cls: "tps-health-native-daily-progress-fill" });
     fill.style.width = `${Math.round(metric.progress * 100)}%`;
   }

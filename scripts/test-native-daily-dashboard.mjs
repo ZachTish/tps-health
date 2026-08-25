@@ -33,7 +33,7 @@ test('daily dashboard maps indexed nutrition to configured goal metrics', () => 
     { propertyKey: 'protein', label: 'Protein', unit: 'g', kind: 'min', min: 125 },
     { propertyKey: 'carbs', label: 'Carbs', unit: 'g', kind: 'range', min: 120, max: 260 },
     { propertyKey: 'activity', label: 'Activity', unit: 'min', kind: 'min', min: 45 },
-  ]);
+  ], { dateIso: '2026-08-24', entryCount: 2, durationMinutes: 50, caloriesBurned: 320, steps: 6400 });
   assert.equal(model.entryCount, 1);
   assert.equal(model.calories, 126);
   assert.deepEqual(model.metrics.map((metric) => [metric.propertyKey, metric.value]), [
@@ -42,6 +42,9 @@ test('daily dashboard maps indexed nutrition to configured goal metrics', () => 
   assert.equal(model.metrics[0].targetLabel, 'up to 2100 kcal');
   assert.equal(model.metrics[1].state, 'below');
   assert.equal(model.metrics[2].targetLabel, '120–260 g');
+  assert.equal(model.activity.entryCount, 2);
+  assert.equal(model.activity.metrics[0].value, 50);
+  assert.equal(model.activity.metrics[0].targetLabel, 'at least 45 min');
 });
 
 test('daily dashboard marks values beyond a maximum and clamps the progress bar', () => {
@@ -67,12 +70,18 @@ test('Health registers the Daily Note renderer and keeps all styling plugin-name
 
 test('daily dashboard uses a compact Base-like table and accessible toolbar', () => {
   assert.match(mainSource, /setIcon\(headingIcon, "table-2"\)/u);
-  assert.match(mainSource, /role: "toolbar", "aria-label": "Nutrition actions"/u);
+  assert.match(mainSource, /role: "toolbar", "aria-label": "Macro actions"/u);
+  assert.match(mainSource, /role: "toolbar", "aria-label": "Activity actions"/u);
+  assert.match(mainSource, /text: "Macros"/u);
+  assert.match(mainSource, /text: "Activity"/u);
   assert.match(mainSource, /metrics\.setAttr\("role", "table"\)/u);
   assert.match(mainSource, /metricHeader\.createSpan\(\{ text: "Metric", attr: \{ role: "columnheader" \} \}\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily\s*\{[\s\S]*?background:\s*var\(--background-primary\)[\s\S]*?border-radius:\s*var\(--radius-s\)[\s\S]*?overflow:\s*hidden/u);
   assert.match(stylesSource, /\.tps-health-native-daily-metric-header\s*,[\s\S]*?grid-template-columns:/u);
   assert.match(stylesSource, /\.tps-health-native-daily-action\s*\{[\s\S]*?background:\s*transparent[\s\S]*?width:\s*30px/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-host\s*\{[\s\S]*?display:\s*block/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-host\s*,[\s\S]*?max-width:\s*none[\s\S]*?width:\s*100%/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-stack\s*\{[\s\S]*?display:\s*grid[\s\S]*?gap:/u);
   assert.doesNotMatch(mainSource, /button\.createSpan\(\{ text: label \}\)/u);
 });
 
@@ -82,8 +91,15 @@ test('Daily Note actions use the exact resolved date context for every Health wo
   assert.match(mainSource, /logActivity:\s*\(\) => this\.plugin\.openActivityLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /startWorkout:\s*\(\) => this\.plugin\.openWorkoutStarter\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /addAction\("Add food", "utensils", actions\.addFood\)/u);
-  assert.match(mainSource, /addAction\("Log activity", "activity", actions\.logActivity\)/u);
-  assert.match(mainSource, /addAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
+  assert.match(mainSource, /addActivityAction\("Log activity", "activity", actions\.logActivity\)/u);
+  assert.match(mainSource, /addActivityAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*display:\s*flex/u);
   assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-height:\s*44px/u);
+});
+
+test('dashboard refreshes from the indexed record signal instead of racing MetadataCache', () => {
+  assert.match(mainSource, /nativeRecordService\?\.onRecordsChanged/u);
+  assert.match(mainSource, /change\.dates\.includes\(this\.dateContext\.dateIso\)/u);
+  assert.match(mainSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.render\(\);[\s\S]*?\}, 0\)/u);
+  assert.doesNotMatch(mainSource, /metadataCache\.on\("changed"[\s\S]{0,600}?scheduleRefresh/u);
 });

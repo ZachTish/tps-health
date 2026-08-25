@@ -1,4 +1,4 @@
-import { TFile } from 'obsidian';
+import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { isoDateKey } from './format';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
@@ -105,6 +105,20 @@ export interface NativeIdentityNormalizationResult {
   skipped: number;
 }
 
+export interface NativeHealthRecordChange {
+  path: string;
+  kinds: NativeHealthKind[];
+  dates: string[];
+}
+
+export interface NativeDailyActivityTotals {
+  dateIso: string;
+  entryCount: number;
+  durationMinutes: number;
+  caloriesBurned: number;
+  steps: number;
+}
+
 interface LegacyHealthCandidate {
   id: string;
   kind: NativeHealthKind;
@@ -138,6 +152,8 @@ export class HealthNativeRecordService {
   readonly version = TPS_HEALTH_NATIVE_RECORDS_VERSION;
   private readonly recordsByPath = new Map<string, IndexedHealthRecord>();
   private readonly pathsByKind = new Map<NativeHealthKind, Set<string>>();
+  private readonly changeListeners = new Set<(change: NativeHealthRecordChange) => void>();
+  private readonly refreshGenerations = new Map<string, number>();
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
 
@@ -157,7 +173,10 @@ export class HealthNativeRecordService {
       this.plugin.scheduleWorkoutActionBars();
     });
     this.plugin.registerEvent(vault.on('create', (file) => {
-      if (file instanceof TFile) this.indexFile(file);
+      if (file instanceof TFile) void this.refreshFile(file);
+    }));
+    this.plugin.registerEvent(vault.on('modify', (file) => {
+      if (file instanceof TFile) void this.refreshFile(file);
     }));
     this.plugin.registerEvent(vault.on('delete', (file) => {
       if (file instanceof TFile) this.removePath(file.path);
@@ -170,6 +189,11 @@ export class HealthNativeRecordService {
 
   isEnabled(): boolean {
     return this.plugin.settings.storageMode === 'native-records';
+  }
+
+  onRecordsChanged(listener: (change: NativeHealthRecordChange) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
   }
 
   requireApi(): NativeRecordsApi {
@@ -512,6 +536,33 @@ export class HealthNativeRecordService {
     return { entryCount: records.length, ...totals };
   }
 
+  getDailyActivityTotals(dateIso: string): NativeDailyActivityTotals {
+    const activityRecords = this.getKindRecords('activity-entry').filter((record) => (
+      record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
+    ));
+    const workoutRecords = this.getKindRecords('workout-session').filter((record) => (
+      record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.workoutDate || record.frontmatter.completedDate) === dateIso
+    ));
+    let durationMinutes = 0;
+    let caloriesBurned = 0;
+    let steps = 0;
+    for (const record of [...activityRecords, ...workoutRecords]) {
+      const duration = numberValue(record.frontmatter.durationMinutes)
+        || numberValue(record.frontmatter.timeEstimate)
+        || numberValue(record.frontmatter.durationSeconds) / 60;
+      durationMinutes += duration;
+      caloriesBurned += numberValue(record.frontmatter.caloriesBurned);
+      steps += numberValue(record.frontmatter.steps);
+    }
+    return {
+      dateIso,
+      entryCount: activityRecords.length + workoutRecords.length,
+      durationMinutes,
+      caloriesBurned,
+      steps,
+    };
+  }
+
   /**
    * Explicitly remove legacy note-level identity aliases after first replacing
    * workout child-ID joins with one durable wikilink relationship.
@@ -848,7 +899,8 @@ export class HealthNativeRecordService {
   }
 
   private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null): void {
-    this.removePath(file.path);
+    const previous = this.recordsByPath.get(file.path);
+    this.removePath(file.path, false);
     const resolved = frontmatter || this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
     const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
     const inspected = Number(api?.version) >= 2 && typeof api?.inspect === 'function'
@@ -857,7 +909,10 @@ export class HealthNativeRecordService {
     const kind = String(inspected?.kind || resolved?.kind || '') as NativeHealthKind;
     const recordId = String(inspected?.id || resolved?.tpsId || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion || resolved?.tpsSchemaVersion);
-    if (!recordId || schemaVersion !== 1 || !HEALTH_KINDS.has(kind)) return;
+    if (!recordId || schemaVersion !== 1 || !HEALTH_KINDS.has(kind)) {
+      if (previous) this.emitChange(file.path, previous, null);
+      return;
+    }
     const record = {
       file,
       frontmatter: { ...(inspected?.frontmatter || resolved) },
@@ -868,15 +923,46 @@ export class HealthNativeRecordService {
     const paths = this.pathsByKind.get(kind) || new Set<string>();
     paths.add(file.path);
     this.pathsByKind.set(kind, paths);
+    this.emitChange(file.path, previous, record);
   }
 
-  private removePath(path: string): void {
+  private removePath(path: string, notify = true): void {
     const record = this.recordsByPath.get(path);
     this.recordsByPath.delete(path);
     if (!record) return;
     const paths = this.pathsByKind.get(record.kind);
     paths?.delete(path);
     if (!paths || paths.size === 0) this.pathsByKind.delete(record.kind);
+    if (notify) this.emitChange(path, record, null);
+  }
+
+  private async refreshFile(file: TFile): Promise<void> {
+    if (file.extension !== 'md') return;
+    const generation = (this.refreshGenerations.get(file.path) || 0) + 1;
+    this.refreshGenerations.set(file.path, generation);
+    try {
+      const content = await this.plugin.app.vault.read(file);
+      if (this.refreshGenerations.get(file.path) !== generation) return;
+      if (this.plugin.app.vault.getAbstractFileByPath(file.path) !== file) return;
+      const info = getFrontMatterInfo(content);
+      const parsed = info.exists ? parseYaml(info.frontmatter) : null;
+      this.indexFile(file, parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null);
+    } catch {
+      // MetadataCache remains the safe eventual fallback for transient reads.
+    } finally {
+      if (this.refreshGenerations.get(file.path) === generation) this.refreshGenerations.delete(file.path);
+    }
+  }
+
+  private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {
+    const kinds = [...new Set([previous?.kind, current?.kind].filter((kind): kind is NativeHealthKind => !!kind))];
+    const dates = [...new Set([
+      previous && dateKey(previous.frontmatter.date || previous.frontmatter.workoutDate || previous.frontmatter.completedDate),
+      current && dateKey(current.frontmatter.date || current.frontmatter.workoutDate || current.frontmatter.completedDate),
+    ].filter((date): date is string => !!date))];
+    if (!kinds.length) return;
+    const change = { path, kinds, dates };
+    for (const listener of this.changeListeners) listener(change);
   }
 
   private getKindRecords(kind: NativeHealthKind): IndexedHealthRecord[] {
