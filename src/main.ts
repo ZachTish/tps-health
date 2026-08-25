@@ -6769,7 +6769,7 @@ export default class TPSHealthPlugin extends Plugin {
 
     const resolved: CoreDailyNoteSettings = {
       format,
-      folder: normalizePath(folder).replace(/^\/+|\/+$/g, ""),
+      folder: normalizeCoreDailyNoteFolder(folder),
     };
     this.dailyNoteSettingsSnapshot = resolved;
     logger.flow("DailyNote", "settings:resolved", { ...resolved, formatSource, folderSource });
@@ -19703,11 +19703,18 @@ function foodResultMeta(item: FoodItem): string {
 
 function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext: FoodLogDateContext | null): boolean {
   const draftContext = draft.dateContext;
-  if (!draftContext?.dateIso || !dateContext?.dateIso) return true;
-  if (draftContext.dateIso !== dateContext.dateIso) return false;
-  const draftTarget = draftContext.foodLogTarget || "";
-  const target = dateContext.foodLogTarget || "";
+  const draftDateIso = draftContext?.dateIso || "";
+  const dateIso = dateContext?.dateIso || "";
+  if (!draftDateIso || !dateIso) return !draftDateIso && !dateIso;
+  if (draftDateIso !== dateIso) return false;
+  const draftTarget = draftContext?.foodLogTarget || "";
+  const target = dateContext?.foodLogTarget || "";
   return !draftTarget || !target || draftTarget === target;
+}
+
+function normalizeCoreDailyNoteFolder(value: string): string {
+  const normalized = normalizePath(value || "").replace(/^\/+|\/+$/g, "");
+  return normalized === "." ? "" : normalized;
 }
 
 function foodLogNutritionForLine(line: string, plugin?: TPSHealthPlugin): Nutrition {

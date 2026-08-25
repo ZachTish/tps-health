@@ -1,12 +1,18 @@
 # TPS Health
 
-## 0.20.2
+## 0.20.3
 
 - Removes the White Claw Surge curated product introduced in 0.19.1. Search correctness no longer depends on a product-specific fallback or on adding the product's brand to the known-brand list.
 - Open Food Facts results now reconstruct a useful display identity when a multi-word query spans the provider's separate `product_name` and `generic_name` fields. This is query-aware and works for brands the plugin has never seen, while avoiding an invented brand value when the provider omitted one.
 - Branded alcohol products with alcohol nutrition but zero protein, carbohydrate, and fat now survive provider filtering. Multi-word relevance and final ranking still require every query token across the provider's identity fields, with existing fuzzy matching applied after retrieval.
 - This is a backward-compatible search reliability patch with no settings, storage, or API migration. Minimum supported Obsidian remains 1.12.0. The final generalized regression uses a fictional unknown brand and explicitly verifies that no curated result exists.
-- Validation: the final combined versioned suite passed 205 checks (204 passed and one credential-gated live USDA check skipped). TypeScript, the mandatory separate production build, test-vault deployment, and exact source/runtime artifact comparison passed; the existing Hot Reload marker provides the test-vault reload path. Production was not accessed.
+- Final combined-tree validation is recorded after the 0.20.3 build.
+
+## 0.20.2
+
+- Date-scoped Daily Note food loggers no longer restore, replace, or clear an unrelated saved tray opened from a context-free command. A saved general tray and a Daily Note tray remain isolated in both directions, including after a successful log.
+- Core Daily Notes root-folder settings now normalize Obsidian Mobile's `.` root sentinel as the vault root. A root `YYYY-MM-DD` note therefore renders the native Health dashboard instead of incorrectly reporting that it is not a configured Daily Note.
+- Food logging, activity logging, and workout creation retain the explicitly selected Daily Note date. The record schema, public API, default legacy mode, and minimum Obsidian 1.12.0 compatibility are unchanged.
 
 ## 0.20.1
 
@@ -428,7 +434,7 @@ In **Native Markdown records** mode, Health stores nutrition on the `food-entry`
 ```
 ````
 
-The containing file must resolve through Core Daily Notes. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
+The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. The dashboard uses that note's date, not today's wall-clock date. It renders configured food metrics only; activity minutes stay in the Activity record/Base rather than being mixed into nutrition totals. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced block contains no stored totals, and Source mode therefore remains ordinary literal Markdown.
 
 ## Daily Note Lines
 

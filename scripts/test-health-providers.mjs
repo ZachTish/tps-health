@@ -755,6 +755,58 @@ test("a fresh logger cannot replace a pending draft from a different date contex
   assert.equal(tray.__closed, true);
 });
 
+test("date-less and Daily Note food trays remain isolated from each other", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const queued = {
+    item: {
+      id: "food-general-draft",
+      name: "General draft food",
+      source: "manual",
+      servingAmount: 1,
+      servingUnit: "serving",
+      nutrition: { calories: 100, proteinG: 5, carbsG: 10, fatG: 4 },
+    },
+    quantity: 1,
+    unit: "serving",
+  };
+  const generalDraft = {
+    id: "general-food-draft",
+    updatedAt: "2026-08-25T01:00:00.000Z",
+    activeTab: "search",
+    searchInput: "general",
+    consumedDateInput: "2026-08-24T20:00",
+    dateContext: null,
+    selectionItems: [queued],
+  };
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: structuredClone(generalDraft) };
+  plugin.saveSettings = async () => {};
+
+  const dailyTray = new FoodSearchModal(fake.app, plugin, null, {
+    dateIso: "2099-12-31",
+    label: "December 31, 2099",
+    isToday: false,
+    foodLogTarget: "daily-note",
+  });
+  assert.deepEqual(dailyTray.selectionItems, [], "a general tray must not leak into a different Daily Note");
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft, generalDraft, "the unrelated general tray remains recoverable");
+
+  plugin.settings.pendingFoodLogDraft = {
+    ...structuredClone(generalDraft),
+    id: "daily-food-draft",
+    dateContext: {
+      dateIso: "2099-12-31",
+      label: "December 31, 2099",
+      isToday: false,
+      foodLogTarget: "daily-note",
+    },
+  };
+  const generalTray = new FoodSearchModal(fake.app, plugin);
+  assert.deepEqual(generalTray.selectionItems, [], "a Daily Note tray must not leak into a context-free command");
+});
+
 test("meal reads and writes enforce the single-serving recipe contract", () => {
   assert.match(mainSource, /function recipeServingsForFood\(item: FoodItem, type: FoodNoteType\): number \{\s*if \(type === "meal"\) return 1;/);
   assert.match(mainSource, /const isMeal = type === "meal";/);
@@ -8869,6 +8921,13 @@ test("daily note destinations follow Core Daily Notes without Health-owned overr
   const TFile = globalThis.__TPSHealthTestTFile;
   assert.ok(await plugin.getFoodLogDateContextForFile(new TFile("2026-08-15.md")), "a root Daily Note must be recognized when Core uses the vault root");
   assert.equal(await plugin.getFoodLogDateContextForFile(new TFile("Projects/2026-08-15.md")), null, "a nested date-shaped note must not be treated as a root Daily Note");
+
+  corePlugin.instance.options.folder = ".";
+  assert.deepEqual(await plugin.getDailyNoteSettings(), {
+    format: "YYYY-MM-DD",
+    folder: "",
+  }, "Obsidian Mobile's dot sentinel must resolve to the vault root");
+  assert.ok(await plugin.getFoodLogDateContextForFile(new TFile("2026-08-15.md")), "a root Daily Note must remain recognized with the mobile dot sentinel");
 
   corePlugin.instance.options = { format: "YYYY/MM/DD", folder: "Core Daily" };
   const created = await plugin.getOrCreateDailyNoteForDate("2026-08-15");
