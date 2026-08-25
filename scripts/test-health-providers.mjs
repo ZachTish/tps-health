@@ -8494,8 +8494,8 @@ test("workout exercise picker performs no catalog work on open and cancels typed
   assert.match(pickerSource, /error\.name === "AbortError"/);
   assert.match(pickerSource, /search:failed/);
   assert.match(pickerSource, /skipCatalogBuild: true/);
-  assert.match(pickerSource, /openNativeSetModal = this\.plugin\.nativeRecordService\?\.isEnabled\(\) === true/);
-  assert.match(pickerSource, /new SetModal\(this\.app, this\.plugin, exercise\)\.open\(\)/);
+  assert.doesNotMatch(pickerSource, /openNativeSetModal/u);
+  assert.doesNotMatch(pickerSource, /new SetModal\(this\.app, this\.plugin, exercise\)\.open\(\)/u, 'native exercise selection returns to the persistent inline row');
   assert.match(pickerSource, /onClose\(\): void \{[\s\S]*this\.plugin\.scheduleWorkoutActionBars\(\)/);
   assert.match(pickerSource, /if \(!Platform\.isMobile && !Platform\.isMobileApp\)/);
   assert.doesNotMatch(pickerSource, /addEventListener\("pointerup"/);

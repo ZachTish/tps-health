@@ -1,8 +1,24 @@
-import type { NativeWorkoutExerciseSnapshot, NativeWorkoutSnapshot } from './native-records';
+import type {
+  NativeWorkoutExerciseSnapshot,
+  NativeWorkoutSetPatch,
+  NativeWorkoutSetSnapshot,
+  NativeWorkoutSnapshot,
+} from './native-records';
+
+export interface NativeWorkoutSetDraft {
+  reps?: number;
+  weight?: number;
+  weightUnit: string;
+  perArm: boolean;
+  rpe?: number;
+  restSeconds?: number;
+  setType: string;
+}
 
 export interface NativeWorkoutSurfaceActions {
   addExercise(): void;
-  addSet(exercise: NativeWorkoutExerciseSnapshot): void;
+  addSet(exercise: NativeWorkoutExerciseSnapshot, draft: NativeWorkoutSetDraft): void | Promise<void>;
+  updateSet(exercise: NativeWorkoutExerciseSnapshot, set: NativeWorkoutSetSnapshot, patch: NativeWorkoutSetPatch): void | Promise<void>;
   finish(): void | Promise<void>;
 }
 
@@ -46,6 +62,60 @@ const formatRest = (seconds: number | undefined): string => {
   const remainder = seconds % 60;
   return minutes ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
 };
+
+const stopInteraction = (element: HTMLElement): void => {
+  for (const eventName of ['click', 'pointerdown', 'mousedown']) {
+    element.addEventListener(eventName, (event) => event.stopPropagation());
+  }
+};
+
+const numberInput = (
+  value: number | undefined,
+  label: string,
+  options: { min?: number; max?: number; step?: string; integer?: boolean } = {},
+): HTMLInputElement => {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.className = 'tps-health-native-workout-input';
+  input.value = value == null ? '' : formatNumber(value);
+  input.placeholder = '—';
+  input.setAttribute('aria-label', label);
+  input.setAttribute('inputmode', options.integer ? 'numeric' : 'decimal');
+  if (options.min != null) input.min = String(options.min);
+  if (options.max != null) input.max = String(options.max);
+  input.step = options.step || (options.integer ? '1' : 'any');
+  stopInteraction(input);
+  return input;
+};
+
+const selectInput = (value: string, label: string, choices: Array<[string, string]>): HTMLSelectElement => {
+  const select = document.createElement('select');
+  select.className = 'tps-health-native-workout-select';
+  select.setAttribute('aria-label', label);
+  for (const [optionValue, optionLabel] of choices) {
+    const option = document.createElement('option');
+    option.value = optionValue;
+    option.textContent = optionLabel;
+    select.append(option);
+  }
+  select.value = value;
+  stopInteraction(select);
+  return select;
+};
+
+const parsedNumber = (input: HTMLInputElement): number | undefined => {
+  const value = input.value.trim();
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const setTypeOptions: Array<[string, string]> = [
+  ['normal', 'Normal'],
+  ['warmup', 'Warmup'],
+  ['drop', 'Drop'],
+  ['failure', 'Failure'],
+];
 
 export function renderNativeWorkoutSurface(
   root: HTMLElement,
@@ -121,17 +191,12 @@ export function renderNativeWorkoutSurface(
         'tps-health-native-workout-exercise-total',
       ),
     );
+    let focusDraft = (): void => undefined;
     exerciseHeader.append(
       exerciseIdentity,
-      button('+ Set', `Log another ${exercise.name} set`, () => options.actions.addSet(exercise), !options.active),
+      button('+ Set', `Enter another ${exercise.name} set inline`, () => focusDraft(), !options.active),
     );
     group.append(exerciseHeader);
-
-    if (!exercise.sets.length) {
-      group.append(text('p', 'No sets logged yet.', 'tps-health-native-workout-no-sets'));
-      exerciseList.append(group);
-      continue;
-    }
     const table = document.createElement('div');
     table.className = 'tps-health-native-workout-table';
     table.setAttribute('role', 'table');
@@ -139,7 +204,7 @@ export function renderNativeWorkoutSurface(
     const tableHeader = document.createElement('div');
     tableHeader.className = 'tps-health-native-workout-row is-header';
     tableHeader.setAttribute('role', 'row');
-    for (const label of ['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type']) {
+    for (const label of ['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', '']) {
       const cell = text('span', label);
       cell.setAttribute('role', 'columnheader');
       tableHeader.append(cell);
@@ -149,20 +214,137 @@ export function renderNativeWorkoutSurface(
       const row = document.createElement('div');
       row.className = 'tps-health-native-workout-row';
       row.setAttribute('role', 'row');
-      const values = [
-        String(set.ordinal),
-        formatNumber(set.reps),
-        `${formatNumber(set.weight)} ${set.weightUnit}${set.perArm ? '/arm' : ''}`,
-        set.rpe == null ? '—' : formatNumber(set.rpe),
-        formatRest(set.restSeconds),
-        set.setType === 'normal' ? 'Normal' : set.setType.charAt(0).toUpperCase() + set.setType.slice(1),
-      ];
-      for (const value of values) {
-        const cell = text('span', value);
-        cell.setAttribute('role', 'cell');
-        row.append(cell);
+      row.dataset.setId = set.id;
+      const ordinal = text('span', String(set.ordinal), 'tps-health-native-workout-ordinal');
+      ordinal.setAttribute('role', 'cell');
+      row.append(ordinal);
+      if (!options.active) {
+        const values = [
+          formatNumber(set.reps),
+          `${formatNumber(set.weight)} ${set.weightUnit}${set.perArm ? '/arm' : ''}`,
+          set.rpe == null ? '—' : formatNumber(set.rpe),
+          formatRest(set.restSeconds),
+          set.setType === 'normal' ? 'Normal' : set.setType.charAt(0).toUpperCase() + set.setType.slice(1),
+          '',
+        ];
+        for (const value of values) {
+          const cell = text('span', value);
+          cell.setAttribute('role', 'cell');
+          row.append(cell);
+        }
+        table.append(row);
+        continue;
       }
+
+      const status = text('span', '', 'tps-health-native-workout-save-state');
+      status.setAttribute('role', 'status');
+      const commit = async (control: HTMLInputElement | HTMLSelectElement, patch: NativeWorkoutSetPatch): Promise<void> => {
+        control.disabled = true;
+        status.textContent = 'Saving…';
+        try {
+          await options.actions.updateSet(exercise, set, patch);
+          status.textContent = 'Saved';
+        } catch {
+          status.textContent = 'Retry';
+        } finally {
+          control.disabled = false;
+        }
+      };
+      const reps = numberInput(set.reps, `${exercise.name} set ${set.ordinal} reps`, { min: 0, step: '1', integer: true });
+      reps.addEventListener('change', () => void commit(reps, { reps: Math.max(0, parsedNumber(reps) || 0) }));
+      row.append(reps);
+
+      const weightCell = document.createElement('div');
+      weightCell.className = 'tps-health-native-workout-weight-cell';
+      weightCell.setAttribute('role', 'cell');
+      const weight = numberInput(set.weight, `${exercise.name} set ${set.ordinal} weight`, { min: 0 });
+      const unitChoices: Array<[string, string]> = [['lb', 'lb'], ['kg', 'kg']];
+      if (!unitChoices.some(([unit]) => unit === set.weightUnit)) unitChoices.unshift([set.weightUnit, set.weightUnit]);
+      const unit = selectInput(set.weightUnit, `${exercise.name} set ${set.ordinal} weight unit`, unitChoices);
+      const perArm = document.createElement('label');
+      perArm.className = 'tps-health-native-workout-per-arm';
+      perArm.setAttribute('title', 'Weight is per arm');
+      const perArmToggle = document.createElement('input');
+      perArmToggle.type = 'checkbox';
+      perArmToggle.checked = set.perArm;
+      perArmToggle.setAttribute('aria-label', `${exercise.name} set ${set.ordinal} weight is per arm`);
+      perArm.append(perArmToggle, text('span', '×2'));
+      stopInteraction(perArm);
+      weight.addEventListener('change', () => void commit(weight, { weight: Math.max(0, parsedNumber(weight) || 0) }));
+      unit.addEventListener('change', () => void commit(unit, { weightUnit: unit.value }));
+      perArmToggle.addEventListener('change', () => void commit(perArmToggle, { perArm: perArmToggle.checked }));
+      weightCell.append(weight, unit, perArm);
+      row.append(weightCell);
+
+      const rpe = numberInput(set.rpe, `${exercise.name} set ${set.ordinal} RPE`, { min: 0, max: 10, step: '0.5' });
+      rpe.addEventListener('change', () => void commit(rpe, { rpe: parsedNumber(rpe) ?? null }));
+      row.append(rpe);
+      const rest = numberInput(set.restSeconds, `${exercise.name} set ${set.ordinal} rest seconds`, { min: 0, step: '1', integer: true });
+      rest.addEventListener('change', () => void commit(rest, { restSeconds: parsedNumber(rest) ?? null }));
+      row.append(rest);
+      const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);
+      setType.addEventListener('change', () => void commit(setType, { setType: setType.value }));
+      row.append(setType, status);
       table.append(row);
+    }
+
+    if (options.active) {
+      const previous = exercise.sets.at(-1);
+      const draft = document.createElement('div');
+      draft.className = 'tps-health-native-workout-row is-draft';
+      draft.setAttribute('role', 'row');
+      const ordinal = text('span', String(exercise.sets.length + 1), 'tps-health-native-workout-ordinal');
+      ordinal.setAttribute('role', 'cell');
+      const reps = numberInput(previous?.reps, `${exercise.name} new set reps`, { min: 0, step: '1', integer: true });
+      const weightCell = document.createElement('div');
+      weightCell.className = 'tps-health-native-workout-weight-cell';
+      weightCell.setAttribute('role', 'cell');
+      const weight = numberInput(previous?.weight, `${exercise.name} new set weight`, { min: 0 });
+      const previousUnit = previous?.weightUnit || 'lb';
+      const unitChoices: Array<[string, string]> = [['lb', 'lb'], ['kg', 'kg']];
+      if (!unitChoices.some(([unit]) => unit === previousUnit)) unitChoices.unshift([previousUnit, previousUnit]);
+      const unit = selectInput(previousUnit, `${exercise.name} new set weight unit`, unitChoices);
+      const perArm = document.createElement('label');
+      perArm.className = 'tps-health-native-workout-per-arm';
+      perArm.setAttribute('title', 'Weight is per arm');
+      const perArmToggle = document.createElement('input');
+      perArmToggle.type = 'checkbox';
+      perArmToggle.checked = previous?.perArm === true;
+      perArmToggle.setAttribute('aria-label', `${exercise.name} new set weight is per arm`);
+      perArm.append(perArmToggle, text('span', '×2'));
+      stopInteraction(perArm);
+      weightCell.append(weight, unit, perArm);
+      const rpe = numberInput(previous?.rpe, `${exercise.name} new set RPE`, { min: 0, max: 10, step: '0.5' });
+      const rest = numberInput(undefined, `${exercise.name} new set rest seconds`, { min: 0, step: '1', integer: true });
+      const setType = selectInput(previous?.setType || 'normal', `${exercise.name} new set type`, setTypeOptions);
+      const log = button('Log', `Log ${exercise.name} set`, async () => {
+        log.disabled = true;
+        log.textContent = 'Saving…';
+        try {
+          await options.actions.addSet(exercise, {
+            reps: parsedNumber(reps),
+            weight: parsedNumber(weight),
+            weightUnit: unit.value,
+            perArm: perArmToggle.checked,
+            rpe: parsedNumber(rpe),
+            restSeconds: parsedNumber(rest),
+            setType: setType.value,
+          });
+        } catch {
+          log.disabled = false;
+          log.textContent = 'Retry';
+        }
+      });
+      log.classList.add('is-compact', 'is-primary');
+      draft.append(ordinal, reps, weightCell, rpe, rest, setType, log);
+      table.append(draft);
+      focusDraft = () => {
+        draft.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        window.setTimeout(() => {
+          reps.focus();
+          reps.select();
+        }, 0);
+      };
     }
     group.append(table);
     exerciseList.append(group);

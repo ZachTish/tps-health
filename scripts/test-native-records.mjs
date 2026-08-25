@@ -239,6 +239,27 @@ test('native workout session stores one exercise record with an atomic set list 
       ],
     }],
   }, 'the UI projection is derived from the indexed atomic set list in authored order');
+  const edited = await service.updateWorkoutSet(second.exercise.file, 'set-2', {
+    reps: 10,
+    weight: 105,
+    weightUnit: 'kg',
+    perArm: true,
+    rpe: 8.5,
+    restSeconds: 75,
+    setType: 'drop',
+  });
+  assert.equal(edited.frontmatter.setCount, 2, 'editing preserves the atomic set count');
+  assert.equal(edited.frontmatter.totalReps, 18);
+  assert.equal(edited.frontmatter.totalVolume, 2900);
+  assert.deepEqual(service.getWorkoutSnapshot(session.path).exercises[0].sets[1], {
+    id: 'set-2', ordinal: 2, reps: 10, weight: 105, weightUnit: 'kg', perArm: true,
+    rpe: 8.5, restSeconds: 75, setType: 'drop', completedDate: '2026-08-24T08:10:00.000Z', note: '',
+  }, 'inline edits retain the stable set identity and update the indexed projection');
+  await assert.rejects(
+    () => service.updateWorkoutSet(second.exercise.file, 'missing-set', { reps: 1 }),
+    /not found/u,
+    'an unresolved row never mutates a different set',
+  );
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
@@ -277,18 +298,24 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /renderNativeWorkoutSurfaceInReadingView\(this\.containerEl, this\.plugin, this\.ctx\.sourcePath\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
-  assert.match(mainSource, /new SetModal\(this\.app, this, exercise\.name, exercise\.sets\.at\(-1\)\)/u);
+  assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
+  assert.match(mainSource, /logNativeWorkoutSetDraft\(exercise\.name, draft\)/u);
+  assert.match(mainSource, /active-state:reconciled-from-native-record/u);
   assert.match(mainSource, /text\.setValue\(reps == null \? "" : String\(reps\)\)/u);
   assert.match(mainSource, /text\.setValue\(weight == null \? "" : String\(weight\)\)/u);
   assert.match(mainSource, /getWorkoutProgress\(workoutId\)/u);
   assert.match(mainSource, /this\.updateNativeWorkoutSurfaces\(\)/u);
   assert.doesNotMatch(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-workout"/u);
-  assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type'\]/u);
-  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', ''\]/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise, \{/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.updateSet\(exercise, set, patch\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /tps-health-native-workout-row is-draft/u);
   assert.match(nativeWorkoutSurfaceSource, /root\.dataset\.renderKey === signature/u);
   assert.match(nativeWorkoutSurfaceSource, /instance: options\.instanceKey/u);
   assert.match(mainSource, /instanceKey: this\.workoutSurfaceInstanceKey/u);
   assert.match(stylesSource, /\.markdown-source-view:not\(\.is-live-preview\) \.tps-health-native-workout-surface/u);
+  assert.match(stylesSource, /\.tps-health-workout-entry-modal \.setting-item-control \{[\s\S]*?flex: 0 0 auto;/u, 'mobile set fields do not inherit a tall desktop flex basis');
+  assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');
 });
 
 test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {

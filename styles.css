@@ -2032,8 +2032,8 @@ body.is-phone .tps-health-selection-controls {
   font-size: var(--font-ui-small);
   font-variant-numeric: tabular-nums;
   gap: 6px;
-  grid-template-columns: minmax(30px, .45fr) minmax(42px, .55fr) minmax(82px, 1.15fr) minmax(38px, .5fr) minmax(46px, .65fr) minmax(56px, .8fr);
-  min-width: 410px;
+  grid-template-columns: 34px 56px minmax(132px, 1.4fr) 52px 62px 88px 58px;
+  min-width: 520px;
   padding: 7px 4px;
 }
 
@@ -2045,12 +2045,66 @@ body.is-phone .tps-health-selection-controls {
   padding-top: 2px;
 }
 
-.tps-health-native-workout-row > span {
+.tps-health-native-workout-row > span,
+.tps-health-native-workout-row > input,
+.tps-health-native-workout-row > select,
+.tps-health-native-workout-row > div,
+.tps-health-native-workout-row > button {
   min-width: 0;
-  overflow: hidden;
   text-align: center;
+}
+
+.tps-health-native-workout-row > span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tps-health-native-workout-input,
+.tps-health-native-workout-select {
+  box-sizing: border-box;
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  height: 32px;
+  min-height: 32px;
+  padding: 3px 5px;
+  width: 100%;
+}
+
+.tps-health-native-workout-weight-cell {
+  align-items: center;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(48px, 1fr) 45px auto;
+}
+
+.tps-health-native-workout-per-arm {
+  align-items: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--font-ui-smaller);
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.tps-health-native-workout-per-arm input {
+  margin: 0;
+}
+
+.tps-health-native-workout-save-state {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.tps-health-native-workout-row.is-draft {
+  background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
+  border-radius: 6px;
+}
+
+.tps-health-native-workout-button.is-compact {
+  min-height: 32px;
+  padding: 3px 7px;
 }
 
 @container tps-health-native-workout (max-width: 470px) {
@@ -2821,7 +2875,9 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   }
 
   .tps-health-workout-entry-modal .setting-item-control {
+    flex: 0 0 auto;
     justify-content: stretch;
+    min-height: 0;
     width: 100%;
   }
 
@@ -2833,6 +2889,15 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-workout-entry-modal .setting-item-control button {
     flex: 1 1 0;
     min-height: 42px;
+  }
+
+  .tps-health-workout-entry-modal > .setting-item:last-child {
+    background: var(--modal-background, var(--background-primary));
+    bottom: calc(-1 * env(safe-area-inset-bottom));
+    margin: 8px -2px 0;
+    padding: 10px 2px calc(10px + env(safe-area-inset-bottom));
+    position: sticky;
+    z-index: 2;
   }
 }
 

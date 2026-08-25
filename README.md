@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.23.1
+
+- Active Native-record workouts now use a persistent, directly editable set table. Reps, weight, unit, per-arm behavior, RPE, rest, and set type can be changed in place; confirmed edits keep the set's stable ID and recalculate workout totals atomically.
+- Every exercise has a prefilled next-set row with an explicit **Log** action. **+ Set** focuses that row, and choosing a newly added exercise returns to the table instead of forcing a second modal. Completed workouts remain read-only.
+- Active workout controls resolve the session by its stable `tpsId` and repair a stale stored path, so moving a session note no longer disables its controls.
+- The fallback add-set modal no longer inherits the desktop control flex basis on phones. Its fields use compact natural height and its actions remain reachable above the mobile keyboard.
+- Native set records, settings, public APIs, Legacy storage, and completed workout notes require no migration. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.23.0
 
 - Workouts, workout plans, exercises, foods, and recipes can now use `/` as an explicit vault-root destination. New reusable Health notes are created directly at the root instead of falling back to `Health/...` folders.

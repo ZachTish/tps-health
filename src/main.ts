@@ -12,8 +12,8 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
-import { renderNativeWorkoutSurface } from "./native-workout-surface";
+import { HealthNativeRecordService, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import { buildNativeDailyDashboardModel, formatNativeDailyMetricValue, type NativeDailyDashboardModel } from "./native-daily-dashboard";
 import { buildVaultDestinationPath, fileIsInVaultDestination, normalizeVaultDestinationFolder, VAULT_ROOT_DESTINATION } from "./vault-destination";
 import {
@@ -2247,6 +2247,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (!(sessionFile instanceof TFile)) throw new Error("Active native workout session was not found.");
       const savedExercise = await this.findOrCreateExercise({ name: exerciseName }, options);
       await this.nativeRecordService.ensureWorkoutExercise(sessionFile, savedExercise.name, savedExercise.sourcePath);
+      this.updateNativeWorkoutSurfaces();
       this.scheduleWorkoutActionBars();
       return;
     }
@@ -3149,6 +3150,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.lastSetEndedAt = endedAt;
     this.settings.activeWorkoutSetCount = Number(result.session.frontmatter.setCount) || (this.settings.activeWorkoutSetCount + 1);
     await this.saveSettings();
+    this.updateNativeWorkoutSurfaces();
     this.scheduleWorkoutActionBars();
     logger.flow("WorkoutSet", "log:done", {
       setId: savedSet.id,
@@ -6762,9 +6764,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   renderNativeWorkoutSurfaceElement(root: HTMLElement, snapshot: NativeWorkoutSnapshot): void {
-    const active = this.settings.activeWorkoutPath === snapshot.path
-      && this.settings.activeWorkoutId === snapshot.id
-      && snapshot.status === "active";
+    const active = this.isActiveNativeWorkoutSnapshot(snapshot);
     const started = Date.parse(snapshot.startedAt);
     const elapsedLabel = Number.isFinite(started)
       ? formatRestDuration(Math.max(0, Math.floor(((snapshot.endedAt ? Date.parse(snapshot.endedAt) : Date.now()) - started) / 1000)))
@@ -6775,8 +6775,13 @@ export default class TPSHealthPlugin extends Plugin {
       instanceKey: this.workoutSurfaceInstanceKey,
       actions: {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
-        addSet: (exercise) => {
-          new SetModal(this.app, this, exercise.name, exercise.sets.at(-1)).open();
+        addSet: async (exercise, draft) => {
+          if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
+          await this.logNativeWorkoutSetDraft(exercise.name, draft);
+        },
+        updateSet: async (exercise, set, patch) => {
+          if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
+          await this.updateNativeWorkoutSetInline(exercise.path, set.id, patch);
         },
         finish: async () => {
           if (!active) return;
@@ -6784,6 +6789,65 @@ export default class TPSHealthPlugin extends Plugin {
         },
       },
     });
+  }
+
+  private isActiveNativeWorkoutSnapshot(snapshot: NativeWorkoutSnapshot): boolean {
+    if (snapshot.status !== "active") return false;
+    const activeId = String(this.settings.activeWorkoutId || "").trim();
+    const activePath = String(this.settings.activeWorkoutPath || "").trim();
+    const identityMatches = activeId ? activeId === snapshot.id : activePath === snapshot.path;
+    if (!identityMatches) return false;
+    if (activePath !== snapshot.path || activeId !== snapshot.id) {
+      this.settings.activeWorkoutPath = snapshot.path;
+      this.settings.activeWorkoutId = snapshot.id;
+      void this.saveSettings();
+      logger.flow("Workout", "active-state:reconciled-from-native-record", {
+        workoutId: snapshot.id,
+        path: snapshot.path,
+      });
+    }
+    return true;
+  }
+
+  private async logNativeWorkoutSetDraft(exercise: string, draft: NativeWorkoutSetDraft): Promise<void> {
+    try {
+      await this.logSet({
+        exercise,
+        reps: draft.reps,
+        weight: draft.weight,
+        weightUnit: draft.weightUnit,
+        perArm: draft.perArm,
+        rpe: draft.rpe,
+        restSeconds: draft.restSeconds,
+        setType: draft.setType as NonNullable<WorkoutSet["setType"]>,
+      });
+      this.updateNativeWorkoutSurfaces();
+    } catch (error) {
+      logger.flowError("WorkoutSet", "inline-add:failed", error, { exercise });
+      new Notice("Could not log that set. Its values remain in the table so you can retry.");
+      throw error;
+    }
+  }
+
+  private async updateNativeWorkoutSetInline(exercisePath: string, setId: string, patch: NativeWorkoutSetPatch): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled()) throw new Error("Native workout storage is not enabled.");
+    try {
+      await this.serializeWorkoutMutation(exercisePath, "native-inline-set-edit", () => (
+        this.nativeRecordService!.updateWorkoutSet(exercisePath, setId, patch)
+      ));
+      this.updateNativeWorkoutSurfaces();
+      this.scheduleWorkoutActionBars();
+      logger.flow("WorkoutSet", "inline-edit:done", {
+        exercisePath,
+        setId,
+        fields: Object.keys(patch).sort(),
+      });
+    } catch (error) {
+      logger.flowError("WorkoutSet", "inline-edit:failed", error, { exercisePath, setId });
+      new Notice("Could not save that set change. The stored values were kept.");
+      this.updateNativeWorkoutSurfaces();
+      throw error;
+    }
   }
 
   private async openWorkoutFileFromActionBar(file: TFile, source: "view" | "active-workout" | "active-view"): Promise<void> {
@@ -14565,13 +14629,11 @@ class WorkoutExercisePickerModal extends Modal {
       results.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = true);
       status.setText("Adding…");
       let exercise = String(name || "").trim();
-      let openNativeSetModal = false;
       try {
         if (!exercise) throw new Error("Exercise name was empty.");
         logger.flow("WorkoutExercisePicker", "choose:start", { path: this.filePath, exercise });
         if (this.workoutId) {
           await this.plugin.addSetForExerciseToActiveWorkout(exercise, undefined, { skipCatalogBuild: true });
-          openNativeSetModal = this.plugin.nativeRecordService?.isEnabled() === true;
         } else if (this.plugin.getActiveWorkoutState()?.target === "daily-note") {
           await this.plugin.logSet({ exercise, createExerciseNote: true });
         } else {
@@ -14583,9 +14645,7 @@ class WorkoutExercisePickerModal extends Modal {
         status.setText(`Added ${exercise}`);
         logger.flow("WorkoutExercisePicker", "choose:done", { path: this.filePath, exercise });
         this.close();
-        if (openNativeSetModal) {
-          window.setTimeout(() => new SetModal(this.app, this.plugin, exercise).open(), 0);
-        } else if (!this.workoutId && this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
+        if (!this.workoutId && this.plugin.getActiveWorkoutState()?.target !== "daily-note") {
           window.setTimeout(() => void this.plugin.focusLatestWorkoutSetAfterPicker(this.filePath), 0);
         }
       } catch (error) {

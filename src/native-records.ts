@@ -44,6 +44,16 @@ export interface NativeWorkoutSetSnapshot {
   note: string;
 }
 
+export interface NativeWorkoutSetPatch {
+  reps?: number;
+  weight?: number;
+  weightUnit?: string;
+  perArm?: boolean;
+  rpe?: number | null;
+  restSeconds?: number | null;
+  setType?: string;
+}
+
 export interface NativeWorkoutExerciseSnapshot {
   id: string;
   path: string;
@@ -273,6 +283,56 @@ export class HealthNativeRecordService {
     if (!updatedSession) throw new Error('Workout session changed before the set count could be saved.');
     this.trackHandle(updatedSession);
     return { session: updatedSession, exercise: updatedExercise };
+  }
+
+  async updateWorkoutSet(
+    exerciseReference: string | TFile,
+    setId: string,
+    patch: NativeWorkoutSetPatch,
+  ): Promise<NativeRecordHandle> {
+    const api = this.requireApi();
+    const exercise = await api.resolve(exerciseReference);
+    if (!exercise || exercise.kind !== 'workout-exercise') throw new Error('Workout exercise record was not found.');
+    const expectedSetId = String(setId || '').trim();
+    if (!expectedSetId) throw new Error('Workout set identity was missing.');
+    const priorSets = Array.isArray(exercise.frontmatter.sets)
+      ? exercise.frontmatter.sets.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
+      : [];
+    const matchingIndexes = priorSets
+      .map((set, index) => String(set.id || '') === expectedSetId ? index : -1)
+      .filter((index) => index >= 0);
+    if (matchingIndexes.length !== 1) throw new Error(matchingIndexes.length ? 'Workout set identity was ambiguous.' : 'Workout set was not found.');
+    const targetIndex = matchingIndexes[0];
+    const nextSet = { ...priorSets[targetIndex] };
+    if (patch.reps !== undefined) nextSet.reps = Math.max(0, numberValue(patch.reps));
+    if (patch.weight !== undefined) nextSet.weight = Math.max(0, numberValue(patch.weight));
+    if (patch.weightUnit !== undefined) nextSet.weightUnit = String(patch.weightUnit || '').trim() || 'lb';
+    if (patch.perArm !== undefined) nextSet.perArm = patch.perArm === true;
+    if (Object.prototype.hasOwnProperty.call(patch, 'rpe')) {
+      if (patch.rpe == null) delete nextSet.rpe;
+      else nextSet.rpe = Math.min(10, Math.max(0, numberValue(patch.rpe)));
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'restSeconds')) {
+      if (patch.restSeconds == null) delete nextSet.restSeconds;
+      else nextSet.restSeconds = Math.max(0, Math.round(numberValue(patch.restSeconds)));
+    }
+    if (patch.setType !== undefined) {
+      const setType = String(patch.setType || '').trim().toLowerCase();
+      if (!['normal', 'warmup', 'drop', 'failure'].includes(setType)) throw new Error('Workout set type was not supported.');
+      nextSet.setType = setType;
+    }
+    const sets = priorSets.map((set, index) => index === targetIndex ? nextSet : set);
+    const totalReps = sets.reduce((sum, current) => sum + numberValue(current.reps), 0);
+    const totalVolume = sets.reduce((sum, current) => sum + numberValue(current.reps) * numberValue(current.weight) * (current.perArm === true ? 2 : 1), 0);
+    const updated = await api.update(exercise.file, {
+      sets,
+      setCount: sets.length,
+      totalReps,
+      totalVolume,
+    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set-inline' });
+    if (!updated) throw new Error('Workout exercise record changed before the set edit could be saved.');
+    this.trackHandle(updated);
+    return updated;
   }
 
   async ensureWorkoutExercise(
