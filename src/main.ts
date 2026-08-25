@@ -799,7 +799,7 @@ export default class TPSHealthPlugin extends Plugin {
           renderNativeDailyDashboardMessage(el, "Enable Native Markdown records in TPS Health to use this dashboard.");
           return;
         }
-        ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext.dateIso));
+        ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext));
       });
     }
     this.registerMarkdownPostProcessor((root, ctx) => {
@@ -10373,7 +10373,7 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
 class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private refreshTimer: number | null = null;
 
-  constructor(containerEl: HTMLElement, private plugin: TPSHealthPlugin, private dateIso: string) {
+  constructor(containerEl: HTMLElement, private plugin: TPSHealthPlugin, private dateContext: FoodLogDateContext) {
     super(containerEl);
   }
 
@@ -10401,13 +10401,27 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 
   private async render(): Promise<void> {
     try {
-      const totals = await this.plugin.getDailyFoodMacroTotals(this.dateIso);
-      renderNativeDailyDashboard(this.containerEl, buildNativeDailyDashboardModel(totals, this.plugin.getMetricRenderConfigs()));
+      const totals = await this.plugin.getDailyFoodMacroTotals(this.dateContext.dateIso);
+      renderNativeDailyDashboard(
+        this.containerEl,
+        buildNativeDailyDashboardModel(totals, this.plugin.getMetricRenderConfigs()),
+        {
+          addFood: () => this.plugin.openFoodLogger({ ...this.dateContext }),
+          logActivity: () => this.plugin.openActivityLogger({ ...this.dateContext }),
+          startWorkout: () => this.plugin.openWorkoutStarter({ ...this.dateContext }),
+        },
+      );
     } catch (error) {
-      logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateIso });
+      logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateContext.dateIso });
       renderNativeDailyDashboardMessage(this.containerEl, "TPS Health could not load this day's nutrition totals.");
     }
   }
+}
+
+interface NativeDailyDashboardActions {
+  addFood(): void;
+  logActivity(): void;
+  startWorkout(): void;
 }
 
 function renderNativeDailyDashboardMessage(container: HTMLElement, message: string): void {
@@ -10416,7 +10430,11 @@ function renderNativeDailyDashboardMessage(container: HTMLElement, message: stri
   root.createDiv({ cls: "tps-health-native-daily-message", text: message });
 }
 
-function renderNativeDailyDashboard(container: HTMLElement, model: NativeDailyDashboardModel): void {
+function renderNativeDailyDashboard(
+  container: HTMLElement,
+  model: NativeDailyDashboardModel,
+  actions: NativeDailyDashboardActions,
+): void {
   container.empty();
   const root = container.createDiv({ cls: "tps-health-native-daily" });
   const header = root.createDiv({ cls: "tps-health-native-daily-header" });
@@ -10430,6 +10448,20 @@ function renderNativeDailyDashboard(container: HTMLElement, model: NativeDailyDa
     cls: "tps-health-native-daily-calories",
     text: `${formatNativeDailyMetricValue(model.calories)} kcal`,
   });
+
+  const actionBar = root.createDiv({ cls: "tps-health-native-daily-actions" });
+  const addAction = (label: string, icon: string, onClick: () => void) => {
+    const button = actionBar.createEl("button", {
+      cls: "tps-health-native-daily-action clickable-icon",
+      attr: { type: "button", "aria-label": label },
+    });
+    setIcon(button, icon);
+    button.createSpan({ text: label });
+    button.addEventListener("click", onClick);
+  };
+  addAction("Add food", "utensils", actions.addFood);
+  addAction("Log activity", "activity", actions.logActivity);
+  addAction("Start workout", "dumbbell", actions.startWorkout);
 
   if (!model.entryCount) {
     root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });

@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.20.0
+
+- The native-record Daily Note card is now an active date-scoped Health section instead of a passive nutrition report. **Add food**, **Log activity**, and **Start workout** open Health's full existing workflows for the date resolved from the containing Daily Note.
+- Logging from a past or future Daily Note preserves that exact date context through the reviewed modal and normal native-record write path; it does not silently fall back to today or introduce a second record writer.
+- The three actions wrap cleanly in narrow panes and use 44 px touch targets on coarse-pointer devices. The summary, goal progress, empty state, incremental refresh, and core `Daily Health.base` table remain unchanged.
+- This establishes the POC sectional mini-app contract: domain plugins own compact create/summary cards while ordinary typed records and core Bases remain authoritative for storage, filtering, sorting, and individual rows. Calendar, Time Tracking, and Finances sections are documented as separate future plugin slices rather than being coupled into Health.
+- Existing Daily Notes, settings, record schemas, legacy storage behavior, and public APIs remain backward compatible. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.19.0
 
 - Native-record Daily Notes can now render a compact nutrition dashboard with the `tps-health-daily` fenced block. It reads the incremental typed-record index, shows the day's entry count and calories, and compares food totals with the configured calorie, protein, carbohydrate, fat, fiber, sugar, alcohol, and sodium goals.

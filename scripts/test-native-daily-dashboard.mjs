@@ -60,7 +60,19 @@ test('daily dashboard formats whole and fractional values without noisy precisio
 
 test('Health registers the Daily Note renderer and keeps all styling plugin-namespaced', () => {
   assert.match(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-daily"/u);
-  assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateIso\)/u);
+  assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateContext\.dateIso\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily/u);
   assert.doesNotMatch(stylesSource, /(?:^|\n)\s*\.native-daily/u);
+});
+
+test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext\)/u);
+  assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
+  assert.match(mainSource, /logActivity:\s*\(\) => this\.plugin\.openActivityLogger\(\{ \.\.\.this\.dateContext \}\)/u);
+  assert.match(mainSource, /startWorkout:\s*\(\) => this\.plugin\.openWorkoutStarter\(\{ \.\.\.this\.dateContext \}\)/u);
+  assert.match(mainSource, /addAction\("Add food", "utensils", actions\.addFood\)/u);
+  assert.match(mainSource, /addAction\("Log activity", "activity", actions\.logActivity\)/u);
+  assert.match(mainSource, /addAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*flex-wrap:\s*wrap/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-height:\s*44px/u);
 });
