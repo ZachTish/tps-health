@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.19.1
+
+- Branded multi-word Open Food Facts searches now use the normalized brand-first phrase across the provider's complete product identity instead of requiring the community record's `brands` field. Products that keep a brand only in `product_name` are no longer excluded by a hard brand filter.
+- Provider rows whose product name is only the brand now combine it with a useful generic name for display and matching. Known brands embedded in the product name are retained as searchable brand metadata even when the provider brand field is empty.
+- White Claw Surge has focused coverage for reordered `white claw surge` searches and a reviewed US 12 oz fallback: 160 kcal, 2 g carbohydrate, 2 g sugar, approximately 22.4 g alcohol at 8% ABV, and 30 mg sodium. This is a backward-compatible search/data patch with no settings, storage, or API migration; minimum supported Obsidian remains 1.12.0.
+- Validation: the final versioned suite passed 203 checks (202 passed, one credential-gated live USDA check skipped), including the name-only brand/generic-name fixture, reordered provider cache reuse, and reviewed fallback. TypeScript, the mandatory separate production build, test-runtime deployment, and exact source/runtime artifact comparison passed; the existing Hot Reload marker handled the test-vault reload path. Production was not accessed.
+
 ## 0.19.0
 
 - Native-record Daily Notes can now render a compact nutrition dashboard with the `tps-health-daily` fenced block. It reads the incremental typed-record index, shows the day's entry count and calories, and compares food totals with the configured calorie, protein, carbohydrate, fat, fiber, sugar, alcohol, and sodium goals.

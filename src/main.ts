@@ -4929,14 +4929,14 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private foodFactsSearchProductToItem(product: any): FoodItem {
-    const brands = Array.isArray(product.brands) ? product.brands.join(", ") : product.brands;
+    const brand = foodFactsProductBrand(product);
     const serving = foodFactsServing(product);
     const basis = foodFactsNutritionBasis(product, serving);
     const itemServing = foodFactsItemServing(serving, basis);
     return normalizeFoodMetricServing({
       id: String(product.code || id("off")),
       name: foodFactsProductName(product),
-      brand: brands ? String(brands) : undefined,
+      brand,
       aliases: foodFactsProductAliases(product),
       barcode: product.code ? String(product.code) : undefined,
       imageUrl: product.image_small_url || product.image_thumb_url || undefined,
@@ -16857,11 +16857,43 @@ function foodFactsProductSearchFields(product: any): Array<unknown> {
 }
 
 function foodFactsProductName(product: any): string {
-  for (const value of [product?.product_name, product?.product_name_en, product?.generic_name, product?.generic_name_en]) {
-    const name = String(value || "").trim();
-    if (name) return name;
+  const productName = firstFoodFactsText(product?.product_name, product?.product_name_en);
+  const genericName = firstFoodFactsText(product?.generic_name, product?.generic_name_en);
+  const brand = foodFactsProductBrand(product);
+  if (productName && brand && genericName && normalizeLookup(productName) === normalizeLookup(brand)) {
+    const normalizedGeneric = normalizeLookup(genericName);
+    if (normalizedGeneric && !normalizedGeneric.includes(normalizeLookup(brand))) return `${brand} ${genericName}`;
+  }
+  return productName || genericName;
+}
+
+function firstFoodFactsText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
   }
   return "";
+}
+
+function foodFactsProductBrand(product: any): string | undefined {
+  const explicit = Array.isArray(product?.brands)
+    ? product.brands.map((value: unknown) => String(value || "").trim()).filter(Boolean).join(", ")
+    : String(product?.brands || "").trim();
+  if (explicit) return explicit;
+  const identity = normalizeLookup([
+    product?.product_name,
+    product?.product_name_en,
+    product?.generic_name,
+    product?.generic_name_en,
+    product?.abbreviated_product_name,
+    product?.abbreviated_product_name_en,
+  ].filter(Boolean).join(" "));
+  if (!identity) return undefined;
+  const paddedIdentity = ` ${identity} `;
+  const inferred = Array.from(COMMON_FOOD_BRANDS)
+    .filter((brand) => paddedIdentity.includes(` ${normalizeLookup(brand)} `))
+    .sort((left, right) => right.length - left.length)[0];
+  return inferred ? titleCase(inferred) : undefined;
 }
 
 function foodFactsProductAliases(product: any): string[] | undefined {
@@ -17381,9 +17413,12 @@ function foodSearchProviderQuery(query: string): string {
 }
 
 function openFoodFactsProviderQuery(query: string): string {
-  const parts = foodSearchProviderQueryParts(query);
-  if (!parts.brand) return parts.query;
-  return [`brands:"${parts.brand}"`, ...parts.productTokens].join(" ").trim();
+  // Search-a-licious indexes brand words from several identity fields, while
+  // community products frequently omit `brands` and keep the brand only in
+  // `product_name`. A hard `brands:` clause drops those otherwise exact rows.
+  // Keep the typo/order-normalized brand-first query, but let the provider
+  // match it across the full product identity.
+  return foodSearchProviderQueryParts(query).query;
 }
 
 function knownFoodBrandMatch(tokens: string[]): { brand: string; matchedIndexes: Set<number> } | null {
@@ -17535,6 +17570,7 @@ const COMMON_FOOD_BRANDS = new Set([
   "pepsi",
   "michelob ultra",
   "michelob",
+  "white claw",
   "dr pepper",
   "lays",
   "doritos",
@@ -17646,6 +17682,7 @@ const CURATED_COMMON_FOODS: CuratedCommonFood[] = [
   { name: "Fairlife 2% Ultra-Filtered Milk", brand: "Fairlife", aliases: ["fairlife milk", "fair life", "ultra filtered milk"], servingUnit: "1 cup", servingMl: 240, nutrition: { calories: 120, proteinG: 13, carbsG: 6, fatG: 4.5, sugarG: 6, sodiumMg: 120 } },
   { name: "Fairlife Fat Free Ultra-Filtered Milk", brand: "Fairlife", aliases: ["fairlife fat free", "fairlife skim", "fairlife milk"], servingUnit: "1 cup", servingMl: 240, nutrition: { calories: 80, proteinG: 13, carbsG: 6, fatG: 0, sugarG: 6, sodiumMg: 120 } },
   { name: "Michelob Ultra Organic Seltzer Signature Collection", brand: "Michelob Ultra", aliases: ["michelob ultra seltzer", "michelob seltzer", "ultra organic seltzer", "michelob ultra hard seltzer", "signature collection hard seltzer"], barcodes: ["018200202636", "0018200202636"], servingUnit: "can", servingMl: 355, nutrition: { calories: 80, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, alcoholG: 11.2, sodiumMg: 5 } },
+  { name: "White Claw Surge Hard Seltzer, 12 oz", brand: "White Claw", aliases: ["white claw surge", "white claw surge seltzer", "white claw hard seltzer surge", "surge hard seltzer", "surge seltzer"], servingUnit: "can", servingMl: 355, nutrition: { calories: 160, proteinG: 0, carbsG: 2, fatG: 0, fiberG: 0, sugarG: 2, alcoholG: 22.4, sodiumMg: 30 } },
   { name: "Quest Tortilla Style Protein Chips, Nacho Cheese", brand: "Quest", aliases: ["quest protein chips", "quest chips", "protein chips", "protein doritos", "doritos protein chips", "nacho protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 18, carbsG: 5, fatG: 5, fiberG: 1, sodiumMg: 340 } },
   { name: "Quest Tortilla Style Protein Chips, Loaded Taco", brand: "Quest", aliases: ["quest protein chips taco", "quest chips taco", "protein chips taco", "protein doritos", "doritos protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 19, carbsG: 5, fatG: 4.5, fiberG: 1, sodiumMg: 340 } },
   { name: "Quest Tortilla Style Protein Chips, Chili Lime", brand: "Quest", aliases: ["quest protein chips chili lime", "quest chips chili lime", "protein chips chili lime", "protein doritos", "doritos protein chips"], servingUnit: "bag", servingGrams: 32, nutrition: { calories: 140, proteinG: 19, carbsG: 5, fatG: 4.5, fiberG: 1, sodiumMg: 330 } },
