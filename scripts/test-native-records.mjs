@@ -34,8 +34,10 @@ async function loadModule() {
 
 const { HealthNativeRecordService, parseLegacyInlineFields } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+const nativeWorkoutSurfaceSource = readFileSync(new URL('../src/native-workout-surface.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
 const typesSource = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
+const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 function createHarness() {
   const files = new Map();
@@ -196,8 +198,57 @@ test('native workout session stores one exercise record with an atomic set list 
     exerciseCount: 1,
     setCount: 2,
   });
+  assert.deepEqual(service.getWorkoutSnapshot(session.path), {
+    id: 'workout-1',
+    path: session.path,
+    title: 'Strength',
+    status: 'active',
+    startedAt: '2026-08-24T08:00:00.000Z',
+    endedAt: '',
+    exerciseCount: 1,
+    setCount: 2,
+    exercises: [{
+      id: second.exercise.id,
+      path: second.exercise.path,
+      name: 'Bench press',
+      exercisePath: '',
+      totalReps: 14,
+      totalVolume: 1460,
+      sets: [
+        {
+          id: 'set-1', ordinal: 1, reps: 8, weight: 100, weightUnit: 'lb', perArm: false,
+          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:05:00.000Z', note: '',
+        },
+        {
+          id: 'set-2', ordinal: 2, reps: 6, weight: 110, weightUnit: 'lb', perArm: false,
+          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:10:00.000Z', note: '',
+        },
+      ],
+    }],
+  }, 'the UI projection is derived from the indexed atomic set list in authored order');
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
+  assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
+});
+
+test('native workout sessions render one persistent table without rewriting the note body', () => {
+  assert.match(mainSource, /new NativeWorkoutSurfaceWidget\(plugin, filePath\)/u);
+  assert.match(mainSource, /sourceView\.classList\.contains\("is-live-preview"\)/u);
+  assert.match(mainSource, /renderNativeWorkoutSurfaceInReadingView\(this\.containerEl, this\.plugin, this\.ctx\.sourcePath\)/u);
+  assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
+  assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
+  assert.match(mainSource, /new SetModal\(this\.app, this, exercise\.name, exercise\.sets\.at\(-1\)\)/u);
+  assert.match(mainSource, /text\.setValue\(reps == null \? "" : String\(reps\)\)/u);
+  assert.match(mainSource, /text\.setValue\(weight == null \? "" : String\(weight\)\)/u);
+  assert.match(mainSource, /getWorkoutProgress\(workoutId\)/u);
+  assert.match(mainSource, /this\.updateNativeWorkoutSurfaces\(\)/u);
+  assert.doesNotMatch(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-workout"/u);
+  assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type'\]/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /root\.dataset\.renderKey === signature/u);
+  assert.match(nativeWorkoutSurfaceSource, /instance: options\.instanceKey/u);
+  assert.match(mainSource, /instanceKey: this\.workoutSurfaceInstanceKey/u);
+  assert.match(stylesSource, /\.markdown-source-view:not\(\.is-live-preview\) \.tps-health-native-workout-surface/u);
 });
 
 test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {

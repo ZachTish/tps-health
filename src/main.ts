@@ -12,7 +12,8 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService } from "./native-records";
+import { HealthNativeRecordService, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { renderNativeWorkoutSurface } from "./native-workout-surface";
 import { buildNativeDailyDashboardModel, formatNativeDailyMetricValue, type NativeDailyDashboardModel } from "./native-daily-dashboard";
 import {
   DEFAULT_SETTINGS,
@@ -547,6 +548,7 @@ export default class TPSHealthPlugin extends Plugin {
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private foodIdentityMutationQueues = new Map<string, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
+  private readonly workoutSurfaceInstanceKey = id("workout-surface");
   private workoutActionBarRefreshTimer: number | null = null;
   private foodLogNutritionRepairTimer: number | null = null;
   private localFoodIndex: LocalFoodIndex | null = null;
@@ -6477,6 +6479,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.workoutActionBarRefreshTimer = window.setTimeout(() => {
       this.workoutActionBarRefreshTimer = null;
       this.updateWorkoutActionBars();
+      this.updateNativeWorkoutSurfaces();
     }, 80);
   }
 
@@ -6517,7 +6520,7 @@ export default class TPSHealthPlugin extends Plugin {
           });
         });
         if (target) {
-          const bar = this.ensureWorkoutActionBar(null, target.file, target.source);
+          const bar = this.ensureWorkoutActionBar(target.view, target.file, target.source);
           if (bar) {
             stats.rendered++;
             retained.add(bar);
@@ -6632,8 +6635,12 @@ export default class TPSHealthPlugin extends Plugin {
       && (!this.nativeRecordService?.isEnabled()
         || isNativeWorkoutSessionFrontmatter(frontmatter, this.settings.activeWorkoutId)
         || this.nativeRecordService.isWorkoutSession(file.path, this.settings.activeWorkoutId));
-    const nativeProgress = this.nativeRecordService?.isEnabled()
-      ? this.nativeRecordService.getWorkoutProgress(this.settings.activeWorkoutId)
+    const nativeSnapshot = this.nativeRecordService?.isEnabled()
+      ? this.nativeRecordService.getWorkoutSnapshot(file.path)
+      : null;
+    const workoutId = nativeSnapshot?.id || this.settings.activeWorkoutId;
+    const nativeProgress = nativeSnapshot
+      ? { exerciseCount: nativeSnapshot.exerciseCount, setCount: nativeSnapshot.setCount }
       : null;
     const renderKey = `${file.path}|${mobileFloating ? "mobile" : "inline"}|${activeForFile ? "active" : "inactive"}|${source}|${this.settings.activeWorkoutSetCount || 0}|${nativeProgress?.exerciseCount || 0}|${nativeProgress?.setCount || 0}`;
     if (bar.dataset.renderKey === renderKey) return bar;
@@ -6666,7 +6673,7 @@ export default class TPSHealthPlugin extends Plugin {
     };
     const refreshSummary = () => {
       if (this.nativeRecordService?.isEnabled()) {
-        const progress = this.nativeRecordService.getWorkoutProgress(this.settings.activeWorkoutId);
+        const progress = this.nativeRecordService.getWorkoutProgress(workoutId);
         updateSummary(progress.setCount, progress.exerciseCount);
         return Promise.resolve();
       }
@@ -6685,8 +6692,8 @@ export default class TPSHealthPlugin extends Plugin {
     const actions = bar.createDiv({ cls: "tps-health-workout-action-buttons" });
     this.createWorkoutActionButton(actions, "+ Exercise", "Add exercise", () => {
       logger.flow("WorkoutActionBar", "exercise-picker:open", { path: file.path });
-      new WorkoutExercisePickerModal(this.app, this, file.path, activeForFile ? this.settings.activeWorkoutId : "").open();
-    });
+      new WorkoutExercisePickerModal(this.app, this, file.path, activeForFile ? workoutId : "").open();
+    }, !activeForFile);
     const finish = this.createWorkoutActionButton(actions, "Finish", activeForFile ? "Finish active workout" : "Only available for the active workout", async () => {
       if (!activeForFile) {
         logger.flowWarn("WorkoutActionBar", "finish:inactive", { path: file.path, activePath: this.settings.activeWorkoutPath || "" });
@@ -6715,12 +6722,53 @@ export default class TPSHealthPlugin extends Plugin {
     return bar;
   }
 
-  private resolveMobileWorkoutActionBarTarget(): { file: TFile; source: "active-view" } | null {
+  private resolveMobileWorkoutActionBarTarget(): { view: MarkdownView; file: TFile; source: "active-view" } | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view?.file instanceof TFile && isWorkoutLikeMarkdownFile(this, view.file, this.app.metadataCache.getFileCache(view.file))) {
-      return { file: view.file, source: "active-view" };
+      return { view, file: view.file, source: "active-view" };
     }
     return null;
+  }
+
+  private updateNativeWorkoutSurfaces(): void {
+    if (!this.nativeRecordService?.isEnabled()) {
+      document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surface.remove());
+      return;
+    }
+    document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface[data-workout-path]").forEach((surface) => {
+      const path = surface.dataset.workoutPath || "";
+      const snapshot = this.nativeRecordService.getWorkoutSnapshot(path);
+      if (!snapshot) {
+        surface.remove();
+        return;
+      }
+      this.renderNativeWorkoutSurfaceElement(surface, snapshot);
+    });
+  }
+
+  renderNativeWorkoutSurfaceElement(root: HTMLElement, snapshot: NativeWorkoutSnapshot): void {
+    const active = this.settings.activeWorkoutPath === snapshot.path
+      && this.settings.activeWorkoutId === snapshot.id
+      && snapshot.status === "active";
+    const started = Date.parse(snapshot.startedAt);
+    const elapsedLabel = Number.isFinite(started)
+      ? formatRestDuration(Math.max(0, Math.floor(((snapshot.endedAt ? Date.parse(snapshot.endedAt) : Date.now()) - started) / 1000)))
+      : "--:--";
+    renderNativeWorkoutSurface(root, snapshot, {
+      active,
+      elapsedLabel,
+      instanceKey: this.workoutSurfaceInstanceKey,
+      actions: {
+        addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
+        addSet: (exercise) => {
+          new SetModal(this.app, this, exercise.name, exercise.sets.at(-1)).open();
+        },
+        finish: async () => {
+          if (!active) return;
+          await this.finishWorkout();
+        },
+      },
+    });
   }
 
   private async openWorkoutFileFromActionBar(file: TFile, source: "view" | "active-workout" | "active-view"): Promise<void> {
@@ -10442,6 +10490,7 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
         logger.flowError("RenderedControls", "food-log:failed", error, { sourcePath: this.ctx.sourcePath });
       });
       renderWorkoutSetChips(this.containerEl, this.plugin, this.ctx);
+      renderNativeWorkoutSurfaceInReadingView(this.containerEl, this.plugin, this.ctx.sourcePath);
       void renderDailyWorkoutHeaders(this.containerEl, this.plugin, this.ctx).catch((error) => {
         logger.flowError("RenderedControls", "daily-workout:failed", error, { sourcePath: this.ctx.sourcePath });
       });
@@ -11756,6 +11805,33 @@ class WorkoutSetEmptyWidget extends WidgetType {
   }
 }
 
+class NativeWorkoutSurfaceWidget extends WidgetType {
+  constructor(private plugin: TPSHealthPlugin, private filePath: string) {
+    super();
+  }
+
+  eq(other: NativeWorkoutSurfaceWidget): boolean {
+    return this.filePath === other.filePath;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const sourceView = view.dom.closest(".markdown-source-view");
+    if (!(sourceView instanceof HTMLElement) || !sourceView.classList.contains("is-live-preview")) {
+      return document.createElement("span");
+    }
+    const root = document.createElement("section");
+    root.className = "tps-health-native-workout-surface";
+    root.dataset.workoutPath = this.filePath;
+    const snapshot = this.plugin.nativeRecordService?.getWorkoutSnapshot(this.filePath);
+    if (snapshot) this.plugin.renderNativeWorkoutSurfaceElement(root, snapshot);
+    return root;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
 function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
   return StateField.define<DecorationSet>({
     create(state) {
@@ -11800,6 +11876,13 @@ function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorSt
       block: true,
     }));
   }
+  if (plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(filePath)) {
+    builder.add(state.doc.length, state.doc.length, Decoration.widget({
+      widget: new NativeWorkoutSurfaceWidget(plugin, filePath),
+      block: true,
+      side: 100,
+    }));
+  }
   return builder.finish();
 }
 
@@ -11822,6 +11905,20 @@ function workoutFilePathForRenderedRoot(plugin: TPSHealthPlugin, root: HTMLEleme
   const dataPath = root.closest("[data-path]")?.getAttribute("data-path");
   if (dataPath && isWorkoutLikeMarkdownPath(plugin, dataPath)) return dataPath;
   return markdownFilePathForRenderedElement(plugin, root);
+}
+
+function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSHealthPlugin, sourcePath: string): void {
+  if (!plugin.nativeRecordService?.isEnabled()) return;
+  const snapshot = plugin.nativeRecordService.getWorkoutSnapshot(sourcePath);
+  if (!snapshot) return;
+  const target = root.closest<HTMLElement>(".markdown-preview-sizer") || root;
+  const existing = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
+    .find((surface) => surface.dataset.workoutPath === snapshot.path);
+  const surface = existing || document.createElement("section");
+  surface.className = "tps-health-native-workout-surface";
+  surface.dataset.workoutPath = snapshot.path;
+  if (!existing) target.appendChild(surface);
+  plugin.renderNativeWorkoutSurfaceElement(surface, snapshot);
 }
 
 function markdownFilePathForRenderedElement(plugin: TPSHealthPlugin, element: HTMLElement): string {
@@ -14178,7 +14275,12 @@ class StartWorkoutModal extends Modal {
 
 class SetModal extends Modal {
 
-  constructor(app: App, private plugin: TPSHealthPlugin, private initialExercise = "") {
+  constructor(
+    app: App,
+    private plugin: TPSHealthPlugin,
+    private initialExercise = "",
+    private initialSet?: NativeWorkoutSetSnapshot,
+  ) {
     super(app);
   }
 
@@ -14220,13 +14322,23 @@ class SetModal extends Modal {
       cls: "tps-health-status",
     });
     let exercise = this.initialExercise.trim();
-    let reps: number | undefined;
-    let weight: number | undefined;
-    let weightUnit = "lb";
-    let perArm = false;
-    let rpe: number | undefined;
-    let restSeconds: number | undefined;
-    let setType: NonNullable<WorkoutSet["setType"]> = "normal";
+    const previousSet = this.initialSet || (exercise && this.plugin.nativeRecordService?.isEnabled()
+      ? this.plugin.nativeRecordService.getWorkoutSnapshot(active.path)?.exercises
+        .find((item) => normalizeLookup(item.name) === normalizeLookup(exercise))?.sets.at(-1)
+      : undefined);
+    let reps: number | undefined = previousSet?.reps;
+    let weight: number | undefined = previousSet?.weight;
+    let weightUnit = previousSet?.weightUnit || "lb";
+    let perArm = previousSet?.perArm === true;
+    let rpe: number | undefined = previousSet?.rpe;
+    let restSeconds: number | undefined = previousSet?.restSeconds;
+    let setType: NonNullable<WorkoutSet["setType"]> = previousSet
+      && ["normal", "warmup", "drop", "failure"].includes(previousSet.setType)
+      ? previousSet.setType as NonNullable<WorkoutSet["setType"]>
+      : "normal";
+    if (previousSet) {
+      status.setText(`${status.textContent || active.title || "Active workout"} • previous ${previousSet.reps} × ${previousSet.weight} ${previousSet.weightUnit} loaded`);
+    }
     let note = "";
     const exerciseList = this.contentEl.createEl("datalist");
     exerciseList.id = `tps-health-exercise-options-${Date.now()}`;
@@ -14305,17 +14417,17 @@ class SetModal extends Modal {
     new Setting(this.contentEl).setName("Reps").addText((text) => {
       repsInput = text.inputEl;
       text.inputEl.setAttr("inputmode", "decimal");
-      text.onChange((value) => reps = numberOrUndefined(value));
+      text.setValue(reps == null ? "" : String(reps)).onChange((value) => reps = numberOrUndefined(value));
     });
     new Setting(this.contentEl).setName("Weight").addText((text) => {
       text.inputEl.setAttr("inputmode", "decimal");
-      text.onChange((value) => weight = numberOrUndefined(value));
+      text.setValue(weight == null ? "" : String(weight)).onChange((value) => weight = numberOrUndefined(value));
     });
     new Setting(this.contentEl).setName("Weight unit").addText((text) => text.setValue(weightUnit).onChange((value) => weightUnit = value.trim() || "lb"));
-    new Setting(this.contentEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.onChange((value) => perArm = value));
+    new Setting(this.contentEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.setValue(perArm).onChange((value) => perArm = value));
     new Setting(this.contentEl).setName("RPE").addText((text) => {
       text.inputEl.setAttr("inputmode", "decimal");
-      text.onChange((value) => rpe = numberOrUndefined(value));
+      text.setValue(rpe == null ? "" : String(rpe)).onChange((value) => rpe = numberOrUndefined(value));
     });
     new Setting(this.contentEl)
       .setName("Rest seconds")
@@ -14323,7 +14435,7 @@ class SetModal extends Modal {
       .addText((text) => {
         restInput = text.inputEl;
         text.inputEl.setAttr("inputmode", "numeric");
-        text.setPlaceholder("auto").onChange((value) => {
+        text.setValue(restSeconds == null ? "" : String(restSeconds)).setPlaceholder("auto").onChange((value) => {
           const parsed = numberOrUndefined(value);
           restSeconds = parsed == null ? undefined : Math.max(0, Math.round(parsed));
         });

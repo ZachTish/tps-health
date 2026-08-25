@@ -1900,6 +1900,178 @@ body.is-phone .tps-health-selection-controls {
   padding-inline: 8px;
 }
 
+.tps-health-native-workout-surface {
+  background: color-mix(in srgb, var(--background-secondary) 74%, var(--background-primary));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-sizing: border-box;
+  container-name: tps-health-native-workout;
+  container-type: inline-size;
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 18px;
+  max-width: 100%;
+  padding: 12px;
+  width: 100%;
+}
+
+/* CodeMirror can retain a block widget during the mode-transition frame. Keep
+   Source mode literal even when that transient editor state survives. */
+.markdown-source-view:not(.is-live-preview) .tps-health-native-workout-surface {
+  display: none !important;
+}
+
+.tps-health-native-workout-header,
+.tps-health-native-workout-exercise-header,
+.tps-health-native-workout-empty,
+.tps-health-native-workout-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.tps-health-native-workout-header,
+.tps-health-native-workout-exercise-header,
+.tps-health-native-workout-empty {
+  justify-content: space-between;
+}
+
+.tps-health-native-workout-identity,
+.tps-health-native-workout-exercise-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tps-health-native-workout-heading,
+.tps-health-native-workout-exercise-name,
+.tps-health-native-workout-summary,
+.tps-health-native-workout-exercise-total,
+.tps-health-native-workout-no-sets {
+  margin: 0;
+}
+
+.tps-health-native-workout-heading {
+  font-size: var(--h3-size);
+  line-height: 1.2;
+}
+
+.tps-health-native-workout-summary,
+.tps-health-native-workout-exercise-total,
+.tps-health-native-workout-no-sets,
+.tps-health-native-workout-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.tps-health-native-workout-button {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  color: var(--text-normal);
+  display: inline-flex;
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+  height: auto;
+  justify-content: center;
+  min-height: 34px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.tps-health-native-workout-button:hover,
+.tps-health-native-workout-button:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+  outline: none;
+}
+
+.tps-health-native-workout-button.is-primary {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.tps-health-native-workout-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tps-health-native-workout-exercises {
+  display: grid;
+  gap: 10px;
+}
+
+.tps-health-native-workout-exercise {
+  background: color-mix(in srgb, var(--background-primary) 82%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  display: grid;
+  gap: 7px;
+  overflow: hidden;
+  padding: 9px;
+}
+
+.tps-health-native-workout-exercise-name {
+  font-size: var(--font-ui-medium);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.tps-health-native-workout-table {
+  display: grid;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.tps-health-native-workout-row {
+  align-items: center;
+  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 74%, transparent);
+  display: grid;
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  gap: 6px;
+  grid-template-columns: minmax(30px, .45fr) minmax(42px, .55fr) minmax(82px, 1.15fr) minmax(38px, .5fr) minmax(46px, .65fr) minmax(56px, .8fr);
+  min-width: 410px;
+  padding: 7px 4px;
+}
+
+.tps-health-native-workout-row.is-header {
+  border-top: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  padding-top: 2px;
+}
+
+.tps-health-native-workout-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container tps-health-native-workout (max-width: 470px) {
+  .tps-health-native-workout-header,
+  .tps-health-native-workout-empty {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tps-health-native-workout-actions,
+  .tps-health-native-workout-header > .tps-health-native-workout-actions,
+  .tps-health-native-workout-empty > .tps-health-native-workout-button {
+    width: 100%;
+  }
+
+  .tps-health-native-workout-actions > .tps-health-native-workout-button,
+  .tps-health-native-workout-empty > .tps-health-native-workout-button {
+    flex: 1 1 0;
+  }
+}
+
 @media (max-width: 520px), (hover: none) and (pointer: coarse) {
   .tps-health-workout-action-bar:not(.tps-health-workout-action-bar--mobile-floating) {
     align-items: stretch;

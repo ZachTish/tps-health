@@ -1,5 +1,16 @@
 # TPS Health
 
+## 0.21.0
+
+- Native workout-session notes now include a durable, compact workout table in Live Preview and Reading View. Each exercise has one stable group with `Set`, `Reps`, `Weight`, `RPE`, `Rest`, and `Type` columns plus exercise/set/rep/volume totals.
+- The table is a projection of the ordinary `workout-session` and `workout-exercise` frontmatter records. It does not write a code block, template, heading, or other marker into the note body; true Source mode stays literal.
+- **+ Exercise**, exercise-level **+ Set**, and **Finish** use the existing reviewed workout flows and write through the native-record service. The display updates after each confirmed mutation without scanning note bodies.
+- Exercise-level **+ Set** carries the most recent reps, weight, unit, per-arm setting, RPE, rest, and set type into the next editable form. Notes remain blank by default. This keeps repeated working sets fast without silently logging anything.
+- Completed workouts retain their table and exact totals after active-workout state is cleared. Their mutation controls are disabled, while the saved record stays readable after a cold reload.
+- Metadata-cache resolution and layout readiness both rebuild the incremental native-record index, preventing an empty workout surface during plugin/app reload races. Plugin reloads also replace stale surface callbacks instead of retaining handlers from an older runtime.
+- Narrow panes remain usable through a horizontally contained table and wrapping header actions; normal mobile/desktop note widths keep the static table presentation.
+- Backward compatible: Legacy workout rendering, templates explicitly configured by the user, record schemas, settings, and public APIs are unchanged. Native-record mode remains opt-in. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.20.4
 
 - Native workout recovery now accepts only the matching `kind: workout-session` record. A `workout-exercise` record with the same `workoutId` can no longer become the active session after a stale path or reload.

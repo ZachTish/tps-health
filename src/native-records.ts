@@ -30,6 +30,42 @@ interface IndexedHealthRecord {
   kind: NativeHealthKind;
 }
 
+export interface NativeWorkoutSetSnapshot {
+  id: string;
+  ordinal: number;
+  reps: number;
+  weight: number;
+  weightUnit: string;
+  perArm: boolean;
+  rpe?: number;
+  restSeconds?: number;
+  setType: string;
+  completedDate: string;
+  note: string;
+}
+
+export interface NativeWorkoutExerciseSnapshot {
+  id: string;
+  path: string;
+  name: string;
+  exercisePath: string;
+  totalReps: number;
+  totalVolume: number;
+  sets: NativeWorkoutSetSnapshot[];
+}
+
+export interface NativeWorkoutSnapshot {
+  id: string;
+  path: string;
+  title: string;
+  status: string;
+  startedAt: string;
+  endedAt: string;
+  exerciseCount: number;
+  setCount: number;
+  exercises: NativeWorkoutExerciseSnapshot[];
+}
+
 export interface LegacyHealthImportPlan {
   candidates: number;
   existing: number;
@@ -82,6 +118,14 @@ export class HealthNativeRecordService {
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, _data, cache) => this.indexFile(file, cache?.frontmatter)));
+    this.plugin.registerEvent(metadataCache.on('resolved', () => {
+      this.rebuild();
+      this.plugin.scheduleWorkoutActionBars();
+    }));
+    this.plugin.app.workspace?.onLayoutReady?.(() => {
+      this.rebuild();
+      this.plugin.scheduleWorkoutActionBars();
+    });
     this.plugin.registerEvent(vault.on('create', (file) => {
       if (file instanceof TFile) this.indexFile(file);
     }));
@@ -307,16 +351,80 @@ export class HealthNativeRecordService {
   }
 
   getWorkoutProgress(workoutId: string): { exerciseCount: number; setCount: number } {
-    const exercises = this.getKindRecords('workout-exercise').filter((record) => (
-      record.frontmatter.archived !== true
-      && String(record.frontmatter.workoutId || '') === workoutId
-    ));
+    const snapshot = this.getWorkoutSnapshot(workoutId);
     return {
+      exerciseCount: snapshot?.exerciseCount || 0,
+      setCount: snapshot?.setCount || 0,
+    };
+  }
+
+  /**
+   * Immutable, index-backed workout projection used by the native session UI.
+   * It never reads Markdown bodies and preserves the session's authored
+   * exercise order before falling back to stable record identity.
+   */
+  getWorkoutSnapshot(reference: string): NativeWorkoutSnapshot | null {
+    const key = String(reference || '').trim();
+    if (!key) return null;
+    const sessionMatches = this.getKindRecords('workout-session').filter((record) => (
+      record.frontmatter.archived !== true
+      && (record.file.path === key || record.id === key || String(record.frontmatter.workoutId || '') === key)
+    ));
+    if (sessionMatches.length !== 1) return null;
+    const session = sessionMatches[0];
+    const workoutId = String(session.frontmatter.workoutId || session.id).trim();
+    if (!workoutId) return null;
+    const order = new Map(
+      (Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds : [])
+        .map((value, index) => [String(value || ''), index] as const)
+        .filter(([id]) => Boolean(id)),
+    );
+    const exerciseRecords = this.getKindRecords('workout-exercise')
+      .filter((record) => record.frontmatter.archived !== true && String(record.frontmatter.workoutId || '') === workoutId)
+      .sort((left, right) => {
+        const leftOrder = order.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = order.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder || left.id.localeCompare(right.id) || left.file.path.localeCompare(right.file.path);
+      });
+    const exercises = exerciseRecords.map((record): NativeWorkoutExerciseSnapshot => {
+      const rawSets = Array.isArray(record.frontmatter.sets)
+        ? record.frontmatter.sets.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
+        : [];
+      const sets = rawSets.map((set, index): NativeWorkoutSetSnapshot => ({
+        id: String(set.id || `set-${index + 1}`),
+        ordinal: index + 1,
+        reps: numberValue(set.reps),
+        weight: numberValue(set.weight),
+        weightUnit: String(set.weightUnit || set.unit || 'lb').trim() || 'lb',
+        perArm: set.perArm === true,
+        rpe: set.rpe == null || String(set.rpe).trim() === '' ? undefined : numberValue(set.rpe),
+        restSeconds: set.restSeconds == null || String(set.restSeconds).trim() === ''
+          ? undefined
+          : Math.max(0, Math.round(numberValue(set.restSeconds))),
+        setType: String(set.setType || 'normal').trim() || 'normal',
+        completedDate: String(set.completedDate || set.endedAt || ''),
+        note: String(set.note || ''),
+      }));
+      return {
+        id: record.id,
+        path: record.file.path,
+        name: String(record.frontmatter.exercise || record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+        exercisePath: String(record.frontmatter.exercisePath || ''),
+        totalReps: sets.reduce((sum, set) => sum + set.reps, 0),
+        totalVolume: sets.reduce((sum, set) => sum + set.reps * set.weight * (set.perArm ? 2 : 1), 0),
+        sets,
+      };
+    });
+    return {
+      id: workoutId,
+      path: session.file.path,
+      title: String(session.frontmatter.title || session.file.basename).trim() || session.file.basename,
+      status: String(session.frontmatter.status || 'active').trim().toLowerCase() || 'active',
+      startedAt: String(session.frontmatter.startedAt || ''),
+      endedAt: String(session.frontmatter.endedAt || ''),
       exerciseCount: exercises.length,
-      setCount: exercises.reduce(
-        (sum, record) => sum + Math.max(0, numberValue(record.frontmatter.setCount)),
-        0,
-      ),
+      setCount: exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0),
+      exercises,
     };
   }
 
