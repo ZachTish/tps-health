@@ -10668,26 +10668,32 @@ function renderNativeDailyDashboard(
 ): void {
   container.empty();
   const root = container.createDiv({ cls: "tps-health-native-daily" });
+  root.setAttr("role", "region");
+  root.setAttr("aria-label", "Daily nutrition");
   const header = root.createDiv({ cls: "tps-health-native-daily-header" });
   const heading = header.createDiv({ cls: "tps-health-native-daily-heading" });
-  heading.createDiv({ cls: "tps-health-native-daily-title", text: "Daily nutrition" });
-  heading.createDiv({
+  const headingIcon = heading.createSpan({ cls: "tps-health-native-daily-heading-icon" });
+  setIcon(headingIcon, "table-2");
+  heading.createSpan({ cls: "tps-health-native-daily-title", text: "Nutrition" });
+  heading.createSpan({
     cls: "tps-health-native-daily-summary",
     text: model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
   });
-  header.createDiv({
+  header.createSpan({
     cls: "tps-health-native-daily-calories",
     text: `${formatNativeDailyMetricValue(model.calories)} kcal`,
   });
 
-  const actionBar = root.createDiv({ cls: "tps-health-native-daily-actions" });
+  const actionBar = header.createDiv({
+    cls: "tps-health-native-daily-actions",
+    attr: { role: "toolbar", "aria-label": "Nutrition actions" },
+  });
   const addAction = (label: string, icon: string, onClick: () => void) => {
     const button = actionBar.createEl("button", {
       cls: "tps-health-native-daily-action clickable-icon",
-      attr: { type: "button", "aria-label": label },
+      attr: { type: "button", "aria-label": label, title: label },
     });
     setIcon(button, icon);
-    button.createSpan({ text: label });
     button.addEventListener("click", onClick);
   };
   addAction("Add food", "utensils", actions.addFood);
@@ -10700,20 +10706,36 @@ function renderNativeDailyDashboard(
   }
 
   const metrics = root.createDiv({ cls: "tps-health-native-daily-metrics" });
+  metrics.setAttr("role", "table");
+  metrics.setAttr("aria-label", "Daily nutrition totals");
+  const metricHeader = metrics.createDiv({ cls: "tps-health-native-daily-metric-header" });
+  metricHeader.setAttr("role", "row");
+  metricHeader.createSpan({ text: "Metric", attr: { role: "columnheader" } });
+  metricHeader.createSpan({ text: "Current", attr: { role: "columnheader" } });
+  metricHeader.createSpan({ text: "Goal", attr: { role: "columnheader" } });
   for (const metric of model.metrics) {
     const card = metrics.createDiv({ cls: `tps-health-native-daily-metric is-${metric.state}` });
     card.setAttr("data-property-key", metric.propertyKey);
+    card.setAttr("role", "row");
     if (metric.color) card.style.setProperty("--tps-health-native-metric-color", metric.color);
-    const line = card.createDiv({ cls: "tps-health-native-daily-metric-line" });
-    line.createSpan({ cls: "tps-health-native-daily-metric-label", text: metric.label });
-    line.createSpan({
+    card.createSpan({
+      cls: "tps-health-native-daily-metric-label",
+      text: metric.label,
+      attr: { role: "cell" },
+    });
+    card.createSpan({
       cls: "tps-health-native-daily-metric-value",
       text: `${formatNativeDailyMetricValue(metric.value)} ${metric.unit}`,
+      attr: { role: "cell" },
+    });
+    card.createSpan({
+      cls: "tps-health-native-daily-target",
+      text: metric.targetLabel,
+      attr: { role: "cell" },
     });
     const track = card.createDiv({ cls: "tps-health-native-daily-progress", attr: { "aria-hidden": "true" } });
     const fill = track.createDiv({ cls: "tps-health-native-daily-progress-fill" });
     fill.style.width = `${Math.round(metric.progress * 100)}%`;
-    card.createDiv({ cls: "tps-health-native-daily-target", text: metric.targetLabel });
   }
 }
 

@@ -65,6 +65,17 @@ test('Health registers the Daily Note renderer and keeps all styling plugin-name
   assert.doesNotMatch(stylesSource, /(?:^|\n)\s*\.native-daily/u);
 });
 
+test('daily dashboard uses a compact Base-like table and accessible toolbar', () => {
+  assert.match(mainSource, /setIcon\(headingIcon, "table-2"\)/u);
+  assert.match(mainSource, /role: "toolbar", "aria-label": "Nutrition actions"/u);
+  assert.match(mainSource, /metrics\.setAttr\("role", "table"\)/u);
+  assert.match(mainSource, /metricHeader\.createSpan\(\{ text: "Metric", attr: \{ role: "columnheader" \} \}\)/u);
+  assert.match(stylesSource, /\.tps-health-native-daily\s*\{[\s\S]*?background:\s*var\(--background-primary\)[\s\S]*?border-radius:\s*var\(--radius-s\)[\s\S]*?overflow:\s*hidden/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-metric-header\s*,[\s\S]*?grid-template-columns:/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-action\s*\{[\s\S]*?background:\s*transparent[\s\S]*?width:\s*30px/u);
+  assert.doesNotMatch(mainSource, /button\.createSpan\(\{ text: label \}\)/u);
+});
+
 test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
   assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext\)/u);
   assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
@@ -73,6 +84,6 @@ test('Daily Note actions use the exact resolved date context for every Health wo
   assert.match(mainSource, /addAction\("Add food", "utensils", actions\.addFood\)/u);
   assert.match(mainSource, /addAction\("Log activity", "activity", actions\.logActivity\)/u);
   assert.match(mainSource, /addAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
-  assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*flex-wrap:\s*wrap/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*display:\s*flex/u);
   assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-height:\s*44px/u);
 });

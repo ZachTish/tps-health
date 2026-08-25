@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.23.4
+
+- The inline Daily Nutrition dashboard now mirrors the visual language of core Bases: a flat compact header, table icon, entry count, calorie summary, column-aligned metric rows, and thin progress indicators replace the oversized dashboard card.
+- Add food, activity, and workout actions remain in the header as accessible icon controls. Their date targeting and mutation behavior are unchanged.
+- Populated and empty Daily Notes were visually verified in the Native POC on mobile-width layouts. No Health record, schema, setting, or workflow migration is required.
+- Minimum supported Obsidian remains 1.12.0.
+
 ## 0.23.3
 
 - Native Health indexing now consumes GCM `nativeRecords` API v2 identity inspection. Food, activity, workout-session, and workout-exercise records remain available when a vault stores stable record identity in a tag instead of physical `tpsId`/`tpsSchemaVersion` properties.

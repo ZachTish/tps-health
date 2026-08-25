@@ -3787,31 +3787,47 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 }
 .tps-health-native-daily {
   --tps-health-native-metric-color: var(--interactive-accent);
-  display: grid;
-  gap: 12px;
-  width: 100%;
-  padding: 14px;
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-l);
-  background: var(--background-secondary);
+  border-radius: var(--radius-s);
   box-sizing: border-box;
+  container-type: inline-size;
+  display: grid;
+  overflow: hidden;
+  width: 100%;
 }
 
-.tps-health-native-daily-header,
-.tps-health-native-daily-metric-line {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+.tps-health-native-daily-header {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 42px;
+  padding: 5px 7px 5px 10px;
 }
 
 .tps-health-native-daily-heading {
+  align-items: center;
+  display: flex;
+  gap: 7px;
   min-width: 0;
 }
 
+.tps-health-native-daily-heading-icon {
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.tps-health-native-daily-heading-icon svg {
+  height: 17px;
+  width: 17px;
+}
+
 .tps-health-native-daily-title {
-  font-size: var(--font-ui-medium);
+  font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
+  white-space: nowrap;
 }
 
 .tps-health-native-daily-summary,
@@ -3822,36 +3838,40 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   font-size: var(--font-ui-smaller);
 }
 
+.tps-health-native-daily-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tps-health-native-daily-calories {
   flex: 0 0 auto;
-  color: var(--text-normal);
-  font-size: var(--font-ui-large);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
   font-weight: var(--font-semibold);
+  white-space: nowrap;
 }
 
 .tps-health-native-daily-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 2px;
 }
 
 .tps-health-native-daily-action {
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: auto;
-  min-width: 0;
-  height: auto;
-  min-height: 32px;
-  padding: 5px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--button-radius);
-  background: var(--interactive-normal);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-s);
   color: var(--text-normal);
-  font-size: var(--font-ui-small);
-  line-height: 1.2;
-  white-space: normal;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 5px;
+  width: 30px;
 }
 
 .tps-health-native-daily-action:hover {
@@ -3866,14 +3886,34 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-native-daily-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
-  gap: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.tps-health-native-daily-metric-header,
+.tps-health-native-daily-metric {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1.25fr) auto minmax(72px, 1fr);
+  min-width: 0;
+  padding: 7px 10px;
+}
+
+.tps-health-native-daily-metric-header {
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  min-height: 32px;
+}
+
+.tps-health-native-daily-metric-header > :nth-child(2),
+.tps-health-native-daily-metric-header > :nth-child(3) {
+  text-align: right;
 }
 
 .tps-health-native-daily-metric {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  min-height: 42px;
 }
 
 .tps-health-native-daily-metric-label,
@@ -3888,14 +3928,21 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   white-space: nowrap;
 }
 
-.tps-health-native-daily-metric-value {
+.tps-health-native-daily-metric-value,
+.tps-health-native-daily-target {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tps-health-native-daily-metric-value {
   font-weight: var(--font-semibold);
 }
 
 .tps-health-native-daily-progress {
-  height: 5px;
+  grid-column: 1 / -1;
+  height: 3px;
   overflow: hidden;
   border-radius: 999px;
   background: var(--background-modifier-border);
@@ -3912,18 +3959,43 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   background: var(--text-error);
 }
 
-@media (max-width: 480px) {
-  .tps-health-native-daily {
-    padding: 12px;
+.tps-health-native-daily-empty,
+.tps-health-native-daily-message {
+  align-items: center;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.tps-health-native-daily--message .tps-health-native-daily-message {
+  border-top: 0;
+}
+
+@container (max-width: 360px) {
+  .tps-health-native-daily-header {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .tps-health-native-daily-metrics {
-    grid-template-columns: 1fr 1fr;
+  .tps-health-native-daily-calories {
+    justify-self: end;
+  }
+
+  .tps-health-native-daily-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+
+  .tps-health-native-daily-metric-header,
+  .tps-health-native-daily-metric {
+    grid-template-columns: minmax(0, 1fr) auto minmax(68px, 0.9fr);
   }
 }
 
 @media (hover: none) and (pointer: coarse) {
   .tps-health-native-daily-action {
     min-height: 44px;
+    min-width: 44px;
+    width: 44px;
   }
 }
