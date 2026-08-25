@@ -506,7 +506,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const folders = createSettingsGroup(
       page,
       "Reusable note folders",
-      "Stable health entities live in these folders and can be linked from daily logs.",
+      "Stable health entities live in these destinations and can be linked from daily logs. Enter / to write directly to the vault root.",
     );
     this.addLibraryFolderSetting(folders, "workoutsFolder", "Workouts destination", "Canonical workout notes created by Start workout. Existing notes are not moved.");
     this.addLibraryFolderSetting(folders, "workoutPlansFolder", "Workout plans destination", "Reusable workout/routine notes. Session logs stay in the workouts destination. Existing notes are not moved.");

@@ -1,12 +1,12 @@
 {
   "name": "tps-health",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "description": "Daily-note backed food, recipe, and workout logging for the TPS system.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test scripts/test-native-records.mjs && node --test scripts/test-native-daily-dashboard.mjs && node --test scripts/test-home-actions.mjs && node --test scripts/test-food-log-date.mjs && node --test scripts/test-health-property-catalog.mjs && node --test scripts/test-health-providers.mjs && node --test scripts/test-describe-food.mjs && npm run test-settings-layout && npm run build",
+    "test": "node --test scripts/test-vault-destination.mjs && node --test scripts/test-native-records.mjs && node --test scripts/test-native-daily-dashboard.mjs && node --test scripts/test-home-actions.mjs && node --test scripts/test-food-log-date.mjs && node --test scripts/test-health-property-catalog.mjs && node --test scripts/test-health-providers.mjs && node --test scripts/test-describe-food.mjs && npm run test-settings-layout && npm run build",
     "test-settings-layout": "node --test scripts/test-settings-layout.mjs",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },

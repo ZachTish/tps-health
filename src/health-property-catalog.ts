@@ -144,7 +144,7 @@ function foodScope(settings: TPSHealthSettings): HealthPropertyCatalogScope {
   }
   if (mode === "metadata-folder-tag" || mode === "folder") {
     const path = String(settings.foodsFolder || "").trim();
-    if (path) scope.paths = [path];
+    if (path && path !== "/" && path !== ".") scope.paths = [path];
   }
   if (mode === "metadata-folder-tag" || mode === "metadata") {
     const identifier = foodFrontmatterScope(settings);

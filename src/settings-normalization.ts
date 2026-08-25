@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
+import { normalizeVaultDestinationFolder } from "./vault-destination";
 
 export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
 
@@ -251,11 +252,7 @@ function stringSetting(value: unknown, fallback: string): string {
 }
 
 function folderSetting(value: unknown, fallback: string): string {
-  const normalized = stringSetting(value, fallback)
-    .replace(/\\/g, "/")
-    .replace(/\/{2,}/g, "/")
-    .replace(/^\/+|\/+$/g, "");
-  return normalized || fallback;
+  return normalizeVaultDestinationFolder(value, fallback);
 }
 
 function optionalStringSetting(value: unknown): string {

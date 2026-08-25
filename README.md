@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.23.0
+
+- Workouts, workout plans, exercises, foods, and recipes can now use `/` as an explicit vault-root destination. New reusable Health notes are created directly at the root instead of falling back to `Health/...` folders.
+- Root is treated as a write destination, not an entity-classification shortcut. Health continues recognizing root-level notes through their typed frontmatter and configured tags, so unrelated root notes do not become food, exercise, or workout entities.
+- Existing destination settings and files are unchanged. No Health note is moved automatically, Native records still use GCM's configured record layout, and Legacy storage remains compatible.
+- This is a backward-compatible destination feature. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.22.0
 
 - Health's GCM property catalog advances to version 2 and now describes the fields Health actually writes for `food-entry`, `activity-entry`, `workout-session`, `workout-exercise`, reusable `exercise`, and `workout-plan` notes. GCM can render these in its stacked Properties surface without exposing them on unrelated kinds.

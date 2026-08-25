@@ -15,6 +15,7 @@ import * as logger from "./logger";
 import { HealthNativeRecordService, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface } from "./native-workout-surface";
 import { buildNativeDailyDashboardModel, formatNativeDailyMetricValue, type NativeDailyDashboardModel } from "./native-daily-dashboard";
+import { buildVaultDestinationPath, fileIsInVaultDestination, normalizeVaultDestinationFolder, VAULT_ROOT_DESTINATION } from "./vault-destination";
 import {
   DEFAULT_SETTINGS,
   ActivityLogEntry,
@@ -1876,7 +1877,7 @@ export default class TPSHealthPlugin extends Plugin {
     let path = "";
     let dailyNotePath = "";
     if (logTarget === "both") {
-      path = await this.uniquePath(`${this.settings.workoutsFolder}/${title}.md`);
+      path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${title}.md`));
       await this.ensureFolder(this.settings.workoutsFolder);
       const template = await this.readWorkoutTemplate();
       const body = template
@@ -3349,7 +3350,7 @@ export default class TPSHealthPlugin extends Plugin {
   async createFoodNoteFromItem(item: FoodItem, type: FoodNoteType = "food", replaceAliases = false): Promise<FoodItem> {
     const folder = isRecipeLikeFoodType(type) ? this.settings.recipesFolder : this.settings.foodsFolder;
     await this.ensureFolder(folder);
-    const path = await this.uniquePath(`${folder}/${sanitizeFileName(item.name)}.md`);
+    const path = await this.uniquePath(buildVaultDestinationPath(folder, `${sanitizeFileName(item.name)}.md`));
     const tag = isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag;
     const normalizedItem = this.prepareFoodNoteItem(item, type);
     if (replaceAliases) normalizedItem.aliases = aliasesFromFrontmatter(item.aliases);
@@ -4590,7 +4591,7 @@ export default class TPSHealthPlugin extends Plugin {
   async createExercise(input: CreateExerciseInput): Promise<ExerciseItem> {
     const folder = normalizePath(this.settings.exercisesFolder || DEFAULT_SETTINGS.exercisesFolder).replace(/^\/+|\/+$/g, "");
     await this.ensureFolder(folder);
-    const path = await this.uniquePath(`${folder}/${sanitizeFileName(input.name)}.md`);
+    const path = await this.uniquePath(buildVaultDestinationPath(folder, `${sanitizeFileName(input.name)}.md`));
     const template = await this.readExerciseTemplate();
     const body = template ? this.renderExerciseTemplate(template, input) : this.defaultExerciseTemplate(input);
     await this.app.vault.create(path, body);
@@ -4706,7 +4707,7 @@ export default class TPSHealthPlugin extends Plugin {
       const recognized = fm.tpsType === "health-workout-plan" ||
         fm.tpsType === "health-routine" ||
         fm.kind === "workout-plan" ||
-        file.path.startsWith(`${this.settings.workoutPlansFolder}/`);
+        fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!recognized) continue;
       stats.recognized++;
       if (!`${fm.name || fm.title || file.basename}`.toLowerCase().includes(lowered)) {
@@ -4722,7 +4723,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   async createWorkoutPlan(input: CreateWorkoutPlanInput): Promise<WorkoutPlanItem> {
     await this.ensureFolder(this.settings.workoutPlansFolder);
-    const path = await this.uniquePath(`${this.settings.workoutPlansFolder}/${sanitizeFileName(input.name)}.md`);
+    const path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutPlansFolder, `${sanitizeFileName(input.name)}.md`));
     const template = await this.readWorkoutPlanTemplate();
     const body = template ? this.renderWorkoutPlanTemplate(template, input) : this.defaultWorkoutPlanTemplate(input);
     await this.app.vault.create(path, body);
@@ -7009,7 +7010,7 @@ export default class TPSHealthPlugin extends Plugin {
       const isWorkoutPlan = fm.tpsType === "health-workout-plan" ||
         fm.tpsType === "health-routine" ||
         fm.kind === "workout-plan" ||
-        file.path.startsWith(`${this.settings.workoutPlansFolder}/`);
+        fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!isWorkoutPlan) continue;
       if (normalizeLookup(String(fm.name || fm.title || file.basename)) === normalized) return this.workoutPlanFromFrontmatter(file, fm);
     }
@@ -7067,7 +7068,7 @@ export default class TPSHealthPlugin extends Plugin {
       : this.settings.defaultRestSeconds;
 
     await this.ensureFolder(this.settings.workoutPlansFolder);
-    const path = await this.uniquePath(`${this.settings.workoutPlansFolder}/${sanitizeFileName(workoutPlanName)}.md`);
+    const path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutPlansFolder, `${sanitizeFileName(workoutPlanName)}.md`));
     const body = this.defaultWorkoutPlanTemplateFromSession(workoutPlanName, cooldownDays, defaultRestSeconds, layoutEntries);
     await this.app.vault.create(path, body);
     logger.flow("WorkoutPlan", "template-from-active:create", {
@@ -16638,10 +16639,10 @@ function healthEntityMatches(mode: HealthEntityIdentificationMode, signals: { me
 }
 
 function fileIsInConfiguredFolder(filePath: string, folder: string): boolean {
-  const normalizedFolder = normalizePath(folder || "").replace(/^\/+|\/+$/g, "");
-  if (!normalizedFolder) return false;
-  const normalizedPath = normalizePath(filePath || "").replace(/^\/+/, "");
-  return normalizedPath.startsWith(`${normalizedFolder}/`);
+  // The vault root is a write destination, not a safe entity classifier: using
+  // it as a folder identity would make every root note look like Health data.
+  if (normalizeVaultDestinationFolder(folder, VAULT_ROOT_DESTINATION) === VAULT_ROOT_DESTINATION) return false;
+  return fileIsInVaultDestination(filePath, folder);
 }
 
 function hasConfiguredTag(cache: any, configuredTag: string): boolean {
