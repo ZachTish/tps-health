@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.20.1
+
+- Native food, activity, and workout records now derive their `date` property from the user's local calendar day instead of slicing the UTC timestamp. An evening log no longer falls into tomorrow's Daily Note merely because its UTC timestamp crossed midnight.
+- A date explicitly selected through a Daily Health section remains authoritative, and date-only values are preserved without timezone parsing. UTC `createdDate`, `completedDate`, `startedAt`, and `endedAt` timestamps remain unchanged for ordering and synchronization.
+- This is a backward-compatible data-routing fix. Existing schemas, settings, legacy storage, public APIs, and minimum Obsidian 1.12.0 compatibility remain unchanged.
+
 ## 0.20.0
 
 - The native-record Daily Note card is now an active date-scoped Health section instead of a passive nutrition report. **Add food**, **Log activity**, and **Start workout** open Health's full existing workflows for the date resolved from the containing Daily Note.
