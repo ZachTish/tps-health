@@ -115,6 +115,42 @@ export interface NativeFilenameNormalizationResult {
   renamedPaths: Record<string, string>;
 }
 
+export interface ActiveWorkoutFilenameState {
+  id: string;
+  path: string;
+}
+
+/**
+ * Reconcile an active workout after an awaited rename batch without reviving a
+ * session that was finished, discarded, or replaced while the batch ran.
+ */
+export function resolveActiveWorkoutAfterFilenameMigration(input: {
+  captured: ActiveWorkoutFilenameState;
+  current: ActiveWorkoutFilenameState;
+  result: NativeFilenameNormalizationResult;
+  indexedSession: Pick<NativeWorkoutSnapshot, 'id' | 'path'> | null;
+}): ActiveWorkoutFilenameState | null {
+  const capturedExplicitId = String(input.captured.id || '').trim();
+  const capturedPath = String(input.captured.path || '').trim();
+  const capturedId = capturedExplicitId
+    || capturedPath.split('/').pop()?.replace(/\.md$/iu, '')
+    || '';
+  if (!capturedId) return null;
+
+  const currentId = String(input.current.id || '').trim();
+  const currentPath = String(input.current.path || '').trim();
+  const stillSameSession = capturedExplicitId
+    ? currentId === capturedExplicitId
+    : !currentId && currentPath === capturedPath;
+  if (!stillSameSession) return null;
+
+  const indexedPath = input.indexedSession?.id === capturedId
+    ? String(input.indexedSession.path || '').trim()
+    : '';
+  const path = String(input.result.renamedPaths[capturedId] || indexedPath).trim();
+  return path ? { id: capturedId, path } : null;
+}
+
 export interface NativeHealthRecordChange {
   path: string;
   kinds: NativeHealthKind[];

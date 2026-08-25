@@ -12,7 +12,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   buildNativeDailyActivityModel,
@@ -540,6 +540,10 @@ export default class TPSHealthPlugin extends Plugin {
   private settingsSavePending = false;
   private readonly uncertainSettingsSaveKeys = new Set<string>();
   private lastSavedSettingsSnapshot: TPSHealthSettings | null = null;
+  private pendingActiveWorkoutFilenameMigration: {
+    expected: ActiveWorkoutFilenameState;
+    next: ActiveWorkoutFilenameState;
+  } | null = null;
   private retainedLegacyUsdaApiKey = "";
   private settingsPersistenceBlockedByFutureSchema = false;
   private settingsPersistenceBlockedNoticeShown = false;
@@ -794,11 +798,22 @@ export default class TPSHealthPlugin extends Plugin {
         if (!checking) void this.traceCommand("normalize-native-health-filenames", async () => {
           const message = "Rename opaque food-log and workout record files to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and manually renamed files are left unchanged.";
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
+          const capturedActiveWorkout = {
+            id: this.settings.activeWorkoutId || "",
+            path: this.settings.activeWorkoutPath || "",
+          };
           const result = await this.nativeRecordService.normalizeNativeRecordFilenames();
-          const activeWorkoutPath = result.renamedPaths[(this.settings.activeWorkoutId || "").trim()];
-          if (activeWorkoutPath) {
-            this.settings.activeWorkoutPath = activeWorkoutPath;
-            await this.saveSettings();
+          const capturedWorkoutId = capturedActiveWorkout.id.trim()
+            || capturedActiveWorkout.path.split("/").pop()?.replace(/\.md$/iu, "")
+            || "";
+          const reconciledActiveWorkout = resolveActiveWorkoutAfterFilenameMigration({
+            captured: capturedActiveWorkout,
+            current: { id: this.settings.activeWorkoutId || "", path: this.settings.activeWorkoutPath || "" },
+            result,
+            indexedSession: this.nativeRecordService.getWorkoutSnapshot(capturedWorkoutId),
+          });
+          if (reconciledActiveWorkout) {
+            await this.persistActiveWorkoutFilenameMigration(capturedActiveWorkout, reconciledActiveWorkout);
           }
           new Notice(`Health filenames: ${result.renamed} renamed, ${result.unchanged} already readable or user-named, ${result.failed} failed.`, 12000);
         });
@@ -924,22 +939,74 @@ export default class TPSHealthPlugin extends Plugin {
     await operation;
   }
 
+  private async persistActiveWorkoutFilenameMigration(
+    expected: ActiveWorkoutFilenameState,
+    next: ActiveWorkoutFilenameState,
+  ): Promise<void> {
+    this.pendingActiveWorkoutFilenameMigration = {
+      expected: normalizedActiveWorkoutFilenameState(expected),
+      next: normalizedActiveWorkoutFilenameState(next),
+    };
+    await this.saveSettings();
+  }
+
   private async flushSettingsSaveQueue(): Promise<void> {
     try {
-      while (this.settingsSavePending && !this.settingsPersistenceBlockedByFutureSchema) {
+      while ((this.settingsSavePending || this.pendingActiveWorkoutFilenameMigration) && !this.settingsPersistenceBlockedByFutureSchema) {
         this.settingsSavePending = false;
+        const activeWorkoutFilenameMigration = this.pendingActiveWorkoutFilenameMigration;
+        this.pendingActiveWorkoutFilenameMigration = null;
         const localSnapshot = cloneSettingsSnapshot(this.settings);
         const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, localSnapshot);
         for (const key of this.uncertainSettingsSaveKeys) {
           if (!changedKeys.includes(key)) changedKeys.push(key);
         }
-        if (!changedKeys.length) continue;
+        if (!changedKeys.length && !activeWorkoutFilenameMigration) continue;
         const latestStored = await this.loadData();
         if (isFutureTPSHealthSettings(latestStored)) {
           this.settingsPersistenceBlockedByFutureSchema = true;
           logger.flowWarn("Settings", "save:blocked-future-schema", { changedCount: changedKeys.length });
           this.notifySettingsPersistenceBlocked();
           return;
+        }
+        const latestNormalized = normalizeTPSHealthSettings(latestStored);
+        let activeWorkoutFilenameMigrationApplied = false;
+        if (activeWorkoutFilenameMigration) {
+          const currentActiveWorkout = activeWorkoutFilenameState(this.settings);
+          const latestActiveWorkout = activeWorkoutFilenameState(latestNormalized);
+          const localStillEligible = sameActiveWorkoutFilenameState(currentActiveWorkout, activeWorkoutFilenameMigration.expected)
+            || sameActiveWorkoutFilenameState(currentActiveWorkout, activeWorkoutFilenameMigration.next);
+          if (localStillEligible) {
+            removeChangedSettingKeys(changedKeys, "activeWorkoutId", "activeWorkoutPath");
+            if (sameActiveWorkoutFilenameState(latestActiveWorkout, activeWorkoutFilenameMigration.expected)) {
+              localSnapshot.activeWorkoutId = activeWorkoutFilenameMigration.next.id;
+              localSnapshot.activeWorkoutPath = activeWorkoutFilenameMigration.next.path;
+              this.settings.activeWorkoutId = activeWorkoutFilenameMigration.next.id;
+              this.settings.activeWorkoutPath = activeWorkoutFilenameMigration.next.path;
+              changedKeys.push("activeWorkoutId", "activeWorkoutPath");
+              changedKeys.sort();
+              activeWorkoutFilenameMigrationApplied = true;
+            } else {
+              localSnapshot.activeWorkoutId = latestActiveWorkout.id;
+              localSnapshot.activeWorkoutPath = latestActiveWorkout.path;
+              this.settings.activeWorkoutId = latestActiveWorkout.id;
+              this.settings.activeWorkoutPath = latestActiveWorkout.path;
+              logger.flow("Settings", "active-workout-filename:cas-skipped", {
+                reason: sameActiveWorkoutFilenameState(latestActiveWorkout, activeWorkoutFilenameMigration.next)
+                  ? "already-persisted"
+                  : "stored-session-changed",
+              });
+            }
+          }
+        }
+        if (!changedKeys.length) {
+          const mutationsDuringRead = changedSettingsKeys(localSnapshot, this.settings);
+          this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(latestNormalized);
+          this.settings = mutationsDuringRead.length
+            ? normalizeTPSHealthSettings(mergeTPSHealthSettingsChanges(latestNormalized, this.settings, mutationsDuringRead))
+            : latestNormalized;
+          logger.setLoggingEnabled(this.settings.enableLogging);
+          continue;
         }
         const persistencePayload = mergeTPSHealthSettingsChanges(
           latestStored,
@@ -978,7 +1045,13 @@ export default class TPSHealthPlugin extends Plugin {
             activeWorkoutSetCount: persistedSnapshot.activeWorkoutSetCount || 0,
           });
         } catch (error) {
-          for (const key of changedKeys) this.uncertainSettingsSaveKeys.add(key);
+          for (const key of changedKeys) {
+            if (activeWorkoutFilenameMigrationApplied && (key === "activeWorkoutId" || key === "activeWorkoutPath")) continue;
+            this.uncertainSettingsSaveKeys.add(key);
+          }
+          if (activeWorkoutFilenameMigrationApplied && !this.pendingActiveWorkoutFilenameMigration) {
+            this.pendingActiveWorkoutFilenameMigration = activeWorkoutFilenameMigration;
+          }
           logger.flowError("Settings", "save:failed", error, {
             foodLogTarget: localSnapshot.foodLogTarget,
             workoutLogTarget: localSnapshot.workoutLogTarget,
@@ -20510,6 +20583,33 @@ function settingsNeedMigration(stored: unknown, normalized: TPSHealthSettings): 
 
 function cloneSettingsSnapshot(settings: TPSHealthSettings): TPSHealthSettings {
   return JSON.parse(JSON.stringify(settings));
+}
+
+function normalizedActiveWorkoutFilenameState(value: ActiveWorkoutFilenameState): ActiveWorkoutFilenameState {
+  return {
+    id: String(value.id || "").trim(),
+    path: String(value.path || "").trim(),
+  };
+}
+
+function activeWorkoutFilenameState(settings: Pick<TPSHealthSettings, "activeWorkoutId" | "activeWorkoutPath">): ActiveWorkoutFilenameState {
+  return normalizedActiveWorkoutFilenameState({
+    id: settings.activeWorkoutId,
+    path: settings.activeWorkoutPath,
+  });
+}
+
+function sameActiveWorkoutFilenameState(left: ActiveWorkoutFilenameState, right: ActiveWorkoutFilenameState): boolean {
+  const normalizedLeft = normalizedActiveWorkoutFilenameState(left);
+  const normalizedRight = normalizedActiveWorkoutFilenameState(right);
+  return normalizedLeft.id === normalizedRight.id && normalizedLeft.path === normalizedRight.path;
+}
+
+function removeChangedSettingKeys(changedKeys: string[], ...keys: string[]): void {
+  const removed = new Set(keys);
+  for (let index = changedKeys.length - 1; index >= 0; index -= 1) {
+    if (removed.has(changedKeys[index])) changedKeys.splice(index, 1);
+  }
 }
 
 function changedSettingsKeys(previous: TPSHealthSettings | null, next: TPSHealthSettings): string[] {

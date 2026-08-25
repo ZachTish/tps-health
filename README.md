@@ -1,5 +1,11 @@
 # TPS Health
 
+## 0.24.1
+
+- Readable filename migration now repairs and persists the active workout ID/path pair from the post-rename stable-ID index, even when the rename result does not contain the session mapping. It captures the active identity before the batch, rechecks both in-memory and latest persisted state, and refuses to restore an old session if that workout was finished, discarded, replaced, or changed by sync while the batch was running.
+- The fix preserves stable identity, record contents, manual names, and the already-migrated POC filenames. Reload-time active-workout recovery remains available as a second independent safeguard.
+- Validation: focused native-record and real save-queue coverage verifies the post-rename workout index path plus concurrent finish/discard/replacement and synced-state guards. The final declared suite passed 226 checks (225 passed and one credential-gated live USDA check skipped); build/deploy, POC reload recovery, and artifact hashes are recorded in the 0.24.1 release notes. Production was not accessed.
+
 ## 0.24.0
 
 - New native `food-entry`, `workout-session`, and `workout-exercise` records use readable filenames while their stable TPS identity remains in the configured frontmatter property or identity tag. Food and performed-exercise files use `YYYY-MM-DD - Title`; generated workout titles avoid repeating the same ISO date in the filename.

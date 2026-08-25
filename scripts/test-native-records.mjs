@@ -47,7 +47,7 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { HealthNativeRecordService, buildNativeHealthRecordFileName, deriveNativeFoodEntryProjection, parseLegacyInlineFields } = await loadModule();
+const { HealthNativeRecordService, buildNativeHealthRecordFileName, deriveNativeFoodEntryProjection, parseLegacyInlineFields, resolveActiveWorkoutAfterFilenameMigration } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const nativeWorkoutSurfaceSource = readFileSync(new URL('../src/native-workout-surface.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
@@ -264,6 +264,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   assert.equal(food.file.path, '_records/food-entries/2026-08-24 - Apple.md');
   assert.equal(session.file.path, '_records/workout-sessions/2026-08-24 - Strength.md');
   assert.equal(exercise.file.path, '_records/workout-exercises/2026-08-24 - Bench press.md');
+  assert.equal(service.getWorkoutSnapshot('workout-old')?.path, '_records/workout-sessions/2026-08-24 - Strength.md', 'the live index resolves an active workout after its TFile moves');
   assert.equal(custom.path, '_records/food-entries/My custom apple.md', 'a user-owned filename is preserved');
   assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
     inspected: 4, renamed: 0, unchanged: 4, failed: 0, renamedPaths: {},
@@ -304,6 +305,34 @@ test('readable filename migration preserves a manual rename that lands while the
     renamedPaths: { 'food-a': '_records/food-entries/2026-08-24 - Apple A.md' },
   });
   assert.equal(later.file.path, '_records/food-entries/My manual apple.md');
+});
+
+test('active workout filename reconciliation is atomic against finish, discard, and replacement races', () => {
+  const result = {
+    inspected: 1,
+    renamed: 1,
+    unchanged: 0,
+    failed: 0,
+    renamedPaths: { 'workout-a': '_records/workout-sessions/2026-08-24 - Strength.md' },
+  };
+  const captured = { id: 'workout-a', path: '_records/workout-sessions/workout-a.md' };
+  const indexedSession = { id: 'workout-a', path: '_records/workout-sessions/2026-08-24 - Strength.md' };
+
+  assert.deepEqual(resolveActiveWorkoutAfterFilenameMigration({ captured, current: captured, result, indexedSession }), {
+    id: 'workout-a', path: '_records/workout-sessions/2026-08-24 - Strength.md',
+  });
+  assert.equal(resolveActiveWorkoutAfterFilenameMigration({
+    captured, current: { id: '', path: '' }, result, indexedSession,
+  }), null, 'a concurrent finish or discard cannot resurrect path-only active state');
+  assert.equal(resolveActiveWorkoutAfterFilenameMigration({
+    captured, current: { id: 'workout-b', path: '_records/workout-sessions/workout-b.md' }, result, indexedSession,
+  }), null, 'a replacement active session cannot receive the prior session path');
+  assert.deepEqual(resolveActiveWorkoutAfterFilenameMigration({
+    captured,
+    current: captured,
+    result: { ...result, renamed: 0, unchanged: 1, renamedPaths: {} },
+    indexedSession,
+  }), { id: 'workout-a', path: indexedSession.path }, 'an already-renamed idempotent rerun repairs a stale persisted path');
 });
 
 test('native food projection derives every macro from the consumed amount and linked serving', () => {
@@ -679,8 +708,9 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /Copy legacy Health logs/u);
   assert.match(mainSource, /Native records: Apply readable Health filenames/u);
   assert.match(mainSource, /normalizeNativeRecordFilenames\(\)/u);
-  assert.match(mainSource, /result\.renamedPaths\[\(this\.settings\.activeWorkoutId \|\| ""\)\.trim\(\)\]/u);
-  assert.match(mainSource, /this\.settings\.activeWorkoutPath = activeWorkoutPath;[\s\S]*?await this\.saveSettings\(\);/u);
+  assert.match(mainSource, /const capturedActiveWorkout = \{[\s\S]*?id: this\.settings\.activeWorkoutId[\s\S]*?path: this\.settings\.activeWorkoutPath/u);
+  assert.match(mainSource, /resolveActiveWorkoutAfterFilenameMigration\(\{[\s\S]*?current: \{ id: this\.settings\.activeWorkoutId[\s\S]*?getWorkoutSnapshot\(capturedWorkoutId\)/u);
+  assert.match(mainSource, /persistActiveWorkoutFilenameMigration\(capturedActiveWorkout, reconciledActiveWorkout\)/u);
   assert.match(settingsSource, /GCM 1\.43\.1 or newer gives new food and workout records readable date-and-title filenames/u);
 });
 

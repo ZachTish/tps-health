@@ -4846,6 +4846,64 @@ test("volatile Health state saves merge with externally updated preferences and 
   assert.equal(plugin.settings.recipesFolder, "Synced Recipes", "the in-memory view must adopt the merged persisted settings");
 });
 
+test("active workout filename repair uses a persistence-time CAS and never pairs different sessions", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const expected = { id: "workout-a", path: "workout-a.md" };
+  const next = { id: "workout-a", path: "2026-08-25 - Strength.md" };
+  const baseline = normalizeTPSHealthSettings({
+    settingsVersion: 2,
+    activeWorkoutId: expected.id,
+    activeWorkoutPath: expected.path,
+  });
+
+  const runCase = async (latestStored) => {
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = JSON.parse(JSON.stringify(baseline));
+    plugin.lastSavedSettingsSnapshot = JSON.parse(JSON.stringify(baseline));
+    const savedPayloads = [];
+    plugin.loadData = async () => JSON.parse(JSON.stringify(latestStored));
+    plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
+    await plugin.persistActiveWorkoutFilenameMigration(expected, next);
+    return { plugin, savedPayloads };
+  };
+
+  const matching = await runCase(baseline);
+  assert.equal(matching.savedPayloads.length, 1);
+  assert.deepEqual(
+    { id: matching.savedPayloads[0].activeWorkoutId, path: matching.savedPayloads[0].activeWorkoutPath },
+    next,
+    "a matching persisted session receives the readable path as one coherent pair",
+  );
+
+  const replacement = normalizeTPSHealthSettings({
+    settingsVersion: 2,
+    recipesFolder: "Synced Recipes",
+    activeWorkoutId: "workout-b",
+    activeWorkoutPath: "2026-08-25 - Cardio.md",
+  });
+  const replaced = await runCase(replacement);
+  assert.equal(replaced.savedPayloads.length, 0, "a newer synced session must not be overwritten");
+  assert.deepEqual(
+    { id: replaced.plugin.settings.activeWorkoutId, path: replaced.plugin.settings.activeWorkoutPath },
+    { id: replacement.activeWorkoutId, path: replacement.activeWorkoutPath },
+  );
+  assert.equal(replaced.plugin.settings.recipesFolder, "Synced Recipes", "the CAS no-write path must adopt unrelated synced settings");
+  replaced.plugin.settings.calorieGoal = 1900;
+  await replaced.plugin.saveSettings();
+  assert.equal(replaced.savedPayloads.length, 1);
+  assert.equal(replaced.savedPayloads[0].recipesFolder, "Synced Recipes", "a later local save must not overwrite the adopted synced preference");
+
+  const cleared = await runCase(normalizeTPSHealthSettings({ settingsVersion: 2 }));
+  assert.equal(cleared.savedPayloads.length, 0, "a synced finish or discard must remain cleared");
+  assert.deepEqual(
+    { id: cleared.plugin.settings.activeWorkoutId, path: cleared.plugin.settings.activeWorkoutPath },
+    { id: "", path: "" },
+  );
+});
+
 test("a queued Health revert repairs an uncertain failed write", async () => {
   installDeterministicBrowserGlobals();
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
