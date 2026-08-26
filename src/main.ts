@@ -68,6 +68,12 @@ interface CoreDailyNoteSettings {
   folder: string;
 }
 
+interface CoreDailyNoteCreationSettings extends CoreDailyNoteSettings {
+  template: string;
+  templateDateFormat: string;
+  templateTimeFormat: string;
+}
+
 interface LogFoodOptions {
   focusAfterLog?: boolean;
   amountGrams?: number;
@@ -308,6 +314,12 @@ const DEFAULT_ACTIVITY_LOG_BASE_PATH = "Activity Log.base";
 const LEGACY_WORKOUT_LOG_BASE_PATH = "Workout Log.base";
 const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan.md";
 const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode";
+const DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS = 300;
+const DAILY_NOTE_TEMPLATER_SETTLE_BUFFER_MS = 100;
+const DAILY_NOTE_TEMPLATER_POLL_MS = 25;
+const DAILY_NOTE_TEMPLATER_TIMEOUT_MS = 5_000;
+const DAILY_NOTE_TEMPLATER_COMMAND_PATTERN = /<%[\s\S]*?%>/u;
+const DAILY_NOTE_TEMPLATE_INCOMPLETE_MARKER = "<!-- tps-daily-note-template-incomplete:v1 -->";
 const BARCODE_LOOKUP_TIMEOUT_MS = 5000;
 const BARCODE_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const BARCODE_MISS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -532,6 +544,16 @@ export function restoredFoodLogDraftConsumedDateInput(
   return saved;
 }
 
+function invariantMomentIsoDate(date: any): string {
+  const year = Number(date?.year?.());
+  const month = Number(date?.month?.());
+  const day = Number(date?.date?.());
+  if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
+    return `${String(year).padStart(4, "0")}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  return String(date?.clone?.().locale?.("en")?.format?.("YYYY-MM-DD") || date?.format?.("YYYY-MM-DD") || "");
+}
+
 export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
   nativeRecordService!: HealthNativeRecordService;
@@ -558,6 +580,10 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutMutationQueues = new Map<string, Promise<unknown>>();
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private foodIdentityMutationQueues = new Map<string, Promise<unknown>>();
+  private dailyNoteEnsureInFlight = new Map<string, Promise<TFile>>();
+  private dailyNoteCreateInFlight = new Map<string, Promise<TFile>>();
+  private failedOwnedDailyNoteCreates = new Map<string, string>();
+  private markdownMutationQueues = new Map<TFile, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
   private readonly workoutSurfaceInstanceKey = id("workout-surface");
   private workoutActionBarRefreshTimer: number | null = null;
@@ -5658,30 +5684,34 @@ export default class TPSHealthPlugin extends Plugin {
   private async insertIntoDailyNote(line: string, section?: string, targetFile?: TFile): Promise<TFile> {
     const file = targetFile || await this.getOrCreateDailyNote();
     if (section?.trim()) return this.appendToDailyHeading(section.trim(), line, file);
-    logger.flow("NoteWrite", "daily-note:insert-front", { path: file.path });
-    const content = await this.app.vault.read(file);
-    const insertAt = frontmatterEndIndex(content);
-    const before = content.slice(0, insertAt);
-    const after = content.slice(insertAt).replace(/^\n*/, "");
-    const prefix = before ? `${before.replace(/\n*$/, "\n")}\n` : "";
-    await this.app.vault.modify(file, `${prefix}${line}\n${after ? `\n${after}` : ""}`);
+    await this.serializeMarkdownMutation(file, async () => {
+      logger.flow("NoteWrite", "daily-note:insert-front", { path: file.path });
+      const content = await this.app.vault.read(file);
+      const insertAt = frontmatterEndIndex(content);
+      const before = content.slice(0, insertAt);
+      const after = content.slice(insertAt).replace(/^\n*/, "");
+      const prefix = before ? `${before.replace(/\n*$/, "\n")}\n` : "";
+      await this.app.vault.modify(file, `${prefix}${line}\n${after ? `\n${after}` : ""}`);
+    });
     return file;
   }
 
   private async appendToDailyHeading(heading: string, line: string, targetFile?: TFile): Promise<TFile> {
     const file = targetFile || await this.getOrCreateDailyNote();
-    const content = await this.app.vault.read(file);
-    const marker = `## ${heading}`;
-    if (!content.includes(marker)) {
-      logger.flow("NoteWrite", "daily-heading:create", { path: file.path, heading });
-      await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
-      return file;
-    }
-    logger.flow("NoteWrite", "daily-heading:append", { path: file.path, heading });
-    const index = content.indexOf(marker) + marker.length;
-    const before = content.slice(0, index);
-    const after = content.slice(index);
-    await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
+    await this.serializeMarkdownMutation(file, async () => {
+      const content = await this.app.vault.read(file);
+      const marker = `## ${heading}`;
+      if (!content.includes(marker)) {
+        logger.flow("NoteWrite", "daily-heading:create", { path: file.path, heading });
+        await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
+        return;
+      }
+      logger.flow("NoteWrite", "daily-heading:append", { path: file.path, heading });
+      const index = content.indexOf(marker) + marker.length;
+      const before = content.slice(0, index);
+      const after = content.slice(index);
+      await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
+    });
     return file;
   }
 
@@ -5689,8 +5719,10 @@ export default class TPSHealthPlugin extends Plugin {
     const file = await this.getFoodLogFile(true);
     if (!file) throw new Error("Food log file is not available");
     if (section?.trim()) return this.appendToHeading(file, section.trim(), line);
-    logger.flow("NoteWrite", "food-log-file:append", { path: file.path });
-    await this.app.vault.append(file, `${line}\n`);
+    await this.serializeMarkdownMutation(file, async () => {
+      logger.flow("NoteWrite", "food-log-file:append", { path: file.path });
+      await this.app.vault.append(file, `${line}\n`);
+    });
     return file;
   }
 
@@ -5706,19 +5738,34 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async appendToHeading(file: TFile, heading: string, line: string): Promise<TFile> {
-    const content = await this.app.vault.read(file);
-    const marker = `## ${heading}`;
-    if (!content.includes(marker)) {
-      logger.flow("NoteWrite", "heading:create", { path: file.path, heading });
-      await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
-      return file;
-    }
-    logger.flow("NoteWrite", "heading:append", { path: file.path, heading });
-    const index = content.indexOf(marker) + marker.length;
-    const before = content.slice(0, index);
-    const after = content.slice(index);
-    await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
+    await this.serializeMarkdownMutation(file, async () => {
+      const content = await this.app.vault.read(file);
+      const marker = `## ${heading}`;
+      if (!content.includes(marker)) {
+        logger.flow("NoteWrite", "heading:create", { path: file.path, heading });
+        await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
+        return;
+      }
+      logger.flow("NoteWrite", "heading:append", { path: file.path, heading });
+      const index = content.indexOf(marker) + marker.length;
+      const before = content.slice(0, index);
+      const after = content.slice(index);
+      await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
+    });
     return file;
+  }
+
+  private async serializeMarkdownMutation<T>(file: TFile, operation: () => Promise<T>): Promise<T> {
+    const previous = this.markdownMutationQueues.get(file) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    this.markdownMutationQueues.set(file, current);
+    try {
+      return await current;
+    } finally {
+      if (this.markdownMutationQueues.get(file) === current) {
+        this.markdownMutationQueues.delete(file);
+      }
+    }
   }
 
   private async focusLineBeforeInsertedDailyLog(file: TFile, marker: string): Promise<void> {
@@ -6407,17 +6454,364 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async getOrCreateDailyNoteForDate(dateValue?: string): Promise<TFile> {
-    const { format, folder } = await this.getDailyNoteSettings();
-    const date = dateValue ? window.moment(dateValue) : window.moment();
-    const fileName = `${(date?.isValid?.() && date.isValid() ? date : window.moment()).format(format)}.md`;
+    const parsedDate = dateValue ? window.moment(dateValue) : window.moment();
+    const date = parsedDate?.isValid?.() && parsedDate.isValid() ? parsedDate : window.moment();
+    const isoDate = invariantMomentIsoDate(date);
+    const pendingEnsure = this.dailyNoteEnsureInFlight.get(isoDate);
+    if (pendingEnsure) return pendingEnsure;
+
+    const ensureOperation = this.ensureDailyNoteForResolvedDate(date, isoDate);
+    this.dailyNoteEnsureInFlight.set(isoDate, ensureOperation);
+    try {
+      return await ensureOperation;
+    } finally {
+      if (this.dailyNoteEnsureInFlight.get(isoDate) === ensureOperation) {
+        this.dailyNoteEnsureInFlight.delete(isoDate);
+      }
+    }
+  }
+
+  private async ensureDailyNoteForResolvedDate(date: any, isoDate: string): Promise<TFile> {
+    const gcmState = this.getGcmPluginState();
+    if (gcmState.present) {
+      const gcmApi = gcmState.api;
+      if (!gcmApi) {
+        logger.flowWarn("DailyNote", "ensure:gcm-api-unready", { date: isoDate });
+        throw new Error("TPS Global Context Menu is loaded, but its API is not ready to create this Daily Note.");
+      }
+      const dailyNotes = gcmApi.dailyNotes;
+      const dailyNotesVersion = Number(dailyNotes?.version);
+      if (!Number.isFinite(dailyNotesVersion) || dailyNotesVersion < 2 || typeof dailyNotes?.ensureForIsoDate !== "function") {
+        logger.flowWarn("DailyNote", "ensure:gcm-v2-unavailable", { date: isoDate, version: Number.isFinite(dailyNotesVersion) ? dailyNotesVersion : 0 });
+        throw new Error("TPS Global Context Menu dailyNotes API v2 is required to create this Daily Note.");
+      }
+      let delegated: unknown;
+      try {
+        delegated = await dailyNotes.ensureForIsoDate(isoDate);
+      } catch (error) {
+        logger.flowError("DailyNote", "ensure:gcm-failed", error, { date: isoDate });
+        throw error;
+      }
+      if (!(delegated instanceof TFile)) {
+        logger.flowWarn("DailyNote", "ensure:gcm-declined", { date: isoDate });
+        throw new Error(`TPS Global Context Menu could not create the Daily Note for ${isoDate}.`);
+      }
+      logger.flow("DailyNote", "ensure:delegated", { date: isoDate, path: delegated.path, apiVersion: dailyNotesVersion });
+      return delegated;
+    }
+
+    const { format, folder, template, templateDateFormat, templateTimeFormat } = await this.getDailyNoteSettings(true);
+    const fileName = `${date.format(format)}.md`;
     const path = normalizePath(folder ? `${folder}/${fileName}` : fileName);
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) return existing;
-    const parentFolder = path.split("/").slice(0, -1).join("/");
-    if (parentFolder) await this.ensureFolder(parentFolder);
-    const created = await this.app.vault.create(path, "");
-    logger.flow("DailyNote", "create", { path, dateValue: dateValue || "", format, folder });
-    return created;
+    const pendingCreate = this.dailyNoteCreateInFlight.get(path);
+    if (pendingCreate) return pendingCreate;
+
+    const createOperation = (async (): Promise<TFile> => {
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof TFile) {
+        const currentExistingContent = await this.app.vault.read(existing);
+        if (currentExistingContent.includes(DAILY_NOTE_TEMPLATE_INCOMPLETE_MARKER)) {
+          throw new Error(`Daily Note template processing is incomplete at ${path}; remove the failure marker after reviewing the file, then retry.`);
+        }
+        const failedFingerprint = this.failedOwnedDailyNoteCreates.get(path);
+        if (failedFingerprint !== undefined) {
+          if (currentExistingContent === failedFingerprint) {
+            throw new Error(`Daily Note creation previously failed at ${path}; remove the incomplete file or retry after it changes.`);
+          }
+          this.failedOwnedDailyNoteCreates.delete(path);
+        }
+        // Existing note content is authoritative. Literal Templater syntax may
+        // be intentional documentation or user-authored text; creation lookup
+        // must never execute or rewrite a mature note based on delimiters alone.
+        if (!(await this.waitForKnownPendingDailyNoteTemplater(existing))) {
+          throw new Error(`Templater did not finish processing the Daily Note at ${existing.path}.`);
+        }
+        logger.flow("DailyNote", "ensure:fallback-existing", { date: isoDate, path: existing.path });
+        return existing;
+      }
+
+      const configuredTemplate = template.trim();
+      const templateFile = configuredTemplate ? this.resolveCoreDailyNoteTemplateFile(configuredTemplate) : null;
+      if (configuredTemplate && !(templateFile instanceof TFile)) {
+        logger.flowWarn("DailyNote", "ensure:fallback-template-missing", { date: isoDate, path, template: configuredTemplate });
+        throw new Error(`Core Daily Notes template not found: ${configuredTemplate}`);
+      }
+
+      let content = "";
+      if (templateFile instanceof TFile) {
+        try {
+          const templateContent = await this.app.vault.read(templateFile);
+          const title = path.split("/").pop()?.replace(/\.md$/i, "") || isoDate;
+          content = renderCoreDailyNoteTemplate(templateContent, date, title, window.moment(), {
+            dateFormat: templateDateFormat,
+            timeFormat: templateTimeFormat,
+          });
+        } catch (error) {
+          logger.flowError("DailyNote", "ensure:fallback-template-read-failed", error, { date: isoDate, path, template: templateFile.path });
+          throw new Error(`Core Daily Notes template could not be read: ${templateFile.path}`);
+        }
+      }
+
+      const parentFolder = path.split("/").slice(0, -1).join("/");
+      if (parentFolder) await this.ensureFolder(parentFolder);
+
+      let created: TFile | null = null;
+      try {
+        created = await this.app.vault.create(path, content);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.toLowerCase().includes("already exists")) {
+          logger.flowWarn("DailyNote", "ensure:fallback-external-create-race", { date: isoDate, path });
+          throw new Error(`Daily Note creation is already in progress at ${path}; retry after it settles.`);
+        }
+        throw error;
+      }
+
+      if (!(created instanceof TFile)) {
+        throw new Error(`Core Daily Notes did not create the expected file at ${path}.`);
+      }
+      // Templater's creation hook delay starts only after Vault.create emits.
+      // Anchor the passive grace to completion so slow iCloud/mobile creates
+      // cannot consume the hook's entire registration window.
+      const createCompletedAt = Date.now();
+
+      if (!(await this.finishDailyNoteTemplater(created, { awaitAutoCreateHook: true, createStartedAt: createCompletedAt }))) {
+        logger.flowWarn("DailyNote", "ensure:fallback-templater-incomplete", { date: isoDate, path: created.path });
+        await this.retainFailedOwnedDailyNote(created);
+        throw new Error(`Templater did not finish processing the Daily Note at ${created.path}.`);
+      }
+      this.failedOwnedDailyNoteCreates.delete(path);
+      logger.flow("DailyNote", "ensure:fallback-created", {
+        path: created.path,
+        date: isoDate,
+        format,
+        folder,
+        template: Boolean(configuredTemplate),
+        source: "core-settings",
+      });
+      return created;
+    })();
+
+    this.dailyNoteCreateInFlight.set(path, createOperation);
+    try {
+      return await createOperation;
+    } finally {
+      if (this.dailyNoteCreateInFlight.get(path) === createOperation) {
+        this.dailyNoteCreateInFlight.delete(path);
+      }
+    }
+  }
+
+  private resolveCoreDailyNoteTemplateFile(templatePath: string): TFile | null {
+    const normalized = normalizePath(templatePath.trim()).replace(/^\/+/, "");
+    if (!normalized) return null;
+    const candidates = normalized.toLowerCase().endsWith(".md") ? [normalized] : [normalized, `${normalized}.md`];
+    for (const candidatePath of candidates) {
+      const candidate = this.app.vault.getAbstractFileByPath(candidatePath);
+      if (candidate instanceof TFile) return candidate;
+    }
+    const linked = this.app.metadataCache.getFirstLinkpathDest?.(normalized.replace(/\.md$/i, ""), "");
+    return linked instanceof TFile ? linked : null;
+  }
+
+  private async retainFailedOwnedDailyNote(file: TFile): Promise<void> {
+    let fingerprint = "";
+    try {
+      fingerprint = await this.app.vault.read(file);
+    } catch (error) {
+      logger.flowError("DailyNote", "failed-create:read-failed", error, { path: file.path });
+      return;
+    }
+
+    this.failedOwnedDailyNoteCreates.set(file.path, fingerprint);
+    let marked = false;
+    try {
+      await this.app.vault.process(file, (current) => {
+        if (current !== fingerprint || current.includes(DAILY_NOTE_TEMPLATE_INCOMPLETE_MARKER)) return current;
+        marked = true;
+        return `${current}${current.endsWith("\n") || current.length === 0 ? "" : "\n"}${DAILY_NOTE_TEMPLATE_INCOMPLETE_MARKER}\n`;
+      });
+    } catch (error) {
+      logger.flowWarn("DailyNote", "failed-create:marker-failed", { path: file.path, error: logger.errorSummary(error) });
+    }
+    if (marked) {
+      const markedContent = await this.app.vault.read(file);
+      this.failedOwnedDailyNoteCreates.set(file.path, markedContent);
+    }
+    // Never delete or replace the file. The hidden failure marker is appended
+    // only through Vault.process when the bytes still match our failed write,
+    // making the fail-closed state durable across reload and Sync without
+    // breaking YAML frontmatter at the beginning of the note.
+    logger.flowWarn("DailyNote", "failed-create:retained", { path: file.path, marked });
+  }
+
+  private async finishDailyNoteTemplater(
+    file: TFile,
+    options: { awaitAutoCreateHook?: boolean; createStartedAt?: number } = {},
+  ): Promise<boolean> {
+    let content: string;
+    try {
+      content = await this.app.vault.read(file);
+    } catch (error) {
+      logger.flowError("DailyNote", "templater:inspect-failed", error, { path: file.path });
+      return false;
+    }
+
+    const hasCommands = DAILY_NOTE_TEMPLATER_COMMAND_PATTERN.test(content);
+    const templater = (this.app as any).plugins?.getPlugin?.("templater-obsidian")
+      || (this.app as any).plugins?.plugins?.["templater-obsidian"];
+    const processor = templater?.templater?.overwrite_file_commands;
+    const autoCreateEligible = this.isDailyNoteTemplaterAutoCreateEnabled(templater)
+      && this.isDailyNoteTemplaterAutoCreateEligible(file, templater);
+    if (!hasCommands && content.length > 0) return true;
+    if (!hasCommands && (!options.awaitAutoCreateHook || !autoCreateEligible)) return true;
+    if (hasCommands && typeof processor !== "function") {
+      logger.flowWarn("DailyNote", "templater:unavailable", { path: file.path });
+      return false;
+    }
+
+    let observedCreateStart: number | null = null;
+    if (autoCreateEligible && options.awaitAutoCreateHook) {
+      const numericStart = Number(options.createStartedAt);
+      const now = Date.now();
+      observedCreateStart = Number.isFinite(numericStart) && numericStart > 0 && numericStart <= now
+        ? numericStart
+        : now;
+    } else if (autoCreateEligible) {
+      observedCreateStart = this.getRecentDailyNoteTemplaterCreateStart(file, templater);
+    }
+    if (observedCreateStart !== null) {
+      return this.waitForDailyNoteTemplaterCreateHook(file, templater, observedCreateStart);
+    }
+
+    try {
+      await processor.call(templater.templater, file, false);
+      const processed = await this.app.vault.read(file);
+      if (DAILY_NOTE_TEMPLATER_COMMAND_PATTERN.test(processed)) {
+        logger.flowWarn("DailyNote", "templater:commands-remain", { path: file.path });
+        return false;
+      }
+      logger.flow("DailyNote", "templater:explicit-complete", { path: file.path });
+      return true;
+    } catch (error) {
+      logger.flowError("DailyNote", "templater:explicit-failed", error, { path: file.path });
+      return false;
+    }
+  }
+
+  private async waitForKnownPendingDailyNoteTemplater(file: TFile): Promise<boolean> {
+    const templater = (this.app as any).plugins?.getPlugin?.("templater-obsidian")
+      || (this.app as any).plugins?.plugins?.["templater-obsidian"];
+    const pendingFiles = templater?.templater?.files_with_pending_templates;
+    const isPending = typeof pendingFiles?.has === "function" && pendingFiles.has(file.path);
+    const recentEligibleCreate = !isPending
+      && this.isDailyNoteTemplaterAutoCreateEnabled(templater)
+      && this.isDailyNoteTemplaterAutoCreateEligible(file, templater)
+      ? this.getRecentDailyNoteTemplaterCreateStart(file, templater)
+      : null;
+    if (!isPending && recentEligibleCreate === null) return true;
+
+    if (recentEligibleCreate !== null) {
+      // The auto hook registers its pending task after a short delay. A recent
+      // eligible file is positive creation evidence, so wait passively through
+      // that registration window; never invoke Templater on the existing file.
+      return this.waitForDailyNoteTemplaterCreateHook(file, templater, recentEligibleCreate);
+    }
+
+    const deadline = Date.now() + DAILY_NOTE_TEMPLATER_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!pendingFiles.has(file.path)) {
+        // Templater writes the file before removing it from the pending set.
+        // Yield once so a caller cannot race the remainder of that microtask.
+        await Promise.resolve();
+        logger.flow("DailyNote", "templater:known-pending-complete", { path: file.path });
+        return true;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, DAILY_NOTE_TEMPLATER_POLL_MS));
+    }
+    logger.flowWarn("DailyNote", "templater:known-pending-timeout", { path: file.path });
+    return false;
+  }
+
+  private isDailyNoteTemplaterAutoCreateEnabled(templater: any): boolean {
+    try {
+      const localSettings = (this.app as any).loadLocalStorage?.("templater-local-settings");
+      if (typeof localSettings?.trigger_on_file_creation === "boolean") {
+        return localSettings.trigger_on_file_creation;
+      }
+    } catch (error) {
+      logger.flowWarn("DailyNote", "templater:local-settings-read-failed", { error: logger.errorSummary(error) });
+    }
+    return templater?.settings?.trigger_on_file_creation === true;
+  }
+
+  private isDailyNoteTemplaterAutoCreateEligible(file: TFile, templater: any): boolean {
+    const settings = templater?.settings || templater?.templater?.plugin?.settings || {};
+    const filePath = normalizePath(file.path).replace(/^\/+/, "");
+    const templateFolder = normalizePath(String(settings.templates_folder || "").trim()).replace(/^\/+|\/+$/g, "");
+    if (templateFolder && (filePath === templateFolder || filePath.startsWith(`${templateFolder}/`))) return false;
+    const ignoredFolders = Array.isArray(settings.ignore_folders_on_creation) ? settings.ignore_folders_on_creation : [];
+    return !ignoredFolders.some((entry: unknown) => {
+      const raw = entry && typeof entry === "object" && "folder" in entry ? (entry as { folder?: unknown }).folder : entry;
+      const ignored = normalizePath(String(raw || "").trim()).replace(/^\/+|\/+$/g, "");
+      return Boolean(ignored && (filePath === ignored || filePath.startsWith(`${ignored}/`)));
+    });
+  }
+
+  private getRecentDailyNoteTemplaterCreateStart(file: TFile, templater: any): number | null {
+    const pendingFiles = templater?.templater?.files_with_pending_templates;
+    const now = Date.now();
+    const stat = (file as any).stat;
+    const timestamps = [Number(stat?.ctime), Number(stat?.mtime)]
+      .filter((value) => Number.isFinite(value) && value > 0 && value <= now);
+    const newestTimestamp = timestamps.length ? Math.max(...timestamps) : null;
+    if (typeof pendingFiles?.has === "function" && pendingFiles.has(file.path)) {
+      return newestTimestamp ?? now - DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS - DAILY_NOTE_TEMPLATER_SETTLE_BUFFER_MS;
+    }
+    if (
+      newestTimestamp !== null
+      && now - newestTimestamp <= DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS + DAILY_NOTE_TEMPLATER_SETTLE_BUFFER_MS
+    ) {
+      return newestTimestamp;
+    }
+    return null;
+  }
+
+  private async waitForDailyNoteTemplaterCreateHook(file: TFile, templater: any, createStartedAt: number): Promise<boolean> {
+    const pendingFiles = templater?.templater?.files_with_pending_templates;
+    const settleAfter = createStartedAt + DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS + DAILY_NOTE_TEMPLATER_SETTLE_BUFFER_MS;
+    const deadline = Date.now() + DAILY_NOTE_TEMPLATER_TIMEOUT_MS;
+    let stableContent: string | null = null;
+    while (Date.now() < deadline) {
+      const now = Date.now();
+      if (now < settleAfter) {
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.min(DAILY_NOTE_TEMPLATER_POLL_MS, settleAfter - now)));
+        continue;
+      }
+      const pending = typeof pendingFiles?.has === "function" && pendingFiles.has(file.path);
+      if (!pending) {
+        try {
+          const processed = await this.app.vault.read(file);
+          if (!DAILY_NOTE_TEMPLATER_COMMAND_PATTERN.test(processed)) {
+            if (stableContent === processed) {
+              logger.flow("DailyNote", "templater:auto-create-complete", { path: file.path });
+              return true;
+            }
+            stableContent = processed;
+          } else {
+            stableContent = null;
+          }
+        } catch (error) {
+          logger.flowError("DailyNote", "templater:auto-create-inspect-failed", error, { path: file.path });
+          return false;
+        }
+      } else {
+        stableContent = null;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, DAILY_NOTE_TEMPLATER_POLL_MS));
+    }
+    logger.flowWarn("DailyNote", "templater:auto-create-timeout", { path: file.path });
+    return false;
   }
 
   private async isTodayDailyNote(file: TFile): Promise<boolean> {
@@ -6511,10 +6905,20 @@ export default class TPSHealthPlugin extends Plugin {
     return await this.app.fileManager.processFrontMatter(file, mutator);
   }
 
-  private getGcmApi(): any {
+  private getGcmPluginState(): { present: boolean; api: any } {
     const plugins = (this.app as any).plugins;
-    return plugins?.plugins?.["tps-global-context-menu"]?.api
-      || plugins?.getPlugin?.("tps-global-context-menu")?.api;
+    const mapped = plugins?.plugins?.["tps-global-context-menu"];
+    const plugin = mapped || plugins?.getPlugin?.("tps-global-context-menu");
+    if (plugin?.enabled === false) return { present: false, api: undefined };
+    const enabledPending = plugins?.enabledPlugins?.has?.("tps-global-context-menu") === true;
+    return {
+      present: Boolean(plugin) || enabledPending,
+      api: plugin?.api,
+    };
+  }
+
+  private getGcmApi(): any {
+    return this.getGcmPluginState().api;
   }
 
   getGcmNativeRecordsApi(): any {
@@ -7037,13 +7441,18 @@ export default class TPSHealthPlugin extends Plugin {
     });
   }
 
-  private async getDailyNoteSettings(): Promise<{ format: string; folder: string }> {
+  private async getDailyNoteSettings(): Promise<CoreDailyNoteSettings>;
+  private async getDailyNoteSettings(includeCreation: true): Promise<CoreDailyNoteCreationSettings>;
+  private async getDailyNoteSettings(includeCreation = false): Promise<CoreDailyNoteSettings | CoreDailyNoteCreationSettings> {
     let format = "YYYY-MM-DD";
     let folder = "";
+    let template = "";
     let formatSource = "daily-notes-default";
     let folderSource = "daily-notes-default";
+    let templateSource = "daily-notes-default";
     let hasRuntimeFormat = false;
     let hasRuntimeFolder = false;
+    let hasRuntimeTemplate = false;
 
     try {
       const dailyNotesPlugin = (this.app as any).internalPlugins?.getPluginById?.("daily-notes")
@@ -7058,6 +7467,11 @@ export default class TPSHealthPlugin extends Plugin {
         folder = options.folder.trim();
         hasRuntimeFolder = true;
         folderSource = "daily-notes-plugin";
+      }
+      if (typeof options?.template === "string" && options.template.trim()) {
+        template = options.template.trim();
+        hasRuntimeTemplate = true;
+        templateSource = "daily-notes-plugin";
       }
     } catch (error) {
       logger.flowWarn("DailyNote", "settings:plugin-read-failed", { error: logger.errorSummary(error) });
@@ -7076,6 +7490,10 @@ export default class TPSHealthPlugin extends Plugin {
         folder = parsed.folder.trim();
         folderSource = "daily-notes-config";
       }
+      if (!hasRuntimeTemplate && typeof parsed?.template === "string" && parsed.template.trim()) {
+        template = parsed.template.trim();
+        templateSource = "daily-notes-config";
+      }
     } catch (error) {
       logger.flow("DailyNote", "settings:config-read-failed", { error: logger.errorSummary(error) });
       // Daily Notes may not have a persisted config yet.
@@ -7087,7 +7505,53 @@ export default class TPSHealthPlugin extends Plugin {
     };
     this.dailyNoteSettingsSnapshot = resolved;
     logger.flow("DailyNote", "settings:resolved", { ...resolved, formatSource, folderSource });
-    return resolved;
+    if (!includeCreation) return resolved;
+    const templateFormats = await this.getCoreTemplateFormats();
+    logger.flow("DailyNote", "settings:creation-resolved", {
+      ...resolved,
+      hasTemplate: Boolean(template),
+      templateSource,
+      ...templateFormats,
+    });
+    return { ...resolved, template, ...templateFormats };
+  }
+
+  private async getCoreTemplateFormats(): Promise<{ templateDateFormat: string; templateTimeFormat: string }> {
+    let templateDateFormat = "YYYY-MM-DD";
+    let templateTimeFormat = "HH:mm";
+    let hasRuntimeDateFormat = false;
+    let hasRuntimeTimeFormat = false;
+    try {
+      const templatesPlugin = (this.app as any).internalPlugins?.getPluginById?.("templates")
+        || (this.app as any).internalPlugins?.plugins?.templates;
+      const options = templatesPlugin?.enabled === false ? null : templatesPlugin?.instance?.options;
+      if (typeof options?.dateFormat === "string" && options.dateFormat.trim()) {
+        templateDateFormat = options.dateFormat.trim();
+        hasRuntimeDateFormat = true;
+      }
+      if (typeof options?.timeFormat === "string" && options.timeFormat.trim()) {
+        templateTimeFormat = options.timeFormat.trim();
+        hasRuntimeTimeFormat = true;
+      }
+    } catch (error) {
+      logger.flowWarn("DailyNote", "template-settings:plugin-read-failed", { error: logger.errorSummary(error) });
+    }
+    if (!hasRuntimeDateFormat || !hasRuntimeTimeFormat) {
+      try {
+        const configDir = (this.app.vault as any)?.configDir || ".obsidian";
+        const raw = await this.app.vault.adapter.read(normalizePath(`${configDir}/templates.json`));
+        const parsed = JSON.parse(raw);
+        if (!hasRuntimeDateFormat && typeof parsed?.dateFormat === "string" && parsed.dateFormat.trim()) {
+          templateDateFormat = parsed.dateFormat.trim();
+        }
+        if (!hasRuntimeTimeFormat && typeof parsed?.timeFormat === "string" && parsed.timeFormat.trim()) {
+          templateTimeFormat = parsed.timeFormat.trim();
+        }
+      } catch (error) {
+        logger.flow("DailyNote", "template-settings:config-read-failed", { error: logger.errorSummary(error) });
+      }
+    }
+    return { templateDateFormat, templateTimeFormat };
   }
 
   private async ensureFolder(folder: string): Promise<void> {
@@ -20262,6 +20726,21 @@ function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext:
 function normalizeCoreDailyNoteFolder(value: string): string {
   const normalized = normalizePath(value || "").replace(/^\/+|\/+$/g, "");
   return normalized === "." ? "" : normalized;
+}
+
+function renderCoreDailyNoteTemplate(
+  content: string,
+  targetDate: { format(pattern: string): string },
+  title: string,
+  currentTime: { format(pattern: string): string },
+  formats: { dateFormat: string; timeFormat: string },
+): string {
+  return String(content || "")
+    .replace(/\{\{date:([^}]+)\}\}/g, (_match, format) => targetDate.format(String(format).trim()))
+    .replace(/\{\{time:([^}]+)\}\}/g, (_match, format) => currentTime.format(String(format).trim()))
+    .replace(/\{\{date\}\}/g, targetDate.format(formats.dateFormat || "YYYY-MM-DD"))
+    .replace(/\{\{time\}\}/g, currentTime.format(formats.timeFormat || "HH:mm"))
+    .replace(/\{\{title\}\}/g, title);
 }
 
 function dailyNoteDateIsoFromFrontmatter(frontmatter: Record<string, unknown> | null | undefined): string {

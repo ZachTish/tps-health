@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.24.2
+
+- Legacy Daily Note creation now follows one authoritative owner. Health delegates to GCM Daily Notes v2+ whenever GCM is enabled, and otherwise uses one coherent live-or-persisted Core folder, format, and template snapshot. ISO dates remain ASCII under localized Moment settings.
+- Standalone fallback coalesces the entire same-day creation lifecycle, waits passively for Templater's delayed create hook, leaves mature existing content untouched, and fails closed without deleting an incomplete or externally changed file.
+- Concurrent legacy food and activity writes serialize per Markdown file, preventing one simultaneous log from overwriting the other. Native-record storage and schemas are unchanged.
+- This is a backward-compatible reliability patch. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.24.1
 
 - Readable filename migration now repairs and persists the active workout ID/path pair from the post-rename stable-ID index, even when the rename result does not contain the session mapping. It captures the active identity before the batch, rechecks both in-memory and latest persisted state, and refuses to restore an old session if that workout was finished, discarded, replaced, or changed by sync while the batch was running.
@@ -557,6 +564,8 @@ Health publishes a version-2 property catalog to GCM. Native record and reusable
 ## Daily Note Lines
 
 TPS Health does not maintain a second Daily Note folder or filename-format preference. It reads Obsidian's Core **Daily notes** settings whenever it resolves a date, with the saved `.obsidian/daily-notes.json` values available during startup before the live core-plugin options are ready. Live Core values win field-by-field—including an intentional vault-root folder—and `YYYY-MM-DD` at the vault root is the safe fallback when Core has no saved value. Date formats containing `/` create the required nested folders. The **Daily logging** settings page links directly to Core Daily Notes instead of duplicating those controls. Legacy `dailyNoteFormat` and `dailyNoteFolder` values are removed from Health's settings on upgrade and never override Core.
+
+Daily Note creation has one owner. When TPS Global Context Menu exposes `dailyNotes` API v2, Health delegates the selected ISO date to `ensureForIsoDate` and uses only the returned file. A `null` result, thrown error, loaded-but-not-ready GCM API, or loaded GCM API older than v2 fails closed; Health never follows an authoritative GCM outcome with its own duplicate creator. Only when GCM is absent or explicitly disabled does Health use its standalone compatibility path. That path honors one coherent Core Daily Notes folder/format/template snapshot, applies Core Templates date/time/title variables, creates nested format folders, and coalesces the entire provider/settings/template lifecycle by ISO date. When Templater owns creation, Health passively waits through its delayed file hook before any caller can append data; it never executes delimiters found in a mature existing note. A missing template, incomplete Templater result, or externally colliding creator fails closed without deleting the observed file. When unchanged failed bytes still belong to Health, an EOF HTML comment marks that one file incomplete through an atomic `Vault.process`; the marker survives reload/Sync, preserves leading YAML, and must be deliberately removed after review before a retry. Concurrent legacy food/activity writes to the same Daily Note or single log file also serialize their read-modify-write operations, so neither entry can overwrite the other. Existing Legacy food, activity, and workout callers retain their `TFile`-or-error contract; Native record storage remains unchanged.
 
 Food logs are appended to the selected day's daily note body by default. The optional food heading setting can still route entries into a section, and the older single-file food log remains supported for legacy readback and tests, but daily notes are the active storage target for normal logging and Home-launched logging:
 

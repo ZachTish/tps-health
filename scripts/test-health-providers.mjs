@@ -4195,10 +4195,14 @@ function createFakeMoment(value) {
   const date = value ? new Date(value) : new Date("2026-06-24T12:00:00.000Z");
   return {
     isValid: () => !Number.isNaN(date.getTime()),
+    year: () => date.getUTCFullYear(),
+    month: () => date.getUTCMonth(),
+    date: () => date.getUTCDate(),
     format(format) {
       if (format === "YYYY-MM-DD") return date.toISOString().slice(0, 10);
       if (format === "YYYY/MM/DD") return date.toISOString().slice(0, 10).replaceAll("-", "/");
       if (format === "YYYY-MM-DDTHH:mm") return date.toISOString().slice(0, 16);
+      if (format === "HH:mm") return date.toISOString().slice(11, 16);
       return date.toISOString().slice(0, 10);
     },
     toISOString: () => date.toISOString(),
@@ -5349,7 +5353,7 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   ]);
   assert.match(typesSource, /defaultFoodLogSection: ""/);
   assert.doesNotMatch(typesSource, /workoutLogHeading/);
-  assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);[\s\S]+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
+  assert.match(mainSource, /private async insertIntoDailyNote\(line: string, section\?: string, targetFile\?: TFile\): Promise<TFile> \{\s+const file = targetFile \|\| await this\.getOrCreateDailyNote\(\);\s+if \(section\?\.trim\(\)\) return this\.appendToDailyHeading\(section\.trim\(\), line, file\);\s+await this\.serializeMarkdownMutation\(file,[\s\S]+const content = await this\.app\.vault\.read\(file\);\s+const insertAt = frontmatterEndIndex\(content\);/);
   assert.match(mainSource, /insertWorkoutBlockIntoContent\(content, block, placement\)/);
   const workoutBlock = "## Workout — Test\n<!-- tps-health:workout [workoutId:: workout-test] -->";
   const daily = "---\ntags:\n---\nIntro without a heading\n- [ ] unheaded opening task\n```md\n## Not a section\n```\n## Food\n- lunch\n";
@@ -7404,6 +7408,13 @@ test("blank active workouts can log sets with rest and save repeated planned set
   let gcmTimerStops = 0;
   fake.app.plugins.plugins["tps-global-context-menu"] = {
     api: {
+      dailyNotes: {
+        version: 2,
+        ensureForIsoDate: async (isoDate) => {
+          const path = `Daily/${isoDate}.md`;
+          return fake.app.vault.getAbstractFileByPath(path) || fake.app.vault.create(path, "");
+        },
+      },
       timeTracking: {
         startTimer: async () => { gcmTimerStarts++; },
         stopActiveTimerForFile: async () => { gcmTimerStops++; },
@@ -8198,6 +8209,13 @@ test("blank workout start activates its Daily Note in Live Preview when GCM open
   fake.app.workspace.getLeaf = () => backgroundLeaf;
   fake.app.plugins.plugins["tps-global-context-menu"] = {
     api: {
+      dailyNotes: {
+        version: 2,
+        ensureForIsoDate: async (isoDate) => {
+          const path = `Inbox/Daily/${isoDate}.md`;
+          return fake.app.vault.getAbstractFileByPath(path) || fake.app.vault.create(path, "");
+        },
+      },
       openFileInLeaf: async (file) => {
         workoutView.file = file;
         markdownLeaves.push(backgroundLeaf);
@@ -9107,6 +9125,345 @@ test("daily note destinations follow Core Daily Notes without Health-owned overr
     format: "ddd, MMM DD YYYY",
     folder: "Persisted Daily",
   }, "persisted Core settings must remain available before the Core plugin runtime is ready");
+});
+
+test("Daily Note creation delegates to GCM dailyNotes v2 and treats a null result as authoritative", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const delegated = new TFile("Canonical/Daily/2026-08-15.md");
+  const delegatedDates = [];
+  const dailyNotes = {
+    version: 2,
+    ensureForIsoDate: async (isoDate) => {
+      delegatedDates.push(isoDate);
+      return delegated;
+    },
+  };
+  fake.app.plugins.plugins["tps-global-context-menu"] = { api: { dailyNotes } };
+  const plugin = new TPSHealthPlugin(fake.app);
+
+  assert.equal(await plugin.getOrCreateDailyNoteForDate("2026-08-15T18:30:00.000Z"), delegated);
+  assert.deepEqual(delegatedDates, ["2026-08-15"]);
+  assert.deepEqual(fake.writes, [], "Health must not run its standalone creator after successful GCM delegation");
+
+  const originalMoment = globalThis.window.moment;
+  globalThis.window.moment = () => ({
+    isValid: () => true,
+    year: () => 2026,
+    month: () => 7,
+    date: () => 19,
+    format: () => "٢٠٢٦-٠٨-١٩",
+  });
+  await plugin.getOrCreateDailyNoteForDate("2026-08-19");
+  assert.equal(delegatedDates.at(-1), "2026-08-19", "the GCM ISO contract must remain ASCII under localized Moment digits");
+  globalThis.window.moment = originalMoment;
+
+  dailyNotes.ensureForIsoDate = async (isoDate) => {
+    delegatedDates.push(isoDate);
+    return null;
+  };
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-16"),
+    /TPS Global Context Menu could not create the Daily Note for 2026-08-16/,
+  );
+  assert.deepEqual(delegatedDates, ["2026-08-15", "2026-08-19", "2026-08-16"]);
+  assert.deepEqual(fake.writes, [], "an authoritative GCM null must not fall through to a duplicate Health note");
+
+  fake.app.plugins.plugins["tps-global-context-menu"].api.dailyNotes = { version: 1 };
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-17"),
+    /dailyNotes API v2 is required/,
+  );
+  assert.deepEqual(fake.writes, [], "Health's standalone creator is allowed only when GCM is absent, not when an older API is present");
+
+  fake.app.plugins.plugins["tps-global-context-menu"].api.dailyNotes = { ensureForIsoDate: async () => delegated };
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-17"),
+    /dailyNotes API v2 is required/,
+    "an unversioned method must not be mistaken for the authoritative v2 contract",
+  );
+
+  fake.app.plugins.plugins["tps-global-context-menu"] = {};
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-18"),
+    /TPS Global Context Menu is loaded, but its API is not ready/,
+  );
+  assert.deepEqual(fake.writes, [], "an enabled GCM instance whose API is still starting must fail closed instead of racing a fallback note");
+
+  delete fake.app.plugins.plugins["tps-global-context-menu"];
+  fake.app.plugins.enabledPlugins = new Set(["tps-global-context-menu"]);
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-18"),
+    /TPS Global Context Menu is loaded, but its API is not ready/,
+    "an enabled GCM awaiting its plugin instance must also fail closed",
+  );
+  assert.deepEqual(fake.writes, []);
+
+  fake.app.plugins.enabledPlugins.clear();
+  fake.app.plugins.plugins["tps-global-context-menu"] = { enabled: false };
+  const standalone = await plugin.getOrCreateDailyNoteForDate("2026-08-18");
+  assert.equal(standalone.path, "2026-08-18.md", "an explicitly disabled GCM permits the standalone Core fallback");
+});
+
+test("standalone Daily Note creation honors Core format and template before legacy Health writes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const dailyNotesPlugin = {
+    enabled: true,
+    instance: {
+      options: {
+        format: "YYYY/MM/DD",
+        folder: "Core Daily",
+        template: "Templates/Core Daily",
+      },
+    },
+  };
+  const templatesPlugin = {
+    enabled: true,
+    instance: { options: { dateFormat: "YYYY/MM/DD", timeFormat: "HH:mm" } },
+  };
+  fake.app.internalPlugins.getPluginById = (id) => {
+    if (id === "daily-notes") return dailyNotesPlugin;
+    if (id === "templates") return templatesPlugin;
+    return null;
+  };
+  fake.app.internalPlugins.plugins = {
+    "daily-notes": dailyNotesPlugin,
+    templates: templatesPlugin,
+  };
+  fake.files.set("Templates/Core Daily.md", [
+    "# {{title}}",
+    "Date {{date}} / {{date:YYYY-MM-DD}}",
+    "Time {{time}}",
+    "<% tp.user.daily_health() %>",
+  ].join("\n"));
+  let templaterPasses = 0;
+  fake.app.plugins.plugins["templater-obsidian"] = {
+    settings: { trigger_on_file_creation: false },
+    templater: {
+      overwrite_file_commands: async (file) => {
+        templaterPasses += 1;
+        const content = await fake.app.vault.read(file);
+        await fake.app.vault.modify(file, content.replace("<% tp.user.daily_health() %>", "Templater complete"));
+      },
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+
+  const created = await plugin.getOrCreateDailyNoteForDate("2026-08-15");
+  assert.equal(created.path, "Core Daily/2026/08/15.md");
+  assert.equal(templaterPasses, 1, "the fallback must await one explicit Templater pass before returning");
+  assert.equal(fake.files.get(created.path), [
+    "# 15",
+    "Date 2026/08/15 / 2026-08-15",
+    "Time 12:00",
+    "Templater complete",
+  ].join("\n"));
+  assert.deepEqual([...fake.folders], ["Core Daily", "Core Daily/2026", "Core Daily/2026/08"]);
+
+  plugin.nativeRecordService = { isEnabled: () => false };
+  const entry = await plugin.logActivity({
+    activity: "Template walk",
+    completedDate: "2026-08-15T18:30:00.000Z",
+    dailyNoteDate: "2026-08-15",
+  });
+  assert.equal(entry.dailyNotePath, created.path, "Legacy storage must keep using the same resolved Daily Note contract");
+  assert.match(fake.files.get(created.path), /\[type:: activityLog\]/);
+  assert.match(fake.files.get(created.path), /Templater complete/);
+
+  fake.files.set("Templates/Core Only.md", "# {{title}}\n{{date}}");
+  dailyNotesPlugin.instance.options.template = "Templates/Core Only";
+  fake.app.plugins.plugins["templater-obsidian"].settings.trigger_on_file_creation = true;
+  const coreOnlyStartedAt = Date.now();
+  const coreOnly = await plugin.getOrCreateDailyNoteForDate("2026-08-16");
+  assert.ok(Date.now() - coreOnlyStartedAt < 250, "a template without Templater commands must not wait for the delayed creation hook");
+  assert.equal(templaterPasses, 1, "Core-only template variables must not invoke the Templater processor");
+  assert.equal(fake.files.get(coreOnly.path), "# 16\n2026/08/16");
+
+  const pendingTemplates = new Set();
+  fake.app.plugins.plugins["templater-obsidian"].templater.files_with_pending_templates = pendingTemplates;
+  fake.files.set("Templates/Auto Daily.md", "Auto <% tp.user.daily_health() %>");
+  dailyNotesPlugin.instance.options.template = "Templates/Auto Daily";
+  const createWithoutAutoHook = fake.app.vault.create.bind(fake.app.vault);
+  let autoDailyNoteCreates = 0;
+  fake.app.vault.create = async (path, content) => {
+    const file = await createWithoutAutoHook(path, content);
+    if (path === "Core Daily/2026/08/17.md") {
+      autoDailyNoteCreates += 1;
+      pendingTemplates.add(path);
+      globalThis.setTimeout(async () => {
+        await fake.app.vault.modify(file, "Auto hook complete");
+        pendingTemplates.delete(path);
+      }, 310);
+    }
+    return file;
+  };
+  const [autoProcessed, coalescedAutoProcessed] = await Promise.all([
+    plugin.getOrCreateDailyNoteForDate("2026-08-17"),
+    plugin.getOrCreateDailyNoteForDate("2026-08-17"),
+  ]);
+  assert.equal(coalescedAutoProcessed, autoProcessed, "same-day fallback callers must share the complete creation lifecycle");
+  assert.equal(autoDailyNoteCreates, 1, "coalescing must prevent a second exact-path create race");
+  assert.equal(fake.files.get(autoProcessed.path), "Auto hook complete", "the fallback must not return before Templater's delayed auto-create hook settles");
+  assert.equal(templaterPasses, 1, "auto-create ownership must not race a second explicit Templater pass");
+
+  const existingLiteralPath = "Core Daily/2026/08/18.md";
+  const existingLiteralContent = "User documentation: <% tp.user.example() %>";
+  fake.files.set(existingLiteralPath, existingLiteralContent);
+  const existingLiteral = await plugin.getOrCreateDailyNoteForDate("2026-08-18");
+  assert.equal(existingLiteral.path, existingLiteralPath);
+  assert.equal(
+    fake.files.get(existingLiteralPath),
+    existingLiteralContent,
+    "lookup must never execute or rewrite Templater delimiters in a mature existing Daily Note",
+  );
+  assert.equal(templaterPasses, 1, "existing note lookup must not invoke Templater");
+
+  const externallyPendingPath = "Core Daily/2026/08/19.md";
+  fake.files.set(externallyPendingPath, "External template snapshot");
+  pendingTemplates.add(externallyPendingPath);
+  globalThis.setTimeout(() => {
+    fake.files.set(externallyPendingPath, "External template complete");
+    pendingTemplates.delete(externallyPendingPath);
+  }, 40);
+  const externallyPending = await plugin.getOrCreateDailyNoteForDate("2026-08-19");
+  assert.equal(externallyPending.path, externallyPendingPath);
+  assert.equal(
+    fake.files.get(externallyPendingPath),
+    "External template complete",
+    "an exact existing file positively owned by Templater must settle before Health callers can append",
+  );
+  assert.equal(templaterPasses, 1, "waiting for known pending ownership must stay passive");
+
+  const prePendingPath = "Core Daily/2026/08/20.md";
+  fake.files.set(prePendingPath, "Pre-pending <% tp.user.daily_health() %>");
+  const getAbstractBeforePrePending = fake.app.vault.getAbstractFileByPath.bind(fake.app.vault);
+  const prePendingCreatedAt = Date.now();
+  fake.app.vault.getAbstractFileByPath = (path) => {
+    const file = getAbstractBeforePrePending(path);
+    if (path === prePendingPath && file) {
+      file.stat = { ctime: prePendingCreatedAt, mtime: prePendingCreatedAt };
+    }
+    return file;
+  };
+  globalThis.setTimeout(() => pendingTemplates.add(prePendingPath), 20);
+  globalThis.setTimeout(() => {
+    fake.files.set(prePendingPath, "Pre-pending template complete");
+    pendingTemplates.delete(prePendingPath);
+  }, 60);
+  const prePending = await plugin.getOrCreateDailyNoteForDate("2026-08-20");
+  assert.equal(prePending.path, prePendingPath);
+  assert.equal(
+    fake.files.get(prePendingPath),
+    "Pre-pending template complete",
+    "a recent eligible exact file must passively wait through Templater's delayed pending registration",
+  );
+  assert.equal(templaterPasses, 1, "the pre-pending guard must never execute the existing file itself");
+  fake.app.vault.getAbstractFileByPath = getAbstractBeforePrePending;
+
+  dailyNotesPlugin.instance.options.template = "";
+  fake.app.vault.create = async (path, content) => {
+    if (path === "Core Daily/2026/08/22.md") {
+      await new Promise((resolve) => setTimeout(resolve, 450));
+    }
+    const file = await createWithoutAutoHook(path, content);
+    if (path === "Core Daily/2026/08/21.md") {
+      globalThis.setTimeout(() => pendingTemplates.add(path), 20);
+      globalThis.setTimeout(() => {
+        fake.files.set(path, "Folder template complete");
+        pendingTemplates.delete(path);
+      }, 60);
+    }
+    if (path === "Core Daily/2026/08/22.md") {
+      globalThis.setTimeout(() => pendingTemplates.add(path), 100);
+      globalThis.setTimeout(() => {
+        fake.files.set(path, "Slow-create folder template complete");
+        pendingTemplates.delete(path);
+      }, 140);
+    }
+    return file;
+  };
+  const blankCoreTemplate = await plugin.getOrCreateDailyNoteForDate("2026-08-21");
+  assert.equal(
+    fake.files.get(blankCoreTemplate.path),
+    "Folder template complete",
+    "a fresh empty Daily Note must await an eligible Templater folder/regex hook before callers append",
+  );
+  assert.equal(templaterPasses, 1, "empty auto-template ownership must remain passive");
+
+  const slowCreate = await plugin.getOrCreateDailyNoteForDate("2026-08-22");
+  assert.equal(
+    fake.files.get(slowCreate.path),
+    "Slow-create folder template complete",
+    "Templater's passive grace must start after a slow Vault.create completes",
+  );
+
+  dailyNotesPlugin.instance.options.template = "Templates/Missing Daily";
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-23"),
+    /Core Daily Notes template not found: Templates\/Missing Daily/,
+  );
+  assert.equal(fake.files.has("Core Daily/2026/08/23.md"), false, "a configured but missing Core template must fail before creating a blank note");
+
+  fake.files.set("Templates/Fail Daily.md", "---\ntitle: {{title}}\n---\n<% tp.user.fail() %>");
+  dailyNotesPlugin.instance.options.template = "Templates/Fail Daily";
+  delete fake.app.plugins.plugins["templater-obsidian"];
+  await assert.rejects(
+    plugin.getOrCreateDailyNoteForDate("2026-08-24"),
+    /Templater did not finish processing/,
+  );
+  const failedPath = "Core Daily/2026/08/24.md";
+  assert.match(
+    fake.files.get(failedPath),
+    /<!-- tps-daily-note-template-incomplete:v1 -->/,
+    "an unchanged owned failure must receive a durable hidden marker without disturbing frontmatter",
+  );
+  assert.match(fake.files.get(failedPath), /^---\n/, "the failure marker must not break YAML frontmatter placement");
+
+  const reloadedPlugin = new TPSHealthPlugin(fake.app);
+  await assert.rejects(
+    reloadedPlugin.getOrCreateDailyNoteForDate("2026-08-24"),
+    /Daily Note template processing is incomplete/,
+    "the durable marker must keep retries fail-closed after a plugin reload",
+  );
+  assert.equal(
+    fake.writes.filter((write) => write.op === "trash" && write.path === failedPath).length,
+    0,
+    "Health must never delete a failed Daily Note that Sync, Templater, or the user may own",
+  );
+});
+
+test("concurrent legacy Daily Note writes serialize without losing either entry", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const dailyFile = new TFile("2026-08-24.md");
+  fake.files.set(dailyFile.path, "---\ntitle: 2026-08-24\n---\n\n# Notes\n");
+
+  const originalModify = fake.app.vault.modify.bind(fake.app.vault);
+  fake.app.vault.modify = async (file, content) => {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    return originalModify(file, content);
+  };
+
+  const plugin = new TPSHealthPlugin(fake.app);
+  await Promise.all([
+    plugin.insertIntoDailyNote("- Food entry [type:: foodLog]", undefined, dailyFile),
+    plugin.insertIntoDailyNote("- Activity entry [type:: activityLog]", undefined, dailyFile),
+  ]);
+
+  const content = fake.files.get(dailyFile.path);
+  assert.match(content, /Food entry \[type:: foodLog\]/, "the first concurrent write must survive");
+  assert.match(content, /Activity entry \[type:: activityLog\]/, "the second concurrent write must survive");
+  assert.equal(
+    fake.writes.filter((write) => write.op === "modify" && write.path === dailyFile.path).length,
+    2,
+    "both queued mutations must commit against the latest note bytes",
+  );
 });
 
 test("food search expands colloquial grocery queries like protein doritos", async () => {
