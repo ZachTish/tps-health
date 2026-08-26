@@ -12,7 +12,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   buildNativeDailyActivityModel,
@@ -66,6 +66,83 @@ interface FoodDuplicateResolution {
 interface CoreDailyNoteSettings {
   format: string;
   folder: string;
+}
+
+interface ActiveNativeWorkoutPresentation {
+  id: string;
+  path: string;
+  title: string;
+  startedAt: string;
+}
+
+interface ActiveWorkoutState {
+  [key: string]: unknown;
+  id: string;
+  target: WorkoutLogTarget | "";
+  path: string;
+  dailyNotePath: string;
+  planPath: string;
+  title: string;
+  startedAt: string;
+  cooldownDays: number;
+  lastSetEndedAt: string;
+  setCount: number;
+}
+
+const ACTIVE_WORKOUT_SETTING_KEYS = [
+  "activeWorkoutId",
+  "activeWorkoutTarget",
+  "activeWorkoutPath",
+  "activeWorkoutDailyNotePath",
+  "activeWorkoutPlanPath",
+  "activeWorkoutTitle",
+  "activeWorkoutStartedAt",
+  "activeWorkoutCooldownDays",
+  "lastSetEndedAt",
+  "activeWorkoutSetCount",
+] as const;
+
+function activeWorkoutStateFromSettings(settings: TPSHealthSettings): ActiveWorkoutState | null {
+  if (!settings.activeWorkoutId && !settings.activeWorkoutPath && !settings.activeWorkoutDailyNotePath) return null;
+  return {
+    id: settings.activeWorkoutId,
+    target: settings.activeWorkoutTarget,
+    path: settings.activeWorkoutPath,
+    dailyNotePath: settings.activeWorkoutDailyNotePath,
+    planPath: settings.activeWorkoutPlanPath,
+    title: settings.activeWorkoutTitle,
+    startedAt: settings.activeWorkoutStartedAt,
+    cooldownDays: settings.activeWorkoutCooldownDays,
+    lastSetEndedAt: settings.lastSetEndedAt,
+    setCount: settings.activeWorkoutSetCount || 0,
+  };
+}
+
+function sameActiveWorkoutState(left: ActiveWorkoutState | null, right: ActiveWorkoutState | null): boolean {
+  if (!left || !right) return left === right;
+  return left.id === right.id
+    && left.target === right.target
+    && left.path === right.path
+    && left.dailyNotePath === right.dailyNotePath
+    && left.planPath === right.planPath
+    && left.title === right.title
+    && left.startedAt === right.startedAt
+    && left.cooldownDays === right.cooldownDays
+    && left.lastSetEndedAt === right.lastSetEndedAt
+    && left.setCount === right.setCount;
+}
+
+function applyActiveWorkoutState(settings: TPSHealthSettings, state: ActiveWorkoutState | null): void {
+  settings.activeWorkoutId = state?.id || "";
+  settings.activeWorkoutTarget = state?.target || "";
+  settings.activeWorkoutPath = state?.path || "";
+  settings.activeWorkoutDailyNotePath = state?.dailyNotePath || "";
+  settings.activeWorkoutPlanPath = state?.planPath || "";
+  settings.activeWorkoutTitle = state?.title || "";
+  settings.activeWorkoutStartedAt = state?.startedAt || "";
+  settings.activeWorkoutCooldownDays = state?.cooldownDays || 0;
+  settings.lastSetEndedAt = state?.lastSetEndedAt || "";
+  settings.activeWorkoutSetCount = state?.setCount || 0;
 }
 
 interface CoreDailyNoteCreationSettings extends CoreDailyNoteSettings {
@@ -566,6 +643,11 @@ export default class TPSHealthPlugin extends Plugin {
     expected: ActiveWorkoutFilenameState;
     next: ActiveWorkoutFilenameState;
   } | null = null;
+  private pendingActiveWorkoutStateMutation: {
+    expected: ActiveWorkoutState;
+    next: ActiveWorkoutState | null;
+    reason: string;
+  } | null = null;
   private retainedLegacyUsdaApiKey = "";
   private settingsPersistenceBlockedByFutureSchema = false;
   private settingsPersistenceBlockedNoticeShown = false;
@@ -976,18 +1058,34 @@ export default class TPSHealthPlugin extends Plugin {
     await this.saveSettings();
   }
 
+  private async persistActiveWorkoutStateMutation(
+    expected: ActiveWorkoutState,
+    next: ActiveWorkoutState | null,
+    reason: string,
+  ): Promise<boolean> {
+    this.pendingActiveWorkoutStateMutation = {
+      expected: { ...expected },
+      next: next ? { ...next } : null,
+      reason,
+    };
+    await this.saveSettings();
+    return sameActiveWorkoutState(this.getActiveWorkoutState(), next);
+  }
+
   private async flushSettingsSaveQueue(): Promise<void> {
     try {
-      while ((this.settingsSavePending || this.pendingActiveWorkoutFilenameMigration) && !this.settingsPersistenceBlockedByFutureSchema) {
+      while ((this.settingsSavePending || this.pendingActiveWorkoutFilenameMigration || this.pendingActiveWorkoutStateMutation) && !this.settingsPersistenceBlockedByFutureSchema) {
         this.settingsSavePending = false;
         const activeWorkoutFilenameMigration = this.pendingActiveWorkoutFilenameMigration;
         this.pendingActiveWorkoutFilenameMigration = null;
+        const activeWorkoutStateMutation = this.pendingActiveWorkoutStateMutation;
+        this.pendingActiveWorkoutStateMutation = null;
         const localSnapshot = cloneSettingsSnapshot(this.settings);
         const changedKeys = changedSettingsKeys(this.lastSavedSettingsSnapshot, localSnapshot);
         for (const key of this.uncertainSettingsSaveKeys) {
           if (!changedKeys.includes(key)) changedKeys.push(key);
         }
-        if (!changedKeys.length && !activeWorkoutFilenameMigration) continue;
+        if (!changedKeys.length && !activeWorkoutFilenameMigration && !activeWorkoutStateMutation) continue;
         const latestStored = await this.loadData();
         if (isFutureTPSHealthSettings(latestStored)) {
           this.settingsPersistenceBlockedByFutureSchema = true;
@@ -1023,6 +1121,32 @@ export default class TPSHealthPlugin extends Plugin {
                   : "stored-session-changed",
               });
             }
+          }
+        }
+        let activeWorkoutStateMutationApplied = false;
+        if (activeWorkoutStateMutation) {
+          const currentActiveWorkout = activeWorkoutStateFromSettings(this.settings);
+          const latestActiveWorkout = activeWorkoutStateFromSettings(latestNormalized);
+          removeChangedSettingKeys(changedKeys, ...ACTIVE_WORKOUT_SETTING_KEYS);
+          const localStillEligible = sameActiveWorkoutState(currentActiveWorkout, activeWorkoutStateMutation.expected)
+            || sameActiveWorkoutState(currentActiveWorkout, activeWorkoutStateMutation.next);
+          if (localStillEligible && sameActiveWorkoutState(latestActiveWorkout, activeWorkoutStateMutation.expected)) {
+            applyActiveWorkoutState(localSnapshot, activeWorkoutStateMutation.next);
+            applyActiveWorkoutState(this.settings, activeWorkoutStateMutation.next);
+            changedKeys.push(...ACTIVE_WORKOUT_SETTING_KEYS);
+            changedKeys.sort();
+            activeWorkoutStateMutationApplied = true;
+          } else {
+            applyActiveWorkoutState(localSnapshot, latestActiveWorkout);
+            applyActiveWorkoutState(this.settings, latestActiveWorkout);
+            logger.flow("Settings", "active-workout-state:cas-skipped", {
+              reason: activeWorkoutStateMutation.reason,
+              result: localStillEligible && sameActiveWorkoutState(latestActiveWorkout, activeWorkoutStateMutation.next)
+                ? "already-persisted"
+                : "stored-session-changed",
+              storedWorkoutId: latestActiveWorkout?.id || "",
+              storedPath: latestActiveWorkout?.path || "",
+            });
           }
         }
         if (!changedKeys.length) {
@@ -1077,6 +1201,9 @@ export default class TPSHealthPlugin extends Plugin {
           }
           if (activeWorkoutFilenameMigrationApplied && !this.pendingActiveWorkoutFilenameMigration) {
             this.pendingActiveWorkoutFilenameMigration = activeWorkoutFilenameMigration;
+          }
+          if (activeWorkoutStateMutationApplied && activeWorkoutStateMutation && !this.pendingActiveWorkoutStateMutation) {
+            this.pendingActiveWorkoutStateMutation = activeWorkoutStateMutation;
           }
           logger.flowError("Settings", "save:failed", error, {
             foodLogTarget: localSnapshot.foodLogTarget,
@@ -1969,21 +2096,117 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("Workout", "start:suppressed-in-flight");
       return this.startWorkoutInFlight;
     }
-    if (this.settings.activeWorkoutId) {
-      logger.flowWarn("Workout", "start:suppressed-active", {
-        workoutId: this.settings.activeWorkoutId,
-        dailyNotePath: this.settings.activeWorkoutDailyNotePath || "",
-      });
-      new Notice("End the active workout before starting another one.");
-      throw new Error("Finish or end the active workout before starting another one.");
-    }
-    const start = this.startWorkoutOnce(input);
+    const start = this.startWorkoutAfterActiveStateReconciliation(input);
     this.startWorkoutInFlight = start;
     try {
       return await start;
     } finally {
       if (this.startWorkoutInFlight === start) this.startWorkoutInFlight = null;
     }
+  }
+
+  private async startWorkoutAfterActiveStateReconciliation(input: StartWorkoutInput): Promise<string> {
+    const activeNativeWorkout = await this.reconcileNativeActiveWorkoutForStart();
+    const active = this.getActiveWorkoutState();
+    if (active) {
+      logger.flowWarn("Workout", "start:suppressed-active", {
+        workoutId: active.id,
+        path: active.path,
+        dailyNotePath: active.dailyNotePath,
+        storage: activeNativeWorkout ? "native-records" : "legacy",
+      });
+      let opened = false;
+      if (activeNativeWorkout && input.openFile !== false) opened = await this.openActiveWorkout();
+      new Notice(opened
+        ? "Opened the active workout. Finish or discard it before starting another one."
+        : "Finish or discard the active workout before starting another one.");
+      throw new Error("Finish or end the active workout before starting another one.");
+    }
+    return this.startWorkoutOnce(input);
+  }
+
+  private async reconcileNativeActiveWorkoutForStart(): Promise<ActiveNativeWorkoutPresentation | null> {
+    if (!this.nativeRecordService?.isEnabled()) return null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const captured = this.getActiveWorkoutState();
+      if (!captured) return null;
+      if (!this.nativeRecordService.isWorkoutIndexSettled()) {
+        logger.flowWarn("Workout", "active-state:index-not-settled", {
+          workoutId: captured.id,
+          path: captured.path,
+        });
+        new Notice("TPS Health is still indexing workout records. Try starting the workout again in a moment.");
+        throw new Error("Workout records are still being indexed.");
+      }
+      const resolution = this.nativeRecordService.resolveWorkoutSession({ id: captured.id, path: captured.path });
+      if (resolution.state === "ambiguous") {
+        logger.flowWarn("Workout", "active-state:ambiguous", {
+          workoutId: captured.id,
+          path: captured.path,
+          matches: resolution.matches,
+          reason: resolution.reason || "duplicate-id",
+        });
+        new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before starting another workout.", 12000);
+        throw new Error("The active workout identity is ambiguous.");
+      }
+      if (resolution.state === "active") {
+        const presentation = await this.reconcileResolvedNativeWorkout(captured, resolution);
+        if (presentation) return presentation;
+        continue;
+      }
+      const unresolvedPath = captured.path ? this.app.vault.getAbstractFileByPath(captured.path) : null;
+      if (resolution.state === "missing" && unresolvedPath instanceof TFile) {
+        logger.flowWarn("Workout", "active-state:path-conflict", {
+          workoutId: captured.id,
+          path: captured.path,
+        });
+        new Notice("The saved active-workout path now points to a different note. Resolve that conflict before starting another workout.", 12000);
+        throw new Error("The active workout path points to a non-workout record.");
+      }
+      const cleared = await this.clearActiveWorkoutStateIfCurrent(captured, `native-${resolution.state}`);
+      if (!cleared) continue;
+      logger.flowWarn("Workout", "active-state:stale-cleared", {
+        workoutId: captured.id,
+        path: captured.path,
+        terminalStatus: resolution.status,
+        reason: resolution.state,
+      });
+      new Notice(resolution.state === "terminal"
+        ? "The previous workout was already finished. Cleared its stale active state."
+        : "The previous workout record was missing. Cleared its stale active state.");
+      return null;
+    }
+    throw new Error("The active workout changed while it was being reconciled. Try again.");
+  }
+
+  private async reconcileResolvedNativeWorkout(
+    captured: ActiveWorkoutState,
+    resolution: NativeWorkoutSessionResolution,
+  ): Promise<ActiveNativeWorkoutPresentation | null> {
+    if (!this.activeWorkoutStateMatches(captured)) return null;
+    const next = {
+      ...captured,
+      id: resolution.id,
+      path: resolution.path,
+      title: captured.title || resolution.title,
+      startedAt: captured.startedAt || resolution.startedAt,
+    };
+    const changed = !sameActiveWorkoutState(captured, next);
+    if (changed) {
+      const persisted = await this.persistActiveWorkoutStateMutation(captured, next, "native-session-recovery");
+      if (!persisted) return null;
+      logger.flow("Workout", "active-state:recovered", {
+        workoutId: resolution.id,
+        previousPath: captured.path,
+        path: resolution.path,
+      });
+    }
+    return {
+      id: resolution.id,
+      path: resolution.path,
+      title: next.title,
+      startedAt: next.startedAt,
+    };
   }
 
   private async startWorkoutOnce(input: StartWorkoutInput): Promise<string> {
@@ -2138,14 +2361,15 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async finishWorkout(input: FinishWorkoutInput = {}): Promise<void> {
-    const path = this.settings.activeWorkoutPath;
-    const dailyNotePath = this.settings.activeWorkoutDailyNotePath;
-    const workoutId = this.settings.activeWorkoutId;
-    if (!path && !dailyNotePath) {
+    const active = this.getActiveWorkoutState();
+    if (!active) {
       logger.flowWarn("Workout", "finish:no-active-workout");
       new Notice("No active workout");
       return;
     }
+    const path = active.path;
+    const dailyNotePath = active.dailyNotePath;
+    const workoutId = active.id;
     if (this.nativeRecordService?.isEnabled()) {
       await this.finishNativeWorkout(path, workoutId, input);
       return;
@@ -2220,33 +2444,60 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async finishNativeWorkout(path: string, workoutId: string, input: FinishWorkoutInput): Promise<void> {
-    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    const active = this.getActiveWorkoutState();
+    if (!this.nativeRecordService.isWorkoutIndexSettled()) {
+      new Notice("TPS Health is still indexing workout records. Try finishing the workout again in a moment.");
+      return;
+    }
+    const resolution = this.nativeRecordService.resolveWorkoutSession({ id: workoutId, path });
+    if (resolution.state === "ambiguous") {
+      logger.flowWarn("Workout", "finish:ambiguous-native-record", {
+        workoutId,
+        path,
+        matches: resolution.matches,
+        reason: resolution.reason || "duplicate-id",
+      });
+      new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before finishing it.", 12000);
+      return;
+    }
+    const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
     if (!(file instanceof TFile)) {
-      await this.clearActiveWorkoutState();
-      throw new Error("Active native workout session was missing.");
+      if (active) await this.clearActiveWorkoutStateIfCurrent(active, `finish-native-${resolution.state}`);
+      logger.flowWarn("Workout", "finish:missing-native-record-cleared", { workoutId, path, state: resolution.state });
+      new Notice(resolution.state === "terminal"
+        ? "The workout was already finished. Cleared its stale active state."
+        : "The active workout record was missing. Cleared its stale active state.");
+      return;
+    }
+    const reconciled = active ? await this.reconcileResolvedNativeWorkout(active, resolution) : null;
+    const operationActive = this.getActiveWorkoutState();
+    if (!reconciled || !operationActive || operationActive.id !== resolution.id || operationActive.path !== resolution.path) {
+      logger.flowWarn("Workout", "finish:active-state-changed", { workoutId, path: resolution.path });
+      new Notice("The active workout changed before it could be finished. No workout was modified.");
+      return;
     }
     const endedAt = input.endedAt || isoNow();
-    const startedAt = this.settings.activeWorkoutStartedAt || endedAt;
+    const startedAt = operationActive.startedAt || endedAt;
     const durationSeconds = workoutDurationSeconds(startedAt, endedAt);
     const durationMinutes = durationSeconds != null ? Math.max(1, Math.round(durationSeconds / 60)) : undefined;
-    const cooldownDays = input.cooldownDays ?? this.settings.activeWorkoutCooldownDays ?? this.settings.defaultWorkoutCooldownDays;
+    const cooldownDays = input.cooldownDays ?? operationActive.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
     const nextEligibleDate = cooldownDays > 0 ? addDaysIsoDate(endedAt, cooldownDays) : undefined;
     await this.nativeRecordService.finishWorkout(file, {
       endedAt,
       completedDate: endedAt,
       durationSeconds,
       timeEstimate: durationMinutes,
-      setCount: this.settings.activeWorkoutSetCount,
+      setCount: operationActive.setCount,
       cooldownDays,
       targetGapDays: cooldownDays,
       nextEligibleDate,
     });
-    if (this.settings.activeWorkoutPlanPath) {
-      await this.updateWorkoutPlanCompletion(this.settings.activeWorkoutPlanPath, endedAt, cooldownDays, path, nextEligibleDate);
+    if (operationActive.planPath) {
+      await this.updateWorkoutPlanCompletion(operationActive.planPath, endedAt, cooldownDays, resolution.path, nextEligibleDate);
     }
-    await this.stopGcmWorkoutTimer(this.getActiveWorkoutState(), endedAt);
-    await this.clearActiveWorkoutState();
-    logger.flow("Workout", "finish:done", { workoutId, path, storage: "native-records" });
+    await this.stopGcmWorkoutTimer(operationActive, endedAt);
+    await this.clearActiveWorkoutStateIfCurrent(operationActive, "finish-native-workout");
+    logger.flow("Workout", "finish:done", { workoutId, path: resolution.path, storage: "native-records" });
     new Notice("Finished workout");
   }
 
@@ -2272,15 +2523,41 @@ export default class TPSHealthPlugin extends Plugin {
       setCount: active.setCount,
     });
     if (this.nativeRecordService?.isEnabled()) {
-      const file = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-      if (!(file instanceof TFile)) {
-        await this.clearActiveWorkoutState();
-        throw new Error("Active native workout session was missing.");
+      if (!this.nativeRecordService.isWorkoutIndexSettled()) {
+        new Notice("TPS Health is still indexing workout records. Try discarding the workout again in a moment.");
+        return;
       }
-      await this.stopGcmWorkoutTimer(active);
+      const resolution = this.nativeRecordService.resolveWorkoutSession({ id: active.id, path: active.path });
+      if (resolution.state === "ambiguous") {
+        logger.flowWarn("Workout", "discard:ambiguous-native-record", {
+          workoutId: active.id,
+          path: active.path,
+          matches: resolution.matches,
+          reason: resolution.reason || "duplicate-id",
+        });
+        new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before discarding it.", 12000);
+        return;
+      }
+      const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
+      if (!(file instanceof TFile)) {
+        await this.clearActiveWorkoutStateIfCurrent(active, `discard-native-${resolution.state}`);
+        logger.flowWarn("Workout", "discard:missing-native-record-cleared", { workoutId: active.id, path: active.path, state: resolution.state });
+        new Notice(resolution.state === "terminal"
+          ? "The workout was already finished. Cleared its stale active state."
+          : "The active workout record was missing. Cleared its stale active state.");
+        return;
+      }
+      const reconciled = await this.reconcileResolvedNativeWorkout(active, resolution);
+      const resolvedActive = this.getActiveWorkoutState();
+      if (!reconciled || !resolvedActive || resolvedActive.id !== resolution.id || resolvedActive.path !== resolution.path) {
+        logger.flowWarn("Workout", "discard:active-state-changed", { workoutId: active.id, path: resolution.path });
+        new Notice("The active workout changed before it could be discarded. No workout was modified.");
+        return;
+      }
+      await this.stopGcmWorkoutTimer(resolvedActive);
       await this.nativeRecordService.discardWorkout(file);
-      await this.clearActiveWorkoutState();
-      logger.flow("Workout", "discard:done", { workoutId: active.id, path: active.path, storage: "native-records" });
+      await this.clearActiveWorkoutStateIfCurrent(resolvedActive, "discard-native-workout");
+      logger.flow("Workout", "discard:done", { workoutId: resolvedActive.id, path: resolution.path, storage: "native-records" });
       new Notice("Discarded workout");
       return;
     }
@@ -2317,18 +2594,10 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async clearActiveWorkoutState(): Promise<void> {
     const active = this.getActiveWorkoutState();
-    this.settings.activeWorkoutPath = "";
-    this.settings.activeWorkoutId = "";
-    this.settings.activeWorkoutTarget = "";
-    this.settings.activeWorkoutDailyNotePath = "";
-    this.settings.activeWorkoutPlanPath = "";
-    this.settings.activeWorkoutTitle = "";
-    this.settings.activeWorkoutStartedAt = "";
-    this.settings.activeWorkoutCooldownDays = 0;
-    this.settings.lastSetEndedAt = "";
-    this.settings.activeWorkoutSetCount = 0;
-    await this.saveSettings();
-    logger.flow("Workout", "active-state:cleared", active || {});
+    if (!active) return;
+    const cleared = await this.clearActiveWorkoutStateIfCurrent(active, "active-workout-completed");
+    if (cleared) logger.flow("Workout", "active-state:cleared", active);
+    else logger.flowWarn("Workout", "active-state:clear-preserved-replacement", active);
   }
 
   async finishWorkoutAndSaveTemplate(input: { title?: string; cooldownDays?: number; defaultRestSeconds?: number } = {}): Promise<string | undefined> {
@@ -3080,21 +3349,97 @@ export default class TPSHealthPlugin extends Plugin {
     });
   }
 
+  getActiveNativeWorkoutPresentation(): ActiveNativeWorkoutPresentation | null {
+    if (!this.nativeRecordService?.isEnabled()) return null;
+    const active = this.getActiveWorkoutState();
+    if (!active) return null;
+    const resolution = this.nativeRecordService.resolveWorkoutSession({ id: active.id, path: active.path });
+    if (resolution.state !== "active") return null;
+    return {
+      id: resolution.id,
+      path: resolution.path,
+      title: active.title || resolution.title,
+      startedAt: active.startedAt || resolution.startedAt,
+    };
+  }
+
+  async openActiveWorkout(): Promise<boolean> {
+    const active = this.getActiveNativeWorkoutPresentation();
+    const file = active?.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
+    if (!active || !(file instanceof TFile)) {
+      new Notice("No active workout record is available to open.");
+      return false;
+    }
+    try {
+      const result = await this.openWorkoutFile(file);
+      return result.opened;
+    } catch (error) {
+      logger.flowError("WorkoutOpen", "active:failed", error, { workoutId: active.id, path: active.path });
+      new Notice("Could not open the active workout.");
+      return false;
+    }
+  }
+
+  private activeWorkoutStateMatches(expected: ActiveWorkoutState): boolean {
+    return sameActiveWorkoutState(this.getActiveWorkoutState(), expected);
+  }
+
+  private async clearActiveWorkoutStateIfCurrent(expected: ActiveWorkoutState, reason: string): Promise<boolean> {
+    if (!this.activeWorkoutStateMatches(expected)) {
+      logger.flowWarn("Workout", "active-state:clear-skipped", {
+        workoutId: expected.id,
+        path: expected.path,
+        reason,
+      });
+      return false;
+    }
+    return this.persistActiveWorkoutStateMutation(expected, null, reason);
+  }
+
   private activeWorkoutFile(): TFile | null {
+    if (this.nativeRecordService?.isEnabled()) {
+      const active = this.getActiveWorkoutState();
+      if (!active) return null;
+      const resolution = this.nativeRecordService.resolveWorkoutSession({ id: active.id, path: active.path });
+      if (resolution.state !== "active") {
+        logger.flowWarn("Workout", "active-file:unresolved", {
+          workoutId: active.id,
+          path: active.path,
+          state: resolution.state,
+          matches: resolution.matches,
+          reason: resolution.reason || "",
+        });
+        return null;
+      }
+      const resolved = this.app.vault.getAbstractFileByPath(resolution.path);
+      if (!(resolved instanceof TFile)) return null;
+      if (active.path !== resolution.path || active.id !== resolution.id) {
+        const next = {
+          ...active,
+          id: resolution.id,
+          path: resolution.path,
+          title: active.title || resolution.title,
+          startedAt: active.startedAt || resolution.startedAt,
+        };
+        void this.persistActiveWorkoutStateMutation(active, next, "native-session-view-recovery").then((persisted) => {
+          const details = {
+            previousPath: active.path,
+            path: resolution.path,
+            workoutId: resolution.id,
+          };
+          if (persisted) logger.flow("Workout", "active-file:recovered", details);
+          else logger.flowWarn("Workout", "active-file:recovery-skipped", details);
+        }).catch((error) => logger.flowError("Workout", "active-file:recovery-failed", error, {
+          previousPath: active.path,
+          path: resolution.path,
+          workoutId: resolution.id,
+        }));
+      }
+      return resolved;
+    }
     const path = this.settings.activeWorkoutPath;
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (file instanceof TFile) {
-      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      const isExpectedNativeSession = !this.nativeRecordService?.isEnabled()
-        || isNativeWorkoutSessionFrontmatter(fm, this.settings.activeWorkoutId)
-        || this.nativeRecordService.isWorkoutSession(file.path, this.settings.activeWorkoutId);
-      if (isExpectedNativeSession) return file;
-      logger.flowWarn("Workout", "active-file:wrong-native-kind", {
-        path: file.path,
-        kind: typeof fm.kind === "string" ? fm.kind : "",
-        workoutId: this.settings.activeWorkoutId || "",
-      });
-    }
+    if (file instanceof TFile) return file;
     if (!this.getActiveWorkoutState()) return null;
     const recovered = this.findActiveWorkoutFileFromState();
     if (recovered) {
@@ -3113,13 +3458,6 @@ export default class TPSHealthPlugin extends Plugin {
       workoutId: this.settings.activeWorkoutId || "",
       title: this.settings.activeWorkoutTitle || "",
     });
-    if (this.nativeRecordService?.isEnabled() && path) {
-      // Keep the retained workout identity available for a later metadata
-      // recovery, but never leave a wrong-kind record eligible for native
-      // workout controls or time tracking.
-      this.settings.activeWorkoutPath = "";
-      void this.saveSettings();
-    }
     return null;
   }
 
@@ -7179,10 +7517,12 @@ export default class TPSHealthPlugin extends Plugin {
       bar.removeAttribute("data-tps-hover-element");
     }
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-    const activeForFile = this.settings.activeWorkoutPath === file.path
-      && (!this.nativeRecordService?.isEnabled()
-        || isNativeWorkoutSessionFrontmatter(frontmatter, this.settings.activeWorkoutId)
-        || this.nativeRecordService.isWorkoutSession(file.path, this.settings.activeWorkoutId));
+    const activeNativeWorkout = this.nativeRecordService?.isEnabled()
+      ? this.getActiveNativeWorkoutPresentation()
+      : null;
+    const activeForFile = this.nativeRecordService?.isEnabled()
+      ? activeNativeWorkout?.path === file.path
+      : this.settings.activeWorkoutPath === file.path;
     const nativeSnapshot = this.nativeRecordService?.isEnabled()
       ? this.nativeRecordService.getWorkoutSnapshot(file.path)
       : null;
@@ -7329,13 +7669,19 @@ export default class TPSHealthPlugin extends Plugin {
     const identityMatches = activeId ? activeId === snapshot.id : activePath === snapshot.path;
     if (!identityMatches) return false;
     if (activePath !== snapshot.path || activeId !== snapshot.id) {
-      this.settings.activeWorkoutPath = snapshot.path;
-      this.settings.activeWorkoutId = snapshot.id;
-      void this.saveSettings();
-      logger.flow("Workout", "active-state:reconciled-from-native-record", {
-        workoutId: snapshot.id,
-        path: snapshot.path,
-      });
+      const active = this.getActiveWorkoutState();
+      if (active) {
+        const next = { ...active, id: snapshot.id, path: snapshot.path };
+        void this.persistActiveWorkoutStateMutation(active, next, "native-surface-recovery").then((persisted) => {
+          if (persisted) logger.flow("Workout", "active-state:reconciled-from-native-record", {
+            workoutId: snapshot.id,
+            path: snapshot.path,
+          });
+        }).catch((error) => logger.flowError("Workout", "active-state:surface-recovery-failed", error, {
+          workoutId: snapshot.id,
+          path: snapshot.path,
+        }));
+      }
     }
     return true;
   }
@@ -8148,20 +8494,8 @@ export default class TPSHealthPlugin extends Plugin {
     };
   }
 
-  getActiveWorkoutState() {
-    if (!this.settings.activeWorkoutId && !this.settings.activeWorkoutPath && !this.settings.activeWorkoutDailyNotePath) return null;
-    return {
-      id: this.settings.activeWorkoutId,
-      target: this.settings.activeWorkoutTarget,
-      path: this.settings.activeWorkoutPath,
-      dailyNotePath: this.settings.activeWorkoutDailyNotePath,
-      planPath: this.settings.activeWorkoutPlanPath,
-      title: this.settings.activeWorkoutTitle,
-      startedAt: this.settings.activeWorkoutStartedAt,
-      cooldownDays: this.settings.activeWorkoutCooldownDays,
-      lastSetEndedAt: this.settings.lastSetEndedAt,
-      setCount: this.settings.activeWorkoutSetCount || 0,
-    };
+  getActiveWorkoutState(): ActiveWorkoutState | null {
+    return activeWorkoutStateFromSettings(this.settings);
   }
 
   async getDailyFoodMacroTotals(dateIso: string): Promise<DailyFoodMacroTotals> {
@@ -9446,7 +9780,9 @@ class FoodSearchModal extends Modal {
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
     }
-    this.activeFoodLogTab = initialDraft?.query ? "search" : initialTab || pendingDraft?.activeTab || "mine";
+    // The general logger always starts where the next action happens: search.
+    // Explicit Scan and Quick add commands may still request their dedicated tab.
+    this.activeFoodLogTab = initialTab || "search";
     this.consumedDateInput = restoredFoodLogDraftConsumedDateInput(dateContext, pendingDraft);
     if (pendingDraft?.consumedDateInput) {
       const savedConsumedDateInput = pendingDraft.consumedDateInput.trim();
@@ -9482,7 +9818,7 @@ class FoodSearchModal extends Modal {
       quick: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
     };
     const tabButtons = new Map<FoodLogTab, HTMLButtonElement>();
-    const tabOrder: FoodLogTab[] = ["barcode", "search", "mine", "describe", "quick"];
+    const tabOrder: FoodLogTab[] = ["search", "barcode", "mine", "describe", "quick"];
     const setActiveTab = (mode: FoodLogTab) => {
       const token = ++this.searchToken;
       this.activeFoodLogTab = mode;
@@ -9512,7 +9848,7 @@ class FoodSearchModal extends Modal {
         this.statusEl.setText("Describe the meal naturally. TPS Health separates every item, reviews the estimates, and retries anything missing or uncertain before opening the tray.");
       }
     };
-    for (const [mode, label] of [["barcode", "Scan"], ["search", "Search"], ["mine", "Saved"], ["describe", "Describe"], ["quick", "Quick add"]] as const) {
+    for (const [mode, label] of [["search", "Search"], ["barcode", "Scan"], ["mine", "Saved"], ["describe", "Describe"], ["quick", "Quick add"]] as const) {
       const button = tabsEl.createEl("button", { text: label, cls: "tps-health-food-tab" });
       button.setAttr("type", "button");
       button.setAttr("role", "tab");
@@ -10041,14 +10377,19 @@ class FoodSearchModal extends Modal {
     this.selectionEl.removeClass("is-collapsed");
 
     const header = this.selectionEl.createDiv({ cls: "tps-health-selection-header" });
-    header.createDiv({ cls: "tps-health-selection-title", text: `${this.selectionItems.length} selected` });
+    header.createDiv({ cls: "tps-health-selection-title", text: this.selectionTrayTitle() });
     renderMacroPills(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
-    const logButton = headerActions.createEl("button", { text: this.selectionSubmitting ? "Logging…" : "Log selected", cls: "mod-cta" });
+    const logButton = headerActions.createEl("button", {
+      text: this.selectionLogButtonText(),
+      cls: "mod-cta tps-health-selection-log",
+      attr: { type: "button" },
+    });
     logButton.disabled = this.selectionSubmitting;
     logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
     logButton.addEventListener("click", () => this.logSelected());
-    const clearButton = headerActions.createEl("button", { text: "Clear", cls: "mod-muted" });
+    const clearButton = headerActions.createEl("button", { text: "Clear tray", cls: "mod-muted", attr: { type: "button" } });
+    clearButton.disabled = this.selectionSubmitting;
     clearButton.addEventListener("click", () => {
       this.selectionItems = [];
       void this.persistDraft();
@@ -10063,75 +10404,150 @@ class FoodSearchModal extends Modal {
       copy.createDiv({ cls: "tps-health-selection-meta", text: foodResultMeta(entry.item) });
       renderMacroPills(copy.createDiv({ cls: "tps-health-selection-line-macros" }), multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
       const controls = row.createDiv({ cls: "tps-health-selection-controls" });
-      const step = foodLogQuantityStep(entry.unit);
+      const initialStep = foodLogQuantityStep(entry.unit);
       const adjustQuantity = (delta: number) => {
+        const step = foodLogQuantityStep(entry.unit);
         entry.quantity = Math.max(step, roundFoodLogQuantity(entry.quantity + delta));
-        this.persistDraft();
-        this.renderSelection();
+        this.refreshSelectionWithoutScroll(() => {
+          this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
+          this.refreshSelectionSummary();
+        });
+        void this.persistDraft();
       };
       const decrement = controls.createEl("button", {
         text: "-",
-        cls: "tps-health-selection-step",
+        cls: "tps-health-selection-step is-decrement",
         attr: { type: "button", "aria-label": `Decrease amount for ${entry.item.name}` },
       });
-      decrement.addEventListener("click", () => adjustQuantity(-step));
+      decrement.disabled = this.selectionSubmitting;
+      decrement.addEventListener("click", () => adjustQuantity(-foodLogQuantityStep(entry.unit)));
       const quantityInput = controls.createEl("input", {
         cls: "tps-health-selection-quantity",
-        attr: { type: "number", min: String(step), step: String(step), value: String(entry.quantity), "aria-label": `Amount for ${entry.item.name}` },
+        attr: { type: "number", min: String(initialStep), step: String(initialStep), value: String(entry.quantity), "aria-label": `Amount for ${entry.item.name}` },
       });
+      quantityInput.disabled = this.selectionSubmitting;
       quantityInput.addEventListener("change", () => {
+        const step = foodLogQuantityStep(entry.unit);
         entry.quantity = Math.max(step, numberOrUndefined(quantityInput.value) || step);
-        this.persistDraft();
-        this.renderSelection();
+        this.refreshSelectionWithoutScroll(() => {
+          this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
+          this.refreshSelectionSummary();
+        });
+        void this.persistDraft();
       });
       const increment = controls.createEl("button", {
         text: "+",
-        cls: "tps-health-selection-step",
+        cls: "tps-health-selection-step is-increment",
         attr: { type: "button", "aria-label": `Increase amount for ${entry.item.name}` },
       });
-      increment.addEventListener("click", () => adjustQuantity(step));
-      const unitSelect = controls.createEl("select", { attr: { "aria-label": `Unit for ${entry.item.name}` } });
+      increment.disabled = this.selectionSubmitting;
+      increment.addEventListener("click", () => adjustQuantity(foodLogQuantityStep(entry.unit)));
+      const unitSelect = controls.createEl("select", {
+        cls: "tps-health-selection-unit",
+        attr: { "aria-label": `Unit for ${entry.item.name}` },
+      });
       for (const unit of foodLogUnitOptionsForSelection(entry)) {
         unitSelect.createEl("option", { text: foodLogUnitOptionLabel(entry.item, unit), value: unit });
       }
       unitSelect.value = entry.unit;
+      unitSelect.disabled = this.selectionSubmitting;
       unitSelect.addEventListener("change", () => {
         entry.unit = unitSelect.value;
         entry.quantity = Math.max(foodLogQuantityStep(entry.unit), entry.quantity);
-        this.persistDraft();
-        this.renderSelection();
+        this.refreshSelectionWithoutScroll(() => {
+          this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
+          this.refreshSelectionSummary();
+        });
+        void this.persistDraft();
       });
-      const edit = controls.createEl("button", { text: "Edit", cls: "mod-muted" });
+      const edit = controls.createEl("button", { text: "Edit", cls: "mod-muted tps-health-selection-edit", attr: { type: "button" } });
+      edit.disabled = this.selectionSubmitting;
       edit.addEventListener("click", () => {
         this.openSelectionFoodEditor(entry);
       });
-      const remove = controls.createEl("button", { text: "Remove", cls: "mod-muted" });
+      const remove = controls.createEl("button", { text: "Remove", cls: "mod-muted tps-health-selection-remove", attr: { type: "button" } });
+      remove.disabled = this.selectionSubmitting;
       remove.addEventListener("click", () => {
         this.selectionItems = this.selectionItems.filter((candidate) => candidate !== entry);
-        this.persistDraft();
+        void this.persistDraft();
         this.renderSelection();
       });
     }
 
-    new Setting(this.selectionEl)
+    const consumedTimeSetting = new Setting(this.selectionEl)
       .setName("Consumed time")
-      .setDesc("Uses Obsidian's local date-time picker. Clear it to log at the current time.")
+      .setDesc("Optional; clear it to use the current time.")
       .addText((text) => {
         configureFoodLogDateTimeInput(text.inputEl);
         text.setValue(this.consumedDateInput);
         text.inputEl.addEventListener("input", () => {
           this.consumedDateInput = text.inputEl.value;
-          this.persistDraft();
+          void this.persistDraft();
         });
       });
+    consumedTimeSetting.settingEl.addClass("tps-health-selection-time");
 
     const buttons = this.selectionEl.createDiv({ cls: "tps-health-selection-actions" });
-    const recipeButton = buttons.createEl("button", { text: "Create recipe" });
+    const recipeButton = buttons.createEl("button", { text: "Create recipe", attr: { type: "button" } });
+    recipeButton.disabled = this.selectionSubmitting;
     recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
   }
 
+  private selectionTrayTitle(): string {
+    const count = this.selectionItems.length;
+    return `${count} food${count === 1 ? "" : "s"} in tray`;
+  }
+
+  private selectionLogButtonText(): string {
+    if (this.selectionSubmitting) return "Logging…";
+    const count = this.selectionItems.length;
+    return `Log ${count} food${count === 1 ? "" : "s"}`;
+  }
+
+  private refreshSelectionSummary(): void {
+    if (!this.selectionEl) return;
+    const title = this.selectionEl.querySelector(".tps-health-selection-title") as HTMLElement | null;
+    if (title) title.setText(this.selectionTrayTitle());
+    const macros = this.selectionEl.querySelector(".tps-health-selection-header > .tps-health-selection-macros") as HTMLElement | null;
+    if (macros) renderMacroPills(macros, this.selectedNutrition());
+    const logButton = this.selectionEl.querySelector(".tps-health-selection-log") as HTMLButtonElement | null;
+    if (logButton) {
+      logButton.setText(this.selectionLogButtonText());
+      logButton.disabled = this.selectionSubmitting;
+      logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
+    }
+  }
+
+  private refreshSelectionWithoutScroll(refresh: () => void): void {
+    const scrollContainer = this.contentEl;
+    const scrollTop = scrollContainer.scrollTop;
+    refresh();
+    scrollContainer.scrollTop = scrollTop;
+    window.requestAnimationFrame(() => {
+      if (this.contentEl === scrollContainer) scrollContainer.scrollTop = scrollTop;
+    });
+  }
+
+  private refreshSelectionRow(
+    entry: BatchFoodSelection,
+    row: HTMLElement,
+    quantityInput: HTMLInputElement,
+    unitSelect: HTMLSelectElement,
+  ): void {
+    const step = foodLogQuantityStep(entry.unit);
+    entry.quantity = Math.max(step, roundFoodLogQuantity(entry.quantity));
+    quantityInput.min = String(step);
+    quantityInput.step = String(step);
+    quantityInput.value = String(entry.quantity);
+    unitSelect.value = entry.unit;
+    const macros = row.querySelector(".tps-health-selection-line-macros") as HTMLElement | null;
+    if (macros) {
+      renderMacroPills(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+    }
+  }
+
   private resetSearchForNextFood(addedName: string): void {
-    this.statusEl.setText(`Added ${addedName}. Search for another food or log selected.`);
+    this.statusEl.setText(`Added ${addedName}. Add another food or log your tray above.`);
     if (this.activeFoodLogTab !== "search") return;
     this.searchInput = "";
     if (this.searchInputEl) this.searchInputEl.value = "";
@@ -11172,8 +11588,15 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
 
 type NativeDailyDashboardSection = "macros" | "activity" | "combined";
 
+export function activeWorkoutElapsedLabel(startedAt: string, now = Date.now()): string {
+  const started = Date.parse(String(startedAt || ""));
+  if (!Number.isFinite(started)) return "Active";
+  return `Active • ${formatRestDuration(Math.max(0, Math.floor((now - started) / 1000)))}`;
+}
+
 class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private refreshTimer: number | null = null;
+  private activeWorkoutTimer: number | null = null;
   private renderGeneration = 0;
 
   constructor(
@@ -11207,6 +11630,8 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     this.register(() => {
       if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+      if (this.activeWorkoutTimer != null) window.clearInterval(this.activeWorkoutTimer);
+      this.activeWorkoutTimer = null;
     });
     void this.render();
   }
@@ -11214,10 +11639,14 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private async render(): Promise<void> {
     const generation = ++this.renderGeneration;
     try {
+      const activeWorkout = this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
         addFood: () => this.plugin.openFoodLogger({ ...this.dateContext }),
         logActivity: () => this.plugin.openActivityLogger({ ...this.dateContext }),
         startWorkout: () => this.plugin.openWorkoutStarter({ ...this.dateContext }),
+        activeWorkout,
+        resumeWorkout: () => void this.plugin.openActiveWorkout(),
+        finishWorkout: () => void this.plugin.finishWorkout(),
       };
       if (this.section === "activity") {
         const activityTotals = this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso) ?? {
@@ -11232,6 +11661,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
           buildNativeDailyActivityModel(activityTotals, this.plugin.getMetricRenderConfigs()),
           actions,
         );
+        this.syncActiveWorkoutTimer(activeWorkout);
         return;
       }
       const totals = await this.plugin.getDailyFoodMacroTotals(this.dateContext.dateIso);
@@ -11245,6 +11675,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       );
       if (this.section === "macros") {
         renderNativeDailyMacros(this.containerEl, model, actions);
+        this.syncActiveWorkoutTimer(null);
         return;
       }
       renderNativeDailyDashboard(
@@ -11252,10 +11683,24 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         model,
         actions,
       );
+      this.syncActiveWorkoutTimer(activeWorkout);
     } catch (error) {
       logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateContext.dateIso });
       renderNativeDailyDashboardMessage(this.containerEl, "TPS Health could not load this day's nutrition totals.");
     }
+  }
+
+  private syncActiveWorkoutTimer(activeWorkout: ActiveNativeWorkoutPresentation | null): void {
+    if (this.activeWorkoutTimer != null) window.clearInterval(this.activeWorkoutTimer);
+    this.activeWorkoutTimer = null;
+    if (!activeWorkout) return;
+    const update = () => {
+      const elapsed = activeWorkoutElapsedLabel(activeWorkout.startedAt);
+      this.containerEl.querySelectorAll<HTMLElement>(".tps-health-native-daily-active-workout-elapsed")
+        .forEach((element) => element.setText(elapsed));
+    };
+    update();
+    this.activeWorkoutTimer = window.setInterval(update, 1000);
   }
 }
 
@@ -11263,6 +11708,9 @@ interface NativeDailyDashboardActions {
   addFood(): void;
   logActivity(): void;
   startWorkout(): void;
+  activeWorkout: ActiveNativeWorkoutPresentation | null;
+  resumeWorkout(): void;
+  finishWorkout(): void;
 }
 
 function renderNativeDailyDashboardMessage(container: HTMLElement, message: string): void {
@@ -11384,7 +11832,31 @@ function renderNativeDailyActivityBlock(
     button.addEventListener("click", onClick);
   };
   addActivityAction("Log activity", "activity", actions.logActivity);
-  addActivityAction("Start workout", "dumbbell", actions.startWorkout);
+  if (actions.activeWorkout) {
+    const activeWorkout = activity.createDiv({ cls: "tps-health-native-daily-active-workout" });
+    activeWorkout.createSpan({
+      cls: "tps-health-native-daily-active-workout-title",
+      text: actions.activeWorkout.title || "Workout",
+    });
+    activeWorkout.createSpan({
+      cls: "tps-health-native-daily-active-workout-elapsed",
+      text: activeWorkoutElapsedLabel(actions.activeWorkout.startedAt),
+    });
+    const resume = activeWorkout.createEl("button", {
+      cls: "tps-health-native-daily-active-workout-button",
+      text: "Resume",
+      attr: { type: "button", "aria-label": "Resume active workout", title: "Resume active workout" },
+    });
+    resume.addEventListener("click", actions.resumeWorkout);
+    const finish = activeWorkout.createEl("button", {
+      cls: "tps-health-native-daily-active-workout-button is-primary",
+      text: "Finish",
+      attr: { type: "button", "aria-label": "Finish active workout", title: "Finish active workout" },
+    });
+    finish.addEventListener("click", actions.finishWorkout);
+  } else {
+    addActivityAction("Start workout", "dumbbell", actions.startWorkout);
+  }
   if (!model.entryCount) {
     activity.createDiv({ cls: "tps-health-native-daily-empty", text: "No activity logged for this day yet." });
   } else {

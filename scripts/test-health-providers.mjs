@@ -271,6 +271,52 @@ function configureFakeCoreDailyNotes(app, folder, format = "YYYY-MM-DD") {
   app.internalPlugins.plugins["daily-notes"] = corePlugin;
 }
 
+function primeHealthSettingsPersistence(plugin) {
+  plugin.__pluginData = structuredClone(plugin.settings);
+  plugin.lastSavedSettingsSnapshot = structuredClone(plugin.settings);
+}
+
+function installNativeWorkoutTestService(plugin, fake, options = {}) {
+  let resolver = options.resolve || (() => ({
+    state: "missing", matches: 0, id: "", path: "", title: "", status: "", startedAt: "",
+  }));
+  let settled = options.settled ?? true;
+  let createCount = 0;
+  let finishCount = 0;
+  let discardCount = 0;
+  const service = {
+    isEnabled: () => true,
+    isWorkoutIndexSettled: () => settled,
+    resolveWorkoutSession: (reference) => resolver(reference),
+    async createWorkoutSession(properties, id) {
+      createCount += 1;
+      const path = `2026-08-26 - ${String(properties.title || "Workout")}.md`;
+      const file = new globalThis.__TPSHealthTestTFile(path);
+      const frontmatter = {
+        ...properties, tpsId: id, tpsSchemaVersion: 1, kind: "workout-session", status: "active",
+      };
+      fake.files.set(path, frontmatterToYaml(frontmatter));
+      resolver = () => ({
+        state: "active", matches: 1, id, path, title: String(properties.title || "Workout"), status: "active",
+        startedAt: String(properties.startedAt || ""),
+      });
+      return { file, path, id, kind: "workout-session", frontmatter };
+    },
+    async finishWorkout() { finishCount += 1; },
+    async discardWorkout() { discardCount += 1; },
+    isWorkoutSession: () => false,
+    getWorkoutSnapshot: () => null,
+    getWorkoutProgress: () => ({ exerciseCount: 0, setCount: 0 }),
+  };
+  plugin.nativeRecordService = service;
+  return {
+    service,
+    setResolver(next) { resolver = next; },
+    setSettled(next) { settled = next; },
+    counts: () => ({ create: createCount, finish: finishCount, discard: discardCount }),
+  };
+}
+
 function parseFrontmatter(content) {
   if (!content.startsWith("---\n")) return {};
   const end = content.indexOf("\n---", 4);
@@ -376,7 +422,10 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.doesNotMatch(foodSearchModalSource, /clearPendingFoodLogDraft\(/);
   assert.match(foodSearchModalSource, /const snapshot = this\.selectionItems\.map/);
   assert.match(foodSearchModalSource, /await this\.persistDraftIfOwned\(\)/);
-  assert.match(mainSource, /Added \$\{addedName\}\. Search for another food or log selected\./);
+  assert.match(mainSource, /Added \$\{addedName\}\. Add another food or log your tray above\./);
+  assert.match(mainSource, /this\.activeFoodLogTab = initialTab \|\| "search";/);
+  assert.doesNotMatch(foodSearchOpen, /pendingDraft\?\.activeTab \|\| "mine"/);
+  assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "barcode", "mine", "describe", "quick"\]/);
   assert.match(mainSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
@@ -394,7 +443,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
 
 test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
   assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\);/);
-  assert.match(mainSource, /const edit = controls\.createEl\("button", \{ text: "Edit", cls: "mod-muted" \}\);/);
+  assert.match(mainSource, /const edit = controls\.createEl\("button", \{ text: "Edit", cls: "mod-muted tps-health-selection-edit", attr: \{ type: "button" \} \}\);/);
   assert.match(mainSource, /private async openSelectionFoodEditor\(entry: BatchFoodSelection\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-open"/);
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, type, freshItem\.name, false, freshItem, this\.dateContext, freshItem\.sourcePath, async \(saved\) => \{/);
@@ -3816,7 +3865,7 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(stylesSource, /\.tps-health-selection-step/);
   assert.match(stylesSource, /\.tps-health-selection-quantity/);
   assert.match(stylesSource, /body\.is-mobile \.tps-health-selection-row/);
-  assert.match(stylesSource, /grid-template-areas:\s*"name name"\s*"copy controls"/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-row\s*\{[\s\S]+grid-template-areas:\s*"name controls"\s*"copy controls"/);
   assert.match(stylesSource, /> \.tps-health-selection-name/);
   assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-step/);
   assert.match(stylesSource, /grid-template-areas:\s*"title title"\s*"meta meta"\s*"macros actions"/);
@@ -3835,8 +3884,67 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(stylesSource, /@container tps-health-food-search \(max-width: 520px\)[\s\S]+grid-template-areas:\s*"title"\s*"meta"\s*"macros"\s*"actions"/);
   assert.match(stylesSource, /\.tps-health-result-actions\s*\{[\s\S]+grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.match(stylesSource, /\.tps-health-result-actions\.has-create-action button:last-child\s*\{\s*grid-column: 1 \/ -1;/);
-  assert.match(stylesSource, /@media \(max-width: 600px\), \(hover: none\) and \(pointer: coarse\)[\s\S]+\.tps-health-food-search-frame \.tps-health-food-tabs\s*\{[\s\S]+grid-template-columns: repeat\(6, minmax\(0, 1fr\)\);/);
-  assert.match(stylesSource, /\.tps-health-food-tab:nth-last-child\(-n \+ 2\)\s*\{\s*grid-column: span 3;/);
+  assert.match(stylesSource, /@media \(max-width: 600px\), \(hover: none\) and \(pointer: coarse\)[\s\S]+\.tps-health-food-search-frame \.tps-health-food-tabs\s*\{[\s\S]+overflow-x: auto;/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-controls\s*\{[\s\S]+grid-template-areas:\s*"decrement quantity increment unit"\s*"edit edit remove remove"/);
+});
+
+test("food tray quantity changes update in place without rebuilding the modal", () => {
+  const selectionRenderer = mainSource.slice(
+    mainSource.indexOf("  private renderSelection(): void"),
+    mainSource.indexOf("  private resetSearchForNextFood", mainSource.indexOf("  private renderSelection(): void")),
+  );
+  assert.match(selectionRenderer, /private selectionLogButtonText\(\): string[\s\S]+`Log \$\{count\} food/);
+  assert.match(selectionRenderer, /tps-health-selection-log/);
+  assert.match(selectionRenderer, /private refreshSelectionSummary\(\): void/);
+  assert.match(selectionRenderer, /private refreshSelectionWithoutScroll\(refresh: \(\) => void\): void/);
+  assert.match(selectionRenderer, /window\.requestAnimationFrame\(\(\) => \{/);
+  assert.match(selectionRenderer, /private refreshSelectionRow\(/);
+  assert.match(selectionRenderer, /adjustQuantity[\s\S]+this\.refreshSelectionRow\(entry, row, quantityInput, unitSelect\);[\s\S]+this\.refreshSelectionSummary\(\);/);
+  const adjustQuantity = selectionRenderer.slice(
+    selectionRenderer.indexOf("const adjustQuantity"),
+    selectionRenderer.indexOf("const decrement", selectionRenderer.indexOf("const adjustQuantity")),
+  );
+  assert.doesNotMatch(adjustQuantity, /this\.renderSelection\(\)/);
+  assert.match(stylesSource, /scrollbar-gutter: stable/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-line-macros,[\s\S]+flex-wrap: nowrap;[\s\S]+overflow-x: auto;/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-food-tab \{[\s\S]+flex: 0 0 auto;[\s\S]+width: auto;/);
+});
+
+test("general food logger starts on Search even when a saved tray remembers another tab", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    pendingFoodLogDraft: {
+      id: "saved-tab-origin",
+      updatedAt: new Date().toISOString(),
+      activeTab: "mine",
+      searchInput: "greek yogurt",
+      consumedDateInput: "",
+      dateContext: null,
+      selectionItems: [{
+        item: {
+          id: "saved-food",
+          name: "Greek yogurt",
+          source: "custom",
+          servingAmount: 1,
+          servingUnit: "serving",
+          nutrition: { calories: 100, proteinG: 12, carbsG: 8, fatG: 0 },
+        },
+        quantity: 1,
+        unit: "serving",
+      }],
+    },
+  };
+
+  const general = new FoodSearchModal(fake.app, plugin);
+  const explicitScanner = new FoodSearchModal(fake.app, plugin, null, null, "barcode");
+
+  assert.equal(general.activeFoodLogTab, "search");
+  assert.equal(general.searchInput, "greek yogurt", "restoring the search text must not restore the old tab");
+  assert.equal(explicitScanner.activeFoodLogTab, "barcode", "the dedicated scanner command must keep its direct route");
 });
 
 test("alternate gram servings scale from a known serving weight without rounding to zero", async () => {
@@ -5949,7 +6057,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private getActiveInlineFoodDraft\(\): InlineFoodDraft \| null/);
   assert.doesNotMatch(mainSource, /\.setName\("Natural add"\)/);
   assert.doesNotMatch(mainSource, /\["natural", "Text"\]/);
-  assert.match(mainSource, /\["barcode", "Scan"\], \["search", "Search"\], \["mine", "Saved"\], \["describe", "Describe"\]/);
+  assert.match(mainSource, /\["search", "Search"\], \["barcode", "Scan"\], \["mine", "Saved"\], \["describe", "Describe"\]/);
   assert.match(mainSource, /\.setName\("Search food"\)/);
   assert.match(mainSource, /\.setName\("Barcode"\)/);
   assert.match(mainSource, /const token = \+\+this\.searchToken;\s+this\.activeFoodLogTab = mode;/);
@@ -7261,8 +7369,9 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(mainSource, /private resolveMobileWorkoutActionBarTarget\(\): \{ view: MarkdownView; file: TFile; source: "active-view" \} \| null/);
   assert.match(mainSource, /private findActiveWorkoutFileFromState\(\): TFile \| null/);
   assert.match(mainSource, /logger\.flow\("Workout", "active-file:recovered"/);
-  assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:wrong-native-kind"/);
-  assert.match(mainSource, /isNativeWorkoutSessionFrontmatter\(fm, workoutId\)/);
+  assert.match(mainSource, /resolveWorkoutSession\(\{ id: active\.id, path: active\.path \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:unresolved"/);
+  assert.match(mainSource, /if \(resolution\.state !== "active"\)/);
   assert.match(mainSource, /fm\.kind === "workout-session"/);
   assert.match(mainSource, /getWorkoutProgress\(workoutId\)/);
   assert.match(mainSource, /applyWorkoutPlanToNativeSession\(record\.file, context\.plan\.sourcePath\)/);
@@ -8539,8 +8648,22 @@ test("native active workout recovery selects only the session record", async () 
     activeWorkoutPath: "Records/Leg extension.md",
     activeWorkoutTitle: "Strength",
   };
-  plugin.nativeRecordService = { isEnabled: () => true, isWorkoutSession: () => false };
-  plugin.saveSettings = async () => {};
+  let resolution = {
+    state: "active",
+    matches: 1,
+    id: "workout-native-1",
+    path: "Workouts/Strength.md",
+    title: "Strength",
+    status: "active",
+    startedAt: "",
+  };
+  plugin.nativeRecordService = {
+    isEnabled: () => true,
+    isWorkoutIndexSettled: () => true,
+    resolveWorkoutSession: () => resolution,
+    isWorkoutSession: () => false,
+  };
+  primeHealthSettingsPersistence(plugin);
   fake.files.set("Records/Leg extension.md", [
     "---",
     "kind: workout-exercise",
@@ -8559,6 +8682,7 @@ test("native active workout recovery selects only the session record", async () 
 
   const recovered = plugin.activeWorkoutFile();
   assert.equal(recovered?.path, "Workouts/Strength.md");
+  await plugin.saveSettings();
   assert.equal(plugin.settings.activeWorkoutPath, "Workouts/Strength.md");
 
   fake.files.set("Workouts/Strength duplicate.md", [
@@ -8570,9 +8694,240 @@ test("native active workout recovery selects only the session record", async () 
     "---",
   ].join("\n"));
   plugin.settings.activeWorkoutPath = "Records/Leg extension.md";
+  resolution = {
+    state: "ambiguous",
+    matches: 2,
+    id: "workout-native-1",
+    path: "",
+    title: "",
+    status: "",
+    startedAt: "",
+    reason: "duplicate-id",
+  };
   const ambiguous = plugin.activeWorkoutFile();
   assert.equal(ambiguous, null);
-  assert.equal(plugin.settings.activeWorkoutPath, "");
+  assert.equal(
+    plugin.settings.activeWorkoutPath,
+    "Records/Leg extension.md",
+    "an ambiguous identity must fail closed without clearing or pairing partial active-workout state",
+  );
+});
+
+test("active native workout elapsed labels remain stable for missing and valid start times", async () => {
+  installDeterministicBrowserGlobals();
+  const { activeWorkoutElapsedLabel } = await importPluginWithObsidianStub();
+  assert.equal(activeWorkoutElapsedLabel(""), "Active");
+  assert.equal(
+    activeWorkoutElapsedLabel("2026-08-26T12:00:00.000Z", Date.parse("2026-08-26T12:01:05.000Z")),
+    "Active • 1:05",
+  );
+});
+
+test("native workout start heals an ID-only or missing-record ghost once and remains single-flight", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-ghost",
+    activeWorkoutPath: "Missing workout.md",
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "Missing workout",
+    activeWorkoutStartedAt: "2026-08-25T11:16:46.886Z",
+  };
+  primeHealthSettingsPersistence(plugin);
+  const harness = installNativeWorkoutTestService(plugin, fake);
+
+  const [first, second] = await Promise.all([
+    plugin.startWorkout({ title: "Recovered start", startedAt: "2026-08-26T12:00:00.000Z", openFile: false }),
+    plugin.startWorkout({ title: "Recovered start", startedAt: "2026-08-26T12:00:00.000Z", openFile: false }),
+  ]);
+
+  assert.equal(first, second);
+  assert.equal(harness.counts().create, 1, "two callers share one reconciliation and one new session write");
+  assert.notEqual(plugin.settings.activeWorkoutId, "workout-ghost");
+  assert.equal(plugin.__pluginData.activeWorkoutId, plugin.settings.activeWorkoutId, "the healed state is durable");
+  assert.ok(globalThis.__TPSHealthTestNotices.some((message) => message.includes("record was missing")));
+});
+
+test("native start recovers moved sessions, clears terminal sessions, and fails closed for ambiguity or index warm-up", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const activeSettings = (plugin, overrides = {}) => ({
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-a",
+    activeWorkoutPath: "Old name.md",
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "Strength",
+    activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+    ...overrides,
+  });
+
+  {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = activeSettings(plugin);
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("New name.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "active", matches: 1, id: "workout-a", path: "New name.md", title: "Strength", status: "active",
+        startedAt: "2026-08-26T10:00:00.000Z",
+      }),
+    });
+    await assert.rejects(
+      () => plugin.startWorkout({ openFile: false }),
+      /Finish or end the active workout/u,
+    );
+    assert.equal(plugin.settings.activeWorkoutPath, "New name.md", "a stable ID repairs the persisted filename before blocking");
+    assert.equal(harness.counts().create, 0);
+  }
+
+  {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = activeSettings(plugin);
+    primeHealthSettingsPersistence(plugin);
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "terminal", matches: 1, id: "workout-a", path: "Old name.md", title: "Strength", status: "complete",
+        startedAt: "2026-08-26T10:00:00.000Z",
+      }),
+    });
+    await plugin.startWorkout({ title: "After completed", startedAt: "2026-08-26T12:00:00.000Z", openFile: false });
+    assert.equal(harness.counts().create, 1, "a terminal session cannot retain active ownership");
+  }
+
+  for (const scenario of [
+    {
+      label: "ambiguous",
+      settled: true,
+      resolution: { state: "ambiguous", matches: 2, id: "", path: "", title: "", status: "", startedAt: "", reason: "duplicate-id" },
+      error: /ambiguous/u,
+    },
+    {
+      label: "warming index",
+      settled: false,
+      resolution: { state: "missing", matches: 0, id: "", path: "", title: "", status: "", startedAt: "" },
+      error: /still being indexed/u,
+    },
+  ]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = activeSettings(plugin);
+    primeHealthSettingsPersistence(plugin);
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      settled: scenario.settled,
+      resolve: () => scenario.resolution,
+    });
+    await assert.rejects(() => plugin.startWorkout({ openFile: false }), scenario.error, scenario.label);
+    assert.equal(plugin.settings.activeWorkoutId, "workout-a", `${scenario.label} must preserve active ownership`);
+    assert.equal(plugin.__pluginData.activeWorkoutId, "workout-a", `${scenario.label} must preserve persisted ownership`);
+    assert.equal(harness.counts().create, 0);
+  }
+});
+
+test("stale active-state cleanup uses persisted compare-and-swap and preserves a synced replacement", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const oldState = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-a",
+    activeWorkoutPath: "Missing A.md",
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "A",
+    activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+  };
+  const replacement = {
+    ...oldState,
+    activeWorkoutId: "workout-b",
+    activeWorkoutPath: "Workout B.md",
+    activeWorkoutTitle: "B",
+    activeWorkoutStartedAt: "2026-08-26T11:00:00.000Z",
+  };
+  plugin.settings = structuredClone(oldState);
+  primeHealthSettingsPersistence(plugin);
+  plugin.__pluginData = structuredClone(replacement);
+  const harness = installNativeWorkoutTestService(plugin, fake, {
+    resolve: ({ id }) => id === "workout-b"
+      ? { state: "active", matches: 1, id: "workout-b", path: "Workout B.md", title: "B", status: "active", startedAt: replacement.activeWorkoutStartedAt }
+      : { state: "missing", matches: 0, id: "", path: "", title: "", status: "", startedAt: "" },
+  });
+
+  await assert.rejects(() => plugin.startWorkout({ openFile: false }), /Finish or end the active workout/u);
+  assert.equal(harness.counts().create, 0);
+  assert.equal(plugin.settings.activeWorkoutId, "workout-b");
+  assert.equal(plugin.__pluginData.activeWorkoutId, "workout-b", "stale A cannot overwrite synced B");
+});
+
+test("ID-only missing native workouts recover through Finish and Discard without throwing", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const action of ["finish", "discard"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: `workout-${action}-ghost`,
+      activeWorkoutPath: "",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: `${action} ghost`,
+    };
+    primeHealthSettingsPersistence(plugin);
+    const harness = installNativeWorkoutTestService(plugin, fake);
+    if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+    assert.equal(plugin.getActiveWorkoutState(), null, `${action} clears an ID-only ghost`);
+    assert.equal(plugin.__pluginData.activeWorkoutId, "");
+    assert.deepEqual(harness.counts(), { create: 0, finish: 0, discard: 0 }, `${action} does not mutate another record`);
+  }
+});
+
+test("native Finish and Discard fail closed if active ownership changes during reconciliation", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const action of ["finish", "discard"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+      activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+      activeWorkoutSetCount: 3,
+    };
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("Workout A.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "active", matches: 1, id: "workout-a", path: "Workout A.md", title: "A", status: "active",
+        startedAt: "2026-08-26T10:00:00.000Z",
+      }),
+    });
+    plugin.reconcileResolvedNativeWorkout = async () => {
+      plugin.settings.activeWorkoutId = "workout-b";
+      plugin.settings.activeWorkoutPath = "Workout B.md";
+      plugin.settings.activeWorkoutTitle = "B";
+      plugin.__pluginData = structuredClone(plugin.settings);
+      return null;
+    };
+    if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+    assert.equal(plugin.settings.activeWorkoutId, "workout-b");
+    assert.equal(harness.counts().finish, 0);
+    assert.equal(harness.counts().discard, 0);
+    assert.equal(fake.files.has("Workout A.md"), true, `${action} does not mutate or trash A after ownership changes`);
+  }
 });
 
 test("workout exercise picker performs no catalog work on open and cancels typed searches", () => {

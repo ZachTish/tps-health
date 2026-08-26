@@ -61,6 +61,7 @@ function createHarness(options = {}) {
   const createCalls = [];
   let generated = 0;
   const vaultEvents = new Map();
+  const metadataEvents = new Map();
   const recordFolder = (kind) => ({
     'food-entry': 'food-entries',
     'activity-entry': 'activity-entries',
@@ -141,6 +142,12 @@ function createHarness(options = {}) {
     settings: { storageMode: 'native-records' },
     manifest: { id: 'tps-health' },
     app: {
+      workspace: {
+        layoutReady: options.layoutReady ?? true,
+        onLayoutReady(callback) {
+          if (this.layoutReady) callback();
+        },
+      },
       vault: {
         getMarkdownFiles: () => [...files.values()],
         cachedRead: async (file) => contents.get(file.path) || '',
@@ -154,15 +161,22 @@ function createHarness(options = {}) {
         },
       },
       metadataCache: {
+        initialized: options.metadataInitialized ?? true,
         getFileCache: (file) => ({ frontmatter: frontmatters.get(file) }),
         getFirstLinkpathDest: (linkpath) => {
           const normalized = String(linkpath || '').replace(/^\[\[|\]\]$/gu, '').replace(/\.md$/u, '');
           return [...files.values()].find((candidate) => candidate.path.replace(/\.md$/u, '') === normalized) || null;
         },
-        on: () => ({}),
+        on: (name, callback) => {
+          const listeners = metadataEvents.get(name) || [];
+          listeners.push(callback);
+          metadataEvents.set(name, listeners);
+          return {};
+        },
       },
     },
     registerEvent: () => {},
+    scheduleWorkoutActionBars: () => {},
     getGcmNativeRecordsApi: () => api,
   };
   const service = new HealthNativeRecordService(plugin);
@@ -181,7 +195,10 @@ function createHarness(options = {}) {
   const emitVault = (name, ...args) => {
     for (const listener of vaultEvents.get(name) || []) listener(...args);
   };
-  return { service, api, files, frontmatters, contents, createCalls, addLegacyFile, addFrontmatterFile, emitVault };
+  const emitMetadata = (name, ...args) => {
+    for (const listener of metadataEvents.get(name) || []) listener(...args);
+  };
+  return { service, api, files, frontmatters, contents, createCalls, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
 }
 
 test('native Health filenames use the record date and plain human title', () => {
@@ -638,6 +655,46 @@ test('native workout session stores one exercise record with an atomic set list 
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
+});
+
+test('active workout resolution distinguishes moved, terminal, missing, conflicting, and duplicate sessions', async () => {
+  const { service, addFrontmatterFile } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z',
+  }, 'workout-live');
+  assert.deepEqual(service.resolveWorkoutSession({ id: 'workout-live', path: 'stale-name.md' }), {
+    state: 'active', matches: 1, id: 'workout-live', path: session.path, title: 'Strength', status: 'active',
+    startedAt: '2026-08-24T08:00:00.000Z',
+  }, 'stable ID repairs a stale filename');
+
+  const conflict = service.resolveWorkoutSession({ id: 'workout-missing', path: session.path });
+  assert.equal(conflict.state, 'ambiguous');
+  assert.equal(conflict.reason, 'identity-conflict');
+  assert.equal(service.resolveWorkoutSession({ id: 'workout-missing', path: 'missing.md' }).state, 'missing');
+
+  const duplicate = addFrontmatterFile('Duplicate Strength.md', {
+    tpsId: 'workout-live', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Duplicate Strength', status: 'active',
+    startedAt: '2026-08-24T08:01:00.000Z',
+  });
+  service.indexFile(duplicate);
+  const ambiguous = service.resolveWorkoutSession({ id: 'workout-live', path: session.path });
+  assert.equal(ambiguous.state, 'ambiguous');
+  assert.equal(ambiguous.reason, 'duplicate-id');
+  assert.equal(ambiguous.matches, 2);
+
+  service.removePath(duplicate.path);
+  const terminalFrontmatter = { ...session.frontmatter, status: 'complete', endedAt: '2026-08-24T09:00:00.000Z' };
+  service.indexFile(session.file, terminalFrontmatter);
+  const terminal = service.resolveWorkoutSession({ id: 'workout-live', path: session.path });
+  assert.equal(terminal.state, 'terminal');
+  assert.equal(terminal.status, 'complete');
+});
+
+test('workout resolution stays fail-closed until MetadataCache reports a settled generation', () => {
+  const cold = createHarness({ layoutReady: true, metadataInitialized: false });
+  assert.equal(cold.service.isWorkoutIndexSettled(), false, 'layout readiness alone cannot authorize stale-state clearing');
+  cold.emitMetadata('resolved');
+  assert.equal(cold.service.isWorkoutIndexSettled(), true, 'the authoritative resolved generation enables reconciliation');
 });
 
 test('explicit identity normalization replaces legacy workout joins before removing duplicate IDs', async () => {

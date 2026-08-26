@@ -113,8 +113,14 @@ test('Daily Note actions use the exact resolved date context for every Health wo
   assert.match(mainSource, /addAction\("Add food", "utensils", actions\.addFood\)/u);
   assert.match(mainSource, /addActivityAction\("Log activity", "activity", actions\.logActivity\)/u);
   assert.match(mainSource, /addActivityAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
+  assert.match(mainSource, /const activeWorkout = this\.plugin\.getActiveNativeWorkoutPresentation\(\)/u);
+  assert.match(mainSource, /if \(actions\.activeWorkout\) \{[\s\S]*?text: activeWorkoutElapsedLabel\(actions\.activeWorkout\.startedAt\)[\s\S]*?text: "Resume"[\s\S]*?"aria-label": "Resume active workout"[\s\S]*?text: "Finish"[\s\S]*?"aria-label": "Finish active workout"[\s\S]*?\} else \{[\s\S]*?addActivityAction\("Start workout"/u);
+  assert.match(mainSource, /this\.activeWorkoutTimer = window\.setInterval\(update, 1000\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*display:\s*flex/u);
-  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-height:\s*44px/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto auto/u);
+  assert.match(stylesSource, /@container \(max-width: 360px\)[\s\S]*?\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*,\s*\.tps-health-native-daily-active-workout-button\s*\{[^}]*min-height:\s*44px/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-width:\s*44px/u);
 });
 
 test('dashboard refreshes from the indexed record signal instead of racing MetadataCache', () => {

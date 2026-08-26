@@ -1,5 +1,19 @@
 # TPS Health
 
+## 0.25.0
+
+- The general food logger now opens on **Search** every time, including when it restores an unlogged tray. The dedicated **Scan food barcode** and **Quick add food estimate** commands still open their requested tools directly.
+- The selected-food tray now names its primary action explicitly as **Log 1 food** or **Log N foods**, keeps the tray above long search results, and uses a flatter visual hierarchy with fewer nested borders.
+- Quantity, unit, and +/- edits update the affected macro row and tray total in place instead of rebuilding the modal. Focus and scroll position remain stable, macro pills use one horizontally contained line, status text has reserved space, and the mobile control grid no longer changes shape as values change.
+- Mobile tabs use one touch-friendly horizontal strip, tray controls use fixed responsive grid areas, and the consumed-time copy is shorter. Existing drafts, food records, commands, storage modes, settings, and public APIs are unchanged.
+
+- Native workout start now reconciles saved active state against the stable-ID workout-session index before deciding whether to block. One active session is recovered after a move and opened for resume; already-finished or truly missing sessions are compare-and-swap cleared and the same Start request continues. Duplicate identities and an index that is still warming up fail closed instead of guessing or erasing state.
+- Active-state repair treats the workout ID, path, title, start time, Daily Note receipt, plan, target, cooldown, set count, and last-set timestamp as one persisted owner snapshot. A synced or local replacement that arrives during recovery, finish, or discard is preserved, and the old operation cannot borrow the replacement session's duration, plan, or set totals.
+- **Finish** and **Discard** recover ID-only and missing-record ghosts with a truthful notice instead of throwing. A valid session that moves remains finishable/discardable; an ambiguous or concurrently replaced session is left unchanged for explicit review.
+- The Daily **Activity** block shows a valid active workout persistently with its title, live elapsed time, and one pair of accessible **Resume** / **Finish** controls. **Start workout** appears only when no valid active workout exists, so stale missing state is never presented as a running timer. The compact row keeps 44 px touch targets and a narrow-pane grid without duplicating controls in the header.
+- Existing workout records and settings require no migration. Recovery is intentionally triggered by an explicit workout action; it does not scan or rewrite note bodies, and it never automatically selects between duplicate TPS IDs.
+- This is a backward-compatible usability and reliability release. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.24.2
 
 - Legacy Daily Note creation now follows one authoritative owner. Health delegates to GCM Daily Notes v2+ whenever GCM is enabled, and otherwise uses one coherent live-or-persisted Core folder, format, and template snapshot. ISO dates remain ASCII under localized Moment settings.

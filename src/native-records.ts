@@ -84,6 +84,36 @@ export interface NativeWorkoutSnapshot {
   exercises: NativeWorkoutExerciseSnapshot[];
 }
 
+export type NativeWorkoutSessionResolutionState = 'active' | 'terminal' | 'missing' | 'ambiguous';
+
+export interface NativeWorkoutSessionResolution {
+  state: NativeWorkoutSessionResolutionState;
+  matches: number;
+  id: string;
+  path: string;
+  title: string;
+  status: string;
+  startedAt: string;
+  reason?: 'duplicate-id' | 'identity-conflict';
+}
+
+function emptyWorkoutSessionResolution(
+  state: Extract<NativeWorkoutSessionResolutionState, 'missing' | 'ambiguous'>,
+  matches: number,
+  reason?: NativeWorkoutSessionResolution['reason'],
+): NativeWorkoutSessionResolution {
+  return {
+    state,
+    matches,
+    id: '',
+    path: '',
+    title: '',
+    status: '',
+    startedAt: '',
+    reason,
+  };
+}
+
 export interface LegacyHealthImportPlan {
   candidates: number;
   existing: number;
@@ -346,6 +376,7 @@ export class HealthNativeRecordService {
   private readonly refreshGenerations = new Map<string, number>();
   private readonly foodProjectionTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
   private readonly foodProjectionGenerations = new Map<string, number>();
+  private workoutIndexReady = false;
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
 
@@ -353,15 +384,19 @@ export class HealthNativeRecordService {
     this.rebuild();
     const metadataCache = this.plugin.app.metadataCache;
     const vault = this.plugin.app.vault;
+    const metadataInitialized = (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
+    this.workoutIndexReady = this.plugin.app.workspace?.layoutReady === true && metadataInitialized;
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, _data, cache) => this.indexFile(file, cache?.frontmatter)));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
       this.rebuild();
+      this.workoutIndexReady = true;
       this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.app.workspace?.onLayoutReady?.(() => {
       this.rebuild();
+      this.workoutIndexReady = (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
       this.plugin.scheduleWorkoutActionBars();
     });
     this.plugin.registerEvent(vault.on('create', (file) => {
@@ -385,6 +420,10 @@ export class HealthNativeRecordService {
 
   isEnabled(): boolean {
     return this.plugin.settings.storageMode === 'native-records';
+  }
+
+  isWorkoutIndexSettled(): boolean {
+    return this.workoutIndexReady && this.refreshGenerations.size === 0;
   }
 
   dispose(): void {
@@ -655,6 +694,46 @@ export class HealthNativeRecordService {
     return !expectedId
       || record.id === expectedId
       || String(record.frontmatter.workoutId || '').trim() === expectedId;
+  }
+
+  /**
+   * Resolve the persisted active-workout pointer without treating an exercise,
+   * terminal session, or duplicate stable ID as a live workout. Stable ID is
+   * authoritative; a path that points at a different session fails closed.
+   */
+  resolveWorkoutSession(reference: { id?: string; path?: string }): NativeWorkoutSessionResolution {
+    const expectedId = String(reference.id || '').trim();
+    const expectedPath = String(reference.path || '').trim();
+    const sessions = this.getKindRecords('workout-session');
+    const idMatches = expectedId
+      ? sessions.filter((record) => record.id === expectedId || String(record.frontmatter.workoutId || '').trim() === expectedId)
+      : [];
+    const pathMatches = expectedPath
+      ? sessions.filter((record) => record.file.path === expectedPath)
+      : [];
+
+    if (expectedId && idMatches.length > 1) {
+      return emptyWorkoutSessionResolution('ambiguous', idMatches.length, 'duplicate-id');
+    }
+    if (expectedId && idMatches.length === 0 && pathMatches.length > 0) {
+      return emptyWorkoutSessionResolution('ambiguous', pathMatches.length, 'identity-conflict');
+    }
+
+    const matches = expectedId ? idMatches : pathMatches;
+    if (matches.length > 1) return emptyWorkoutSessionResolution('ambiguous', matches.length, 'duplicate-id');
+    if (matches.length === 0) return emptyWorkoutSessionResolution('missing', 0);
+
+    const record = matches[0];
+    const status = String(record.frontmatter.status || '').trim().toLocaleLowerCase();
+    return {
+      state: record.frontmatter.archived === true || status !== 'active' ? 'terminal' : 'active',
+      matches: 1,
+      id: record.id,
+      path: record.file.path,
+      title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+      status,
+      startedAt: String(record.frontmatter.startedAt || '').trim(),
+    };
   }
 
   getWorkoutProgress(workoutId: string): { exerciseCount: number; setCount: number } {
