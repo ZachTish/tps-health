@@ -715,6 +715,14 @@ export class HealthNativeRecordService {
     if (expectedId && idMatches.length > 1) {
       return emptyWorkoutSessionResolution('ambiguous', idMatches.length, 'duplicate-id');
     }
+    if (
+      expectedId
+      && idMatches.length === 1
+      && pathMatches.length === 1
+      && idMatches[0].file.path !== pathMatches[0].file.path
+    ) {
+      return emptyWorkoutSessionResolution('ambiguous', 2, 'identity-conflict');
+    }
     if (expectedId && idMatches.length === 0 && pathMatches.length > 0) {
       return emptyWorkoutSessionResolution('ambiguous', pathMatches.length, 'identity-conflict');
     }

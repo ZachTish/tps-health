@@ -672,6 +672,14 @@ test('active workout resolution distinguishes moved, terminal, missing, conflict
   assert.equal(conflict.reason, 'identity-conflict');
   assert.equal(service.resolveWorkoutSession({ id: 'workout-missing', path: 'missing.md' }).state, 'missing');
 
+  const otherSession = await service.createWorkoutSession({
+    title: 'Cardio', startedAt: '2026-08-24T09:00:00.000Z',
+  }, 'workout-other');
+  const bothValidConflict = service.resolveWorkoutSession({ id: 'workout-live', path: otherSession.path });
+  assert.equal(bothValidConflict.state, 'ambiguous', 'an ID and path that resolve to different valid sessions must fail closed');
+  assert.equal(bothValidConflict.reason, 'identity-conflict');
+  assert.equal(bothValidConflict.matches, 2);
+
   const duplicate = addFrontmatterFile('Duplicate Strength.md', {
     tpsId: 'workout-live', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Duplicate Strength', status: 'active',
     startedAt: '2026-08-24T08:01:00.000Z',
@@ -733,6 +741,13 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
   assert.match(mainSource, /logNativeWorkoutSetDraft\(exercise\.name, draft\)/u);
   assert.match(mainSource, /active-state:reconciled-from-native-record/u);
+  const activeSurfaceGuard = mainSource.slice(
+    mainSource.indexOf("  private isActiveNativeWorkoutSnapshot"),
+    mainSource.indexOf("  private async logNativeWorkoutSetDraft"),
+  );
+  assert.match(activeSurfaceGuard, /isWorkoutIndexSettled\(\)/u);
+  assert.match(activeSurfaceGuard, /resolveWorkoutSession\(\{ id: active\.id, path: active\.path \}\)/u);
+  assert.match(activeSurfaceGuard, /resolution\.state !== "active" \|\| resolution\.id !== snapshot\.id \|\| resolution\.path !== snapshot\.path/u);
   assert.match(mainSource, /text\.setValue\(reps == null \? "" : String\(reps\)\)/u);
   assert.match(mainSource, /text\.setValue\(weight == null \? "" : String\(weight\)\)/u);
   assert.match(mainSource, /getWorkoutProgress\(workoutId\)/u);

@@ -114,8 +114,10 @@ test('Daily Note actions use the exact resolved date context for every Health wo
   assert.match(mainSource, /addActivityAction\("Log activity", "activity", actions\.logActivity\)/u);
   assert.match(mainSource, /addActivityAction\("Start workout", "dumbbell", actions\.startWorkout\)/u);
   assert.match(mainSource, /const activeWorkout = this\.plugin\.getActiveNativeWorkoutPresentation\(\)/u);
+  assert.match(mainSource, /if \(this\.section !== "macros"\) \{\s*this\.register\(this\.plugin\.onActiveWorkoutStateChanged\(scheduleRefresh\)\);\s*\}/u);
   assert.match(mainSource, /if \(actions\.activeWorkout\) \{[\s\S]*?text: activeWorkoutElapsedLabel\(actions\.activeWorkout\.startedAt\)[\s\S]*?text: "Resume"[\s\S]*?"aria-label": "Resume active workout"[\s\S]*?text: "Finish"[\s\S]*?"aria-label": "Finish active workout"[\s\S]*?\} else \{[\s\S]*?addActivityAction\("Start workout"/u);
   assert.match(mainSource, /this\.activeWorkoutTimer = window\.setInterval\(update, 1000\)/u);
+  assert.match(mainSource, /if \(this\.activeWorkoutTimer != null\) window\.clearInterval\(this\.activeWorkoutTimer\)[\s\S]*?catch \(error\) \{[\s\S]*?this\.syncActiveWorkoutTimer\(null\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*display:\s*flex/u);
   assert.match(stylesSource, /\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto auto/u);
   assert.match(stylesSource, /@container \(max-width: 360px\)[\s\S]*?\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto/u);

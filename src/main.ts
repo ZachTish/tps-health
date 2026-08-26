@@ -648,6 +648,7 @@ export default class TPSHealthPlugin extends Plugin {
     next: ActiveWorkoutState | null;
     reason: string;
   } | null = null;
+  private readonly activeWorkoutStateListeners = new Set<() => void>();
   private retainedLegacyUsdaApiKey = "";
   private settingsPersistenceBlockedByFutureSchema = false;
   private settingsPersistenceBlockedNoticeShown = false;
@@ -1063,13 +1064,31 @@ export default class TPSHealthPlugin extends Plugin {
     next: ActiveWorkoutState | null,
     reason: string,
   ): Promise<boolean> {
+    const before = this.getActiveWorkoutState();
     this.pendingActiveWorkoutStateMutation = {
       expected: { ...expected },
       next: next ? { ...next } : null,
       reason,
     };
     await this.saveSettings();
-    return sameActiveWorkoutState(this.getActiveWorkoutState(), next);
+    const current = this.getActiveWorkoutState();
+    if (!sameActiveWorkoutState(before, current)) this.emitActiveWorkoutStateChanged();
+    return sameActiveWorkoutState(current, next);
+  }
+
+  onActiveWorkoutStateChanged(listener: () => void): () => void {
+    this.activeWorkoutStateListeners.add(listener);
+    return () => this.activeWorkoutStateListeners.delete(listener);
+  }
+
+  private emitActiveWorkoutStateChanged(): void {
+    for (const listener of [...this.activeWorkoutStateListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        logger.flowError("Workout", "active-state-listener:failed", error);
+      }
+    }
   }
 
   private async flushSettingsSaveQueue(): Promise<void> {
@@ -1136,6 +1155,17 @@ export default class TPSHealthPlugin extends Plugin {
             changedKeys.push(...ACTIVE_WORKOUT_SETTING_KEYS);
             changedKeys.sort();
             activeWorkoutStateMutationApplied = true;
+          } else if (
+            sameActiveWorkoutState(latestActiveWorkout, activeWorkoutStateMutation.expected)
+            && !sameActiveWorkoutState(currentActiveWorkout, activeWorkoutStateMutation.expected)
+            && !sameActiveWorkoutState(currentActiveWorkout, activeWorkoutStateMutation.next)
+          ) {
+            this.settingsSavePending = true;
+            logger.flow("Settings", "active-workout-state:cas-deferred-local-change", {
+              reason: activeWorkoutStateMutation.reason,
+              localWorkoutId: currentActiveWorkout?.id || "",
+              localPath: currentActiveWorkout?.path || "",
+            });
           } else {
             applyActiveWorkoutState(localSnapshot, latestActiveWorkout);
             applyActiveWorkoutState(this.settings, latestActiveWorkout);
@@ -1239,6 +1269,7 @@ export default class TPSHealthPlugin extends Plugin {
   onunload(): void {
     logger.flow("Lifecycle", "unload");
     this.nativeRecordService?.dispose();
+    this.activeWorkoutStateListeners.clear();
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
     this.removeWorkoutActionBars();
     this.clearGcmFoodLogButtonRegistration();
@@ -2273,6 +2304,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
     await this.saveSettings();
+    this.emitActiveWorkoutStateChanged();
     logger.flow("Workout", "start:state-saved", {
       workoutId,
       path,
@@ -2337,6 +2369,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
     await this.saveSettings();
+    this.emitActiveWorkoutStateChanged();
     if (context.plan?.sourcePath) {
       try {
         await this.applyWorkoutPlanToNativeSession(record.file, context.plan.sourcePath);
@@ -2462,7 +2495,14 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
     if (!(file instanceof TFile)) {
-      if (active) await this.clearActiveWorkoutStateIfCurrent(active, `finish-native-${resolution.state}`);
+      const cleared = active
+        ? await this.clearActiveWorkoutStateIfCurrent(active, `finish-native-${resolution.state}`)
+        : false;
+      if (!cleared) {
+        logger.flowWarn("Workout", "finish:stale-clear-skipped", { workoutId, path, state: resolution.state });
+        new Notice("The active workout changed before stale state could be cleared. No workout was modified.");
+        return;
+      }
       logger.flowWarn("Workout", "finish:missing-native-record-cleared", { workoutId, path, state: resolution.state });
       new Notice(resolution.state === "terminal"
         ? "The workout was already finished. Cleared its stale active state."
@@ -2540,7 +2580,12 @@ export default class TPSHealthPlugin extends Plugin {
       }
       const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
       if (!(file instanceof TFile)) {
-        await this.clearActiveWorkoutStateIfCurrent(active, `discard-native-${resolution.state}`);
+        const cleared = await this.clearActiveWorkoutStateIfCurrent(active, `discard-native-${resolution.state}`);
+        if (!cleared) {
+          logger.flowWarn("Workout", "discard:stale-clear-skipped", { workoutId: active.id, path: active.path, state: resolution.state });
+          new Notice("The active workout changed before stale state could be cleared. No workout was modified.");
+          return;
+        }
         logger.flowWarn("Workout", "discard:missing-native-record-cleared", { workoutId: active.id, path: active.path, state: resolution.state });
         new Notice(resolution.state === "terminal"
           ? "The workout was already finished. Cleared its stale active state."
@@ -7664,24 +7709,28 @@ export default class TPSHealthPlugin extends Plugin {
 
   private isActiveNativeWorkoutSnapshot(snapshot: NativeWorkoutSnapshot): boolean {
     if (snapshot.status !== "active") return false;
-    const activeId = String(this.settings.activeWorkoutId || "").trim();
-    const activePath = String(this.settings.activeWorkoutPath || "").trim();
-    const identityMatches = activeId ? activeId === snapshot.id : activePath === snapshot.path;
-    if (!identityMatches) return false;
-    if (activePath !== snapshot.path || activeId !== snapshot.id) {
-      const active = this.getActiveWorkoutState();
-      if (active) {
-        const next = { ...active, id: snapshot.id, path: snapshot.path };
-        void this.persistActiveWorkoutStateMutation(active, next, "native-surface-recovery").then((persisted) => {
-          if (persisted) logger.flow("Workout", "active-state:reconciled-from-native-record", {
-            workoutId: snapshot.id,
-            path: snapshot.path,
-          });
-        }).catch((error) => logger.flowError("Workout", "active-state:surface-recovery-failed", error, {
-          workoutId: snapshot.id,
-          path: snapshot.path,
-        }));
-      }
+    const service = this.nativeRecordService;
+    const active = this.getActiveWorkoutState();
+    if (!service?.isEnabled() || !active || !service.isWorkoutIndexSettled()) return false;
+    const resolution = service.resolveWorkoutSession({ id: active.id, path: active.path });
+    if (resolution.state !== "active" || resolution.id !== snapshot.id || resolution.path !== snapshot.path) return false;
+    if (active.path !== resolution.path || active.id !== resolution.id) {
+      const next = {
+        ...active,
+        id: resolution.id,
+        path: resolution.path,
+        title: active.title || resolution.title,
+        startedAt: active.startedAt || resolution.startedAt,
+      };
+      void this.persistActiveWorkoutStateMutation(active, next, "native-surface-recovery").then((persisted) => {
+        if (persisted) logger.flow("Workout", "active-state:reconciled-from-native-record", {
+          workoutId: resolution.id,
+          path: resolution.path,
+        });
+      }).catch((error) => logger.flowError("Workout", "active-state:surface-recovery-failed", error, {
+        workoutId: resolution.id,
+        path: resolution.path,
+      }));
     }
     return true;
   }
@@ -11627,6 +11676,9 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       scheduleRefresh();
     });
     if (unsubscribe) this.register(unsubscribe);
+    if (this.section !== "macros") {
+      this.register(this.plugin.onActiveWorkoutStateChanged(scheduleRefresh));
+    }
     this.register(() => {
       if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
@@ -11686,6 +11738,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       this.syncActiveWorkoutTimer(activeWorkout);
     } catch (error) {
       logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateContext.dateIso });
+      this.syncActiveWorkoutTimer(null);
       renderNativeDailyDashboardMessage(this.containerEl, "TPS Health could not load this day's nutrition totals.");
     }
   }

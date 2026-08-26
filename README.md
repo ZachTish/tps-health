@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.25.1
+
+- Native active-workout identity is now resolved as one stable ID/path pair everywhere it can expose or mutate a session. If both values point to different valid workouts, Start, Finish, Discard, and the inline workout surface fail closed instead of selecting one or silently repairing the other.
+- Active-workout persistence preserves a newer synced session and local changes such as a replacement workout or updated set count that arrive while recovery is reading stored settings. Stale cleanup cannot overwrite the current owner.
+- Daily **Activity** blocks subscribe to global active-workout state in addition to date-scoped record changes. Overnight workouts and Daily Notes for another date immediately replace Start with the live Resume/Finish row, and they remove the timer as soon as the session ends or is discarded.
+- Missing-record Finish and Discard actions now report when a concurrent replacement prevented cleanup. No unrelated workout is modified, and render failures tear down the elapsed-time interval instead of leaving a stale timer behind.
+- Existing records, settings, food-logger behavior, storage modes, and public APIs require no migration. This is a backward-compatible reliability patch; minimum supported Obsidian remains 1.12.0.
+- Validation: focused native-record/dashboard coverage passed 28/28 and focused provider recovery coverage passed 10/10. The final declared suite passed 245 checks (244 passed and one credential-gated live USDA integration check skipped), followed by a production build and byte-identical test-vault deployment that preserved Health runtime state. POC QA cleared the real missing-record ghost, created one readable session, exposed a monotonic timer with Resume/Finish, reopened the same session, and restored empty active state after recoverable cleanup. Final artifact hashes are recorded in `release-notes/0.25.1.md`.
+
 ## 0.25.0
 
 - The general food logger now opens on **Search** every time, including when it restores an unlogged tray. The dedicated **Scan food barcode** and **Quick add food estimate** commands still open their requested tools directly.

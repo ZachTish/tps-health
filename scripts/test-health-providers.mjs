@@ -8752,6 +8752,38 @@ test("native workout start heals an ID-only or missing-record ghost once and rem
   assert.ok(globalThis.__TPSHealthTestNotices.some((message) => message.includes("record was missing")));
 });
 
+test("active-workout subscribers receive cross-date Start and Finish state changes and can unsubscribe", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, storageMode: "native-records" };
+  primeHealthSettingsPersistence(plugin);
+  installNativeWorkoutTestService(plugin, fake);
+  plugin.stopGcmWorkoutTimer = async () => {};
+  const observed = [];
+  const unsubscribe = plugin.onActiveWorkoutStateChanged(() => {
+    observed.push(plugin.getActiveWorkoutState());
+  });
+
+  await plugin.startWorkout({
+    title: "Overnight workout",
+    startedAt: "2026-08-25T23:50:00.000Z",
+    dailyNoteDate: "2026-08-26T00:10:00.000Z",
+    openFile: false,
+  });
+  assert.equal(observed.length, 1);
+  assert.ok(observed[0]?.id, "Start publishes the new active owner to every Activity subscriber");
+
+  await plugin.finishWorkout({ endedAt: "2026-08-26T00:20:00.000Z" });
+  assert.equal(observed.length, 2);
+  assert.equal(observed[1], null, "cross-date Finish publishes the clear independently of record-date invalidation");
+
+  unsubscribe();
+  await plugin.startWorkout({ title: "Unobserved workout", startedAt: "2026-08-26T01:00:00.000Z", openFile: false });
+  assert.equal(observed.length, 2, "an unloaded Daily Activity child no longer receives active-state changes");
+});
+
 test("native start recovers moved sessions, clears terminal sessions, and fails closed for ambiguity or index warm-up", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -8830,6 +8862,79 @@ test("native start recovers moved sessions, clears terminal sessions, and fails 
   }
 });
 
+test("native Start, Finish, and Discard fail closed when ID and path resolve to different valid sessions", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const action of ["start", "finish", "discard"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout B.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+      activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+    };
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("Workout A.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    fake.files.set("Workout B.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "ambiguous", matches: 2, id: "", path: "", title: "", status: "", startedAt: "",
+        reason: "identity-conflict",
+      }),
+    });
+
+    if (action === "start") await assert.rejects(() => plugin.startWorkout({ openFile: false }), /ambiguous/u);
+    else if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+
+    assert.equal(plugin.settings.activeWorkoutId, "workout-a", `${action} preserves the stable owner`);
+    assert.equal(plugin.settings.activeWorkoutPath, "Workout B.md", `${action} preserves the conflicting pointer for review`);
+    assert.equal(plugin.__pluginData.activeWorkoutId, "workout-a");
+    assert.deepEqual(harness.counts(), { create: 0, finish: 0, discard: 0 }, `${action} performs no record mutation`);
+  }
+});
+
+test("native workout surface exposes no mutation controls or CAS repair for a conflicting ID and path", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-a",
+    activeWorkoutPath: "Workout B.md",
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "A",
+  };
+  primeHealthSettingsPersistence(plugin);
+  installNativeWorkoutTestService(plugin, fake, {
+    resolve: () => ({
+      state: "ambiguous", matches: 2, id: "", path: "", title: "", status: "", startedAt: "",
+      reason: "identity-conflict",
+    }),
+  });
+  let repairAttempts = 0;
+  plugin.persistActiveWorkoutStateMutation = async () => {
+    repairAttempts += 1;
+    return true;
+  };
+
+  const active = plugin.isActiveNativeWorkoutSnapshot({
+    id: "workout-a",
+    path: "Workout A.md",
+    status: "active",
+  });
+
+  assert.equal(active, false, "the surface renders read-only, which disables add/edit/finish controls");
+  assert.equal(repairAttempts, 0, "a conflicting valid path is never rewritten to match the displayed snapshot");
+  assert.equal(plugin.settings.activeWorkoutPath, "Workout B.md");
+});
+
 test("stale active-state cleanup uses persisted compare-and-swap and preserves a synced replacement", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -8864,6 +8969,63 @@ test("stale active-state cleanup uses persisted compare-and-swap and preserves a
   assert.equal(harness.counts().create, 0);
   assert.equal(plugin.settings.activeWorkoutId, "workout-b");
   assert.equal(plugin.__pluginData.activeWorkoutId, "workout-b", "stale A cannot overwrite synced B");
+});
+
+test("grouped active-state CAS preserves and queues local changes made while stored settings load", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const scenario of ["replacement", "set-count"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+      activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+      activeWorkoutSetCount: 1,
+    };
+    primeHealthSettingsPersistence(plugin);
+    const captured = plugin.getActiveWorkoutState();
+    let releaseFirstLoad;
+    let markFirstLoadStarted;
+    const firstLoadStarted = new Promise((resolve) => { markFirstLoadStarted = resolve; });
+    const firstLoad = new Promise((resolve) => { releaseFirstLoad = resolve; });
+    let loadCount = 0;
+    plugin.loadData = async () => {
+      loadCount += 1;
+      if (loadCount === 1) {
+        markFirstLoadStarted();
+        return firstLoad;
+      }
+      return structuredClone(plugin.__pluginData);
+    };
+
+    const mutation = plugin.persistActiveWorkoutStateMutation(captured, null, `qa-${scenario}`);
+    await firstLoadStarted;
+    if (scenario === "replacement") {
+      plugin.settings.activeWorkoutId = "workout-b";
+      plugin.settings.activeWorkoutPath = "Workout B.md";
+      plugin.settings.activeWorkoutTitle = "B";
+      plugin.settings.activeWorkoutStartedAt = "2026-08-26T11:00:00.000Z";
+      plugin.settings.activeWorkoutSetCount = 0;
+    } else {
+      plugin.settings.activeWorkoutSetCount = 2;
+    }
+    releaseFirstLoad(structuredClone(plugin.__pluginData));
+
+    assert.equal(await mutation, false, `${scenario} supersedes the stale clear`);
+    if (scenario === "replacement") {
+      assert.equal(plugin.settings.activeWorkoutId, "workout-b");
+      assert.equal(plugin.__pluginData.activeWorkoutId, "workout-b", "the replacement is queued and durably saved");
+    } else {
+      assert.equal(plugin.settings.activeWorkoutSetCount, 2);
+      assert.equal(plugin.__pluginData.activeWorkoutSetCount, 2, "the concurrent set count is queued and durably saved");
+    }
+    assert.ok(loadCount >= 2, `${scenario} receives a follow-up persistence pass`);
+  }
 });
 
 test("ID-only missing native workouts recover through Finish and Discard without throwing", async () => {
@@ -8927,6 +9089,137 @@ test("native Finish and Discard fail closed if active ownership changes during r
     assert.equal(harness.counts().finish, 0);
     assert.equal(harness.counts().discard, 0);
     assert.equal(fake.files.has("Workout A.md"), true, `${action} does not mutate or trash A after ownership changes`);
+  }
+});
+
+test("missing-record Finish and Discard preserve a synced replacement during stale-state cleanup", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const action of ["finish", "discard"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    const oldState = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Missing A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+    };
+    const replacement = {
+      ...oldState,
+      activeWorkoutId: "workout-b",
+      activeWorkoutPath: "Workout B.md",
+      activeWorkoutTitle: "B",
+      activeWorkoutStartedAt: "2026-08-26T11:00:00.000Z",
+    };
+    plugin.settings = structuredClone(oldState);
+    primeHealthSettingsPersistence(plugin);
+    plugin.__pluginData = structuredClone(replacement);
+    const harness = installNativeWorkoutTestService(plugin, fake);
+
+    if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+
+    assert.equal(plugin.settings.activeWorkoutId, "workout-b", `${action} adopts the newer persisted owner`);
+    assert.equal(plugin.__pluginData.activeWorkoutId, "workout-b", `${action} cannot overwrite the replacement`);
+    assert.deepEqual(harness.counts(), { create: 0, finish: 0, discard: 0 });
+    assert.ok(
+      globalThis.__TPSHealthTestNotices.some((message) => message.includes("changed") && message.includes("No workout was modified")),
+      `${action} reports that stale cleanup was skipped`,
+    );
+  }
+});
+
+test("native Finish and Discard keep operation metadata bound to the revalidated owner", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+
+  {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+      activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+      activeWorkoutPlanPath: "Plan A.md",
+      activeWorkoutCooldownDays: 3,
+      activeWorkoutSetCount: 7,
+    };
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("Workout A.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "active", matches: 1, id: "workout-a", path: "Workout A.md", title: "A", status: "active",
+        startedAt: "2026-08-26T10:00:00.000Z",
+      }),
+    });
+    let finishOptions;
+    let planOwner = "";
+    let timerOwner = "";
+    harness.service.finishWorkout = async (_file, options) => {
+      finishOptions = options;
+      plugin.settings.activeWorkoutId = "workout-b";
+      plugin.settings.activeWorkoutPath = "Workout B.md";
+      plugin.settings.activeWorkoutTitle = "B";
+      plugin.settings.activeWorkoutStartedAt = "2026-08-26T10:59:00.000Z";
+      plugin.settings.activeWorkoutPlanPath = "Plan B.md";
+      plugin.settings.activeWorkoutCooldownDays = 9;
+      plugin.settings.activeWorkoutSetCount = 99;
+      plugin.__pluginData = structuredClone(plugin.settings);
+    };
+    plugin.updateWorkoutPlanCompletion = async (planPath) => { planOwner = planPath; };
+    plugin.stopGcmWorkoutTimer = async (owner) => { timerOwner = owner?.id || ""; };
+
+    await plugin.finishWorkout({ endedAt: "2026-08-26T11:00:00.000Z" });
+
+    assert.equal(finishOptions.durationSeconds, 3600);
+    assert.equal(finishOptions.timeEstimate, 60);
+    assert.equal(finishOptions.cooldownDays, 3);
+    assert.equal(finishOptions.setCount, 7);
+    assert.equal(planOwner, "Plan A.md");
+    assert.equal(timerOwner, "workout-a");
+    assert.equal(plugin.settings.activeWorkoutId, "workout-b", "the replacement remains active after A finishes");
+  }
+
+  {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+      activeWorkoutStartedAt: "2026-08-26T10:00:00.000Z",
+    };
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("Workout A.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    const harness = installNativeWorkoutTestService(plugin, fake, {
+      resolve: () => ({
+        state: "active", matches: 1, id: "workout-a", path: "Workout A.md", title: "A", status: "active",
+        startedAt: "2026-08-26T10:00:00.000Z",
+      }),
+    });
+    let timerOwner = "";
+    plugin.stopGcmWorkoutTimer = async (owner) => {
+      timerOwner = owner?.id || "";
+      plugin.settings.activeWorkoutId = "workout-b";
+      plugin.settings.activeWorkoutPath = "Workout B.md";
+      plugin.settings.activeWorkoutTitle = "B";
+      plugin.__pluginData = structuredClone(plugin.settings);
+    };
+
+    await plugin.discardWorkout();
+
+    assert.equal(timerOwner, "workout-a");
+    assert.equal(harness.counts().discard, 1, "the resolved A record is the only discarded record");
+    assert.equal(plugin.settings.activeWorkoutId, "workout-b", "discard cleanup cannot clear the replacement");
   }
 });
 
