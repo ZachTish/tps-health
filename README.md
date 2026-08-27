@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.25.2
+
+- A live blank native workout now resolves its owning session by stable workout ID before adding an exercise. If GCM has already renamed or moved the new session note, TPS Health repairs the saved path and attaches the exercise to that resolved session instead of failing against the stale filename.
+- The mutation is fail-closed: indexing, duplicate-ID, terminal-session, and concurrently replaced-workout states are rejected before an exercise is attached. The active owner is rechecked after reusable-exercise creation so a delayed picker cannot write into a different workout.
+- A newly attached zero-set exercise is indexed and projected into the open workout immediately, exposing its editable first-set row without requiring a reload or a pre-existing set. Existing workout records, exercise notes, schemas, settings, and APIs require no migration.
+- This is a backward-compatible reliability patch. Minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite passed 247 checks (246 passed and one credential-gated live USDA integration check skipped), followed by a separate production build and byte-identical isolated test-vault deployment that preserved Health runtime state. Automated click-through QA was unavailable because the macOS Computer Use service failed to start; the unchanged picker interaction contract and the repaired native mutation route are covered by focused regressions. Final artifact hashes are recorded in `release-notes/0.25.2.md`.
+
 ## 0.25.1
 
 - Native active-workout identity is now resolved as one stable ID/path pair everywhere it can expose or mutate a session. If both values point to different valid workouts, Start, Finish, Discard, and the inline workout surface fail closed instead of selecting one or silently repairing the other.

@@ -8723,6 +8723,76 @@ test("active native workout elapsed labels remain stable for missing and valid s
   );
 });
 
+test("blank native workouts attach a new exercise through the resolved stable session", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const resolvedPath = "Workouts/2026-08-27 - Blank workout.md";
+  fake.files.set(resolvedPath, frontmatterToYaml({
+    tpsId: "workout-blank",
+    tpsSchemaVersion: 1,
+    kind: "workout-session",
+    title: "Blank workout",
+    status: "active",
+  }));
+  plugin.settings = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-blank",
+    activeWorkoutPath: "Workouts/stale blank workout.md",
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "Blank workout",
+    activeWorkoutStartedAt: "2026-08-27T10:00:00.000Z",
+  };
+  primeHealthSettingsPersistence(plugin);
+  let attached = null;
+  let surfaceRefreshes = 0;
+  let actionRefreshes = 0;
+  plugin.nativeRecordService = {
+    isEnabled: () => true,
+    isWorkoutIndexSettled: () => true,
+    resolveWorkoutSession: () => ({
+      state: "active",
+      matches: 1,
+      id: "workout-blank",
+      path: resolvedPath,
+      title: "Blank workout",
+      status: "active",
+      startedAt: "2026-08-27T10:00:00.000Z",
+    }),
+    ensureWorkoutExercise: async (sessionFile, name, exercisePath) => {
+      attached = { sessionPath: sessionFile.path, name, exercisePath };
+      return { file: new globalThis.__TPSHealthTestTFile("Records/Bench press.md") };
+    },
+  };
+  plugin.findOrCreateExercise = async () => ({
+    id: "Health/Exercises/Bench press.md",
+    name: "Bench press",
+    sourcePath: "Health/Exercises/Bench press.md",
+    category: "strength",
+    primaryMuscles: [],
+    secondaryMuscles: [],
+    equipment: [],
+    defaultRestSeconds: 90,
+    defaultSetType: "normal",
+  });
+  plugin.updateNativeWorkoutSurfaces = () => { surfaceRefreshes += 1; };
+  plugin.scheduleWorkoutActionBars = () => { actionRefreshes += 1; };
+
+  await plugin.addSetForExerciseToActiveWorkout("Bench press", undefined, { skipCatalogBuild: true });
+
+  assert.deepEqual(attached, {
+    sessionPath: resolvedPath,
+    name: "Bench press",
+    exercisePath: "Health/Exercises/Bench press.md",
+  });
+  assert.equal(plugin.settings.activeWorkoutPath, resolvedPath, "the live owner follows the stable session before attaching the exercise");
+  assert.equal(plugin.__pluginData.activeWorkoutPath, resolvedPath, "the repaired owner is durable");
+  assert.equal(surfaceRefreshes, 1, "the new exercise is projected into the open live workout immediately");
+  assert.equal(actionRefreshes, 1);
+});
+
 test("native workout start heals an ID-only or missing-record ghost once and remains single-flight", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();

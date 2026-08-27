@@ -657,6 +657,24 @@ test('native workout session stores one exercise record with an atomic set list 
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
 });
 
+test('a blank native workout projects a newly attached exercise before its first set', async () => {
+  const { service } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Blank workout',
+    startedAt: '2026-08-27T08:00:00.000Z',
+  }, 'workout-blank');
+
+  const exercise = await service.ensureWorkoutExercise(session, 'Bench press', 'Health/Exercises/Bench press.md');
+  const snapshot = service.getWorkoutSnapshot(session.path);
+
+  assert.equal(exercise.frontmatter.setCount, 0);
+  assert.equal(snapshot.exerciseCount, 1);
+  assert.equal(snapshot.setCount, 0);
+  assert.equal(snapshot.exercises[0].name, 'Bench press');
+  assert.equal(snapshot.exercises[0].exercisePath, 'Health/Exercises/Bench press.md');
+  assert.deepEqual(snapshot.exercises[0].sets, [], 'the live table can render its first editable draft row immediately');
+});
+
 test('active workout resolution distinguishes moved, terminal, missing, conflicting, and duplicate sessions', async () => {
   const { service, addFrontmatterFile } = createHarness();
   const session = await service.createWorkoutSession({

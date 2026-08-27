@@ -2688,12 +2688,24 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     if (this.nativeRecordService?.isEnabled()) {
-      const sessionFile = active?.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-      if (!(sessionFile instanceof TFile)) throw new Error("Active native workout session was not found.");
+      const { owner, file: sessionFile } = await this.resolveActiveNativeWorkoutMutationTarget("add-exercise");
       const savedExercise = await this.findOrCreateExercise({ name: exerciseName }, options);
+      if (!this.activeWorkoutStateMatches(owner)) {
+        throw new Error("The active workout changed before the exercise could be added.");
+      }
+      const latestResolution = this.nativeRecordService.resolveWorkoutSession({ id: owner.id, path: owner.path });
+      if (latestResolution.state !== "active" || latestResolution.id !== owner.id || latestResolution.path !== owner.path) {
+        throw new Error("The active workout changed before the exercise could be added.");
+      }
       await this.nativeRecordService.ensureWorkoutExercise(sessionFile, savedExercise.name, savedExercise.sourcePath);
       this.updateNativeWorkoutSurfaces();
       this.scheduleWorkoutActionBars();
+      logger.flow("WorkoutExercisePicker", "exercise:attached", {
+        workoutId: owner.id,
+        path: owner.path,
+        exercise: savedExercise.name,
+        exercisePath: savedExercise.sourcePath || "",
+      });
       return;
     }
     if (active?.target === "daily-note") {
@@ -2737,6 +2749,51 @@ export default class TPSHealthPlugin extends Plugin {
         savedExercise?.sourcePath,
       );
     }
+  }
+
+  private async resolveActiveNativeWorkoutMutationTarget(operation: string): Promise<{ owner: ActiveWorkoutState; file: TFile }> {
+    const service = this.nativeRecordService;
+    const captured = this.getActiveWorkoutState();
+    if (!service?.isEnabled() || !captured) throw new Error("No active native workout is available.");
+    if (!service.isWorkoutIndexSettled()) {
+      throw new Error("Workout records are still being indexed. Try again in a moment.");
+    }
+    const resolution = service.resolveWorkoutSession({ id: captured.id, path: captured.path });
+    if (resolution.state === "ambiguous") {
+      logger.flowWarn("Workout", "mutation:ambiguous-native-record", {
+        operation,
+        workoutId: captured.id,
+        path: captured.path,
+        matches: resolution.matches,
+        reason: resolution.reason || "duplicate-id",
+      });
+      throw new Error("The active workout has conflicting records and cannot be changed safely.");
+    }
+    if (resolution.state !== "active") {
+      logger.flowWarn("Workout", "mutation:inactive-native-record", {
+        operation,
+        workoutId: captured.id,
+        path: captured.path,
+        state: resolution.state,
+      });
+      throw new Error(resolution.state === "terminal"
+        ? "The workout has already ended."
+        : "The active workout session could not be found.");
+    }
+    const presentation = await this.reconcileResolvedNativeWorkout(captured, resolution);
+    const owner = this.getActiveWorkoutState();
+    if (!presentation || !owner || owner.id !== resolution.id || owner.path !== resolution.path) {
+      throw new Error("The active workout changed before it could be updated.");
+    }
+    const file = this.app.vault.getAbstractFileByPath(resolution.path);
+    if (!(file instanceof TFile)) throw new Error("The active workout session could not be found.");
+    logger.flow("Workout", "mutation:resolved-native-record", {
+      operation,
+      workoutId: owner.id,
+      path: owner.path,
+      repairedPath: captured.path !== owner.path,
+    });
+    return { owner, file };
   }
 
   async addExercisePlaceholderToDailyWorkout(filePath: string, workoutId: string, exercise: string, exercisePath?: string): Promise<void> {
