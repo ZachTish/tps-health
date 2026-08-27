@@ -878,7 +878,9 @@ export default class TPSHealthPlugin extends Plugin {
           const plan = await this.nativeRecordService.planLegacyImport();
           const message = `Create ${plan.candidates - plan.existing} native Health records from legacy logs? Existing notes will not be edited or deleted.`;
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
-          const result = await this.nativeRecordService.importLegacyRecords();
+          const result = await this.nativeRecordService.importLegacyRecords((name, existingPath) => (
+            this.ensureExerciseDefinitionForWorkout(name, existingPath).then((exercise) => exercise.sourcePath || "")
+          ));
           new Notice(`Native Health import: ${result.created} created, ${result.skipped} already present, ${result.failed} failed. Legacy source files were preserved.`, 12000);
         });
         return true;
@@ -908,9 +910,11 @@ export default class TPSHealthPlugin extends Plugin {
         if (!checking) void this.traceCommand("consolidate-native-workout-storage", async () => {
           const message = `Copy ${plan.childNotes} exercise ${plan.childNotes === 1 ? "note" : "notes"} into ${plan.sessions} workout ${plan.sessions === 1 ? "note" : "notes"}, then move the redundant child notes to trash? Workout history and reusable exercise notes are preserved.`;
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
-          const result = await this.nativeRecordService.consolidateWorkoutStorage((path, mutation) => (
-            this.serializeWorkoutMutation(path, "consolidate-native-workout-storage", mutation)
-          ));
+          const result = await this.nativeRecordService.consolidateWorkoutStorage(
+            (path, mutation) => this.serializeWorkoutMutation(path, "consolidate-native-workout-storage", mutation),
+            (name, existingPath) => this.ensureExerciseDefinitionForWorkout(name, existingPath)
+              .then((exercise) => exercise.sourcePath || ""),
+          );
           new Notice(`Workout storage: ${result.consolidated} consolidated, ${result.trashed} redundant child notes moved to trash, ${result.failed} failed.`, 12000);
         });
         return true;
@@ -3642,11 +3646,9 @@ export default class TPSHealthPlugin extends Plugin {
     const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
     const startedTimestamp = Date.parse(startedAt);
     if (set.createExerciseNote === false) {
-      logger.flow("Exercise", "set-note:skip-create", { exercise: set.exercise, route: "active-workout" });
+      logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "active-workout" });
     }
-    const exercise = set.createExerciseNote === false
-      ? this.findExercise(set.exercise)
-      : await this.findOrCreateExercise({ name: set.exercise });
+    const exercise = await this.findOrCreateExercise({ name: set.exercise });
     const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
       ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
       : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
@@ -3715,9 +3717,10 @@ export default class TPSHealthPlugin extends Plugin {
     const previousEnd = this.settings.lastSetEndedAt ? Date.parse(this.settings.lastSetEndedAt) : NaN;
     const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
     const startedTimestamp = Date.parse(startedAt);
-    const exercise = set.createExerciseNote === false
-      ? this.findExercise(set.exercise)
-      : await this.findOrCreateExercise({ name: set.exercise });
+    if (set.createExerciseNote === false) {
+      logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "native-workout" });
+    }
+    const exercise = await this.findOrCreateExercise({ name: set.exercise });
     const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
       ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
       : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
@@ -3767,11 +3770,9 @@ export default class TPSHealthPlugin extends Plugin {
     const endedAt = set.completedDate || isoNow();
     const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
     if (set.createExerciseNote === false) {
-      logger.flow("Exercise", "set-note:skip-create", { exercise: set.exercise, route: "workout-file", path: file.path });
+      logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "workout-file", path: file.path });
     }
-    const exercise = set.createExerciseNote === false
-      ? this.findExercise(set.exercise)
-      : await this.findOrCreateExercise({ name: set.exercise });
+    const exercise = await this.findOrCreateExercise({ name: set.exercise });
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const content = await this.app.vault.read(file);
     const setCount = countWorkoutSetRecords(content) + 1;
@@ -3946,9 +3947,10 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedItem = this.prepareFoodNoteItem(item, type);
     if (replaceAliases) normalizedItem.aliases = aliasesFromFrontmatter(item.aliases);
     const template = type === "food" ? await this.readFoodTemplate() : "";
-    const body = template
+    const renderedBody = template
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
+    const body = sanitizePermanentFoodNoteContent(renderedBody);
     await this.app.vault.create(path, body);
     this.localFoodIndexDirty = true;
     logger.flow("Food", "note:create", {
@@ -4420,6 +4422,7 @@ export default class TPSHealthPlugin extends Plugin {
         delete frontmatter.ingredients;
         if (!normalized.ingredients.trim()) delete frontmatter.ingredientStatement;
       }
+      for (const key of FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
       applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
     });
 
@@ -5184,7 +5187,8 @@ export default class TPSHealthPlugin extends Plugin {
     await this.ensureFolder(folder);
     const path = await this.uniquePath(buildVaultDestinationPath(folder, `${sanitizeFileName(input.name)}.md`));
     const template = await this.readExerciseTemplate();
-    const body = template ? this.renderExerciseTemplate(template, input) : this.defaultExerciseTemplate(input);
+    const renderedBody = template ? this.renderExerciseTemplate(template, input) : this.defaultExerciseTemplate(input);
+    const body = sanitizePermanentExerciseNoteContent(renderedBody);
     await this.app.vault.create(path, body);
     this.exerciseSearchIndexDirty = true;
     this.exerciseSearchIndexGeneration++;
@@ -5244,6 +5248,26 @@ export default class TPSHealthPlugin extends Plugin {
     return this.createExercise(input);
   }
 
+  async ensureExerciseDefinitionForWorkout(name: string, existingPath = ""): Promise<ExerciseItem> {
+    const path = normalizePath(existingPath || "");
+    if (path) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile && !isArchivedHealthPath(file.path)) {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const fm = cache?.frontmatter || {};
+        const tags = cache?.tags?.map((tag) => tag.tag) || [];
+        const isExercise = tags.includes(this.settings.exerciseTag) ||
+          fm.kind === "exercise" ||
+          fm.tpsType === "health-exercise" ||
+          fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+        if (isExercise) return this.exerciseFromFrontmatter(file, fm);
+      }
+    }
+    const exercise = await this.findOrCreateExercise({ name }, { skipCatalogBuild: true });
+    if (!exercise.sourcePath) throw new Error(`Reusable exercise note could not be created for ${name}.`);
+    return exercise;
+  }
+
   async upsertExercise(input: UpsertExerciseInput): Promise<ExerciseItem> {
     const file = await this.resolveExistingExerciseFile(input.path, input.name);
     if (!(file instanceof TFile) || input.merge === false) {
@@ -5252,6 +5276,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, exerciseFrontmatter(input, this.settings.defaultRestSeconds));
+      for (const key of EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
     });
     logger.flow("Exercise", "upsert:merge", { path: file.path, name: input.name });
     return this.exerciseFromFrontmatter(file, {
@@ -17661,6 +17686,31 @@ function removeYamlFrontmatterProperty(content: string, key: string): string {
   while (end < frontmatterEnd - 1 && (/^\s+/.test(lines[end]) || !lines[end].trim())) end++;
   lines.splice(index, end - index);
   return lines.join("\n");
+}
+
+const FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS = [
+  "foodPath", "foodName", "foodId", "quantity", "unit", "servings", "amount", "amountUnit",
+  "nutritionSnapshot", "foodServingAmount", "foodServingUnit", "foodServingGrams", "foodServingMl",
+  "consumedAt", "consumedDate", "completedDate",
+] as const;
+
+const EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS = [
+  "workout", "workoutId", "workoutPath", "workoutPlanPath", "exerciseOrder", "exerciseRecordIds",
+  "sets", "setCount", "totalReps", "totalVolume", "lastSetEndedAt", "lastCompletedDate", "lastSessionPath",
+  "startedAt", "endedAt", "completedDate", "durationSeconds", "reps", "weight", "weightUnit", "rpe",
+  "restSeconds", "setType", "dropSet", "superset",
+] as const;
+
+function removeYamlFrontmatterProperties(content: string, keys: readonly string[]): string {
+  return keys.reduce((current, key) => removeYamlFrontmatterProperty(current, key), content);
+}
+
+function sanitizePermanentFoodNoteContent(content: string): string {
+  return removeYamlFrontmatterProperties(content, FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS);
+}
+
+function sanitizePermanentExerciseNoteContent(content: string): string {
+  return removeYamlFrontmatterProperties(content, EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS);
 }
 
 function stripStandaloneFoodIngredientStatementFromBody(content: string, ingredientStatement: string): string {

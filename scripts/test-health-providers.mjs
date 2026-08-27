@@ -5662,8 +5662,9 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /logger\.flow\("Exercise", "search:empty", \{ cached: cached\.length \}\)/);
   assert.match(mainSource, /const candidates = files\.filter/);
   assert.match(mainSource, /vaultFiles: files\.length,[\s\S]*candidates: candidates\.length,[\s\S]*inspected,[\s\S]*recognized/);
-  assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "active-workout" \}\)/);
-  assert.match(mainSource, /logger\.flow\("Exercise", "set-note:skip-create", \{ exercise: set\.exercise, route: "workout-file", path: file\.path \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Exercise", "set-note:required-override", \{ exercise: set\.exercise, route: "active-workout" \}\)/);
+  assert.match(mainSource, /logger\.flowWarn\("Exercise", "set-note:required-override", \{ exercise: set\.exercise, route: "workout-file", path: file\.path \}\)/);
+  assert.match(mainSource, /const exercise = await this\.findOrCreateExercise\(\{ name: set\.exercise \}\)/);
   assert.match(mainSource, /private async resolveExistingExerciseFile\(path: string \| undefined, name: string\): Promise<TFile \| null>/);
   assert.match(mainSource, /logger\.flow\("Exercise", "upsert-resolve:path-hit"/);
   assert.match(mainSource, /logger\.flowWarn\("Exercise", "upsert-resolve:path-missing"/);
@@ -7804,9 +7805,16 @@ test("concurrent workout set logs serialize per file without losing a set", asyn
   const content = fake.files.get(path);
   assert.notEqual(squat.id, press.id);
   assert.equal((content.match(/\[type:: workoutSet\]/g) || []).length, 2);
-  assert.match(content, /Squat - 225 lb x 5/);
-  assert.match(content, /Bench press - 185 lb x 8/);
+  assert.match(content, /\[\[Health\/Exercises\/Squat\|Squat\]\] - 225 lb x 5/);
+  assert.match(content, /\[\[Health\/Exercises\/Bench press\|Bench press\]\] - 185 lb x 8/);
   assert.match(content, /setCount: 2/);
+  for (const exercisePath of ["Health/Exercises/Squat.md", "Health/Exercises/Bench press.md"]) {
+    assert.ok(fake.files.has(exercisePath), `a reusable definition exists at ${exercisePath}`);
+    const definition = parseFrontmatter(fake.files.get(exercisePath));
+    for (const sessionKey of ["sets", "workoutPath", "completedDate", "setCount", "totalReps", "totalVolume"]) {
+      assert.equal(definition[sessionKey], undefined, `${sessionKey} stays on the workout session, not ${exercisePath}`);
+    }
+  }
   assert.equal(plugin.getActiveWorkoutState().setCount, 2);
   assert.equal(plugin.workoutMutationQueues.size, 0);
 
@@ -9488,6 +9496,10 @@ test("configured food templates merge identity tags into frontmatter and remove 
     "name: \"{{name}}\"",
     "servingGrams: {{servingGrams}}",
     "proteinG: {{proteinG}}",
+    "quantity: 4",
+    "unit: serving",
+    "consumedAt: 2026-08-27T12:00:00.000Z",
+    "completedDate: 2026-08-27T12:00:00.000Z",
     "---",
     "{{tag}}",
     "## Notes",
@@ -9511,8 +9523,61 @@ test("configured food templates merge identity tags into frontmatter and remove 
   assert.match(rendered, /proteinG: 20/);
   assert.equal(frontmatter.ingredientStatement, "milk protein, cocoa");
   assert.equal(frontmatter.ingredients, undefined);
+  assert.equal(frontmatter.quantity, undefined, "a permanent food definition must not inherit consumed quantity");
+  assert.equal(frontmatter.unit, undefined);
+  assert.equal(frontmatter.consumedAt, undefined);
+  assert.equal(frontmatter.completedDate, undefined);
   assert.doesNotMatch(stripFrontmatter(rendered), /^(?:#)?tps\/food\s*$/m);
   assert.match(stripFrontmatter(rendered), /## Notes\nTemplate note/);
+});
+
+test("exercise definitions remain reusable counterparts without workout-session data", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = {
+    ...plugin.settings,
+    exercisesFolder: "Health/Exercises",
+    exerciseTemplatePath: "Templates/Exercise Definition.md",
+    exerciseTag: "#exercise",
+    defaultRestSeconds: 90,
+  };
+  fake.files.set("Templates/Exercise Definition.md", [
+    "---",
+    "kind: {{kind}}",
+    "name: \"{{name}}\"",
+    "defaultRestSeconds: {{defaultRestSeconds}}",
+    "sets:",
+    "  - reps: 8",
+    "workoutPath: Workouts/Session.md",
+    "completedDate: 2026-08-27T12:00:00.000Z",
+    "totalVolume: 1200",
+    "---",
+    "Definition notes stay reusable.",
+  ].join("\n"));
+
+  const created = await plugin.createExercise({ name: "Definition-only press" });
+  let frontmatter = parseFrontmatter(fake.files.get(created.sourcePath));
+  assert.equal(frontmatter.kind, "exercise");
+  assert.equal(frontmatter.name, "Definition-only press");
+  assert.equal(frontmatter.defaultRestSeconds, 90);
+  assert.equal(frontmatter.sets, undefined);
+  assert.equal(frontmatter.workoutPath, undefined);
+  assert.equal(frontmatter.completedDate, undefined);
+  assert.equal(frontmatter.totalVolume, undefined);
+  assert.match(stripFrontmatter(fake.files.get(created.sourcePath)), /Definition notes stay reusable/);
+
+  fake.files.set(created.sourcePath, fake.files.get(created.sourcePath).replace(
+    "defaultRestSeconds: 90",
+    "defaultRestSeconds: 90\nsets:\n  - reps: 5\nlastSessionPath: Workouts/Old.md\ntotalReps: 5",
+  ));
+  await plugin.upsertExercise({ path: created.sourcePath, name: "Definition-only press", defaultRestSeconds: 120 });
+  frontmatter = parseFrontmatter(fake.files.get(created.sourcePath));
+  assert.equal(frontmatter.defaultRestSeconds, 120);
+  assert.equal(frontmatter.sets, undefined, "updating a definition removes leaked set history");
+  assert.equal(frontmatter.lastSessionPath, undefined);
+  assert.equal(frontmatter.totalReps, undefined);
 });
 
 test("food note creation and updates write only the selected identification signals", async () => {
@@ -9584,7 +9649,7 @@ test("food note creation and updates write only the selected identification sign
   });
   fake.files.set(changing.sourcePath, fake.files.get(changing.sourcePath).replace(
     '  - "tps/food"',
-    '  - "tps/food"\n  - "user/pantry"',
+    '  - "tps/food"\n  - "user/pantry"\nquantity: 2\nunit: serving\namount: 100\namountUnit: g\ncompletedDate: 2026-08-27T12:00:00.000Z',
   ));
   plugin.settings.foodIdentificationMode = "tag";
   await plugin.upsertFoodFromInput({
@@ -9597,6 +9662,11 @@ test("food note creation and updates write only the selected identification sign
   let changingFrontmatter = parseFrontmatter(fake.files.get(changing.sourcePath));
   assert.equal(changingFrontmatter.kind, undefined, "tag-only updates must remove TPS food kind metadata");
   assert.deepEqual(changingFrontmatter.tags, ["tps/food", "user/pantry"]);
+  assert.equal(changingFrontmatter.quantity, undefined, "updating a permanent food removes leaked consumption facts");
+  assert.equal(changingFrontmatter.unit, undefined);
+  assert.equal(changingFrontmatter.amount, undefined);
+  assert.equal(changingFrontmatter.amountUnit, undefined);
+  assert.equal(changingFrontmatter.completedDate, undefined);
 
   plugin.settings.foodIdentificationMode = "metadata";
   await plugin.upsertFoodFromInput({

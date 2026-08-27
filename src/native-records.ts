@@ -108,6 +108,8 @@ export interface NativeWorkoutStorageResult extends NativeWorkoutStoragePlan {
   failed: number;
 }
 
+export type WorkoutExerciseDefinitionResolver = (name: string, existingPath: string) => Promise<string>;
+
 export type NativeWorkoutSessionResolutionState = 'active' | 'terminal' | 'missing' | 'ambiguous';
 
 export interface NativeWorkoutSessionResolution {
@@ -626,7 +628,7 @@ export class HealthNativeRecordService {
     if (!session || session.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const exerciseName = String(set.exercise || '').trim();
     if (!exerciseName) throw new Error('Workout exercise name is required.');
-    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const { exercises: priorExercises, legacyChildren } = await this.workoutExercisesForWrite(session);
     const exerciseKey = exerciseName.toLocaleLowerCase();
     let targetIndex = priorExercises.findIndex((exercise) => exercise.name.toLocaleLowerCase() === exerciseKey);
     const exercises = priorExercises.map((exercise) => ({ ...exercise, sets: exercise.sets.map((storedSet) => ({ ...storedSet })) }));
@@ -639,6 +641,9 @@ export class HealthNativeRecordService {
       });
       targetIndex = exercises.length - 1;
     }
+    const definitionPath = wikilinkPath(set.exercisePath) || exercises[targetIndex].exercisePath;
+    if (!definitionPath) throw new Error('A reusable exercise note is required before logging its workout sets.');
+    exercises[targetIndex].exercisePath = definitionPath;
     exercises[targetIndex].sets.push({ ...set });
     const aggregates = workoutAggregates(exercises);
     const updatedSession = await api.update(session.file, {
@@ -667,7 +672,7 @@ export class HealthNativeRecordService {
     if (!session) throw new Error('Workout session was not found.');
     const expectedSetId = String(setId || '').trim();
     if (!expectedSetId) throw new Error('Workout set identity was missing.');
-    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const { exercises: priorExercises, legacyChildren } = await this.workoutExercisesForWrite(session);
     const matches = priorExercises.flatMap((exercise, exerciseIndex) => exercise.sets.flatMap((set, setIndex) => (
       String(set.id || '') === expectedSetId ? [{ exerciseIndex, setIndex }] : []
     )));
@@ -715,19 +720,23 @@ export class HealthNativeRecordService {
     if (!session || session.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const name = exerciseName.trim();
     if (!name) throw new Error('Workout exercise name is required.');
-    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
-    const existing = priorExercises.find((exercise) => exercise.name.toLocaleLowerCase() === name.toLocaleLowerCase());
-    if (existing && !legacyChildren.length && Object.prototype.hasOwnProperty.call(session.frontmatter, 'workoutData')) {
+    const { exercises: priorExercises, legacyChildren } = await this.workoutExercisesForWrite(session);
+    const existingIndex = priorExercises.findIndex((exercise) => exercise.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    const existing = existingIndex >= 0 ? priorExercises[existingIndex] : undefined;
+    const definitionPath = wikilinkPath(exercisePath) || existing?.exercisePath || '';
+    if (!definitionPath) throw new Error('A reusable exercise note is required before adding it to a workout.');
+    if (existing && existing.exercisePath === definitionPath && !legacyChildren.length && Object.prototype.hasOwnProperty.call(session.frontmatter, 'workoutData')) {
       return this.embeddedExerciseHandle(session, existing);
     }
     const exercises = priorExercises.map((exercise) => ({ ...exercise, sets: exercise.sets.map((set) => ({ ...set })) }));
     const target = existing || {
       id: `workout-exercise-${stableHash(`${session.id}\u0000${name.toLocaleLowerCase()}`)}`,
       name,
-      exercisePath: wikilinkPath(exercisePath),
+      exercisePath: definitionPath,
       sets: [],
     };
     if (!existing) exercises.push(target);
+    else exercises[existingIndex].exercisePath = definitionPath;
     const updated = await api.update(session.file, {
       workoutData: workoutDataValue(exercises),
       ...workoutAggregates(exercises),
@@ -742,7 +751,7 @@ export class HealthNativeRecordService {
     const api = this.requireApi();
     const session = await api.resolve(reference);
     if (!session || session.kind !== 'workout-session') throw new Error('Native workout session was not found.');
-    const { exercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const { exercises, legacyChildren } = await this.workoutExercisesForWrite(session);
     const updated = await api.update(session.file, {
       ...updates,
       status: 'complete',
@@ -793,6 +802,7 @@ export class HealthNativeRecordService {
 
   async consolidateWorkoutStorage(
     serialize: <T>(path: string, mutation: () => Promise<T>) => Promise<T> = async (_path, mutation) => mutation(),
+    resolveDefinition?: WorkoutExerciseDefinitionResolver,
   ): Promise<NativeWorkoutStorageResult> {
     const api = this.requireApi();
     const plan = this.planWorkoutStorageConsolidation();
@@ -808,7 +818,10 @@ export class HealthNativeRecordService {
           if (!current || current.kind !== 'workout-session') return null;
           const children = this.getWorkoutExerciseRecords(current);
           if (!children.length) return null;
-          const exercises = this.workoutExercisesForRead(current);
+          const exercises = await this.ensureWorkoutExerciseDefinitionPaths(
+            this.workoutExercisesForRead(current),
+            resolveDefinition,
+          );
           const updated = await api.update(current.file, {
             workoutData: workoutDataValue(exercises),
             ...workoutAggregates(exercises),
@@ -1156,7 +1169,7 @@ export class HealthNativeRecordService {
   }
 
   /** Explicit, copy-only import. Every legacy line remains byte-identical. */
-  async importLegacyRecords(): Promise<LegacyHealthImportResult> {
+  async importLegacyRecords(resolveDefinition?: WorkoutExerciseDefinitionResolver): Promise<LegacyHealthImportResult> {
     const api = this.requireApi();
     const collected = await this.collectLegacyCandidates();
     const plan = await this.planLegacyImport();
@@ -1182,8 +1195,9 @@ export class HealthNativeRecordService {
               sets: storedWorkoutSets(exercise.properties.sets),
             }))
             .filter((exercise) => Boolean(exercise.name));
-          properties.workoutData = workoutDataValue(exercises);
-          Object.assign(properties, workoutAggregates(exercises));
+          const linkedExercises = await this.ensureWorkoutExerciseDefinitionPaths(exercises, resolveDefinition);
+          properties.workoutData = workoutDataValue(linkedExercises);
+          Object.assign(properties, workoutAggregates(linkedExercises));
         }
         const persistedProperties = {
           ...properties,
@@ -1398,15 +1412,41 @@ export class HealthNativeRecordService {
       }));
   }
 
-  private workoutExercisesForWrite(session: NativeRecordHandle): {
+  private async workoutExercisesForWrite(session: NativeRecordHandle): Promise<{
     exercises: StoredWorkoutExercise[];
     legacyChildren: IndexedHealthRecord[];
-  } {
+  }> {
     const legacyChildren = this.getWorkoutExerciseRecords(session);
     return {
-      exercises: this.workoutExercisesForRead(session),
+      exercises: await this.ensureWorkoutExerciseDefinitionPaths(this.workoutExercisesForRead(session)),
       legacyChildren,
     };
+  }
+
+  private async ensureWorkoutExerciseDefinitionPaths(
+    exercises: StoredWorkoutExercise[],
+    resolver?: WorkoutExerciseDefinitionResolver,
+  ): Promise<StoredWorkoutExercise[]> {
+    const pluginResolver = (this.plugin as TPSHealthPlugin & {
+      ensureExerciseDefinitionForWorkout?: (name: string, existingPath?: string) => Promise<{ sourcePath?: string }>;
+    }).ensureExerciseDefinitionForWorkout;
+    const resolvePath = resolver || (typeof pluginResolver === 'function'
+      ? async (name: string, existingPath: string) => (
+        (await pluginResolver.call(this.plugin, name, existingPath)).sourcePath || ''
+      )
+      : null);
+    const linked: StoredWorkoutExercise[] = [];
+    for (const exercise of exercises) {
+      let exercisePath = wikilinkPath(exercise.exercisePath);
+      if (resolvePath) exercisePath = wikilinkPath(await resolvePath(exercise.name, exercisePath));
+      if (!exercisePath) throw new Error(`Reusable exercise note could not be resolved for ${exercise.name}.`);
+      linked.push({
+        ...exercise,
+        exercisePath,
+        sets: exercise.sets.map((set) => ({ ...set })),
+      });
+    }
+    return linked;
   }
 
   private embeddedExerciseHandle(session: NativeRecordHandle, exercise: StoredWorkoutExercise): NativeRecordHandle {

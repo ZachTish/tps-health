@@ -69,6 +69,7 @@ export interface LogFoodByFoodPathInput extends Omit<LogFoodInput, "item" | "que
 
 export interface LogSetInput extends Omit<WorkoutSet, "id" | "endedAt" | "restSeconds"> {
   restSeconds?: number;
+  /** @deprecated Exercise definitions are always created or reused; session data remains on the workout note. */
   createExerciseNote?: boolean;
 }
 

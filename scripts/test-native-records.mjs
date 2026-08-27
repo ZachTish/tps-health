@@ -60,6 +60,7 @@ function createHarness(options = {}) {
   const contents = new Map();
   const createCalls = [];
   const trashedPaths = [];
+  const exerciseDefinitions = new Set();
   let generated = 0;
   const vaultEvents = new Map();
   const metadataEvents = new Map();
@@ -186,6 +187,11 @@ function createHarness(options = {}) {
     registerEvent: () => {},
     scheduleWorkoutActionBars: () => {},
     getGcmNativeRecordsApi: () => api,
+    ensureExerciseDefinitionForWorkout: async (name, existingPath = '') => {
+      const sourcePath = existingPath || `Health/Exercises/${String(name).replace(/[\\/:*?"<>|]/gu, '-')}.md`;
+      exerciseDefinitions.add(sourcePath);
+      return { name, sourcePath };
+    },
   };
   const service = new HealthNativeRecordService(plugin);
   service.setup();
@@ -206,7 +212,7 @@ function createHarness(options = {}) {
   const emitMetadata = (name, ...args) => {
     for (const listener of metadataEvents.get(name) || []) listener(...args);
   };
-  return { service, api, files, frontmatters, contents, createCalls, trashedPaths, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
+  return { service, api, files, frontmatters, contents, createCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
 }
 
 test('native Health filenames use the record date and plain human title', () => {
@@ -237,7 +243,7 @@ test('GCM API v3 receives readable filenames while stable record IDs remain auth
   const session = await service.createWorkoutSession({
     title: 'Workout 2026-08-25 06.16', startedAt: '2026-08-25T11:16:00.000Z', workoutDate: '2026-08-25',
   }, 'workout-one');
-  const exercise = await service.ensureWorkoutExercise(session, 'Leg curl');
+  const exercise = await service.ensureWorkoutExercise(session, 'Leg curl', 'Health/Exercises/Leg curl.md');
 
   assert.equal(firstFood.id, 'food-one');
   assert.equal(firstFood.path, '_records/food-entries/2026-08-25 - Apple.md');
@@ -261,7 +267,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   const session = await service.createWorkoutSession({
     title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z', workoutDate: '2026-08-24',
   }, 'workout-old');
-  const exercise = await service.ensureWorkoutExercise(session, 'Bench press');
+  const exercise = await service.ensureWorkoutExercise(session, 'Bench press', 'Health/Exercises/Bench press.md');
   const customFrontmatter = {
     tpsId: 'food-custom', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Apple', foodName: 'Apple', date: '2026-08-24',
   };
@@ -592,8 +598,13 @@ test('native workout session stores every exercise and set atomically in one not
   const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-1');
   assert.equal(Object.hasOwn(session.frontmatter, 'workoutId'), false);
   assert.equal(Object.hasOwn(session.frontmatter, 'exerciseRecordIds'), false);
-  await service.appendWorkoutSet(session.file, { id: 'set-1', exercise: 'Bench press', endedAt: '2026-08-24T08:05:00.000Z', reps: 8, weight: 100, weightUnit: 'lb' });
-  const second = await service.appendWorkoutSet(session.file, { id: 'set-2', exercise: 'Bench press', endedAt: '2026-08-24T08:10:00.000Z', reps: 6, weight: 110, weightUnit: 'lb' });
+  await assert.rejects(
+    () => service.appendWorkoutSet(session.file, { id: 'set-missing-definition', exercise: 'Bench press', reps: 1 }),
+    /reusable exercise note is required/i,
+    'session data cannot create an unlinked exercise occurrence',
+  );
+  await service.appendWorkoutSet(session.file, { id: 'set-1', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', endedAt: '2026-08-24T08:05:00.000Z', reps: 8, weight: 100, weightUnit: 'lb' });
+  const second = await service.appendWorkoutSet(session.file, { id: 'set-2', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', endedAt: '2026-08-24T08:10:00.000Z', reps: 6, weight: 110, weightUnit: 'lb' });
   assert.equal(second.exercise.frontmatter.setCount, 2);
   assert.equal(second.exercise.frontmatter.totalReps, 14);
   assert.equal(second.exercise.frontmatter.totalVolume, 1460);
@@ -624,7 +635,7 @@ test('native workout session stores every exercise and set atomically in one not
       id: second.exercise.id,
       path: session.path,
       name: 'Bench press',
-      exercisePath: '',
+      exercisePath: 'Health/Exercises/Bench press.md',
       totalReps: 14,
       totalVolume: 1460,
       sets: [
@@ -684,7 +695,7 @@ test('a blank native workout projects a newly attached exercise before its first
 });
 
 test('legacy workout child notes consolidate into the parent and follow it to trash', async () => {
-  const { service, addFrontmatterFile, files, frontmatters, trashedPaths, emitVault } = createHarness();
+  const { service, addFrontmatterFile, files, frontmatters, trashedPaths, exerciseDefinitions, emitVault } = createHarness();
   const session = addFrontmatterFile('_records/workout-sessions/legacy-workout.md', {
     tpsId: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy strength', status: 'complete',
     startedAt: '2026-08-22T08:00:00.000Z', setCount: 1, workoutData: 'invalid synced value',
@@ -704,6 +715,8 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
   assert.equal(files.has(child.path), false);
   assert.equal(typeof frontmatters.get(session).workoutData, 'string');
   assert.equal(service.getWorkoutSnapshot(session.path).setCount, 1, 'the parent remains complete after child cleanup');
+  assert.ok(exerciseDefinitions.has('Health/Exercises/Bench press.md'), 'consolidation backfills a reusable definition without moving session sets into it');
+  assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].exercisePath, 'Health/Exercises/Bench press.md');
 
   const orphanSession = addFrontmatterFile('_records/workout-sessions/delete-me.md', {
     tpsId: 'delete-me', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Delete me', status: 'complete',
@@ -735,7 +748,7 @@ test('the next live mutation upgrades an active child-note workout without losin
   service.indexFile(session, frontmatters.get(session));
   service.indexFile(child, frontmatters.get(child));
 
-  await service.appendWorkoutSet(session, { id: 'set-2', exercise: 'Bench press', reps: 6, weight: 110, weightUnit: 'lb' });
+  await service.appendWorkoutSet(session, { id: 'set-2', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 6, weight: 110, weightUnit: 'lb' });
   const snapshot = service.getWorkoutSnapshot(session.path);
   assert.deepEqual(snapshot.exercises[0].sets.map((set) => set.id), ['set-1', 'set-2']);
   assert.equal(snapshot.setCount, 2);
@@ -871,7 +884,7 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /Native records: Apply readable Health filenames/u);
   assert.match(mainSource, /Native records: Consolidate workouts into one note each/u);
   assert.match(mainSource, /planWorkoutStorageConsolidation\(\)/u);
-  assert.match(mainSource, /consolidateWorkoutStorage\(\(path, mutation\) =>/u);
+  assert.match(mainSource, /consolidateWorkoutStorage\([\s\S]*?serializeWorkoutMutation\(path, "consolidate-native-workout-storage"[\s\S]*?ensureExerciseDefinitionForWorkout/u);
   assert.match(mainSource, /normalizeNativeRecordFilenames\(\)/u);
   assert.match(mainSource, /const capturedActiveWorkout = \{[\s\S]*?id: this\.settings\.activeWorkoutId[\s\S]*?path: this\.settings\.activeWorkoutPath/u);
   assert.match(mainSource, /resolveActiveWorkoutAfterFilenameMigration\(\{[\s\S]*?current: \{ id: this\.settings\.activeWorkoutId[\s\S]*?getWorkoutSnapshot\(capturedWorkoutId\)/u);
@@ -880,7 +893,7 @@ test('native Health storage is explicit and removes Daily Note writes only in na
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {
-  const { service, addLegacyFile, contents, files } = createHarness({ apiVersion: 3 });
+  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 3 });
   const legacy = [
     '- Apple <!-- [type:: foodLog] [food:: Apple] [foodId:: food-old-1] [servings:: 2] [unit:: serving] [cal:: 190] [protein:: 1] [carbs:: 50] [fat:: 0.6] [fiber:: 8.8] [sodium:: 4] [completedDate:: 2026-08-23T12:00:00.000Z] -->',
     '- Walk <!-- [type:: activityLog] [activity:: Walk] [activityType:: walking] [activityId:: activity-old-1] [source:: manual] [durationMinutes:: 30] [startedAt:: 2026-08-23T08:00:00.000Z] [completedDate:: 2026-08-23T08:30:00.000Z] -->',
@@ -906,6 +919,8 @@ test('legacy Health import is deterministic, typed, copy-only, and idempotent', 
   assert.equal(files.has('_records/workout-exercises/2026-08-23 - Bench.md'), false);
   assert.equal(service.getWorkoutSnapshot('workout-old-1').setCount, 1);
   assert.equal(service.getWorkoutSnapshot('workout-old-1').exercises[0].name, 'Bench');
+  assert.equal(service.getWorkoutSnapshot('workout-old-1').exercises[0].exercisePath, 'Health/Exercises/Bench.md');
+  assert.ok(exerciseDefinitions.has('Health/Exercises/Bench.md'));
   assert.equal(contents.get('2026-08-23.md'), before, 'copy import preserves legacy bytes');
   const second = await service.importLegacyRecords();
   assert.equal(second.created, 0);
