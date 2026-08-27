@@ -4,7 +4,8 @@ import { isoDateKey } from './format';
 import * as logger from './logger';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
-export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 2;
+export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 3;
+const WORKOUT_DATA_VERSION = 1;
 
 type NativeHealthKind = 'food-entry' | 'activity-entry' | 'workout-session' | 'workout-exercise';
 
@@ -82,6 +83,29 @@ export interface NativeWorkoutSnapshot {
   exerciseCount: number;
   setCount: number;
   exercises: NativeWorkoutExerciseSnapshot[];
+}
+
+interface StoredWorkoutExercise {
+  id: string;
+  name: string;
+  exercisePath: string;
+  sets: Array<Record<string, unknown>>;
+}
+
+interface StoredWorkoutData {
+  version: number;
+  exercises: StoredWorkoutExercise[];
+}
+
+export interface NativeWorkoutStoragePlan {
+  sessions: number;
+  childNotes: number;
+}
+
+export interface NativeWorkoutStorageResult extends NativeWorkoutStoragePlan {
+  consolidated: number;
+  trashed: number;
+  failed: number;
 }
 
 export type NativeWorkoutSessionResolutionState = 'active' | 'terminal' | 'missing' | 'ambiguous';
@@ -267,6 +291,61 @@ const numberValue = (value: unknown): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const storedWorkoutSets = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value)
+  ? value.filter((set): set is Record<string, unknown> => !!set && typeof set === 'object' && !Array.isArray(set))
+    .map((set) => ({ ...set }))
+  : [];
+
+const storedWorkoutExercises = (value: unknown): StoredWorkoutExercise[] | null => {
+  let decoded: unknown = value;
+  if (typeof value === 'string' && value.trim()) {
+    try { decoded = JSON.parse(value); } catch { return null; }
+  }
+  const raw = decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+    ? (decoded as Record<string, unknown>).exercises
+    : null;
+  if (!Array.isArray(raw)) return null;
+  return raw.flatMap((entry, index): StoredWorkoutExercise[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const name = String(record.name || record.exercise || record.title || '').trim();
+    if (!name) return [];
+    return [{
+      id: String(record.id || `exercise-${index + 1}`).trim() || `exercise-${index + 1}`,
+      name,
+      exercisePath: wikilinkPath(record.exercisePath),
+      sets: storedWorkoutSets(record.sets),
+    }];
+  });
+};
+
+const workoutDataValue = (exercises: StoredWorkoutExercise[]): string => JSON.stringify({
+  version: WORKOUT_DATA_VERSION,
+  exercises: exercises.map((exercise) => ({
+    id: exercise.id,
+    name: exercise.name,
+    exercisePath: exercise.exercisePath || '',
+    sets: exercise.sets.map((set) => ({ ...set })),
+  })),
+} as StoredWorkoutData);
+
+const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
+  exerciseCount: number;
+  setCount: number;
+  totalReps: number;
+  totalVolume: number;
+} => {
+  const sets = exercises.flatMap((exercise) => exercise.sets);
+  return {
+    exerciseCount: exercises.length,
+    setCount: sets.length,
+    totalReps: sets.reduce((sum, set) => sum + numberValue(set.reps), 0),
+    totalVolume: sets.reduce((sum, set) => (
+      sum + numberValue(set.reps) * numberValue(set.weight) * (set.perArm === true ? 2 : 1)
+    ), 0),
+  };
+};
+
 const dateKey = (value: unknown): string => {
   const raw = String(value || '').trim();
   return raw ? isoDateKey(raw) : '';
@@ -407,8 +486,13 @@ export class HealthNativeRecordService {
     }));
     this.plugin.registerEvent(vault.on('delete', (file) => {
       if (file instanceof TFile) {
+        const deleted = this.recordsByPath.get(file.path);
+        const legacyChildren = deleted?.kind === 'workout-session'
+          ? this.getWorkoutExerciseRecords(deleted)
+          : [];
         this.foodDefinitionsByPath.delete(file.path);
         this.removePath(file.path);
+        if (legacyChildren.length) void this.trashLegacyWorkoutChildren(deleted!, legacyChildren, 'health-workout-delete');
       }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
@@ -518,7 +602,11 @@ export class HealthNativeRecordService {
       ...properties,
       status: 'active',
       date: dateKey(properties.workoutDate || startedAt),
+      workoutData: workoutDataValue([]),
+      exerciseCount: 0,
       setCount: 0,
+      totalReps: 0,
+      totalVolume: 0,
       tags: ['health', 'workout'],
     };
     const api = this.requireApi();
@@ -537,29 +625,31 @@ export class HealthNativeRecordService {
     const session = await api.resolve(sessionReference);
     if (!session || session.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const exerciseName = String(set.exercise || '').trim();
-    let exercise = await this.ensureWorkoutExercise(session, exerciseName, set.exercisePath);
-    const priorSets = Array.isArray(exercise.frontmatter.sets)
-      ? exercise.frontmatter.sets.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
-      : [];
-    const sets = [...priorSets, { ...set }];
-    const totalReps = sets.reduce((sum, current) => sum + numberValue(current.reps), 0);
-    const totalVolume = sets.reduce((sum, current) => sum + numberValue(current.reps) * numberValue(current.weight) * (current.perArm === true ? 2 : 1), 0);
-    const updatedExercise = await api.update(exercise.file, {
-      sets,
-      setCount: sets.length,
-      totalReps,
-      totalVolume,
-      lastCompletedDate: set.completedDate || set.endedAt,
-    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' });
-    if (!updatedExercise) throw new Error('Workout exercise record changed before the set could be saved.');
-    this.trackHandle(updatedExercise);
+    if (!exerciseName) throw new Error('Workout exercise name is required.');
+    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const exerciseKey = exerciseName.toLocaleLowerCase();
+    let targetIndex = priorExercises.findIndex((exercise) => exercise.name.toLocaleLowerCase() === exerciseKey);
+    const exercises = priorExercises.map((exercise) => ({ ...exercise, sets: exercise.sets.map((storedSet) => ({ ...storedSet })) }));
+    if (targetIndex < 0) {
+      exercises.push({
+        id: `workout-exercise-${stableHash(`${session.id}\u0000${exerciseKey}`)}`,
+        name: exerciseName,
+        exercisePath: wikilinkPath(set.exercisePath),
+        sets: [],
+      });
+      targetIndex = exercises.length - 1;
+    }
+    exercises[targetIndex].sets.push({ ...set });
+    const aggregates = workoutAggregates(exercises);
     const updatedSession = await api.update(session.file, {
-      setCount: numberValue(session.frontmatter.setCount) + 1,
+      workoutData: workoutDataValue(exercises),
+      ...aggregates,
       lastSetEndedAt: set.completedDate || set.endedAt,
     }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' });
-    if (!updatedSession) throw new Error('Workout session changed before the set count could be saved.');
+    if (!updatedSession) throw new Error('Workout session changed before the set could be saved.');
     this.trackHandle(updatedSession);
-    return { session: updatedSession, exercise: updatedExercise };
+    if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updatedSession, legacyChildren, 'health-workout-storage-upgrade');
+    return { session: updatedSession, exercise: this.embeddedExerciseHandle(updatedSession, exercises[targetIndex]) };
   }
 
   async updateWorkoutSet(
@@ -568,19 +658,23 @@ export class HealthNativeRecordService {
     patch: NativeWorkoutSetPatch,
   ): Promise<NativeRecordHandle> {
     const api = this.requireApi();
-    const exercise = await api.resolve(exerciseReference);
-    if (!exercise || exercise.kind !== 'workout-exercise') throw new Error('Workout exercise record was not found.');
+    const reference = await api.resolve(exerciseReference);
+    const session = reference?.kind === 'workout-session'
+      ? reference
+      : reference?.kind === 'workout-exercise'
+        ? this.findWorkoutSessionHandleForExercise(reference)
+        : null;
+    if (!session) throw new Error('Workout session was not found.');
     const expectedSetId = String(setId || '').trim();
     if (!expectedSetId) throw new Error('Workout set identity was missing.');
-    const priorSets = Array.isArray(exercise.frontmatter.sets)
-      ? exercise.frontmatter.sets.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
-      : [];
-    const matchingIndexes = priorSets
-      .map((set, index) => String(set.id || '') === expectedSetId ? index : -1)
-      .filter((index) => index >= 0);
-    if (matchingIndexes.length !== 1) throw new Error(matchingIndexes.length ? 'Workout set identity was ambiguous.' : 'Workout set was not found.');
-    const targetIndex = matchingIndexes[0];
-    const nextSet = { ...priorSets[targetIndex] };
+    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const matches = priorExercises.flatMap((exercise, exerciseIndex) => exercise.sets.flatMap((set, setIndex) => (
+      String(set.id || '') === expectedSetId ? [{ exerciseIndex, setIndex }] : []
+    )));
+    if (matches.length !== 1) throw new Error(matches.length ? 'Workout set identity was ambiguous.' : 'Workout set was not found.');
+    const { exerciseIndex, setIndex } = matches[0];
+    const exercises = priorExercises.map((exercise) => ({ ...exercise, sets: exercise.sets.map((set) => ({ ...set })) }));
+    const nextSet = { ...exercises[exerciseIndex].sets[setIndex] };
     if (patch.reps !== undefined) nextSet.reps = Math.max(0, numberValue(patch.reps));
     if (patch.weight !== undefined) nextSet.weight = Math.max(0, numberValue(patch.weight));
     if (patch.weightUnit !== undefined) nextSet.weightUnit = String(patch.weightUnit || '').trim() || 'lb';
@@ -598,17 +692,14 @@ export class HealthNativeRecordService {
       if (!['normal', 'warmup', 'drop', 'failure'].includes(setType)) throw new Error('Workout set type was not supported.');
       nextSet.setType = setType;
     }
-    const sets = priorSets.map((set, index) => index === targetIndex ? nextSet : set);
-    const totalReps = sets.reduce((sum, current) => sum + numberValue(current.reps), 0);
-    const totalVolume = sets.reduce((sum, current) => sum + numberValue(current.reps) * numberValue(current.weight) * (current.perArm === true ? 2 : 1), 0);
-    const updated = await api.update(exercise.file, {
-      sets,
-      setCount: sets.length,
-      totalReps,
-      totalVolume,
+    exercises[exerciseIndex].sets[setIndex] = nextSet;
+    const updated = await api.update(session.file, {
+      workoutData: workoutDataValue(exercises),
+      ...workoutAggregates(exercises),
     }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set-inline' });
-    if (!updated) throw new Error('Workout exercise record changed before the set edit could be saved.');
+    if (!updated) throw new Error('Workout session changed before the set edit could be saved.');
     this.trackHandle(updated);
+    if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
     return updated;
   }
 
@@ -624,38 +715,45 @@ export class HealthNativeRecordService {
     if (!session || session.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const name = exerciseName.trim();
     if (!name) throw new Error('Workout exercise name is required.');
-    const existing = this.findWorkoutExercise(session.id, name);
-    if (existing) return existing;
-    const exerciseOrder = this.getWorkoutExerciseRecords(session)
-      .reduce((maximum, record) => Math.max(maximum, numberValue(record.frontmatter.exerciseOrder)), 0) + 1;
-    const properties = {
-      title: name,
-      workout: this.recordLink(session.path),
-      exercise: name,
-      exercisePath: this.recordLink(exercisePath),
-      exerciseOrder,
+    const { exercises: priorExercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const existing = priorExercises.find((exercise) => exercise.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (existing && !legacyChildren.length && Object.prototype.hasOwnProperty.call(session.frontmatter, 'workoutData')) {
+      return this.embeddedExerciseHandle(session, existing);
+    }
+    const exercises = priorExercises.map((exercise) => ({ ...exercise, sets: exercise.sets.map((set) => ({ ...set })) }));
+    const target = existing || {
+      id: `workout-exercise-${stableHash(`${session.id}\u0000${name.toLocaleLowerCase()}`)}`,
+      name,
+      exercisePath: wikilinkPath(exercisePath),
       sets: [],
-      setCount: 0,
-      totalReps: 0,
-      totalVolume: 0,
-      tags: ['health', 'workout-exercise'],
     };
-    const created = await api.create('workout-exercise', properties, {
-      fileName: Number(api.version) >= 3
-        ? buildNativeHealthRecordFileName('workout-exercise', properties, { date: session.frontmatter.date || session.frontmatter.workoutDate || session.frontmatter.startedAt })
-        : undefined,
-      cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' },
-    });
-    this.trackHandle(created);
-    return created;
+    if (!existing) exercises.push(target);
+    const updated = await api.update(session.file, {
+      workoutData: workoutDataValue(exercises),
+      ...workoutAggregates(exercises),
+    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' });
+    if (!updated) throw new Error('Workout session changed before the exercise could be added.');
+    this.trackHandle(updated);
+    if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
+    return this.embeddedExerciseHandle(updated, target);
   }
 
   async finishWorkout(reference: string | TFile, updates: Record<string, unknown>): Promise<NativeRecordHandle> {
-    const updated = await this.requireApi().update(reference, { ...updates, status: 'complete' }, {
+    const api = this.requireApi();
+    const session = await api.resolve(reference);
+    if (!session || session.kind !== 'workout-session') throw new Error('Native workout session was not found.');
+    const { exercises, legacyChildren } = this.workoutExercisesForWrite(session);
+    const updated = await api.update(session.file, {
+      ...updates,
+      status: 'complete',
+      workoutData: workoutDataValue(exercises),
+      ...workoutAggregates(exercises),
+    }, {
       kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-finish',
     });
     if (!updated) throw new Error('Native workout session was not found.');
     this.trackHandle(updated);
+    if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
     return updated;
   }
 
@@ -672,19 +770,64 @@ export class HealthNativeRecordService {
     const key = exercise.trim().toLocaleLowerCase();
     const session = this.findWorkoutSession(workoutId);
     if (!session) return null;
-    const matches = this.getKindRecords('workout-exercise').filter((record) => (
-      this.recordBelongsToWorkout(record, session)
-      && String(record.frontmatter.exercise || record.frontmatter.title || '').trim().toLocaleLowerCase() === key
-    ));
-    return matches.length === 1 ? this.toHandle(matches[0]) : null;
+    const matches = this.workoutExercisesForRead(session)
+      .filter((candidate) => candidate.name.toLocaleLowerCase() === key);
+    return matches.length === 1 ? this.embeddedExerciseHandle(this.toHandle(session), matches[0]) : null;
   }
 
   getWorkoutExerciseNames(workoutId: string): string[] {
     const session = this.findWorkoutSession(workoutId);
     if (!session) return [];
-    return this.getWorkoutExerciseRecords(session)
-      .map((record) => String(record.frontmatter.exercise || record.frontmatter.title || '').trim())
-      .filter(Boolean);
+    return this.workoutExercisesForRead(session).map((exercise) => exercise.name);
+  }
+
+  planWorkoutStorageConsolidation(): NativeWorkoutStoragePlan {
+    const sessions = this.getKindRecords('workout-session');
+    const eligible = sessions.map((session) => ({ session, children: this.getWorkoutExerciseRecords(session) }))
+      .filter(({ children }) => children.length > 0);
+    return {
+      sessions: eligible.length,
+      childNotes: eligible.reduce((sum, entry) => sum + entry.children.length, 0),
+    };
+  }
+
+  async consolidateWorkoutStorage(
+    serialize: <T>(path: string, mutation: () => Promise<T>) => Promise<T> = async (_path, mutation) => mutation(),
+  ): Promise<NativeWorkoutStorageResult> {
+    const api = this.requireApi();
+    const plan = this.planWorkoutStorageConsolidation();
+    let consolidated = 0;
+    let trashed = 0;
+    let failed = 0;
+    const sessions = this.getKindRecords('workout-session').slice()
+      .sort((left, right) => left.file.path.localeCompare(right.file.path));
+    for (const indexed of sessions) {
+      try {
+        const result = await serialize(indexed.file.path, async () => {
+          const current = this.recordsByPath.get(indexed.file.path);
+          if (!current || current.kind !== 'workout-session') return null;
+          const children = this.getWorkoutExerciseRecords(current);
+          if (!children.length) return null;
+          const exercises = this.workoutExercisesForRead(current);
+          const updated = await api.update(current.file, {
+            workoutData: workoutDataValue(exercises),
+            ...workoutAggregates(exercises),
+          }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-storage-consolidation' });
+          if (!updated) throw new Error('Workout session changed before storage consolidation.');
+          this.trackHandle(updated);
+          const cleanup = await this.trashLegacyWorkoutChildren(updated, children, 'health-workout-storage-consolidation');
+          return cleanup;
+        });
+        if (!result) continue;
+        consolidated += 1;
+        trashed += result.trashed;
+        failed += result.failed;
+      } catch (error) {
+        failed += 1;
+        logger.flowError('WorkoutStorage', 'consolidate:failed', error, { workoutId: indexed.id, path: indexed.file.path });
+      }
+    }
+    return { ...plan, consolidated, trashed, failed };
   }
 
   isWorkoutSession(path: string, workoutId = ''): boolean {
@@ -768,24 +911,8 @@ export class HealthNativeRecordService {
     const session = sessionMatches[0];
     const workoutId = session.id;
     if (!workoutId) return null;
-    const order = new Map(
-      (Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds : [])
-        .map((value, index) => [String(value || ''), index] as const)
-        .filter(([id]) => Boolean(id)),
-    );
-    const exerciseRecords = this.getWorkoutExerciseRecords(session)
-      .sort((left, right) => {
-        const authoredLeft = numberValue(left.frontmatter.exerciseOrder);
-        const authoredRight = numberValue(right.frontmatter.exerciseOrder);
-        const leftOrder = authoredLeft > 0 ? authoredLeft : (order.get(left.id) ?? Number.MAX_SAFE_INTEGER);
-        const rightOrder = authoredRight > 0 ? authoredRight : (order.get(right.id) ?? Number.MAX_SAFE_INTEGER);
-        return leftOrder - rightOrder || left.id.localeCompare(right.id) || left.file.path.localeCompare(right.file.path);
-      });
-    const exercises = exerciseRecords.map((record): NativeWorkoutExerciseSnapshot => {
-      const rawSets = Array.isArray(record.frontmatter.sets)
-        ? record.frontmatter.sets.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
-        : [];
-      const sets = rawSets.map((set, index): NativeWorkoutSetSnapshot => ({
+    const exercises = this.workoutExercisesForRead(session).map((exercise): NativeWorkoutExerciseSnapshot => {
+      const sets = exercise.sets.map((set, index): NativeWorkoutSetSnapshot => ({
         id: String(set.id || `set-${index + 1}`),
         ordinal: index + 1,
         reps: numberValue(set.reps),
@@ -801,10 +928,10 @@ export class HealthNativeRecordService {
         note: String(set.note || ''),
       }));
       return {
-        id: record.id,
-        path: record.file.path,
-        name: String(record.frontmatter.exercise || record.frontmatter.title || record.file.basename).trim() || record.file.basename,
-        exercisePath: wikilinkPath(record.frontmatter.exercisePath),
+        id: exercise.id,
+        path: session.file.path,
+        name: exercise.name,
+        exercisePath: exercise.exercisePath,
         totalReps: sets.reduce((sum, set) => sum + set.reps, 0),
         totalVolume: sets.reduce((sum, set) => sum + set.reps * set.weight * (set.perArm ? 2 : 1), 0),
         sets,
@@ -1000,6 +1127,7 @@ export class HealthNativeRecordService {
   /** Read-only migration inventory. Legacy source files are never changed. */
   async planLegacyImport(): Promise<LegacyHealthImportPlan> {
     const candidates = await this.collectLegacyCandidates();
+    const recordCandidates = candidates.records.filter((candidate) => candidate.kind !== 'workout-exercise');
     const totals = zeroNutritionTotals();
     let foodEntries = 0;
     let activityEntries = 0;
@@ -1013,10 +1141,10 @@ export class HealthNativeRecordService {
       } else if (candidate.kind === 'activity-entry') activityEntries += 1;
       else if (candidate.kind === 'workout-session') workoutSessions += 1;
       else if (candidate.kind === 'workout-exercise') workoutExercises += 1;
-      if (this.findRecordById(candidate.id)) existing += 1;
+      if (candidate.kind !== 'workout-exercise' && this.findRecordById(candidate.id)) existing += 1;
     }
     return {
-      candidates: candidates.records.length,
+      candidates: recordCandidates.length,
       existing,
       foodEntries,
       activityEntries,
@@ -1035,7 +1163,8 @@ export class HealthNativeRecordService {
     let created = 0;
     let skipped = 0;
     let failed = 0;
-    for (const candidate of collected.records) {
+    const exerciseGroups = collected.records.filter((candidate) => candidate.kind === 'workout-exercise');
+    for (const candidate of collected.records.filter((record) => record.kind !== 'workout-exercise')) {
       const existing = this.findRecordById(candidate.id) || await api.resolve(candidate.id);
       if (existing) {
         skipped += 1;
@@ -1043,16 +1172,18 @@ export class HealthNativeRecordService {
       }
       try {
         const properties = { ...candidate.properties };
-        let workoutSession: NativeRecordHandle | null = null;
-        if (candidate.kind === 'workout-exercise') {
-          workoutSession = candidate.workoutReferenceId
-            ? this.findRecordById(candidate.workoutReferenceId) || await api.resolve(candidate.workoutReferenceId)
-            : null;
-          if (!workoutSession || workoutSession.kind !== 'workout-session') {
-            failed += 1;
-            continue;
-          }
-          properties.workout = this.recordLink(workoutSession.path);
+        if (candidate.kind === 'workout-session') {
+          const exercises = exerciseGroups
+            .filter((exercise) => exercise.workoutReferenceId === candidate.id)
+            .map((exercise): StoredWorkoutExercise => ({
+              id: exercise.id,
+              name: String(exercise.properties.exercise || exercise.properties.title || '').trim(),
+              exercisePath: wikilinkPath(exercise.properties.exercisePath),
+              sets: storedWorkoutSets(exercise.properties.sets),
+            }))
+            .filter((exercise) => Boolean(exercise.name));
+          properties.workoutData = workoutDataValue(exercises);
+          Object.assign(properties, workoutAggregates(exercises));
         }
         const persistedProperties = {
           ...properties,
@@ -1063,9 +1194,7 @@ export class HealthNativeRecordService {
         const record = await api.create(candidate.kind, persistedProperties, {
           id: candidate.id,
           fileName: Number(api.version) >= 3
-            ? buildNativeHealthRecordFileName(candidate.kind, persistedProperties, {
-              date: workoutSession?.frontmatter.date || workoutSession?.frontmatter.workoutDate || workoutSession?.frontmatter.startedAt,
-            }) || undefined
+            ? buildNativeHealthRecordFileName(candidate.kind, persistedProperties) || undefined
             : undefined,
           cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-legacy-import' },
         });
@@ -1240,6 +1369,106 @@ export class HealthNativeRecordService {
     return linkedPath === session.file.path
       || String(record.frontmatter.workoutId || '').trim() === session.id
       || wikilinkPath(record.frontmatter.workoutPath) === session.file.path;
+  }
+
+  private workoutExercisesForRead(session: IndexedHealthRecord | NativeRecordHandle): StoredWorkoutExercise[] {
+    if (Object.prototype.hasOwnProperty.call(session.frontmatter, 'workoutData')) {
+      const embedded = storedWorkoutExercises(session.frontmatter.workoutData);
+      if (embedded) return embedded;
+    }
+    const order = new Map(
+      (Array.isArray(session.frontmatter.exerciseRecordIds) ? session.frontmatter.exerciseRecordIds : [])
+        .map((value, index) => [String(value || ''), index] as const)
+        .filter(([id]) => Boolean(id)),
+    );
+    return this.getWorkoutExerciseRecords(session)
+      .slice()
+      .sort((left, right) => {
+        const authoredLeft = numberValue(left.frontmatter.exerciseOrder);
+        const authoredRight = numberValue(right.frontmatter.exerciseOrder);
+        const leftOrder = authoredLeft > 0 ? authoredLeft : (order.get(left.id) ?? Number.MAX_SAFE_INTEGER);
+        const rightOrder = authoredRight > 0 ? authoredRight : (order.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+        return leftOrder - rightOrder || left.id.localeCompare(right.id) || left.file.path.localeCompare(right.file.path);
+      })
+      .map((record) => ({
+        id: record.id,
+        name: String(record.frontmatter.exercise || record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+        exercisePath: wikilinkPath(record.frontmatter.exercisePath),
+        sets: storedWorkoutSets(record.frontmatter.sets),
+      }));
+  }
+
+  private workoutExercisesForWrite(session: NativeRecordHandle): {
+    exercises: StoredWorkoutExercise[];
+    legacyChildren: IndexedHealthRecord[];
+  } {
+    const legacyChildren = this.getWorkoutExerciseRecords(session);
+    return {
+      exercises: this.workoutExercisesForRead(session),
+      legacyChildren,
+    };
+  }
+
+  private embeddedExerciseHandle(session: NativeRecordHandle, exercise: StoredWorkoutExercise): NativeRecordHandle {
+    const aggregates = workoutAggregates([exercise]);
+    return {
+      file: session.file,
+      path: session.path,
+      id: exercise.id,
+      kind: 'workout-exercise',
+      frontmatter: {
+        title: exercise.name,
+        exercise: exercise.name,
+        exercisePath: this.recordLink(exercise.exercisePath),
+        sets: exercise.sets.map((set) => ({ ...set })),
+        setCount: aggregates.setCount,
+        totalReps: aggregates.totalReps,
+        totalVolume: aggregates.totalVolume,
+      },
+    };
+  }
+
+  private findWorkoutSessionHandleForExercise(exercise: NativeRecordHandle): NativeRecordHandle | null {
+    const indexed = this.recordsByPath.get(exercise.path);
+    if (indexed?.kind === 'workout-session') return this.toHandle(indexed);
+    if (indexed?.kind !== 'workout-exercise') return null;
+    const matches = this.getKindRecords('workout-session')
+      .filter((session) => this.recordBelongsToWorkout(indexed, session));
+    return matches.length === 1 ? this.toHandle(matches[0]) : null;
+  }
+
+  private async trashLegacyWorkoutChildren(
+    session: IndexedHealthRecord | NativeRecordHandle,
+    children: IndexedHealthRecord[],
+    surface: string,
+  ): Promise<{ trashed: number; failed: number }> {
+    let trashed = 0;
+    let failed = 0;
+    for (const child of children) {
+      const current = this.plugin.app.vault.getAbstractFileByPath(child.file.path);
+      if (!(current instanceof TFile)) continue;
+      try {
+        await this.plugin.app.vault.trash(current, false);
+        trashed += 1;
+      } catch (error) {
+        failed += 1;
+        logger.flowError('WorkoutStorage', 'legacy-child-trash-failed', error, {
+          workoutId: session.id,
+          path: session.file.path,
+          childPath: child.file.path,
+          surface,
+        });
+      }
+    }
+    logger.flow('WorkoutStorage', 'legacy-children:trashed', {
+      workoutId: session.id,
+      path: session.file.path,
+      childNotes: children.length,
+      trashed,
+      failed,
+      surface,
+    });
+    return { trashed, failed };
   }
 
   private getWorkoutExerciseRecords(session: IndexedHealthRecord | NativeRecordHandle): IndexedHealthRecord[] {

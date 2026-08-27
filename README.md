@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.26.0
+
+- Native workouts now store the complete ordered exercise/set structure in one versioned `workoutData` property on the `workout-session` note. Adding an exercise, logging or editing a set, finishing the workout, and importing a legacy body workout no longer create per-workout exercise child notes.
+- The session keeps normal queryable summary properties—`exerciseCount`, `setCount`, `totalReps`, `totalVolume`, and `lastSetEndedAt`—while TPS Health owns the compact internal JSON payload. Reusable exercise definitions remain optional separate notes because they carry defaults and history across workouts; exercise occurrences do not.
+- Existing `workout-exercise` child notes remain readable. The next live mutation or Finish copies them into the parent first and then moves the redundant children to Obsidian trash. **Native records: Consolidate workouts into one note each** performs the same serialized, confirmed migration across historical workouts and reports successes/failures.
+- Deleting a legacy workout session cascades only its linked `workout-exercise` child records to trash, preventing orphaned set data. A failed parent write never deletes a child, a failed trash operation leaves the copied data intact, and reusable exercise notes are never part of cleanup.
+- Native record API version advances to 3. Legacy storage, food/activity records, workout plans, reusable exercises, public Health APIs, and existing workout rendering remain compatible. Minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite passed 248 checks (247 passed and one credential-gated live USDA integration check skipped). A separate production build deployed byte-identical `main.js`, `manifest.json`, and `styles.css` artifacts to the isolated test vault; its existing Hot Reload marker provides the reload path and runtime-owned `data.json` remained present. The nonvisual storage, mutation, migration, invalid-payload fallback, cleanup-order, and parent-deletion behaviors are covered by integration regressions. Production was not accessed.
+
 ## 0.25.2
 
 - A live blank native workout now resolves its owning session by stable workout ID before adding an exercise. If GCM has already renamed or moved the new session note, TPS Health repairs the saved path and attaches the exercise to that resolved session instead of failing against the stale filename.

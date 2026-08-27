@@ -899,6 +899,24 @@ export default class TPSHealthPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "consolidate-native-workout-storage",
+      name: "Native records: Consolidate workouts into one note each",
+      checkCallback: (checking) => {
+        if (!this.nativeRecordService?.isEnabled()) return false;
+        const plan = this.nativeRecordService.planWorkoutStorageConsolidation();
+        if (plan.childNotes <= 0) return false;
+        if (!checking) void this.traceCommand("consolidate-native-workout-storage", async () => {
+          const message = `Copy ${plan.childNotes} exercise ${plan.childNotes === 1 ? "note" : "notes"} into ${plan.sessions} workout ${plan.sessions === 1 ? "note" : "notes"}, then move the redundant child notes to trash? Workout history and reusable exercise notes are preserved.`;
+          if (typeof window.confirm === "function" && !window.confirm(message)) return;
+          const result = await this.nativeRecordService.consolidateWorkoutStorage((path, mutation) => (
+            this.serializeWorkoutMutation(path, "consolidate-native-workout-storage", mutation)
+          ));
+          new Notice(`Workout storage: ${result.consolidated} consolidated, ${result.trashed} redundant child notes moved to trash, ${result.failed} failed.`, 12000);
+        });
+        return true;
+      },
+    });
+    this.addCommand({
       id: "normalize-native-health-filenames",
       name: "Native records: Apply readable Health filenames",
       checkCallback: (checking) => {
@@ -3727,7 +3745,7 @@ export default class TPSHealthPlugin extends Plugin {
       setId: savedSet.id,
       exercise: savedSet.exercise,
       workoutPath: sessionPath,
-      exerciseRecordPath: result.exercise.path,
+      workoutDataPath: result.exercise.path,
       setCount: this.settings.activeWorkoutSetCount,
       storage: "native-records",
     });

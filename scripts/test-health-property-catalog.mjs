@@ -62,6 +62,9 @@ test('catalog exposes kind-scoped native record and reusable exercise fields', (
   assert.deepEqual(byKey('activity')[0].scope.kinds, ['activity-entry']);
   assert.deepEqual(byKey('workout')[0].scope.kinds, ['workout-exercise']);
   assert.equal(byKey('workout')[0].listItemType, 'link');
+  assert.deepEqual(byKey('exerciseCount')[0].scope.kinds, ['workout-session']);
+  assert.ok(byKey('totalReps')[0].scope.kinds.includes('workout-session'));
+  assert.ok(byKey('totalVolume')[0].scope.kinds.includes('workout-session'));
   assert.deepEqual(byKey('primaryMuscles')[0].scope.kinds, ['exercise']);
   assert.ok(byKey('status')[0].scope.kinds.includes('workout-session'));
   assert.equal(catalog.food.find((property) => property.key === 'name').label, 'Name');
