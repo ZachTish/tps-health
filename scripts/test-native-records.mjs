@@ -447,12 +447,18 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'tpsId is the only food-record identity');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingQuantity'), false, 'new records keep one authored quantity field');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingUnit'), false, 'new records keep one authored unit field');
+  for (const redundant of ['status', 'date', 'foodName', 'brand', 'amount', 'amountUnit', 'tags']) {
+    assert.equal(Object.hasOwn(foodRecord.frontmatter, redundant), false, `${redundant} is not duplicated on a food entry`);
+  }
 
   const activity = await service.createActivityEntry({
     id: 'activity-1', activity: 'Walk', activityType: 'walking', startedAt: '2026-08-24T07:00:00.000Z', completedDate: '2026-08-24T07:30:00.000Z', durationMinutes: 30, source: 'manual',
   });
   assert.equal(activity.frontmatter.durationMinutes, 30);
-  assert.equal(activity.frontmatter.date, '2026-08-24');
+  assert.equal(activity.frontmatter.completedDate, '2026-08-24T07:30:00.000Z');
+  for (const redundant of ['status', 'date', 'activity', 'source', 'tags']) {
+    assert.equal(Object.hasOwn(activity.frontmatter, redundant), false, `${redundant} is implied or duplicated`);
+  }
   assert.deepEqual(service.getDailyActivityTotals('2026-08-24'), {
     dateIso: '2026-08-24', entryCount: 1, durationMinutes: 30, caloriesBurned: 0, steps: 0,
   });
@@ -478,7 +484,12 @@ test('a Base quantity edit immediately updates indexed totals and persists Base-
   assert.equal(created.frontmatter.quantity, 1.25);
   assert.equal(created.frontmatter.unit, 'cup');
 
-  const authored = { ...(await api.resolve(created.file)).frontmatter, quantity: 3, unit: 'cup' };
+  const authored = {
+    ...(await api.resolve(created.file)).frontmatter,
+    quantity: 3,
+    unit: 'cup',
+    tags: ['tps/record/v1/food-entry/food-yogurt', 'user/keep'],
+  };
   frontmatters.set(created.file, authored);
   service.indexFile(created.file, authored);
 
@@ -490,12 +501,13 @@ test('a Base quantity edit immediately updates indexed totals and persists Base-
   const persisted = await api.resolve(created.file);
   assert.equal(persisted.frontmatter.quantity, 3);
   assert.equal(persisted.frontmatter.unit, 'cup');
-  assert.equal(persisted.frontmatter.amount, 450);
-  assert.equal(persisted.frontmatter.amountUnit, 'g');
+  assert.equal(Object.hasOwn(persisted.frontmatter, 'amount'), false, 'converted amount remains a derived in-memory value');
+  assert.equal(Object.hasOwn(persisted.frontmatter, 'amountUnit'), false);
   assert.equal(persisted.frontmatter.calories, 240);
   assert.equal(persisted.frontmatter.proteinG, 36);
   assert.equal(persisted.frontmatter.carbsG, 27);
   assert.equal(persisted.frontmatter.sodiumMg, 135);
+  assert.deepEqual(persisted.frontmatter.tags, authored.tags, 'projection cleanup preserves GCM identity and user tags');
 });
 
 test('editing a linked food definition recalculates only its indexed food entries', async () => {
@@ -562,7 +574,9 @@ test('native record dates follow the local calendar day instead of the UTC day',
     quantity: 1,
     unit: 'serving',
   });
-  assert.equal(food.frontmatter.date, '2026-08-24', '7:32 PM Central remains on the Aug 24 Daily Note');
+  assert.equal(food.frontmatter.completedDate, '2026-08-25T00:32:00.000Z');
+  assert.equal(Object.hasOwn(food.frontmatter, 'date'), false, 'the local day derives from one timestamp instead of a duplicate date property');
+  assert.equal(service.getDailyFoodTotals('2026-08-24').entryCount, 1, '7:32 PM Central remains on the Aug 24 dashboard');
 
   const dateOnlyFood = await service.createFoodEntry({
     id: 'food-date-only',
@@ -572,7 +586,7 @@ test('native record dates follow the local calendar day instead of the UTC day',
     quantity: 1,
     unit: 'serving',
   });
-  assert.equal(dateOnlyFood.frontmatter.date, '2026-08-24', 'date-only input is never shifted by timezone parsing');
+  assert.equal(dateOnlyFood.frontmatter.completedDate, '2026-08-24', 'date-only input is stored once and never shifted');
 
   const activity = await service.createActivityEntry({
     id: 'activity-evening',
@@ -583,19 +597,27 @@ test('native record dates follow the local calendar day instead of the UTC day',
     durationMinutes: 30,
     source: 'manual',
   });
-  assert.equal(activity.frontmatter.date, '2026-08-24');
+  assert.equal(activity.frontmatter.completedDate, '2026-08-25T00:32:00.000Z');
+  assert.equal(Object.hasOwn(activity.frontmatter, 'date'), false);
 
   const workout = await service.createWorkoutSession({
     title: 'Evening workout',
     startedAt: '2026-08-25T00:32:00.000Z',
     workoutDate: '2026-08-24',
   }, 'workout-evening');
-  assert.equal(workout.frontmatter.date, '2026-08-24', 'an explicit Daily Note workout date wins');
+  assert.equal(Object.hasOwn(workout.frontmatter, 'date'), false);
+  assert.equal(Object.hasOwn(workout.frontmatter, 'workoutDate'), false);
+  assert.equal(service.getDailyActivityTotals('2026-08-24').entryCount, 2, 'the activity and workout days both derive from their timestamps');
 });
 
 test('native workout session stores every exercise and set atomically in one note', async () => {
-  const { service, createCalls, files } = createHarness();
+  const { service, createCalls, files, frontmatters } = createHarness();
   const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-1');
+  frontmatters.set(session.file, {
+    ...frontmatters.get(session.file),
+    tags: ['tps/record/v1/workout-session/workout-1', 'user/keep'],
+  });
+  service.indexFile(session.file, frontmatters.get(session.file));
   assert.equal(Object.hasOwn(session.frontmatter, 'workoutId'), false);
   assert.equal(Object.hasOwn(session.frontmatter, 'exerciseRecordIds'), false);
   await assert.rejects(
@@ -608,11 +630,11 @@ test('native workout session stores every exercise and set atomically in one not
   assert.equal(second.exercise.frontmatter.setCount, 2);
   assert.equal(second.exercise.frontmatter.totalReps, 14);
   assert.equal(second.exercise.frontmatter.totalVolume, 1460);
-  assert.equal(second.session.frontmatter.setCount, 2);
-  assert.equal(second.session.frontmatter.exerciseCount, 1);
-  assert.equal(second.session.frontmatter.totalReps, 14);
-  assert.equal(second.session.frontmatter.totalVolume, 1460);
+  for (const derived of ['setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'lastSetEndedAt']) {
+    assert.equal(Object.hasOwn(second.session.frontmatter, derived), false, `${derived} derives from workoutData`);
+  }
   assert.equal(typeof second.session.frontmatter.workoutData, 'string');
+  assert.deepEqual(second.session.frontmatter.tags, ['tps/record/v1/workout-session/workout-1', 'user/keep']);
   assert.equal(createCalls.filter((call) => call.kind === 'workout-exercise').length, 0, 'exercise occurrences never create child notes');
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0);
   assert.equal(service.isWorkoutSession(session.path, 'workout-1'), true);
@@ -659,9 +681,11 @@ test('native workout session stores every exercise and set atomically in one not
     restSeconds: 75,
     setType: 'drop',
   });
-  assert.equal(edited.frontmatter.setCount, 2, 'editing preserves the workout set count');
-  assert.equal(edited.frontmatter.totalReps, 18);
-  assert.equal(edited.frontmatter.totalVolume, 2900);
+  for (const derived of ['setCount', 'exerciseCount', 'totalReps', 'totalVolume']) {
+    assert.equal(Object.hasOwn(edited.frontmatter, derived), false, `${derived} remains a projection after editing`);
+  }
+  assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].totalReps, 18);
+  assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].totalVolume, 2900);
   assert.deepEqual(service.getWorkoutSnapshot(session.path).exercises[0].sets[1], {
     id: 'set-2', ordinal: 2, reps: 10, weight: 105, weightUnit: 'kg', perArm: true,
     rpe: 8.5, restSeconds: 75, setType: 'drop', completedDate: '2026-08-24T08:10:00.000Z', note: '',

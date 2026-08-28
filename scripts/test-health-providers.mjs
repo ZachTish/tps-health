@@ -9578,6 +9578,23 @@ test("exercise definitions remain reusable counterparts without workout-session 
   assert.equal(frontmatter.sets, undefined, "updating a definition removes leaked set history");
   assert.equal(frontmatter.lastSessionPath, undefined);
   assert.equal(frontmatter.totalReps, undefined);
+
+  plugin.settings.exerciseTemplatePath = "";
+  const minimalExercise = await plugin.createExercise({ name: "Minimal definition" });
+  const minimalExerciseFrontmatter = parseFrontmatter(fake.files.get(minimalExercise.sourcePath));
+  assert.deepEqual(
+    Object.keys(minimalExerciseFrontmatter).sort(),
+    ["kind", "name", "tags"],
+    "a default definition should not persist empty arrays or inherited defaults",
+  );
+
+  const minimalPlan = await plugin.createWorkoutPlan({ name: "Minimal routine" });
+  const minimalPlanFrontmatter = parseFrontmatter(fake.files.get(minimalPlan.sourcePath));
+  assert.deepEqual(
+    Object.keys(minimalPlanFrontmatter).sort(),
+    ["kind", "name"],
+    "a default workout plan should not persist fixed workflow fields, duplicate cooldowns, or blank history",
+  );
 });
 
 test("food note creation and updates write only the selected identification signals", async () => {

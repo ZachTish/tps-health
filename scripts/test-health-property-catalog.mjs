@@ -55,20 +55,20 @@ test('food property catalog follows the configured Health identification mode', 
   });
 });
 
-test('catalog exposes kind-scoped native record and reusable exercise fields', () => {
+test('catalog exposes only the compact user-facing native and reusable fields', () => {
   const catalog = buildHealthPropertyCatalog(settings('tag'));
   const byKey = (key) => catalog.nativeRecords.filter((property) => property.key === key);
-  assert.deepEqual(byKey('foodName')[0].scope.kinds, ['food-entry']);
-  assert.deepEqual(byKey('activity')[0].scope.kinds, ['activity-entry']);
-  assert.deepEqual(byKey('workout')[0].scope.kinds, ['workout-exercise']);
-  assert.equal(byKey('workout')[0].listItemType, 'link');
-  assert.deepEqual(byKey('exerciseCount')[0].scope.kinds, ['workout-session']);
-  assert.ok(byKey('totalReps')[0].scope.kinds.includes('workout-session'));
-  assert.ok(byKey('totalVolume')[0].scope.kinds.includes('workout-session'));
+  assert.deepEqual(byKey('foodPath')[0].scope.kinds, ['food-entry']);
+  assert.deepEqual(byKey('activityType')[0].scope.kinds, ['activity-entry']);
   assert.deepEqual(byKey('primaryMuscles')[0].scope.kinds, ['exercise']);
-  assert.ok(byKey('status')[0].scope.kinds.includes('workout-session'));
+  assert.deepEqual(byKey('status')[0].scope.kinds, ['workout-session']);
+  assert.deepEqual(byKey('startedAt')[0].scope.kinds, ['activity-entry', 'workout-session']);
   assert.equal(catalog.food.find((property) => property.key === 'name').label, 'Name');
   assert.ok(byKey('name').every((property) => property.label === 'Name'));
+  for (const redundant of ['foodName', 'brand', 'date', 'amount', 'amountUnit', 'durationSeconds', 'setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'workout', 'exercisePath', 'exerciseOrder', 'lastCompletedDate', 'nextEligibleDate']) {
+    assert.equal(byKey(redundant).length, 0, `${redundant} is derived, duplicated, legacy-only, or internal`);
+  }
+  assert.ok(new Set(catalog.nativeRecords.map((property) => property.key)).size <= 28, 'the imported native catalog stays intentionally small');
 });
 
 test('daily rollup properties are generated from configured goals and require their own rollup key', () => {
@@ -93,7 +93,11 @@ test('daily rollup properties are generated from configured goals and require th
 
 test('catalog exposes the reusable food fields Health actually writes', () => {
   const keys = new Set(buildHealthPropertyCatalog(settings('tag')).food.map((property) => property.key));
-  for (const key of ['name', 'brand', 'aliases', 'barcode', 'servingAmount', 'servingUnit', 'nutritionBasis', 'calories', 'proteinG', 'ingredientStatement']) {
+  for (const key of ['name', 'brand', 'aliases', 'barcode', 'servingAmount', 'servingUnit', 'calories', 'proteinG', 'ingredientStatement']) {
     assert.equal(keys.has(key), true, `missing ${key}`);
   }
+  for (const internal of ['nutritionBasis', 'imageUrl', 'sourceImagePath', 'confidence', 'notes']) {
+    assert.equal(keys.has(internal), false, `${internal} should not clutter imported GCM properties`);
+  }
+  assert.ok(keys.size <= 18, 'the reusable food catalog stays intentionally small');
 });

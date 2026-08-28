@@ -14,14 +14,6 @@ const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
   { id: "serving-unit", key: "servingUnit", label: "Serving unit", type: "text", icon: "ruler" },
   { id: "serving-grams", key: "servingGrams", label: "Serving grams", type: "number", icon: "weight" },
   { id: "serving-ml", key: "servingMl", label: "Serving milliliters", type: "number", icon: "cup-soda" },
-  {
-    id: "nutrition-basis",
-    key: "nutritionBasis",
-    label: "Nutrition basis",
-    type: "selector",
-    options: ["labeled-serving", "per-100g", "per-100ml", "estimated-serving"],
-    icon: "list-filter",
-  },
   { id: "calories", key: "calories", label: "Serving calories", type: "number", icon: "flame" },
   { id: "protein", key: "proteinG", label: "Protein", type: "number", icon: "dumbbell" },
   { id: "carbs", key: "carbsG", label: "Carbs", type: "number", icon: "wheat" },
@@ -32,10 +24,6 @@ const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
   { id: "alcohol", key: "alcoholG", label: "Alcohol", type: "number", icon: "wine" },
   { id: "sodium", key: "sodiumMg", label: "Sodium", type: "number", icon: "shaker" },
   { id: "ingredients", key: "ingredientStatement", label: "Ingredients", type: "text", icon: "notebook-tabs" },
-  { id: "image-url", key: "imageUrl", label: "Image URL", type: "text", icon: "image" },
-  { id: "source-image", key: "sourceImagePath", label: "Source image", type: "text", icon: "file-image" },
-  { id: "confidence", key: "confidence", label: "Confidence", type: "number", icon: "gauge" },
-  { id: "notes", key: "notes", label: "Food notes", type: "text", icon: "notebook-pen" },
 ];
 
 const scoped = (
@@ -55,18 +43,13 @@ const scoped = (
 });
 
 const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
-  scoped('record-status', 'status', 'Status', 'selector', ['food-entry', 'activity-entry', 'workout-session'], {
+  scoped('record-status', 'status', 'Status', 'selector', ['workout-session'], {
     icon: 'circle-check', options: ['active', 'complete', 'discarded'],
   }),
-  scoped('record-date', 'date', 'Date', 'datetime', ['food-entry', 'activity-entry', 'workout-session'], { icon: 'calendar-days' }),
-  scoped('record-completed', 'completedDate', 'Completed', 'datetime', ['food-entry', 'activity-entry', 'workout-session'], { icon: 'check-check' }),
+  scoped('record-completed', 'completedDate', 'Completed', 'datetime', ['food-entry', 'activity-entry'], { icon: 'check-check' }),
   scoped('food-link', 'foodPath', 'Food', 'list', ['food-entry'], { icon: 'utensils', listItemType: 'link' }),
-  scoped('food-name', 'foodName', 'Food name', 'text', ['food-entry'], { icon: 'utensils' }),
-  scoped('food-brand', 'brand', 'Brand', 'text', ['food-entry'], { icon: 'badge' }),
   scoped('food-quantity', 'quantity', 'Consumed quantity', 'number', ['food-entry'], { icon: 'scale' }),
   scoped('food-unit', 'unit', 'Consumed unit', 'text', ['food-entry'], { icon: 'ruler' }),
-  scoped('food-amount', 'amount', 'Calculated metric amount', 'number', ['food-entry'], { icon: 'scale' }),
-  scoped('food-amount-unit', 'amountUnit', 'Calculated metric unit', 'text', ['food-entry'], { icon: 'ruler' }),
   scoped('record-calories', 'calories', 'Calculated calories', 'number', ['food-entry'], { icon: 'flame' }),
   scoped('record-protein', 'proteinG', 'Calculated protein', 'number', ['food-entry'], { icon: 'dumbbell' }),
   scoped('record-carbs', 'carbsG', 'Calculated carbs', 'number', ['food-entry'], { icon: 'wheat' }),
@@ -76,7 +59,6 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('record-sugar-alcohol', 'sugarAlcoholG', 'Calculated sugar alcohol', 'number', ['food-entry'], { icon: 'candy-off' }),
   scoped('record-alcohol', 'alcoholG', 'Calculated alcohol', 'number', ['food-entry'], { icon: 'wine' }),
   scoped('record-sodium', 'sodiumMg', 'Calculated sodium', 'number', ['food-entry'], { icon: 'shaker' }),
-  scoped('activity-name', 'activity', 'Activity', 'text', ['activity-entry'], { icon: 'activity' }),
   scoped('activity-type', 'activityType', 'Activity type', 'text', ['activity-entry'], { icon: 'list-filter' }),
   scoped('activity-started', 'startedAt', 'Started', 'datetime', ['activity-entry', 'workout-session'], { icon: 'play' }),
   scoped('activity-duration', 'durationMinutes', 'Duration', 'number', ['activity-entry'], { icon: 'timer' }),
@@ -86,26 +68,12 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('activity-calories', 'caloriesBurned', 'Calories burned', 'number', ['activity-entry', 'workout-session'], { icon: 'flame' }),
   scoped('workout-plan', 'workoutPlanPath', 'Workout plan', 'list', ['workout-session'], { icon: 'clipboard-list', listItemType: 'link' }),
   scoped('workout-ended', 'endedAt', 'Ended', 'datetime', ['workout-session'], { icon: 'square' }),
-  scoped('workout-duration', 'durationSeconds', 'Duration seconds', 'number', ['workout-session'], { icon: 'timer' }),
-  scoped('workout-set-count', 'setCount', 'Sets', 'number', ['workout-session', 'workout-exercise'], { icon: 'list-ordered' }),
-  scoped('workout-exercise-count', 'exerciseCount', 'Exercises', 'number', ['workout-session'], { icon: 'dumbbell' }),
-  scoped('workout-relation', 'workout', 'Workout', 'list', ['workout-exercise'], { icon: 'link', listItemType: 'link' }),
-  scoped('exercise-link', 'exercisePath', 'Exercise note', 'list', ['workout-exercise'], { icon: 'link', listItemType: 'link' }),
-  scoped('exercise-order', 'exerciseOrder', 'Exercise order', 'number', ['workout-exercise'], { icon: 'list-ordered' }),
-  scoped('exercise-total-reps', 'totalReps', 'Total reps', 'number', ['workout-session', 'workout-exercise'], { icon: 'repeat-2' }),
-  scoped('exercise-total-volume', 'totalVolume', 'Total volume', 'number', ['workout-session', 'workout-exercise'], { icon: 'weight' }),
-  scoped('exercise-last-completed', 'lastCompletedDate', 'Last completed', 'datetime', ['workout-exercise', 'exercise', 'workout-plan'], { icon: 'history' }),
   scoped('exercise-name', 'name', 'Name', 'text', ['exercise'], { icon: 'dumbbell' }),
-  scoped('exercise-category', 'category', 'Category', 'selector', ['exercise'], { icon: 'shapes', options: ['strength', 'cardio', 'mobility', 'recovery'] }),
   scoped('exercise-primary-muscles', 'primaryMuscles', 'Primary muscles', 'list', ['exercise'], { icon: 'accessibility', listItemType: 'text' }),
-  scoped('exercise-secondary-muscles', 'secondaryMuscles', 'Secondary muscles', 'list', ['exercise'], { icon: 'accessibility', listItemType: 'text' }),
   scoped('exercise-equipment', 'equipment', 'Equipment', 'list', ['exercise'], { icon: 'dumbbell', listItemType: 'text' }),
   scoped('exercise-rest', 'defaultRestSeconds', 'Default rest', 'number', ['exercise', 'workout-plan'], { icon: 'timer-reset' }),
-  scoped('exercise-set-type', 'defaultSetType', 'Default set type', 'selector', ['exercise'], { icon: 'list-filter', options: ['normal', 'warmup', 'drop', 'failure'] }),
-  scoped('exercise-rest-days', 'recommendedRestDays', 'Recommended rest days', 'number', ['exercise'], { icon: 'calendar-clock' }),
   scoped('plan-name', 'name', 'Name', 'text', ['workout-plan'], { icon: 'clipboard-list' }),
-  scoped('plan-cooldown', 'cooldownDays', 'Cooldown days', 'number', ['workout-plan', 'workout-session'], { icon: 'calendar-clock' }),
-  scoped('plan-next-eligible', 'nextEligibleDate', 'Next eligible', 'datetime', ['workout-plan', 'workout-session'], { icon: 'calendar-check' }),
+  scoped('plan-cooldown', 'cooldownDays', 'Cooldown days', 'number', ['workout-plan'], { icon: 'calendar-clock' }),
 ];
 
 const FOOD_ROLLUP_KEYS = new Set([

@@ -234,7 +234,37 @@ const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 
 const FOOD_NUTRITION_KEYS = [
   'calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg',
 ] as const;
+const CORE_FOOD_NUTRITION_KEYS = new Set<string>(['calories', 'proteinG', 'carbsG', 'fatG']);
+const REDUNDANT_FOOD_ENTRY_KEYS = [
+  'status', 'date', 'foodName', 'brand', 'amount', 'amountUnit',
+] as const;
+const REDUNDANT_WORKOUT_SESSION_KEYS = [
+  'date', 'completedDate', 'scheduled', 'workoutDate', 'allDay', 'cooldownDays', 'targetGapDays',
+  'nextEligibleDate', 'durationSeconds', 'timeEstimate', 'exerciseCount', 'setCount', 'totalReps',
+  'totalVolume', 'lastSetEndedAt',
+] as const;
 const FOOD_PROJECTION_DEBOUNCE_MS = 120;
+
+function compactRecordProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(properties).filter(([, value]) => (
+    value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)
+  )));
+}
+
+function foodNutritionStorageValues(
+  nutrition: object,
+  clearMissing = false,
+): Record<string, unknown> {
+  const values = nutrition as Record<string, unknown>;
+  return Object.fromEntries(FOOD_NUTRITION_KEYS.map((key) => {
+    const value = stableNumber(numberValue(values[key]));
+    return [key, CORE_FOOD_NUTRITION_KEYS.has(key) || value !== 0 ? value : clearMissing ? null : undefined];
+  }).filter(([, value]) => value !== undefined));
+}
+
+function clearProperties(keys: readonly string[]): Record<string, null> {
+  return Object.fromEntries(keys.map((key) => [key, null]));
+}
 
 const strictDateKey = (...values: unknown[]): string => {
   for (const value of values) {
@@ -347,6 +377,68 @@ const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
     ), 0),
   };
 };
+
+function workoutSessionDataUpdates(
+  exercises: StoredWorkoutExercise[],
+  updates: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...clearProperties(REDUNDANT_WORKOUT_SESSION_KEYS),
+    ...compactRecordProperties({
+      status: updates.status,
+      endedAt: updates.endedAt || updates.completedDate,
+      caloriesBurned: updates.caloriesBurned,
+      workoutData: workoutDataValue(exercises),
+    }),
+  };
+}
+
+function minimalNativeRecordProperties(
+  kind: NativeHealthKind,
+  properties: Record<string, unknown>,
+): Record<string, unknown> {
+  if (kind === 'food-entry') {
+    return compactRecordProperties({
+      title: properties.title || properties.foodName,
+      completedDate: properties.completedDate || properties.createdDate,
+      foodPath: properties.foodPath,
+      quantity: properties.quantity,
+      unit: properties.unit,
+      ...foodNutritionStorageValues(properties),
+      note: properties.note,
+    });
+  }
+  if (kind === 'activity-entry') {
+    const completedDate = properties.completedDate || properties.createdDate;
+    return compactRecordProperties({
+      title: properties.title || properties.activity,
+      activityType: properties.activityType,
+      startedAt: properties.startedAt && properties.startedAt !== completedDate ? properties.startedAt : undefined,
+      completedDate,
+      durationMinutes: properties.durationMinutes,
+      distance: properties.distance,
+      distanceUnit: properties.distanceUnit,
+      steps: properties.steps,
+      caloriesBurned: properties.caloriesBurned,
+      source: properties.source && properties.source !== 'manual' ? properties.source : undefined,
+      sourceId: properties.sourceId,
+      device: properties.device,
+      note: properties.note,
+    });
+  }
+  if (kind === 'workout-session') {
+    return compactRecordProperties({
+      title: properties.title,
+      status: properties.status || 'complete',
+      startedAt: properties.startedAt || properties.createdDate,
+      endedAt: properties.endedAt || properties.completedDate,
+      workoutPlanPath: properties.workoutPlanPath,
+      caloriesBurned: properties.caloriesBurned,
+      workoutData: properties.workoutData,
+    });
+  }
+  return compactRecordProperties(properties);
+}
 
 const dateKey = (value: unknown): string => {
   const raw = String(value || '').trim();
@@ -535,30 +627,15 @@ export class HealthNativeRecordService {
     const nutrition = entry.nutritionOverride || entry.item.nutrition || {};
     const authoredQuantity = positiveNumber(entry.servingQuantity, entry.quantity);
     const authoredUnit = String(entry.servingUnit || entry.unit || 'serving').trim() || 'serving';
-    const properties = {
+    const properties = compactRecordProperties({
       title: entry.item.name,
-      status: 'complete',
       completedDate: entry.completedDate || entry.createdDate,
-      date: dateKey(entry.completedDate || entry.createdDate),
       foodPath: this.recordLink(entry.item.sourcePath),
-      foodName: entry.item.name,
-      brand: entry.item.brand,
       quantity: authoredQuantity,
       unit: authoredUnit,
-      amount: entry.amount,
-      amountUnit: entry.amountUnit,
-      calories: numberValue(nutrition.calories),
-      proteinG: numberValue(nutrition.proteinG),
-      carbsG: numberValue(nutrition.carbsG),
-      fatG: numberValue(nutrition.fatG),
-      fiberG: numberValue(nutrition.fiberG),
-      sugarG: numberValue(nutrition.sugarG),
-      sugarAlcoholG: numberValue(nutrition.sugarAlcoholG),
-      alcoholG: numberValue(nutrition.alcoholG),
-      sodiumMg: numberValue(nutrition.sodiumMg),
+      ...foodNutritionStorageValues(nutrition),
       note: entry.note,
-      tags: ['health', 'food-log'],
-    };
+    });
     const api = this.requireApi();
     const record = await api.create('food-entry', properties, {
       id: entry.id,
@@ -571,25 +648,21 @@ export class HealthNativeRecordService {
   }
 
   async createActivityEntry(entry: ActivityLogEntry): Promise<NativeRecordHandle> {
-    const record = await this.requireApi().create('activity-entry', {
+    const record = await this.requireApi().create('activity-entry', compactRecordProperties({
       title: entry.activity,
-      status: 'complete',
-      activity: entry.activity,
       activityType: entry.activityType,
-      startedAt: entry.startedAt,
+      startedAt: entry.startedAt !== entry.completedDate ? entry.startedAt : undefined,
       completedDate: entry.completedDate,
-      date: dateKey(entry.completedDate),
       durationMinutes: entry.durationMinutes,
       distance: entry.distance,
       distanceUnit: entry.distanceUnit,
       steps: entry.steps,
       caloriesBurned: entry.caloriesBurned,
-      source: entry.source,
+      source: entry.source && entry.source !== 'manual' ? entry.source : undefined,
       sourceId: entry.sourceId,
       device: entry.device,
       note: entry.note,
-      tags: ['health', 'activity'],
-    }, {
+    }), {
       id: entry.id,
       now: new Date(entry.startedAt),
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-activity-log' },
@@ -600,17 +673,14 @@ export class HealthNativeRecordService {
 
   async createWorkoutSession(properties: Record<string, unknown>, recordId: string): Promise<NativeRecordHandle> {
     const startedAt = String(properties.startedAt || new Date().toISOString());
-    const recordProperties = {
-      ...properties,
+    const recordProperties = compactRecordProperties({
+      title: properties.title,
       status: 'active',
-      date: dateKey(properties.workoutDate || startedAt),
+      startedAt,
+      workoutPlanPath: this.recordLink(properties.workoutPlanPath),
+      caloriesBurned: properties.caloriesBurned,
       workoutData: workoutDataValue([]),
-      exerciseCount: 0,
-      setCount: 0,
-      totalReps: 0,
-      totalVolume: 0,
-      tags: ['health', 'workout'],
-    };
+    });
     const api = this.requireApi();
     const record = await api.create('workout-session', recordProperties, {
       id: recordId,
@@ -645,12 +715,11 @@ export class HealthNativeRecordService {
     if (!definitionPath) throw new Error('A reusable exercise note is required before logging its workout sets.');
     exercises[targetIndex].exercisePath = definitionPath;
     exercises[targetIndex].sets.push({ ...set });
-    const aggregates = workoutAggregates(exercises);
-    const updatedSession = await api.update(session.file, {
-      workoutData: workoutDataValue(exercises),
-      ...aggregates,
-      lastSetEndedAt: set.completedDate || set.endedAt,
-    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' });
+    const updatedSession = await api.update(
+      session.file,
+      workoutSessionDataUpdates(exercises),
+      { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set' },
+    );
     if (!updatedSession) throw new Error('Workout session changed before the set could be saved.');
     this.trackHandle(updatedSession);
     if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updatedSession, legacyChildren, 'health-workout-storage-upgrade');
@@ -698,10 +767,11 @@ export class HealthNativeRecordService {
       nextSet.setType = setType;
     }
     exercises[exerciseIndex].sets[setIndex] = nextSet;
-    const updated = await api.update(session.file, {
-      workoutData: workoutDataValue(exercises),
-      ...workoutAggregates(exercises),
-    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set-inline' });
+    const updated = await api.update(
+      session.file,
+      workoutSessionDataUpdates(exercises),
+      { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-set-inline' },
+    );
     if (!updated) throw new Error('Workout session changed before the set edit could be saved.');
     this.trackHandle(updated);
     if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
@@ -737,10 +807,11 @@ export class HealthNativeRecordService {
     };
     if (!existing) exercises.push(target);
     else exercises[existingIndex].exercisePath = definitionPath;
-    const updated = await api.update(session.file, {
-      workoutData: workoutDataValue(exercises),
-      ...workoutAggregates(exercises),
-    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' });
+    const updated = await api.update(
+      session.file,
+      workoutSessionDataUpdates(exercises),
+      { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-exercise' },
+    );
     if (!updated) throw new Error('Workout session changed before the exercise could be added.');
     this.trackHandle(updated);
     if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
@@ -752,12 +823,10 @@ export class HealthNativeRecordService {
     const session = await api.resolve(reference);
     if (!session || session.kind !== 'workout-session') throw new Error('Native workout session was not found.');
     const { exercises, legacyChildren } = await this.workoutExercisesForWrite(session);
-    const updated = await api.update(session.file, {
+    const updated = await api.update(session.file, workoutSessionDataUpdates(exercises, {
       ...updates,
       status: 'complete',
-      workoutData: workoutDataValue(exercises),
-      ...workoutAggregates(exercises),
-    }, {
+    }), {
       kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-finish',
     });
     if (!updated) throw new Error('Native workout session was not found.');
@@ -822,10 +891,11 @@ export class HealthNativeRecordService {
             this.workoutExercisesForRead(current),
             resolveDefinition,
           );
-          const updated = await api.update(current.file, {
-            workoutData: workoutDataValue(exercises),
-            ...workoutAggregates(exercises),
-          }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-storage-consolidation' });
+          const updated = await api.update(
+            current.file,
+            workoutSessionDataUpdates(exercises),
+            { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-storage-consolidation' },
+          );
           if (!updated) throw new Error('Workout session changed before storage consolidation.');
           this.trackHandle(updated);
           const cleanup = await this.trashLegacyWorkoutChildren(updated, children, 'health-workout-storage-consolidation');
@@ -982,7 +1052,9 @@ export class HealthNativeRecordService {
       record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
     ));
     const workoutRecords = this.getKindRecords('workout-session').filter((record) => (
-      record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.workoutDate || record.frontmatter.completedDate) === dateIso
+      record.frontmatter.archived !== true && dateKey(
+        record.frontmatter.date || record.frontmatter.workoutDate || record.frontmatter.completedDate || record.frontmatter.startedAt || record.frontmatter.endedAt,
+      ) === dateIso
     ));
     let durationMinutes = 0;
     let caloriesBurned = 0;
@@ -990,7 +1062,14 @@ export class HealthNativeRecordService {
     for (const record of [...activityRecords, ...workoutRecords]) {
       const duration = numberValue(record.frontmatter.durationMinutes)
         || numberValue(record.frontmatter.timeEstimate)
-        || numberValue(record.frontmatter.durationSeconds) / 60;
+        || numberValue(record.frontmatter.durationSeconds) / 60
+        || (() => {
+          const startedAt = Date.parse(String(record.frontmatter.startedAt || ''));
+          const endedAt = Date.parse(String(record.frontmatter.endedAt || record.frontmatter.completedDate || ''));
+          return Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt
+            ? (endedAt - startedAt) / 60_000
+            : 0;
+        })();
       durationMinutes += duration;
       caloriesBurned += numberValue(record.frontmatter.caloriesBurned);
       steps += numberValue(record.frontmatter.steps);
@@ -1197,14 +1276,8 @@ export class HealthNativeRecordService {
             .filter((exercise) => Boolean(exercise.name));
           const linkedExercises = await this.ensureWorkoutExerciseDefinitionPaths(exercises, resolveDefinition);
           properties.workoutData = workoutDataValue(linkedExercises);
-          Object.assign(properties, workoutAggregates(linkedExercises));
         }
-        const persistedProperties = {
-          ...properties,
-          legacySourcePath: candidate.sourcePath,
-          legacySourceLine: candidate.lineNumber,
-          legacyImportedAt: new Date().toISOString(),
-        };
+        const persistedProperties = minimalNativeRecordProperties(candidate.kind, properties);
         const record = await api.create(candidate.kind, persistedProperties, {
           id: candidate.id,
           fileName: Number(api.version) >= 3
@@ -1664,9 +1737,8 @@ export class HealthNativeRecordService {
     const projection = deriveNativeFoodEntryProjection(frontmatter, food.frontmatter);
     if (!projection) return null;
     const updates: Record<string, unknown> = {
-      amount: projection.amount ?? null,
-      amountUnit: projection.amountUnit ?? null,
-      ...projection.nutrition,
+      ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
+      ...foodNutritionStorageValues(projection.nutrition, true),
     };
     const next = { ...frontmatter };
     let needsPersist = false;
@@ -1720,10 +1792,9 @@ export class HealthNativeRecordService {
       const projected = this.projectFoodEntry(current.frontmatter, current.path);
       if (!projected?.needsPersist) return;
       const updates: Record<string, unknown> = {
-        amount: projected.frontmatter.amount ?? null,
-        amountUnit: projected.frontmatter.amountUnit ?? null,
+        ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
+        ...foodNutritionStorageValues(projected.frontmatter, true),
       };
-      for (const key of FOOD_NUTRITION_KEYS) updates[key] = projected.frontmatter[key];
       const updated = await this.requireApi().update(current.file, updates, {
         kind: 'automation',
         sourcePluginId: this.plugin.manifest.id,
@@ -1736,7 +1807,7 @@ export class HealthNativeRecordService {
         foodPath: this.resolveFoodSourcePath(updated.frontmatter.foodPath, path),
         quantity: numberValue(updated.frontmatter.quantity),
         unit: String(updated.frontmatter.unit || ''),
-        changedKeys: ['amount', 'amountUnit', ...FOOD_NUTRITION_KEYS],
+        changedKeys: [...REDUNDANT_FOOD_ENTRY_KEYS, ...FOOD_NUTRITION_KEYS],
       });
     } catch (error) {
       logger.flowError('NativeFoodProjection', 'reconcile:failed', error, { path });
@@ -1748,8 +1819,8 @@ export class HealthNativeRecordService {
   private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {
     const kinds = [...new Set([previous?.kind, current?.kind].filter((kind): kind is NativeHealthKind => !!kind))];
     const dates = [...new Set([
-      previous && dateKey(previous.frontmatter.date || previous.frontmatter.workoutDate || previous.frontmatter.completedDate),
-      current && dateKey(current.frontmatter.date || current.frontmatter.workoutDate || current.frontmatter.completedDate),
+      previous && dateKey(previous.frontmatter.date || previous.frontmatter.workoutDate || previous.frontmatter.completedDate || previous.frontmatter.startedAt || previous.frontmatter.endedAt),
+      current && dateKey(current.frontmatter.date || current.frontmatter.workoutDate || current.frontmatter.completedDate || current.frontmatter.startedAt || current.frontmatter.endedAt),
     ].filter((date): date is string => !!date))];
     if (!kinds.length) return;
     const change = { path, kinds, dates };

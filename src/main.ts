@@ -5275,13 +5275,13 @@ export default class TPSHealthPlugin extends Plugin {
       return this.createExercise(input);
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      Object.assign(frontmatter, exerciseFrontmatter(input, this.settings.defaultRestSeconds));
+      Object.assign(frontmatter, exerciseFrontmatter(input));
       for (const key of EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
     });
     logger.flow("Exercise", "upsert:merge", { path: file.path, name: input.name });
     return this.exerciseFromFrontmatter(file, {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
-      ...exerciseFrontmatter(input, this.settings.defaultRestSeconds),
+      ...exerciseFrontmatter(input),
     });
   }
 
@@ -5371,12 +5371,12 @@ export default class TPSHealthPlugin extends Plugin {
       return this.createWorkoutPlan(input);
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      Object.assign(frontmatter, workoutPlanFrontmatter(input, this.settings.defaultWorkoutCooldownDays, this.settings.defaultRestSeconds));
+      Object.assign(frontmatter, workoutPlanFrontmatter(input));
     });
     logger.flow("WorkoutPlan", "upsert:merge", { path: file.path, name: input.name });
     return this.workoutPlanFromFrontmatter(file, {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
-      ...workoutPlanFrontmatter(input, this.settings.defaultWorkoutCooldownDays, this.settings.defaultRestSeconds),
+      ...workoutPlanFrontmatter(input),
     });
   }
 
@@ -8145,7 +8145,7 @@ export default class TPSHealthPlugin extends Plugin {
       frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
       frontmatter.lastCompletedDate = endedAt;
       frontmatter.cooldownDays = cooldownDays;
-      frontmatter.targetGapDays = cooldownDays;
+      delete frontmatter.targetGapDays;
       frontmatter.lastSessionPath = sessionPath;
       if (nextEligibleDate) frontmatter.nextEligibleDate = nextEligibleDate;
       else delete frontmatter.nextEligibleDate;
@@ -8340,16 +8340,9 @@ export default class TPSHealthPlugin extends Plugin {
     return [
 	      "---",
 	      "kind: workout-plan",
-	      "workflowKind: workflow",
-	      "workflowType: workout",
-	      "recurrenceMode: completion-triggered",
 	      `name: \"${escapeYamlString(name)}\"`,
 	      `cooldownDays: ${cooldownDays}`,
-	      `targetGapDays: ${cooldownDays}`,
 	      `defaultRestSeconds: ${defaultRestSeconds}`,
-      "lastCompletedDate:",
-      "nextEligibleDate:",
-      "lastSessionPath:",
       "---",
       "",
       `# ${name}`,
@@ -8517,21 +8510,12 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private defaultWorkoutPlanTemplate(input: CreateWorkoutPlanInput): string {
-    const cooldownDays = input.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
-    const defaultRestSeconds = input.defaultRestSeconds ?? this.settings.defaultRestSeconds;
     return [
 	      "---",
 	      "kind: workout-plan",
-	      "workflowKind: workflow",
-	      "workflowType: workout",
-	      "recurrenceMode: completion-triggered",
 	      `name: "${escapeYamlString(input.name)}"`,
-	      `cooldownDays: ${cooldownDays}`,
-	      `targetGapDays: ${cooldownDays}`,
-	      `defaultRestSeconds: ${defaultRestSeconds}`,
-      "lastCompletedDate:",
-      "nextEligibleDate:",
-      "lastSessionPath:",
+	      input.cooldownDays != null ? `cooldownDays: ${input.cooldownDays}` : "",
+	      input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
       "---",
       "",
       "# {{name}}",
@@ -8541,7 +8525,7 @@ export default class TPSHealthPlugin extends Plugin {
       "",
       "## Notes",
       input.notes || "",
-    ].join("\n").split("{{name}}").join(input.name);
+    ].filter((line) => line !== "").join("\n").split("{{name}}").join(input.name);
   }
 
   private renderWorkoutPlanTemplate(template: string, input: CreateWorkoutPlanInput): string {
@@ -8564,12 +8548,12 @@ export default class TPSHealthPlugin extends Plugin {
       "---",
       "kind: exercise",
       `name: "${escapeYamlString(input.name)}"`,
-      input.category ? `category: ${input.category}` : "category: strength",
-      input.primaryMuscles?.length ? `primaryMuscles: [${input.primaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "primaryMuscles: []",
-      input.secondaryMuscles?.length ? `secondaryMuscles: [${input.secondaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "secondaryMuscles: []",
-      input.equipment?.length ? `equipment: [${input.equipment.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "equipment: []",
-      `defaultRestSeconds: ${input.defaultRestSeconds || this.settings.defaultRestSeconds}`,
-      input.defaultSetType ? `defaultSetType: ${input.defaultSetType}` : "defaultSetType: normal",
+      input.category ? `category: ${input.category}` : "",
+      input.primaryMuscles?.length ? `primaryMuscles: [${input.primaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
+      input.secondaryMuscles?.length ? `secondaryMuscles: [${input.secondaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
+      input.equipment?.length ? `equipment: [${input.equipment.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
+      input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
+      input.defaultSetType ? `defaultSetType: ${input.defaultSetType}` : "",
       input.recommendedRestDays != null ? `recommendedRestDays: ${input.recommendedRestDays}` : "",
       configuredTag ? "tags:" : "tags: []",
       configuredTag ? `  - "${escapeYamlString(configuredTag)}"` : "",
@@ -18790,32 +18774,27 @@ function yamlStringList(key: string, values: string[]): string {
   ].join("\n");
 }
 
-function exerciseFrontmatter(input: CreateExerciseInput, defaultRestSeconds: number): Record<string, unknown> {
+function exerciseFrontmatter(input: CreateExerciseInput): Record<string, unknown> {
   return compactObject({
     kind: "exercise",
     name: input.name,
-    category: input.category || "strength",
-    primaryMuscles: input.primaryMuscles || [],
-    secondaryMuscles: input.secondaryMuscles || [],
-    equipment: input.equipment || [],
-    defaultRestSeconds: input.defaultRestSeconds || defaultRestSeconds,
-    defaultSetType: input.defaultSetType || "normal",
+    category: input.category,
+    primaryMuscles: input.primaryMuscles?.length ? input.primaryMuscles : undefined,
+    secondaryMuscles: input.secondaryMuscles?.length ? input.secondaryMuscles : undefined,
+    equipment: input.equipment?.length ? input.equipment : undefined,
+    defaultRestSeconds: input.defaultRestSeconds,
+    defaultSetType: input.defaultSetType,
     recommendedRestDays: input.recommendedRestDays,
     notes: input.notes,
   });
 }
 
-function workoutPlanFrontmatter(input: CreateWorkoutPlanInput, defaultCooldownDays: number, defaultRestSeconds: number): Record<string, unknown> {
-  const cooldownDays = input.cooldownDays ?? defaultCooldownDays;
+function workoutPlanFrontmatter(input: CreateWorkoutPlanInput): Record<string, unknown> {
   return compactObject({
     kind: "workout-plan",
-    workflowKind: "workflow",
-    workflowType: "workout",
-    recurrenceMode: "completion-triggered",
     name: input.name,
-    cooldownDays,
-    targetGapDays: cooldownDays,
-    defaultRestSeconds: input.defaultRestSeconds ?? defaultRestSeconds,
+    cooldownDays: input.cooldownDays,
+    defaultRestSeconds: input.defaultRestSeconds,
     notes: input.notes,
   });
 }
