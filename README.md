@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.26.3
+
+- Blank workouts now use a fast first-set path: an exercise already attached to the live workout carries its reusable exercise-note link into set logging, so Health does not rebuild the whole exercise catalog before the first set can save and appear.
+- Rapid repeated sets reuse the exact exercise note path immediately, including while Obsidian's metadata index is still catching up. This prevents duplicate exercise notes and keeps repeated sets together in saved layouts.
+- Native workout cards remain mounted during the brief metadata-index delay after an atomic set write and refresh from the resulting session snapshot instead of disappearing and making the saved set look lost.
+- Legacy blank-workout startup resolves the authoritative Daily Note before creating a standalone session note. If any later start write or active-state save fails, the Daily Note block is rolled back and the standalone note is moved to Obsidian trash rather than leaving a corrupt half-started workout.
+- Start commands and modals now report failures without rethrowing an unhandled UI promise. Existing workout records, reusable exercise notes, settings, storage modes, and public APIs require no migration. This is a backward-compatible reliability patch; minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite ran 252 checks (251 passed and the intentionally credential-gated live USDA check skipped), followed by a separate production build and byte-identical isolated test-vault deployment. Real UI QA started an empty native workout, created a new exercise, logged its first 8-rep/135-lb set, and immediately displayed the persisted row and 1-set count. Synthetic QA notes were archived, the prior Legacy storage settings and empty active state were restored, Hot Reload completed, and production was not accessed.
+
 ## 0.26.2
 
 - Native Health records now persist authored facts instead of repeating values that can be inferred from the record kind, title, timestamp, links, or `workoutData`. Food entries no longer duplicate name, brand, status, date, converted amount, or Health tags; activity entries omit implied status/name/date/manual source; workout sessions omit dates, scheduling aliases, cooldown copies, counts, totals, duration summaries, and Health tags.
@@ -1257,6 +1266,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Version notes
 
+- 0.26.3: Fixes the empty-workout first-set workflow, avoids live catalog rebuilds and duplicate exercise notes, preserves the native card through index lag, and rolls back failed legacy starts.
 - 0.26.2: Minimizes native Health and GCM-imported properties while keeping calculated food/workout values available as projections and preserving legacy reads.
 - 0.17.0: Adds guarded saved-food duplicate review with explicit reuse/combine/keep-separate choices and catalog-wide mutation serialization, and moves workout-task identity from a visible HTML comment to inline `kind`/`workoutId` properties.
 - 0.14.0: Makes Describe omission-safe with durable extraction/review/repair phases, physical plausibility auditing, per-item retries, and a large Honeycrisp fallback.

@@ -12,7 +12,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   buildNativeDailyActivityModel,
@@ -772,8 +772,10 @@ export default class TPSHealthPlugin extends Plugin {
     this.addCommand({
       id: "start-blank-workout",
       name: "Start blank workout",
-      callback: () => this.traceCommand("start-blank-workout", async () => {
+      callback: () => void this.traceCommand("start-blank-workout", async () => {
         await this.startWorkout({ openFile: true });
+      }).catch((error) => {
+        new Notice(`Could not start workout: ${logger.errorSummary(error)}`);
       }),
     });
     this.addCommand({
@@ -2283,25 +2285,28 @@ export default class TPSHealthPlugin extends Plugin {
     });
     let path = "";
     let dailyNotePath = "";
-    if (logTarget === "both") {
-      path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${title}.md`));
-      await this.ensureFolder(this.settings.workoutsFolder);
-      const template = await this.readWorkoutTemplate();
-      const body = template
-        ? this.renderWorkoutSessionTemplate(template, { title, startedAt, plan, cooldownDays, workoutId })
-        : this.defaultWorkoutTemplate(title, startedAt, plan, cooldownDays, workoutId);
-      await this.app.vault.create(path, body);
-      await this.ensureWorkoutSessionFrontmatter(path, title, startedAt, plan, cooldownDays, workoutId);
-      logger.flow("Workout", "start:note-created", {
-        workoutId,
-        path,
-        planPath: plan?.sourcePath || "",
-        template: Boolean(template),
-      });
-      if (plan?.sourcePath) await this.applyWorkoutPlanToSession(path, plan.sourcePath);
-    }
-    {
-      const dailyFile = await this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
+    // Resolve the authoritative Daily Note before creating any workout
+    // artifacts. A delegated Daily Note failure must never leave an orphaned
+    // session note that looks active but has no durable active-workout state.
+    const dailyFile = await this.getOrCreateDailyNoteForDate(dailyNoteDate);
+    try {
+      if (logTarget === "both") {
+        path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${title}.md`));
+        await this.ensureFolder(this.settings.workoutsFolder);
+        const template = await this.readWorkoutTemplate();
+        const body = template
+          ? this.renderWorkoutSessionTemplate(template, { title, startedAt, plan, cooldownDays, workoutId })
+          : this.defaultWorkoutTemplate(title, startedAt, plan, cooldownDays, workoutId);
+        await this.app.vault.create(path, body);
+        await this.ensureWorkoutSessionFrontmatter(path, title, startedAt, plan, cooldownDays, workoutId);
+        logger.flow("Workout", "start:note-created", {
+          workoutId,
+          path,
+          planPath: plan?.sourcePath || "",
+          template: Boolean(template),
+        });
+      }
+      const insertedDailyFile = await this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
         id: workoutId,
         title,
         startedAt,
@@ -2309,11 +2314,11 @@ export default class TPSHealthPlugin extends Plugin {
         plan,
         cooldownDays,
         status: "active",
-      }), dailyNoteDate);
-      dailyNotePath = dailyFile.path;
-      if (plan?.sourcePath) {
-        await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
-      }
+      }), dailyNoteDate, dailyFile);
+      dailyNotePath = insertedDailyFile.path;
+    } catch (error) {
+      await this.rollbackStartedWorkoutArtifacts(workoutId, path, dailyFile, "start-write-failed");
+      throw error;
     }
     this.settings.activeWorkoutPath = path;
     this.settings.activeWorkoutId = workoutId;
@@ -2325,7 +2330,13 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.activeWorkoutCooldownDays = cooldownDays;
     this.settings.lastSetEndedAt = "";
     this.settings.activeWorkoutSetCount = 0;
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (error) {
+      applyActiveWorkoutState(this.settings, null);
+      await this.rollbackStartedWorkoutArtifacts(workoutId, path, dailyFile, "start-state-save-failed");
+      throw error;
+    }
     this.emitActiveWorkoutStateChanged();
     logger.flow("Workout", "start:state-saved", {
       workoutId,
@@ -2335,8 +2346,36 @@ export default class TPSHealthPlugin extends Plugin {
       planPath: plan?.sourcePath || "",
     });
     await this.ensureGcmWorkoutTimer();
+    if (plan?.sourcePath) {
+      const preloadFailures: string[] = [];
+      if (path) {
+        try {
+          await this.applyWorkoutPlanToSession(path, plan.sourcePath);
+        } catch (error) {
+          preloadFailures.push("workout note");
+          logger.flowWarn("WorkoutPlan", "apply-session-after-start:failed", {
+            workoutId,
+            path,
+            planPath: plan.sourcePath,
+            error: logger.errorSummary(error),
+          });
+        }
+      }
+      try {
+        await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
+      } catch (error) {
+        preloadFailures.push("Daily Note");
+        logger.flowWarn("WorkoutPlan", "apply-daily-after-start:failed", {
+          workoutId,
+          dailyNotePath,
+          planPath: plan.sourcePath,
+          error: logger.errorSummary(error),
+        });
+      }
+      if (preloadFailures.length) new Notice(`Started workout, but its plan could not be preloaded in the ${preloadFailures.join(" and ")}.`);
+    }
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    const dailyFile = dailyNotePath ? this.app.vault.getAbstractFileByPath(dailyNotePath) : null;
+    const dailyTarget = dailyNotePath ? this.app.vault.getAbstractFileByPath(dailyNotePath) : null;
     let openResult: WorkoutOpenResult = {
       requested: input.openFile !== false,
       opened: false,
@@ -2344,7 +2383,7 @@ export default class TPSHealthPlugin extends Plugin {
       reason: input.openFile === false ? "openFile=false" : dailyNotePath ? "daily note was not found in vault" : "no daily workout path was created",
     };
     if (file instanceof TFile) await this.cacheWorkoutFile(file);
-    if (input.openFile !== false && dailyFile instanceof TFile) openResult = await this.openWorkoutFile(dailyFile);
+    if (input.openFile !== false && dailyTarget instanceof TFile) openResult = await this.openWorkoutFile(dailyTarget);
     logger.flow("Workout", "start:done", {
       workoutId,
       path,
@@ -3648,7 +3687,7 @@ export default class TPSHealthPlugin extends Plugin {
     if (set.createExerciseNote === false) {
       logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "active-workout" });
     }
-    const exercise = await this.findOrCreateExercise({ name: set.exercise });
+    const exercise = await this.ensureExerciseDefinitionForWorkout(set.exercise, set.exercisePath || "");
     const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
       ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
       : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
@@ -3720,7 +3759,10 @@ export default class TPSHealthPlugin extends Plugin {
     if (set.createExerciseNote === false) {
       logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "native-workout" });
     }
-    const exercise = await this.findOrCreateExercise({ name: set.exercise });
+    // A live native row already owns the reusable exercise path. Reuse it
+    // directly instead of rebuilding the entire exercise catalog before every
+    // set; a typed new exercise still takes the responsive create path.
+    const exercise = await this.ensureExerciseDefinitionForWorkout(set.exercise, set.exercisePath || "");
     const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
       ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
       : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
@@ -5211,8 +5253,13 @@ export default class TPSHealthPlugin extends Plugin {
   private exactLinkedExercise(name: string): ExerciseItem | null {
     const normalized = normalizeLookup(name);
     const resolver = (this.app.metadataCache as any)?.getFirstLinkpathDest;
-    if (!normalized || typeof resolver !== "function") return null;
-    const file = resolver.call(this.app.metadataCache, name.trim(), "");
+    if (!normalized) return null;
+    const resolved = typeof resolver === "function"
+      ? resolver.call(this.app.metadataCache, name.trim(), "")
+      : null;
+    const folder = normalizePath(this.settings.exercisesFolder || DEFAULT_SETTINGS.exercisesFolder).replace(/^\/+|\/+$/g, "");
+    const exactPath = buildVaultDestinationPath(folder, `${sanitizeFileName(name)}.md`);
+    const file = resolved instanceof TFile ? resolved : this.app.vault.getAbstractFileByPath(exactPath);
     if (!(file instanceof TFile) || isArchivedHealthPath(file.path)) return null;
     const cache = this.app.metadataCache.getFileCache(file);
     const fm = cache?.frontmatter || {};
@@ -6280,8 +6327,8 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string): Promise<TFile> {
-    const file = await this.getOrCreateDailyNoteForDate(dateValue);
+  private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string, resolvedFile?: TFile): Promise<TFile> {
+    const file = resolvedFile || await this.getOrCreateDailyNoteForDate(dateValue);
     const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
     const block = workoutDailyNoteBlock(line);
     logger.flow("NoteWrite", "workout-session:daily-note", { dateValue: dateValue || "", path: file.path, placement });
@@ -6290,6 +6337,44 @@ export default class TPSHealthPlugin extends Plugin {
       await this.writeWorkoutMutationContent(file, insertWorkoutBlockIntoContent(content, block, placement), "start-daily-workout");
     });
     return file;
+  }
+
+  private async rollbackStartedWorkoutArtifacts(
+    workoutId: string,
+    workoutPath: string,
+    dailyFile: TFile,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.serializeWorkoutMutation(dailyFile.path, `rollback-${reason}`, async () => {
+        const content = await this.readWorkoutMutationContent(dailyFile, `rollback-${reason}`);
+        const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
+        const updated = removeWorkoutDailyBlockContent(content, workoutId, placement);
+        if (updated !== content) await this.writeWorkoutMutationContent(dailyFile, updated, `rollback-${reason}`);
+      });
+    } catch (error) {
+      logger.flowWarn("Workout", "start:daily-rollback-failed", {
+        workoutId,
+        dailyNotePath: dailyFile.path,
+        reason,
+        error: logger.errorSummary(error),
+      });
+    }
+    const workoutFile = workoutPath ? this.app.vault.getAbstractFileByPath(workoutPath) : null;
+    if (workoutFile instanceof TFile && workoutFile.path !== dailyFile.path) {
+      try {
+        await this.app.vault.trash(workoutFile, false);
+        this.workoutFileSnapshots.delete(workoutFile.path);
+        logger.flow("Workout", "start:workout-note-rolled-back", { workoutId, path: workoutFile.path, reason });
+      } catch (error) {
+        logger.flowWarn("Workout", "start:workout-note-rollback-failed", {
+          workoutId,
+          path: workoutFile.path,
+          reason,
+          error: logger.errorSummary(error),
+        });
+      }
+    }
   }
 
   private async repairActiveDailyWorkoutBlock(): Promise<void> {
@@ -7772,6 +7857,19 @@ export default class TPSHealthPlugin extends Plugin {
       const path = surface.dataset.workoutPath || "";
       const snapshot = this.nativeRecordService.getWorkoutSnapshot(path);
       if (!snapshot) {
+        const active = this.getActiveWorkoutState();
+        if (active?.path === path) {
+          // Metadata indexing can briefly lag the atomic session write. Keep
+          // the active surface mounted instead of making a successfully saved
+          // set look as though it disappeared; the next index event refreshes
+          // the same card.
+          surface.dataset.renderKey = "";
+          logger.flow("WorkoutSurface", "refresh:awaiting-index", {
+            workoutId: active.id,
+            path,
+          });
+          return;
+        }
         surface.remove();
         return;
       }
@@ -7793,7 +7891,9 @@ export default class TPSHealthPlugin extends Plugin {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
         addSet: async (exercise, draft) => {
           if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
-          await this.logNativeWorkoutSetDraft(exercise.name, draft);
+          await this.logNativeWorkoutSetDraft(exercise, draft);
+          const refreshed = this.nativeRecordService?.getWorkoutSnapshot(snapshot.path);
+          if (refreshed) this.renderNativeWorkoutSurfaceElement(root, refreshed);
         },
         updateSet: async (exercise, set, patch) => {
           if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
@@ -7835,10 +7935,11 @@ export default class TPSHealthPlugin extends Plugin {
     return true;
   }
 
-  private async logNativeWorkoutSetDraft(exercise: string, draft: NativeWorkoutSetDraft): Promise<void> {
+  private async logNativeWorkoutSetDraft(exercise: NativeWorkoutExerciseSnapshot, draft: NativeWorkoutSetDraft): Promise<void> {
     try {
       await this.logSet({
-        exercise,
+        exercise: exercise.name,
+        exercisePath: exercise.exercisePath,
         reps: draft.reps,
         weight: draft.weight,
         weightUnit: draft.weightUnit,
@@ -7849,7 +7950,7 @@ export default class TPSHealthPlugin extends Plugin {
       });
       this.updateNativeWorkoutSurfaces();
     } catch (error) {
-      logger.flowError("WorkoutSet", "inline-add:failed", error, { exercise });
+      logger.flowError("WorkoutSet", "inline-add:failed", error, { exercise: exercise.name, exercisePath: exercise.exercisePath || "" });
       new Notice("Could not log that set. Its values remain in the table so you can retry.");
       throw error;
     }
@@ -15517,7 +15618,7 @@ class StartWorkoutModal extends Modal {
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Start workout" });
-    this.contentEl.createEl("p", {
+    const status = this.contentEl.createEl("p", {
       text: "Choose a saved workout template, or start with a clean empty workout.",
       cls: "tps-health-status",
     });
@@ -15647,7 +15748,9 @@ class StartWorkoutModal extends Modal {
             this.close();
           } catch (error) {
             logger.flowError("WorkoutModal", "start-blank:failed", error, { title, cooldownDays, logTarget, workoutDate, openFile });
-            throw error;
+            const message = logger.errorSummary(error);
+            status.setText(`Could not start workout: ${message}`);
+            new Notice(`Could not start workout: ${message}`);
           }
         }))
       .addButton((button) => {
@@ -15674,7 +15777,9 @@ class StartWorkoutModal extends Modal {
             this.close();
           } catch (error) {
             logger.flowError("WorkoutModal", "start:failed", error, { title, plan, cooldownDays, logTarget, workoutDate, openFile });
-            throw error;
+            const message = logger.errorSummary(error);
+            status.setText(`Could not start workout: ${message}`);
+            new Notice(`Could not start workout: ${message}`);
           }
         });
       });
@@ -15722,7 +15827,7 @@ class SetModal extends Modal {
               }
             } catch (error) {
               logger.flowError("WorkoutSetModal", "start-blank:failed", error);
-              throw error;
+              new Notice(`Could not start workout: ${logger.errorSummary(error)}`);
             }
           }));
       return;

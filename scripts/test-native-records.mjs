@@ -866,7 +866,8 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
   assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
-  assert.match(mainSource, /logNativeWorkoutSetDraft\(exercise\.name, draft\)/u);
+  assert.match(mainSource, /logNativeWorkoutSetDraft\(exercise, draft\)/u);
+  assert.match(mainSource, /exercisePath: exercise\.exercisePath/u);
   assert.match(mainSource, /active-state:reconciled-from-native-record/u);
   const activeSurfaceGuard = mainSource.slice(
     mainSource.indexOf("  private isActiveNativeWorkoutSnapshot"),

@@ -5624,7 +5624,7 @@ test("active workout commands expose set logging and layout saving", async () =>
   assert.match(mainSource, /id: "finish-workout-and-save-layout"/);
   assert.match(mainSource, /interface WorkoutOpenResult/);
   assert.match(mainSource, /let openResult: WorkoutOpenResult = \{/);
-  assert.match(mainSource, /if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && dailyFile instanceof TFile\) openResult = await this\.openWorkoutFile\(dailyFile\);/);
+  assert.match(mainSource, /if \(file instanceof TFile\) await this\.cacheWorkoutFile\(file\);\s+if \(input\.openFile !== false && dailyTarget instanceof TFile\) openResult = await this\.openWorkoutFile\(dailyTarget\);/);
   assert.match(mainSource, /openRequested: openResult\.requested/);
   assert.match(mainSource, /openRoute: openResult\.route/);
   assert.match(mainSource, /openReason: openResult\.reason \|\| ""/);
@@ -7631,6 +7631,119 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.doesNotMatch(completedMarkerLine, /-->\s+\[/);
   assert.equal(gcmTimerStops, 0, "finishing a Health workout must not stop an unrelated GCM timer");
   assert.equal(plugin.getActiveWorkoutState(), null);
+});
+
+test("blank workout start preflights the Daily Note and never leaves an orphan session note", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: {
+      dailyNotes: {
+        version: 4,
+        ensureForIsoDate: async () => null,
+      },
+    },
+  };
+  plugin.settings = {
+    ...plugin.settings,
+    workoutsFolder: "Health/Workouts",
+    workoutLogTarget: "both",
+  };
+
+  await assert.rejects(
+    () => plugin.startWorkout({ title: "Must not orphan", startedAt: "2026-08-28T12:00:00.000Z", openFile: false }),
+    /could not create the Daily Note/u,
+  );
+
+  assert.equal(
+    [...fake.files.keys()].some((path) => path.includes("Must not orphan")),
+    false,
+    "a declined Daily Note is detected before a standalone workout note is created",
+  );
+  assert.equal(plugin.getActiveWorkoutState(), null);
+  assert.match(mainSource, /Resolve the authoritative Daily Note before creating any workout[\s\S]*artifacts/u);
+});
+
+test("a native inline set reuses its attached exercise note without rebuilding the exercise catalog", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const sessionPath = "_records/workout-sessions/Native inline QA.md";
+  const exercisePath = "Health/Exercises/Bench press.md";
+  fake.files.set(sessionPath, frontmatterToYaml({
+    tpsId: "workout-inline",
+    tpsSchemaVersion: 1,
+    kind: "workout-session",
+    title: "Native inline QA",
+    status: "active",
+  }));
+  fake.files.set(exercisePath, frontmatterToYaml({ kind: "exercise", name: "Bench press" }));
+  plugin.settings = {
+    ...plugin.settings,
+    storageMode: "native-records",
+    activeWorkoutId: "workout-inline",
+    activeWorkoutPath: sessionPath,
+    activeWorkoutTarget: "both",
+    activeWorkoutTitle: "Native inline QA",
+    activeWorkoutStartedAt: "2026-08-28T12:00:00.000Z",
+    activeWorkoutSetCount: 0,
+  };
+  primeHealthSettingsPersistence(plugin);
+  let appendedSet = null;
+  let resolvedDefinition = null;
+  let catalogBuilds = 0;
+  plugin.findOrCreateExercise = async () => {
+    catalogBuilds += 1;
+    throw new Error("the catalog must not be rebuilt for an attached exercise");
+  };
+  plugin.ensureExerciseDefinitionForWorkout = async (name, path) => {
+    resolvedDefinition = { name, path };
+    return {
+      id: exercisePath,
+      name,
+      sourcePath: exercisePath,
+      defaultRestSeconds: 90,
+      defaultSetType: "normal",
+    };
+  };
+  plugin.nativeRecordService = {
+    isEnabled: () => true,
+    appendWorkoutSet: async (_file, set) => {
+      appendedSet = set;
+      return {
+        session: { frontmatter: {} },
+        exercise: { path: sessionPath },
+      };
+    },
+    getWorkoutSnapshot: () => null,
+  };
+  plugin.updateNativeWorkoutSurfaces = () => {};
+  plugin.scheduleWorkoutActionBars = () => {};
+
+  await plugin.logNativeWorkoutSetDraft({
+    id: "exercise-inline",
+    path: sessionPath,
+    name: "Bench press",
+    exercisePath,
+    totalReps: 0,
+    totalVolume: 0,
+    sets: [],
+  }, {
+    reps: 8,
+    weight: 135,
+    weightUnit: "lb",
+    setType: "normal",
+  });
+
+  assert.deepEqual(resolvedDefinition, { name: "Bench press", path: exercisePath });
+  assert.equal(catalogBuilds, 0);
+  assert.equal(appendedSet.exercisePath, exercisePath);
+  assert.equal(appendedSet.reps, 8);
+  assert.equal(plugin.settings.activeWorkoutSetCount, 1);
+  assert.equal(plugin.__pluginData.activeWorkoutSetCount, 1, "the first visible set count is persisted with the atomic session write");
 });
 
 test("legacy GCM workout cleanup stays lossless and current workouts start one no-workspace GCM task timer", async () => {
