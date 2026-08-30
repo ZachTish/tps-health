@@ -17,7 +17,20 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
+async function loadDateFilterModule() {
+  const result = await build({
+    entryPoints: [fileURLToPath(new URL('../src/native-daily-date-filter.ts', import.meta.url))],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'esm',
+    logLevel: 'silent',
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
+}
+
 const { buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue } = await loadModule();
+const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
@@ -74,10 +87,50 @@ test('daily dashboard formats whole and fractional values without noisy precisio
   assert.equal(formatNativeDailyMetricValue(Number.NaN), '0');
 });
 
+test('daily dashboard date filters use Bases equality, variables, functions, and duration syntax', () => {
+  const context = {
+    todayIso: '2026-08-30',
+    fileName: 'Dashboard',
+    filePath: 'Dashboards/Dashboard.md',
+    properties: { scheduled: '2026-08-24 00:00:00', reviewDate: '2026-09-02' },
+  };
+  assert.deepEqual(resolveNativeDailyDateFilter('', context), { kind: 'empty' });
+  assert.deepEqual(resolveNativeDailyDateFilter('date(note.date) == today()', context), {
+    kind: 'resolved', dateIso: '2026-08-30', expression: 'date(note.date) == today()',
+  });
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == today() - "1d"', context).dateIso, '2026-08-29');
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == date(this.scheduled)', context).dateIso, '2026-08-24');
+  assert.equal(resolveNativeDailyDateFilter('date == date(this.file.properties.reviewDate)', context).dateIso, '2026-09-02');
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == date("2026-09-05") + "1 week"', context).dateIso, '2026-09-12');
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == date("2027-01-31") + "1M"', context).dateIso, '2027-02-28');
+});
+
+test('daily dashboard accepts a Bases filters wrapper and resolves embedding-file variables', () => {
+  const context = {
+    todayIso: '2026-08-30',
+    fileName: 'Sun, Aug 30 2026',
+    filePath: 'Daily/Sun, Aug 30 2026.md',
+    fileDateIso: '2026-08-30',
+    properties: {},
+  };
+  const result = resolveNativeDailyDateFilter(`filters:\n  and:\n    - date(note.date) == date(this.file.name)`, context);
+  assert.equal(result.kind, 'resolved');
+  assert.equal(result.dateIso, '2026-08-30');
+});
+
+test('daily dashboard date filters fail closed on missing, invalid, or ambiguous selectors', () => {
+  const context = { todayIso: '2026-08-30', fileName: 'Dashboard', filePath: 'Dashboard.md', properties: {} };
+  assert.equal(resolveNativeDailyDateFilter('note.kind == "food-entry"', context).kind, 'invalid');
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == date(this.missing)', context).kind, 'invalid');
+  assert.equal(resolveNativeDailyDateFilter('date(note.date) == date("2026-02-30")', context).kind, 'invalid');
+  assert.equal(resolveNativeDailyDateFilter('date == today()\ndate == today() - "1d"', context).kind, 'invalid');
+});
+
 test('Health registers independently embeddable macro and activity renderers plus the compatibility renderer', () => {
   assert.match(mainSource, /registerNativeDailySection\("tps-health-macros", "macros"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-activity", "activity"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-daily", "combined"\)/u);
+  assert.match(mainSource, /resolveNativeDailyDateFilter\(source/u);
   assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section\)/u);
   assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateContext\.dateIso\)/u);
   assert.match(mainSource, /if \(this\.section === "activity"\) \{[\s\S]*?renderNativeDailyActivity\([\s\S]*?return;[\s\S]*?getDailyFoodMacroTotals/u);

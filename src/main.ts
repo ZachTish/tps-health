@@ -7,6 +7,7 @@ import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFood
 import { buildHealthPropertyCatalog } from "./health-property-catalog";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine } from "./format";
 import { resolveFoodLogDateKey } from "./food-log-date";
+import { resolveNativeDailyDateFilter } from "./native-daily-date-filter";
 import { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescribeFoodExtraction, isUsableDescribeFoodReview, localDescribeFoodEstimate, parseFoodDescription, type DescribeExtractedFood, type DescribeFoodExtraction, type DescribeFoodPlan, type DescribeFoodReview, type DescribeNutritionEstimate, type DescribePlannedFood, type DescribeReviewedFood } from "./describe-food";
 import { createTPSHealthHomeActionProvider } from "./home-actions";
@@ -980,11 +981,40 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorExtension(createFoodLogChipExtension(this));
     if (typeof (this as any).registerMarkdownCodeBlockProcessor === "function") {
       const registerNativeDailySection = (language: string, section: NativeDailyDashboardSection) => {
-        this.registerMarkdownCodeBlockProcessor(language, async (_source, el, ctx) => {
+        this.registerMarkdownCodeBlockProcessor(language, async (source, el, ctx) => {
           const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
-          const dateContext = file instanceof TFile ? await this.getDailyNoteDateContext(file) : null;
+          const containingDateContext = file instanceof TFile ? await this.getDailyNoteDateContext(file) : null;
+          const frontmatter = file instanceof TFile
+            ? this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined
+            : undefined;
+          const filter = resolveNativeDailyDateFilter(source, {
+            todayIso: invariantMomentIsoDate(window.moment()),
+            fileName: file instanceof TFile ? file.basename : "",
+            filePath: file instanceof TFile ? file.path : ctx.sourcePath,
+            fileDateIso: containingDateContext?.dateIso,
+            properties: frontmatter,
+          });
+          if (filter.kind === "invalid") {
+            logger.flowWarn("NativeDailyDashboard", "date-filter:invalid", {
+              sourcePath: ctx.sourcePath,
+              section,
+              message: filter.message,
+            });
+            renderNativeDailyDashboardMessage(el, filter.message);
+            return;
+          }
+          if (filter.kind === "resolved") {
+            logger.flow("NativeDailyDashboard", "date-filter:resolved", {
+              sourcePath: ctx.sourcePath,
+              section,
+              dateIso: filter.dateIso,
+            });
+          }
+          const dateContext = filter.kind === "resolved"
+            ? this.foodLogDateContextForIsoDate(filter.dateIso)
+            : containingDateContext;
           if (!dateContext) {
-            renderNativeDailyDashboardMessage(el, "This Health section must be embedded in a configured Daily Note.");
+            renderNativeDailyDashboardMessage(el, "This Health section needs a Daily Note context or a Bases-style date filter.");
             return;
           }
           if (!this.nativeRecordService?.isEnabled()) {
@@ -7389,6 +7419,16 @@ export default class TPSHealthPlugin extends Plugin {
   private async getActiveDailyNoteDateContext(): Promise<FoodLogDateContext | null> {
     const file = this.app.workspace.getActiveFile();
     return file instanceof TFile ? this.getDailyNoteDateContext(file) : null;
+  }
+
+  private foodLogDateContextForIsoDate(dateIso: string): FoodLogDateContext {
+    const parsed = window.moment(dateIso, "YYYY-MM-DD", true);
+    const today = window.moment();
+    return {
+      dateIso,
+      label: dateIso,
+      isToday: parsed.isSame(today, "day"),
+    };
   }
 
   private async summarizeDailyNoteDateContext(file: TFile | null | undefined, dateContext: FoodLogDateContext | null): Promise<Record<string, unknown>> {

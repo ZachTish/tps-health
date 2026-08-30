@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.27.0
+
+- The `tps-health-macros`, `tps-health-activity`, and compatibility `tps-health-daily` blocks now accept one Bases-style date equality filter. A block can display today, a fixed day, a frontmatter date on the embedding note, or an offset such as yesterday without requiring the embedding note itself to be a Daily Note.
+- Supported selectors mirror the relevant Obsidian Bases vocabulary: `today()`, `now().date()`, `date(...)`, `this.file.name`, `this.file.path`, `this.<property>`, `this.file.properties.<property>`, quoted ISO dates, and `+`/`-` duration strings. Standard `filters:` / `and:` wrappers are accepted.
+- Empty blocks remain unchanged and resolve the containing Core Daily Note. Explicit filters fail visibly when missing, invalid, or ambiguous, and every dashboard action inherits the displayed date.
+- Existing records, settings, public APIs, storage modes, and block names require no migration. This is a backward-compatible dashboard feature; minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite ran 255 checks (254 passed and the intentionally credential-gated live USDA check skipped), followed by a separate byte-stable production build and isolated test-vault reload. Real renderer QA confirmed that valid current/offset and frontmatter filters reached the Native-record storage guard and that an unresolved property rendered the precise fail-closed error. The vault's pre-existing Legacy storage mode was preserved, the synthetic note was archived, source/runtime artifacts are byte-identical, and production was not accessed.
+
 ## 0.26.3
 
 - Blank workouts now use a fast first-set path: an exercise already attached to the live workout carries its reusable exercise-note link into set logging, so Health does not rebuild the whole exercise catalog before the first set can save and appear.
@@ -616,7 +624,27 @@ In **Native Markdown records** mode, Health stores nutrition and activity on typ
 ```
 ````
 
-The containing file must resolve through Core Daily Notes. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. Each section uses that note's date, not today's wall-clock date. **Macros** summarizes configured food metrics and exposes **Add food**; **Activity** summarizes typed activity/workout duration and exposes **Log activity** and **Start workout**. Each processor subscribes only to its own record kinds and can be placed, referenced, or omitted independently. Activity is never mixed into the macro table. On phones, both use core Bases' full-bleed embed variables so their outer edge aligns with adjacent Base sections. Existing notes may keep `tps-health-daily`, which renders both sections as a compatibility wrapper. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced blocks contain no stored totals, and Source mode therefore remains ordinary literal Markdown.
+An empty block resolves through the containing Core Daily Note. Empty, `/`, and Obsidian Mobile's `.` folder values all mean the vault root. Each empty section uses that note's date, not today's wall-clock date. **Macros** summarizes configured food metrics and exposes **Add food**; **Activity** summarizes typed activity/workout duration and exposes **Log activity** and **Start workout**. Each processor subscribes only to its own record kinds and can be placed, referenced, or omitted independently. Activity is never mixed into the macro table. On phones, both use core Bases' full-bleed embed variables so their outer edge aligns with adjacent Base sections. Existing notes may keep `tps-health-daily`, which renders both sections as a compatibility wrapper. A companion core Base can show the actual records with `note.kind == "food-entry"` and `date(note.date) == date(this.file.name)`. The fenced blocks contain no stored totals, and Source mode therefore remains ordinary literal Markdown.
+
+Each Health block can instead select one date with the same equality-expression vocabulary used by [Obsidian Bases](https://help.obsidian.md/bases/syntax). This permits the block to live in a dashboard or other ordinary Markdown note:
+
+````markdown
+```tps-health-macros
+date(note.date) == today()
+```
+
+```tps-health-activity
+filters:
+  and:
+    - date(note.date) == date(this.scheduled)
+```
+
+```tps-health-daily
+date(note.date) == today() - "1d"
+```
+````
+
+The record-date operand may be `date`, `note.date`, or either wrapped in `date(...)`. The selected-date side supports `today()`, `now()` / `now().date()`, `date(...)`, a quoted or bare ISO date, `this.file.name`, `this.file.path`, `this.<property>`, and `this.file.properties.<property>`. As in Bases, date expressions may add or subtract duration strings using years, months, weeks, days, hours, minutes, or seconds. `this` refers to the embedding Markdown note; when that note is a recognized Daily Note, `this.file.name` and `this.file.path` resolve to its already-validated Core Daily Note date. Only one date equality selector is allowed because a Health section displays one day. Other Base filter clauses do not change Health data; missing, malformed, unsupported, or ambiguous date selectors render an explanatory error instead of falling back to the wrong day. **Add food**, **Log activity**, and **Start workout** all inherit the resolved displayed date.
 
 Health indexes each native record as an immutable per-file projection. A create, edit, rename, or delete rereads only the affected Markdown file, emits the exact record kinds and dates that changed, and refreshes only matching mounted dashboards. The authoritative file read closes the delay between a successful Base/frontmatter edit and MetadataCache convergence; MetadataCache remains a fallback rather than the dashboard's refresh clock. No full-vault rescan runs for a warm dashboard update.
 
