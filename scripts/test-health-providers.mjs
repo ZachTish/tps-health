@@ -3069,7 +3069,7 @@ test("food result metadata uses clean source labels", () => {
   );
 });
 
-test("AI Describe reviews every extracted item while the no-Gateway fallback remains bounded", () => {
+test("AI Describe uses one cloud review for the deterministic complete list while the no-Gateway fallback remains bounded", () => {
   const aiDescribe = mainSource.slice(
     mainSource.indexOf("private async openFoodDescriberWithAi"),
     mainSource.indexOf("private async describeFoodAi"),
@@ -3078,7 +3078,8 @@ test("AI Describe reviews every extracted item while the no-Gateway fallback rem
     mainSource.indexOf("private async legacyOpenFoodDescriber"),
     mainSource.indexOf("openWorkoutStarter"),
   );
-  assert.match(aiDescribe, /taskId: "health\.describe-food\.extract"/);
+  assert.match(aiDescribe, /extraction = localDescribeFoodExtraction\(description\)/);
+  assert.doesNotMatch(aiDescribe, /taskId: "health\.describe-food\.extract"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.review"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.repair"/);
   assert.match(aiDescribe, /taskId: "health\.describe-food\.estimate"/);
@@ -3097,7 +3098,7 @@ test("AI Describe reviews every extracted item while the no-Gateway fallback rem
   assert.match(mainSource, /Array\.from\(\{ length: Math\.min\(Math\.max\(1, concurrency\), items\.length\) \}/);
 });
 
-test("AI Describe recovers a Honeycrisp apple omitted by extraction and review before committing the tray", async () => {
+test("AI Describe recovers a Honeycrisp apple omitted by cloud review before committing the tray", async () => {
   installDeterministicBrowserGlobals();
   const storage = new Map();
   window.localStorage = {
@@ -3112,13 +3113,6 @@ test("AI Describe recovers a Honeycrisp apple omitted by extraction and review b
   fake.app.tpsAiGateway = {
     completeStructured: async (request) => {
       requests.push(request);
-      if (request.taskId === "health.describe-food.extract") return {
-        data: {
-          mealName: "Yogurts and apple",
-          foods: [{ itemId: "item-1", label: "vanilla yogurts", quantity: 4, unit: "cup", estimatedWeightG: 600 }],
-        },
-        provider: "gemini", model: "test", traceId: "extract", attempts: 1,
-      };
       if (request.taskId === "health.describe-food.review") return {
         data: {
           mealName: "Yogurts and apple",
@@ -3145,7 +3139,7 @@ test("AI Describe recovers a Honeycrisp apple omitted by extraction and review b
     createdAt: new Date().toISOString(),
     dateContext: null,
   });
-  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.extract", "health.describe-food.review", "health.describe-food.repair"]);
+  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.review", "health.describe-food.repair"]);
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.length, 2);
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[0]?.quantity, 4);
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.name, "large Honeycrisp apple");
@@ -3168,10 +3162,6 @@ test("AI Describe replaces an empty result with a final Gemini estimate after da
   fake.app.tpsAiGateway = {
     completeStructured: async (request) => {
       requests.push(request);
-      if (request.taskId === "health.describe-food.extract") return {
-        data: { mealName: "Mystery dumpling", foods: [{ itemId: "item-1", label: "mystery saffron dumpling", quantity: 1, unit: "serving", estimatedWeightG: 180 }] },
-        provider: "gemini", model: "test", traceId: "extract", attempts: 1,
-      };
       if (request.taskId === "health.describe-food.review" || request.taskId === "health.describe-food.repair") return {
         data: request.taskId.endsWith("review") ? { mealName: "Mystery dumpling", foods: [empty] } : empty,
         provider: "gemini", model: "test", traceId: request.taskId, attempts: 1,
@@ -3196,7 +3186,6 @@ test("AI Describe replaces an empty result with a final Gemini estimate after da
     dateContext: null,
   });
   assert.deepEqual(requests.map((request) => request.taskId), [
-    "health.describe-food.extract",
     "health.describe-food.review",
     "health.describe-food.repair",
     "health.describe-food.estimate",
@@ -3223,19 +3212,6 @@ test("AI Describe keeps a measured sandwich together and creates only inline tra
   fake.app.tpsAiGateway = {
     completeStructured: async (request) => {
       requests.push(request);
-      if (request.taskId === "health.describe-food.extract") return {
-        data: {
-          mealName: "Lunch",
-          foods: [
-            { itemId: "item-1", label: "Diet Coke", quantity: 1, unit: "can", estimatedWeightG: 355 },
-            { itemId: "item-2", label: "Honeycrisp apple", quantity: 1, unit: "apple", estimatedWeightG: 242 },
-            { itemId: "item-3", label: "ham sandwich", quantity: 1, unit: "sandwich", estimatedWeightG: 150 },
-            { itemId: "item-4", label: "56 g ham", quantity: 56, unit: "g", estimatedWeightG: 56 },
-            { itemId: "item-5", label: "Velveeta cheese", quantity: 1, unit: "slice", estimatedWeightG: 20 },
-          ],
-        },
-        provider: "gemini", model: "test", traceId: "fragmented-extract", attempts: 1,
-      };
       assert.equal(request.taskId, "health.describe-food.review");
       const reviewedExtraction = JSON.parse(request.messages[1].content).extraction;
       assert.equal(reviewedExtraction.foods.length, 3, "local top-level extraction must reject AI fragmentation of sandwich ingredients");
@@ -3263,7 +3239,7 @@ test("AI Describe keeps a measured sandwich together and creates only inline tra
   assert.ok(selections.every((entry) => entry.item.source === "custom-inline" && !entry.item.sourcePath));
   assert.equal(selections[2].item.nutrition?.calories, 330);
   assert.equal(fake.files.size, filesBefore, "Describe must not create reusable food or meal files");
-  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.extract", "health.describe-food.review"]);
+  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.review"]);
 });
 
 test("Describe still creates one editable inline tray item when AI and every search route fail", async () => {
@@ -3277,7 +3253,8 @@ test("Describe still creates one editable inline tray item when AI and every sea
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
   fake.app.vault.getName = () => "Describe total fallback vault";
-  fake.app.tpsAiGateway = { completeStructured: async () => { throw new Error("provider offline"); } };
+  let gatewayCalls = 0;
+  fake.app.tpsAiGateway = { completeStructured: async () => { gatewayCalls += 1; throw new Error("provider offline"); } };
   const plugin = new TPSHealthPlugin(fake.app);
   plugin.manifest = { id: "tps-health" };
   plugin.settings = { ...plugin.settings };
@@ -3293,6 +3270,7 @@ test("Describe still creates one editable inline tray item when AI and every sea
   assert.equal(selections[0].item.nutrition?.calories, 200);
   assert.ok((selections[0].item.nutrition?.proteinG || 0) > 0);
   assert.equal(fake.files.size, filesBefore);
+  assert.equal(gatewayCalls, 1, "an unavailable cloud provider must fail over once instead of retrying every item and stage");
 });
 
 test("USDA provider combines data types, parses responses, and dedupes cached requests", async () => {
@@ -6053,14 +6031,14 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "barcode-scanner:suppressed-active"/);
   assert.match(mainSource, /autoStart: true/);
   assert.match(mainSource, /onClose: \(\) => \{\s+if \(this\.barcodeScannerModal === scanner\) this\.barcodeScannerModal = null;/);
-  assert.match(mainSource, /this\.statusEl\.setText\("Enter or scan a UPC\/EAN barcode\."\);\s+this\.openBarcodeScanner\(\);/);
-  assert.match(mainSource, /setButtonText\("Scan"\)\s+\.onClick\(\(\) => this\.openBarcodeScanner\(\)\)/);
+  assert.match(mainSource, /this\.statusEl\.setText\("Point the camera at a UPC\/EAN barcode\. Keep glare outside the guide when possible\."\);\s+this\.openBarcodeScanner\(\);/);
   assert.match(mainSource, /private getActiveInlineFoodDraft\(\): InlineFoodDraft \| null/);
   assert.doesNotMatch(mainSource, /\.setName\("Natural add"\)/);
   assert.doesNotMatch(mainSource, /\["natural", "Text"\]/);
   assert.match(mainSource, /\["search", "Search"\], \["barcode", "Scan"\], \["mine", "Saved"\], \["describe", "Describe"\]/);
   assert.match(mainSource, /\.setName\("Search food"\)/);
-  assert.match(mainSource, /\.setName\("Barcode"\)/);
+  assert.match(mainSource, /new Setting\(panelByMode\.search\)\s+\.setClass\("tps-health-search-barcode"\)\s+\.setName\("UPC \/ EAN"\)/);
+  assert.doesNotMatch(mainSource.slice(mainSource.indexOf("class BarcodeScannerModal"), mainSource.indexOf("class NutritionLabelScanModal")), /\.setName\("Enter barcode"\)|manualBarcode/);
   assert.match(mainSource, /const token = \+\+this\.searchToken;\s+this\.activeFoodLogTab = mode;/);
   assert.match(mainSource, /this\.resultsEl\.empty\(\);\s+this\.actionsEl\.empty\(\);\s+if \(mode === "mine"\) \{\s+void this\.renderQuickPicks\(token\);/);
   assert.match(mainSource, /else if \(mode === "search"\) \{\s+if \(this\.searchInput\.trim\(\)\.length >= 2\) this\.queueSearch\(this\.searchInput\);/);
@@ -6164,7 +6142,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /void this\.optimizeCameraTrack\(sessionId\);\s+await this\.startZxingVideoScan\(statusEl, sessionId\)/);
   assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+const controls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
   assert.match(mainSource, /if \(!this\.isCameraSessionActive\(sessionId\)\) \{\s+controls\?\.stop\?\.\(\);/);
-  assert.match(mainSource, /const barcode = barcodeFromInput\(String\(text\)\);\s+if \(!barcode\) return;\s+logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
+  assert.match(mainSource, /const barcode = barcodeFromDecodedResult\(result\);\s+if \(!barcode\) return;\s+logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
   assert.match(mainSource, /this\.scheduleNativeVideoFallback\(statusEl, sessionId\)/);
   assert.match(mainSource, /void this\.startCanvasScanLoop\(statusEl, sessionId\)/);
   assert.match(mainSource, /private scheduleNativeVideoFallback\(statusEl: HTMLElement, sessionId: number\): void/);
@@ -6200,12 +6178,18 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /export const BARCODE_ASSIST_ROTATION_ANGLES = \[0, 22\.5, 45, 67\.5\] as const/);
   assert.match(mainSource, /private async optimizeCameraTrack\(sessionId: number\)/);
   assert.match(mainSource, /focusMode: "continuous"/);
+  assert.match(mainSource, /exposureMode: "continuous"/);
+  assert.match(mainSource, /whiteBalanceMode: "continuous"/);
+  assert.match(mainSource, /barcodeGlareExposureCompensation\(capabilities\?\.exposureCompensation/);
   assert.match(mainSource, /pointsOfInterest: \[\{ x: 0\.5, y: 0\.5 \}\]/);
   assert.match(mainSource, /barcodeAssistZoomPlan\(capabilities\?\.zoom/);
   assert.match(mainSource, /barcodeCameraConstraints\(this\.desiredFacingMode \|\| this\.defaultFacingMode\(\)\)/);
   assert.match(mainSource, /const BARCODE_IMAGE_MAX_DIMENSION = 1600/);
   assert.match(mainSource, /function barcodeImageScale\(img: HTMLImageElement\): number/);
   assert.match(mainSource, /function\* barcodeImageCanvases\(img: HTMLImageElement\): IterableIterator<HTMLCanvasElement>/);
+  assert.match(mainSource, /barcodeLiveGlareProcessing\(attempt\)/);
+  assert.match(mainSource, /autoContrast: true, grayscale: true/);
+  assert.match(mainSource, /function barcodeHasValidGtinCheckDigit/);
   assert.match(mainSource, /private async tryDecodeCanvases\(reader: any, canvases: Iterable<HTMLCanvasElement>, sessionId\?: number\)/);
   assert.doesNotMatch(mainSource, /canvas\.toDataURL/);
   assert.doesNotMatch(mainSource, /decodeFromImageElement/);
@@ -6218,6 +6202,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(stylesSource, /\.tps-health-scanner-viewport/);
   assert.match(stylesSource, /\.tps-health-scanner-guide/);
   assert.match(stylesSource, /\.tps-health-scanner-controls button:focus-visible/);
+  assert.match(stylesSource, /\.tps-health-search-barcode input:focus-visible/);
   assert.match(stylesSource, /min-height: 44px/);
   assert.match(mainSource, /const BARCODE_LOOKUP_TIMEOUT_MS = 5000;/);
   assert.match(mainSource, /this\.withTimeout\(\s*this\.lookupOpenFoodFactsBarcodeCandidate\(code\),\s*BARCODE_LOOKUP_TIMEOUT_MS,\s*null,/);
@@ -6241,6 +6226,9 @@ test("barcode assist covers arbitrary orientation and adapts camera distance", a
     BARCODE_ASSIST_ROTATION_ANGLES,
     barcodeAssistZoomPlan,
     barcodeCameraConstraints,
+    barcodeGlareExposureCompensation,
+    barcodeHasValidGtinCheckDigit,
+    barcodeLiveGlareProcessing,
   } = await importPluginWithObsidianStub();
 
   assert.deepEqual([...BARCODE_ASSIST_ROTATION_ANGLES], [0, 22.5, 45, 67.5]);
@@ -6264,6 +6252,16 @@ test("barcode assist covers arbitrary orientation and adapts camera distance", a
   assert.deepEqual(barcodeAssistZoomPlan({ min: 0.5, max: 1.5 }, 0.5), { base: 0.5, assist: 1.5 });
   assert.equal(barcodeAssistZoomPlan({ min: 1, max: 1.1 }, 1), null);
   assert.equal(barcodeAssistZoomPlan(undefined, 1), null);
+  assert.equal(barcodeGlareExposureCompensation({ min: -2, max: 2, step: 0.1 }, 0), -0.7);
+  assert.equal(barcodeGlareExposureCompensation({ min: -0.3, max: 1, step: 0.1 }, 0), -0.3);
+  assert.equal(barcodeGlareExposureCompensation({ min: 0, max: 2 }, 0), null);
+  assert.equal(barcodeGlareExposureCompensation(undefined, 0), null);
+  assert.deepEqual(barcodeLiveGlareProcessing(1), { brightness: 0.72, contrast: 1.8, grayscale: true });
+  assert.deepEqual(barcodeLiveGlareProcessing(2), { autoContrast: true, grayscale: true });
+  assert.deepEqual(barcodeLiveGlareProcessing(3), { autoContrast: true, grayscale: true, threshold: 142 });
+  assert.equal(barcodeLiveGlareProcessing(4), null);
+  assert.equal(barcodeHasValidGtinCheckDigit("012345678905"), true);
+  assert.equal(barcodeHasValidGtinCheckDigit("012345678906"), false);
 });
 
 test("food log chips keep calories on the title row and macros on the serving row", async () => {

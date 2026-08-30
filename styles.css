@@ -1190,7 +1190,7 @@ body.is-phone .tps-health-selection-controls {
 }
 
 .tps-health-scanner-controls,
-.tps-health-scanner-manual {
+.tps-health-search-barcode {
   border-top: 0;
   padding: 6px 0;
 }
@@ -1207,13 +1207,13 @@ body.is-phone .tps-health-selection-controls {
   white-space: normal;
 }
 
-.tps-health-scanner-manual {
+.tps-health-search-barcode {
   margin-top: 4px;
 }
 
 .tps-health-scanner-controls button:focus-visible,
-.tps-health-scanner-manual button:focus-visible,
-.tps-health-scanner-manual input:focus-visible {
+.tps-health-search-barcode button:focus-visible,
+.tps-health-search-barcode input:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
 }
@@ -3374,8 +3374,8 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-food-search-frame .tps-health-selection-header-actions button,
   .tps-health-food-search-frame .tps-health-selection-actions button,
   .tps-health-scanner-controls button,
-  .tps-health-scanner-manual input,
-  .tps-health-scanner-manual button,
+  .tps-health-search-barcode input,
+  .tps-health-search-barcode button,
   .tps-health-label-scan-actions button {
     min-height: 44px;
   }
@@ -3428,7 +3428,7 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   }
 
   .tps-health-scanner-controls .setting-item-control,
-  .tps-health-scanner-manual .setting-item-control {
+  .tps-health-search-barcode .setting-item-control {
     align-items: stretch;
   }
 }

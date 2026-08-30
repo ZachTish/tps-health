@@ -151,7 +151,8 @@ test("Describe audit retries empty nutrition unless the food is credibly zero nu
 test("Describe delegates its review pipeline to TPS AI Gateway and retains the local parser", () => {
   assert.match(mainSource, /getAiGatewayApi/);
   assert.match(mainSource, /gateway\.completeStructured<T>/);
-  assert.match(mainSource, /taskId: \"health\.describe-food\.extract\"/);
+  assert.match(mainSource, /extraction = localDescribeFoodExtraction\(description\)/);
+  assert.doesNotMatch(mainSource, /taskId: \"health\.describe-food\.extract\"/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.review\"/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.repair\"/);
   assert.match(mainSource, /taskId: \"health\.describe-food\.estimate\"/);
@@ -169,7 +170,7 @@ test("Describe reviews and repairs every extracted item before preparing editabl
     mainSource.indexOf("private async openFoodDescriberWithAi"),
     mainSource.indexOf("private async describeFoodAi"),
   );
-  assert.match(describeMethod, /Assign stable IDs item-1, item-2/);
+  assert.match(describeMethod, /Deterministic local extraction is both the completeness guard/);
   assert.match(describeMethod, /Return every extracted itemId exactly once/);
   assert.match(describeMethod, /Rechecking item/);
   assert.match(describeMethod, /Estimating item/);
@@ -196,8 +197,8 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
 });
 
 test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract-v4` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v4` : undefined/);
+  assert.doesNotMatch(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v5` : undefined/);
   assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v4-\$\{index \+ 1\}` : undefined/);
   assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v2-\$\{index \+ 1\}` : undefined/);
   assert.match(mainSource, /version: 2 as const/);
