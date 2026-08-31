@@ -713,6 +713,78 @@ test('native workout session stores every exercise and set atomically in one not
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
 });
 
+test('native workout structure edits persist sets, exercise order, supersets, and drop sets in the session note', async () => {
+  const { service, files, frontmatters } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Live strength',
+    startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-structure');
+  await service.ensureWorkoutExercise(session, 'Bench press', 'Health/Exercises/Bench press.md');
+  await service.ensureWorkoutExercise(session, 'Row', 'Health/Exercises/Row.md');
+  await service.ensureWorkoutExercise(session, 'Overhead press', 'Health/Exercises/Overhead press.md');
+  await service.appendWorkoutSet(session.file, {
+    id: 'bench-1', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md',
+    reps: 8, weight: 100, weightUnit: 'lb', rpe: 8, restSeconds: 90,
+    completedDate: '2026-08-31T08:05:00.000Z',
+  });
+
+  let snapshot = service.getWorkoutSnapshot(session.path);
+  const benchId = snapshot.exercises.find((exercise) => exercise.name === 'Bench press').id;
+  const rowId = snapshot.exercises.find((exercise) => exercise.name === 'Row').id;
+  const pressId = snapshot.exercises.find((exercise) => exercise.name === 'Overhead press').id;
+
+  await service.addPlannedWorkoutSet(session.path, benchId);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const bench = snapshot.exercises.find((exercise) => exercise.id === benchId);
+  assert.equal(bench.sets.length, 2, '+ Set appends a persisted row instead of opening a transient draft');
+  assert.deepEqual(bench.sets[1], {
+    id: bench.sets[1].id,
+    ordinal: 2,
+    reps: 8,
+    weight: 100,
+    weightUnit: 'lb',
+    perArm: false,
+    rpe: 8,
+    restSeconds: 90,
+    setType: 'normal',
+    completedDate: '',
+    note: '',
+  }, 'the new set is editable and seeded from the prior set without copying completion state');
+
+  await service.reorderWorkoutExercise(session.path, pressId, -1);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(snapshot.exercises.map((exercise) => exercise.name), ['Bench press', 'Overhead press', 'Row']);
+
+  await service.setWorkoutSupersetLinks(session.path, benchId, [rowId]);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const supersetMembers = snapshot.exercises.filter((exercise) => exercise.supersetGroupId);
+  assert.deepEqual(supersetMembers.map((exercise) => exercise.id).sort(), [benchId, rowId].sort());
+  assert.equal(supersetMembers[0].supersetGroupId, supersetMembers[1].supersetGroupId, 'arbitrary exercises share one superset group');
+  assert.equal(snapshot.exercises.find((exercise) => exercise.id === pressId).supersetGroupId, undefined);
+
+  const firstSet = snapshot.exercises.find((exercise) => exercise.id === benchId).sets[0];
+  const secondSet = snapshot.exercises.find((exercise) => exercise.id === benchId).sets[1];
+  await service.setWorkoutDropSetLinks(session.path, benchId, firstSet.id, [secondSet.id]);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  let benchSets = snapshot.exercises.find((exercise) => exercise.id === benchId).sets;
+  assert.equal(benchSets[0].dropSetGroupId, benchSets[1].dropSetGroupId);
+  assert.equal(benchSets[0].setType, 'normal');
+  assert.equal(benchSets[1].setType, 'drop');
+
+  await service.setWorkoutDropSetLinks(session.path, benchId, firstSet.id, [], true);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  benchSets = snapshot.exercises.find((exercise) => exercise.id === benchId).sets;
+  assert.equal(benchSets.length, 3, 'the drop-set picker can create a real additional set');
+  assert.equal(benchSets[0].dropSetGroupId, benchSets[2].dropSetGroupId);
+  assert.equal(benchSets[1].dropSetGroupId, undefined, 'relinking clears the prior group instead of duplicating membership');
+  assert.equal(benchSets[1].setType, 'normal');
+  assert.equal(benchSets[2].setType, 'drop');
+
+  const stored = JSON.parse(frontmatters.get(session.file).workoutData);
+  assert.deepEqual(stored.exercises.map((exercise) => exercise.name), ['Bench press', 'Overhead press', 'Row']);
+  assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0, 'structural edits never create child notes');
+});
+
 test('a blank native workout projects a newly attached exercise before its first set', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({
@@ -879,8 +951,12 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
   assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
-  assert.match(mainSource, /logNativeWorkoutSetDraft\(exercise, draft\)/u);
-  assert.match(mainSource, /exercisePath: exercise\.exercisePath/u);
+  assert.match(mainSource, /addNativePlannedWorkoutSet\(snapshot, exercise\)/u);
+  assert.match(mainSource, /openNativeWorkoutExerciseMenu\(snapshot, exercise, event\)/u);
+  assert.match(mainSource, /openNativeWorkoutSetMenu\(snapshot, exercise, set, event\)/u);
+  assert.match(mainSource, /reorderWorkoutExercise\(snapshot\.path, exercise\.id, direction\)/u);
+  assert.match(mainSource, /setWorkoutSupersetLinks\(snapshot\.path, exercise\.id, selectedIds\)/u);
+  assert.match(mainSource, /setWorkoutDropSetLinks\(snapshot\.path, exercise\.id, set\.id, selected, Boolean\(created\)\)/u);
   assert.match(mainSource, /active-state:reconciled-from-native-record/u);
   const activeSurfaceGuard = mainSource.slice(
     mainSource.indexOf("  private isActiveNativeWorkoutSnapshot"),
@@ -895,15 +971,20 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /this\.updateNativeWorkoutSurfaces\(\)/u);
   assert.doesNotMatch(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-workout"/u);
   assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', ''\]/u);
-  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise, \{/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.updateSet\(exercise, set, patch\)/u);
-  assert.match(nativeWorkoutSurfaceSource, /tps-health-native-workout-row is-draft/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openExerciseMenu\(exercise, event\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openSetMenu\(exercise, set, event\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /tps-health-native-workout-row\$\{set\.dropSetGroupId \? ' is-drop-set' : ''\}/u);
+  assert.doesNotMatch(nativeWorkoutSurfaceSource, /tps-health-native-workout-row is-draft/u);
   assert.match(nativeWorkoutSurfaceSource, /root\.dataset\.renderKey === signature/u);
   assert.match(nativeWorkoutSurfaceSource, /instance: options\.instanceKey/u);
   assert.match(mainSource, /instanceKey: this\.workoutSurfaceInstanceKey/u);
   assert.match(stylesSource, /\.markdown-source-view:not\(\.is-live-preview\) \.tps-health-native-workout-surface/u);
   assert.match(stylesSource, /\.tps-health-workout-entry-modal \.setting-item-control \{[\s\S]*?flex: 0 0 auto;/u, 'mobile set fields do not inherit a tall desktop flex basis');
   assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');
+  assert.match(stylesSource, /\.tps-health-native-workout-exercise\.is-superset/u);
+  assert.match(stylesSource, /\.tps-health-native-workout-row\.is-drop-set/u);
 });
 
 test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {

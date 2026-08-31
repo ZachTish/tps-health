@@ -2028,7 +2028,9 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-native-workout-header,
 .tps-health-native-workout-exercise-header,
 .tps-health-native-workout-empty,
-.tps-health-native-workout-actions {
+.tps-health-native-workout-actions,
+.tps-health-native-workout-exercise-actions,
+.tps-health-native-workout-row-actions {
   align-items: center;
   display: flex;
   gap: 8px;
@@ -2117,6 +2119,31 @@ body.is-phone .tps-health-selection-controls {
   padding: 9px;
 }
 
+.tps-health-native-workout-exercise.is-superset {
+  border-inline-start: 3px solid var(--color-purple);
+}
+
+.tps-health-native-workout-exercise-actions {
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.tps-health-native-workout-button.is-menu {
+  min-width: 34px;
+  padding-inline: 7px;
+}
+
+.tps-health-native-workout-group-badge {
+  border: 1px solid color-mix(in srgb, var(--color-purple) 55%, var(--background-modifier-border));
+  border-radius: 999px;
+  color: var(--color-purple);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  justify-self: start;
+  line-height: 1.2;
+  padding: 2px 6px;
+}
+
 .tps-health-native-workout-exercise-name {
   font-size: var(--font-ui-medium);
   line-height: 1.25;
@@ -2147,6 +2174,11 @@ body.is-phone .tps-health-selection-controls {
   font-size: var(--font-ui-smaller);
   font-weight: 700;
   padding-top: 2px;
+}
+
+.tps-health-native-workout-row.is-drop-set {
+  border-inline-start: 3px solid var(--color-orange);
+  padding-inline-start: 5px;
 }
 
 .tps-health-native-workout-row > span,
@@ -2201,6 +2233,17 @@ body.is-phone .tps-health-selection-controls {
   font-size: var(--font-ui-smaller);
 }
 
+.tps-health-native-workout-row-actions {
+  gap: 3px;
+  justify-content: flex-end;
+}
+
+.tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
+  min-height: 30px;
+  min-width: 30px;
+  padding: 2px 6px;
+}
+
 .tps-health-native-workout-row.is-draft {
   background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
   border-radius: 6px;
@@ -2227,6 +2270,18 @@ body.is-phone .tps-health-selection-controls {
   .tps-health-native-workout-actions > .tps-health-native-workout-button,
   .tps-health-native-workout-empty > .tps-health-native-workout-button {
     flex: 1 1 0;
+  }
+
+  .tps-health-native-workout-exercise-header {
+    align-items: flex-start;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .tps-health-native-workout-exercise-actions .tps-health-native-workout-button,
+  .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
+    min-height: 44px;
+    min-width: 44px;
   }
 }
 

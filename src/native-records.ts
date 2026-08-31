@@ -1,6 +1,6 @@
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
-import { isoDateKey } from './format';
+import { id, isoDateKey } from './format';
 import * as logger from './logger';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
@@ -49,6 +49,7 @@ export interface NativeWorkoutSetSnapshot {
   rpe?: number;
   restSeconds?: number;
   setType: string;
+  dropSetGroupId?: string;
   completedDate: string;
   note: string;
 }
@@ -68,6 +69,7 @@ export interface NativeWorkoutExerciseSnapshot {
   path: string;
   name: string;
   exercisePath: string;
+  supersetGroupId?: string;
   totalReps: number;
   totalVolume: number;
   sets: NativeWorkoutSetSnapshot[];
@@ -89,6 +91,7 @@ interface StoredWorkoutExercise {
   id: string;
   name: string;
   exercisePath: string;
+  supersetGroupId?: string;
   sets: Array<Record<string, unknown>>;
 }
 
@@ -359,6 +362,7 @@ const storedWorkoutExercises = (value: unknown): StoredWorkoutExercise[] | null 
       id: String(record.id || `exercise-${index + 1}`).trim() || `exercise-${index + 1}`,
       name,
       exercisePath: wikilinkPath(record.exercisePath),
+      supersetGroupId: String(record.supersetGroupId || '').trim() || undefined,
       sets: storedWorkoutSets(record.sets),
     }];
   });
@@ -370,9 +374,48 @@ const workoutDataValue = (exercises: StoredWorkoutExercise[]): string => JSON.st
     id: exercise.id,
     name: exercise.name,
     exercisePath: exercise.exercisePath || '',
+    ...(exercise.supersetGroupId ? { supersetGroupId: exercise.supersetGroupId } : {}),
     sets: exercise.sets.map((set) => ({ ...set })),
   })),
 } as StoredWorkoutData);
+
+const cloneStoredWorkoutExercises = (exercises: StoredWorkoutExercise[]): StoredWorkoutExercise[] => exercises.map((exercise) => ({
+  ...exercise,
+  sets: exercise.sets.map((set) => ({ ...set })),
+}));
+
+const nextStoredWorkoutGroupId = (usedValues: string[], prefix: 'super' | 'drop'): string => {
+  const used = new Set(usedValues.map((value) => String(value || '').trim()).filter(Boolean));
+  for (let code = 65; code <= 90; code++) {
+    const candidate = String.fromCharCode(code);
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${prefix}-${stableHash(`${Date.now()}\u0000${usedValues.join('\u0000')}`)}`;
+};
+
+const clearSingletonSupersets = (exercises: StoredWorkoutExercise[]): void => {
+  const counts = new Map<string, number>();
+  for (const exercise of exercises) {
+    if (exercise.supersetGroupId) counts.set(exercise.supersetGroupId, (counts.get(exercise.supersetGroupId) || 0) + 1);
+  }
+  for (const exercise of exercises) {
+    if (exercise.supersetGroupId && (counts.get(exercise.supersetGroupId) || 0) < 2) delete exercise.supersetGroupId;
+  }
+};
+
+const clearSingletonDropSets = (exercise: StoredWorkoutExercise): void => {
+  const counts = new Map<string, number>();
+  for (const set of exercise.sets) {
+    const groupId = String(set.dropSetGroupId || '').trim();
+    if (groupId) counts.set(groupId, (counts.get(groupId) || 0) + 1);
+  }
+  for (const set of exercise.sets) {
+    const groupId = String(set.dropSetGroupId || '').trim();
+    if (!groupId || (counts.get(groupId) || 0) >= 2) continue;
+    delete set.dropSetGroupId;
+    if (String(set.setType || '').trim().toLowerCase() === 'drop') set.setType = 'normal';
+  }
+};
 
 const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
   exerciseCount: number;
@@ -791,15 +834,170 @@ export class HealthNativeRecordService {
     return updated;
   }
 
+  async addPlannedWorkoutSet(sessionReference: string | TFile, exerciseId: string): Promise<NativeRecordHandle> {
+    const expectedExerciseId = String(exerciseId || '').trim();
+    if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-add-set', (exercises) => {
+      const exercise = exercises.find((candidate) => candidate.id === expectedExerciseId);
+      if (!exercise) throw new Error('Workout exercise was not found.');
+      const previous = exercise.sets.at(-1);
+      exercise.sets.push({
+        id: id('set'),
+        reps: previous?.reps,
+        weight: previous?.weight,
+        weightUnit: String(previous?.weightUnit || previous?.unit || 'lb').trim() || 'lb',
+        perArm: previous?.perArm === true,
+        rpe: previous?.rpe,
+        restSeconds: previous?.restSeconds,
+        setType: 'normal',
+      });
+    });
+  }
+
+  async reorderWorkoutExercise(
+    sessionReference: string | TFile,
+    exerciseId: string,
+    direction: -1 | 1,
+  ): Promise<NativeRecordHandle> {
+    const expectedExerciseId = String(exerciseId || '').trim();
+    if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-reorder-exercise', (exercises) => {
+      const currentIndex = exercises.findIndex((exercise) => exercise.id === expectedExerciseId);
+      if (currentIndex < 0) throw new Error('Workout exercise was not found.');
+      const nextIndex = Math.max(0, Math.min(exercises.length - 1, currentIndex + direction));
+      if (nextIndex === currentIndex) return;
+      const [exercise] = exercises.splice(currentIndex, 1);
+      exercises.splice(nextIndex, 0, exercise);
+    });
+  }
+
+  async setWorkoutSupersetLinks(
+    sessionReference: string | TFile,
+    exerciseId: string,
+    selectedExerciseIds: string[],
+  ): Promise<NativeRecordHandle> {
+    const expectedExerciseId = String(exerciseId || '').trim();
+    if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-superset', (exercises, session) => {
+      const current = exercises.find((exercise) => exercise.id === expectedExerciseId);
+      if (!current) throw new Error('Workout exercise was not found.');
+      const currentGroupId = current.supersetGroupId;
+      const selected = new Set([expectedExerciseId, ...selectedExerciseIds.map((value) => String(value || '').trim())].filter(Boolean));
+      const validSelected = new Set(exercises.filter((exercise) => selected.has(exercise.id)).map((exercise) => exercise.id));
+      const touchedGroups = new Set<string>();
+      if (current.supersetGroupId) touchedGroups.add(current.supersetGroupId);
+      for (const exercise of exercises) {
+        if (validSelected.has(exercise.id) && exercise.supersetGroupId) touchedGroups.add(exercise.supersetGroupId);
+      }
+      for (const exercise of exercises) {
+        if (exercise.supersetGroupId && touchedGroups.has(exercise.supersetGroupId)) delete exercise.supersetGroupId;
+      }
+      if (validSelected.size > 1) {
+        const groupId = currentGroupId
+          || nextStoredWorkoutGroupId(exercises.map((exercise) => exercise.supersetGroupId || ''), 'super');
+        for (const exercise of exercises) if (validSelected.has(exercise.id)) exercise.supersetGroupId = groupId;
+        logger.flow('WorkoutStorage', 'superset:linked', { workoutId: session.id, exerciseId: expectedExerciseId, members: validSelected.size, groupId });
+      }
+      clearSingletonSupersets(exercises);
+    });
+  }
+
+  async setWorkoutDropSetLinks(
+    sessionReference: string | TFile,
+    exerciseId: string,
+    setId: string,
+    selectedSetIds: string[],
+    addNewSet = false,
+  ): Promise<NativeRecordHandle> {
+    const expectedExerciseId = String(exerciseId || '').trim();
+    const expectedSetId = String(setId || '').trim();
+    if (!expectedExerciseId || !expectedSetId) throw new Error('Workout drop-set identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-drop-set', (exercises, session) => {
+      const exercise = exercises.find((candidate) => candidate.id === expectedExerciseId);
+      if (!exercise) throw new Error('Workout exercise was not found.');
+      const current = exercise.sets.find((set) => String(set.id || '').trim() === expectedSetId);
+      if (!current) throw new Error('Workout set was not found.');
+      const selected = new Set([expectedSetId, ...selectedSetIds.map((value) => String(value || '').trim())].filter(Boolean));
+      const validIds = new Set(exercise.sets.map((set) => String(set.id || '').trim()).filter(Boolean));
+      const touchedGroups = new Set<string>();
+      const currentGroupId = String(current.dropSetGroupId || '').trim();
+      if (currentGroupId) touchedGroups.add(currentGroupId);
+      for (const set of exercise.sets) {
+        const candidateId = String(set.id || '').trim();
+        const groupId = String(set.dropSetGroupId || '').trim();
+        if (selected.has(candidateId) && groupId) touchedGroups.add(groupId);
+      }
+      for (const set of exercise.sets) {
+        const groupId = String(set.dropSetGroupId || '').trim();
+        if (!groupId || !touchedGroups.has(groupId)) continue;
+        delete set.dropSetGroupId;
+        if (String(set.setType || '').trim().toLowerCase() === 'drop') set.setType = 'normal';
+      }
+      for (const candidateId of [...selected]) if (!validIds.has(candidateId)) selected.delete(candidateId);
+      if (addNewSet) {
+        const addedId = id('set');
+        exercise.sets.push({
+          id: addedId,
+          reps: current.reps,
+          weight: current.weight,
+          weightUnit: String(current.weightUnit || current.unit || 'lb').trim() || 'lb',
+          perArm: current.perArm === true,
+          rpe: current.rpe,
+          restSeconds: current.restSeconds,
+          setType: 'drop',
+        });
+        selected.add(addedId);
+      }
+      if (selected.size > 1) {
+        const groupId = currentGroupId || nextStoredWorkoutGroupId(
+          exercise.sets.map((set) => String(set.dropSetGroupId || '').trim()),
+          'drop',
+        );
+        for (const set of exercise.sets) {
+          const candidateId = String(set.id || '').trim();
+          if (!selected.has(candidateId)) continue;
+          set.dropSetGroupId = groupId;
+          if (candidateId !== expectedSetId) set.setType = 'drop';
+        }
+        if (String(current.setType || '').trim().toLowerCase() === 'drop') current.setType = 'normal';
+        logger.flow('WorkoutStorage', 'drop-set:linked', { workoutId: session.id, exerciseId: expectedExerciseId, setId: expectedSetId, members: selected.size, groupId });
+      }
+      clearSingletonDropSets(exercise);
+    });
+  }
+
+  private async mutateWorkoutStructure(
+    sessionReference: string | TFile,
+    surface: string,
+    mutation: (exercises: StoredWorkoutExercise[], session: NativeRecordHandle) => void,
+  ): Promise<NativeRecordHandle> {
+    const api = this.requireApi();
+    const session = await api.resolve(sessionReference);
+    if (!session || session.kind !== 'workout-session') throw new Error('Workout session was not found.');
+    const { exercises: priorExercises, legacyChildren } = await this.workoutExercisesForWrite(session);
+    const exercises = cloneStoredWorkoutExercises(priorExercises);
+    mutation(exercises, session);
+    const updated = await api.update(
+      session.file,
+      workoutSessionDataUpdates(exercises),
+      { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface },
+    );
+    if (!updated) throw new Error('Workout session changed before the workout could be updated.');
+    this.trackHandle(updated);
+    if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
+    return updated;
+  }
+
   async ensureWorkoutExercise(
     sessionReference: string | TFile | NativeRecordHandle,
     exerciseName: string,
     exercisePath?: string,
   ): Promise<NativeRecordHandle> {
     const api = this.requireApi();
-    const session = typeof sessionReference === 'object' && sessionReference !== null && 'kind' in sessionReference
-      ? sessionReference as NativeRecordHandle
-      : await api.resolve(sessionReference as string | TFile);
+    const resolvedReference = typeof sessionReference === 'object' && sessionReference !== null && 'kind' in sessionReference
+      ? (sessionReference as NativeRecordHandle).file
+      : sessionReference as string | TFile;
+    const session = await api.resolve(resolvedReference);
     if (!session || session.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const name = exerciseName.trim();
     if (!name) throw new Error('Workout exercise name is required.');
@@ -1020,6 +1218,9 @@ export class HealthNativeRecordService {
           ? undefined
           : Math.max(0, Math.round(numberValue(set.restSeconds))),
         setType: String(set.setType || 'normal').trim() || 'normal',
+        ...(String(set.dropSetGroupId || '').trim()
+          ? { dropSetGroupId: String(set.dropSetGroupId || '').trim() }
+          : {}),
         completedDate: String(set.completedDate || set.endedAt || ''),
         note: String(set.note || ''),
       }));
@@ -1028,6 +1229,7 @@ export class HealthNativeRecordService {
         path: session.file.path,
         name: exercise.name,
         exercisePath: exercise.exercisePath,
+        ...(exercise.supersetGroupId ? { supersetGroupId: exercise.supersetGroupId } : {}),
         totalReps: sets.reduce((sum, set) => sum + set.reps, 0),
         totalVolume: sets.reduce((sum, set) => sum + set.reps * set.weight * (set.perArm ? 2 : 1), 0),
         sets,

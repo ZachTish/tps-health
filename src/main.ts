@@ -7904,9 +7904,9 @@ export default class TPSHealthPlugin extends Plugin {
       instanceKey: this.workoutSurfaceInstanceKey,
       actions: {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
-        addSet: async (exercise, draft) => {
+        addSet: async (exercise) => {
           if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
-          await this.logNativeWorkoutSetDraft(exercise, draft);
+          await this.addNativePlannedWorkoutSet(snapshot, exercise);
           const refreshed = this.nativeRecordService?.getWorkoutSnapshot(snapshot.path);
           if (refreshed) this.renderNativeWorkoutSurfaceElement(root, refreshed);
         },
@@ -7914,6 +7914,8 @@ export default class TPSHealthPlugin extends Plugin {
           if (!this.isActiveNativeWorkoutSnapshot(snapshot)) throw new Error("This workout is no longer active.");
           await this.updateNativeWorkoutSetInline(exercise.path, set.id, patch);
         },
+        openExerciseMenu: (exercise, event) => this.openNativeWorkoutExerciseMenu(snapshot, exercise, event),
+        openSetMenu: (exercise, set, event) => this.openNativeWorkoutSetMenu(snapshot, exercise, set, event),
         finish: async () => {
           if (!active) return;
           await this.finishWorkout();
@@ -7948,6 +7950,145 @@ export default class TPSHealthPlugin extends Plugin {
       }));
     }
     return true;
+  }
+
+  private async addNativePlannedWorkoutSet(snapshot: NativeWorkoutSnapshot, exercise: NativeWorkoutExerciseSnapshot): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) {
+      throw new Error("This workout is no longer active.");
+    }
+    try {
+      await this.serializeWorkoutMutation(snapshot.path, "native-add-planned-set", () => (
+        this.nativeRecordService!.addPlannedWorkoutSet(snapshot.path, exercise.id)
+      ));
+      this.updateNativeWorkoutSurfaces();
+      this.scheduleWorkoutActionBars();
+      logger.flow("WorkoutSet", "planned-add:done", { path: snapshot.path, exerciseId: exercise.id, exercise: exercise.name });
+    } catch (error) {
+      logger.flowError("WorkoutSet", "planned-add:failed", error, { path: snapshot.path, exerciseId: exercise.id, exercise: exercise.name });
+      new Notice("Could not add another set. The workout was left unchanged.");
+      throw error;
+    }
+  }
+
+  private openNativeWorkoutExerciseMenu(
+    snapshot: NativeWorkoutSnapshot,
+    exercise: NativeWorkoutExerciseSnapshot,
+    event: MouseEvent,
+  ): void {
+    const exerciseIndex = snapshot.exercises.findIndex((candidate) => candidate.id === exercise.id);
+    const menu = new Menu();
+    menu.addItem((item) => item
+      .setTitle("Move exercise up")
+      .setIcon("arrow-up")
+      .setDisabled(exerciseIndex <= 0)
+      .onClick(() => void this.reorderNativeWorkoutExercise(snapshot, exercise, -1)));
+    menu.addItem((item) => item
+      .setTitle("Move exercise down")
+      .setIcon("arrow-down")
+      .setDisabled(exerciseIndex < 0 || exerciseIndex >= snapshot.exercises.length - 1)
+      .onClick(() => void this.reorderNativeWorkoutExercise(snapshot, exercise, 1)));
+    menu.addSeparator();
+    menu.addItem((item) => item
+      .setTitle(exercise.supersetGroupId ? "Edit superset…" : "Create superset…")
+      .setIcon("link")
+      .onClick(() => this.openNativeWorkoutSupersetLinker(snapshot, exercise)));
+    menu.showAtMouseEvent(event);
+  }
+
+  private openNativeWorkoutSetMenu(
+    snapshot: NativeWorkoutSnapshot,
+    exercise: NativeWorkoutExerciseSnapshot,
+    set: NativeWorkoutSetSnapshot,
+    event: MouseEvent,
+  ): void {
+    const menu = new Menu();
+    menu.addItem((item) => item
+      .setTitle(set.dropSetGroupId ? "Edit drop set…" : "Create drop set…")
+      .setIcon("list-plus")
+      .onClick(() => this.openNativeWorkoutDropSetLinker(snapshot, exercise, set)));
+    menu.showAtMouseEvent(event);
+  }
+
+  private async reorderNativeWorkoutExercise(
+    snapshot: NativeWorkoutSnapshot,
+    exercise: NativeWorkoutExerciseSnapshot,
+    direction: -1 | 1,
+  ): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) return;
+    try {
+      await this.serializeWorkoutMutation(snapshot.path, "native-reorder-exercise", () => (
+        this.nativeRecordService!.reorderWorkoutExercise(snapshot.path, exercise.id, direction)
+      ));
+      this.updateNativeWorkoutSurfaces();
+      logger.flow("Workout", "exercise:reordered", { path: snapshot.path, exerciseId: exercise.id, direction });
+    } catch (error) {
+      logger.flowError("Workout", "exercise:reorder-failed", error, { path: snapshot.path, exerciseId: exercise.id, direction });
+      new Notice("Could not reorder that exercise. The workout was left unchanged.");
+    }
+  }
+
+  private openNativeWorkoutSupersetLinker(snapshot: NativeWorkoutSnapshot, exercise: NativeWorkoutExerciseSnapshot): void {
+    new WorkoutGroupLinkModal(this.app, {
+      kind: "superset",
+      title: `Superset ${exercise.name}`,
+      description: "Choose the other exercises that should rotate with this exercise.",
+      choices: snapshot.exercises.filter((candidate) => candidate.id !== exercise.id).map((candidate) => ({
+        id: candidate.id,
+        label: candidate.name,
+        checked: Boolean(exercise.supersetGroupId && candidate.supersetGroupId === exercise.supersetGroupId),
+      })),
+      allowCreate: true,
+      createLabel: "Add a new exercise",
+      createPlaceholder: "Exercise name",
+      onSubmit: async (selected, created) => {
+        if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) {
+          throw new Error("This workout is no longer active.");
+        }
+        await this.serializeWorkoutMutation(snapshot.path, "native-superset-link", async () => {
+          const selectedIds = [...selected];
+          if (created) {
+            const definition = await this.ensureExerciseDefinitionForWorkout(created);
+            await this.nativeRecordService!.ensureWorkoutExercise(snapshot.path, created, definition.sourcePath);
+            const refreshed = this.nativeRecordService!.getWorkoutSnapshot(snapshot.path);
+            const added = refreshed?.exercises.find((candidate) => normalizeLookup(candidate.name) === normalizeLookup(created));
+            if (!added) throw new Error("The new superset exercise could not be resolved.");
+            selectedIds.push(added.id);
+          }
+          await this.nativeRecordService!.setWorkoutSupersetLinks(snapshot.path, exercise.id, selectedIds);
+        });
+        this.updateNativeWorkoutSurfaces();
+        logger.flow("Workout", "superset:done", { path: snapshot.path, exerciseId: exercise.id, selected: selected.length, created: Boolean(created) });
+      },
+    }).open();
+  }
+
+  private openNativeWorkoutDropSetLinker(
+    snapshot: NativeWorkoutSnapshot,
+    exercise: NativeWorkoutExerciseSnapshot,
+    set: NativeWorkoutSetSnapshot,
+  ): void {
+    new WorkoutGroupLinkModal(this.app, {
+      kind: "dropset",
+      title: `Drop sets for ${exercise.name}`,
+      description: "Choose one or more sets to perform immediately after this set.",
+      choices: exercise.sets.filter((candidate) => candidate.id !== set.id).map((candidate) => ({
+        id: candidate.id,
+        label: `Set ${candidate.ordinal} · ${formatNativeDailyMetricValue(candidate.weight)} ${candidate.weightUnit} × ${formatNativeDailyMetricValue(candidate.reps)}`,
+        checked: Boolean(set.dropSetGroupId && candidate.dropSetGroupId === set.dropSetGroupId),
+      })),
+      allowCreate: true,
+      createLabel: "Add a new set",
+      onSubmit: async (selected, created) => {
+        if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) {
+          throw new Error("This workout is no longer active.");
+        }
+        await this.serializeWorkoutMutation(snapshot.path, "native-drop-set-link", () => (
+          this.nativeRecordService!.setWorkoutDropSetLinks(snapshot.path, exercise.id, set.id, selected, Boolean(created))
+        ));
+        this.updateNativeWorkoutSurfaces();
+        logger.flow("Workout", "drop-set:done", { path: snapshot.path, exerciseId: exercise.id, setId: set.id, selected: selected.length, created: Boolean(created) });
+      },
+    }).open();
   }
 
   private async logNativeWorkoutSetDraft(exercise: NativeWorkoutExerciseSnapshot, draft: NativeWorkoutSetDraft): Promise<void> {

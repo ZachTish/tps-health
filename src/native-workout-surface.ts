@@ -17,8 +17,10 @@ export interface NativeWorkoutSetDraft {
 
 export interface NativeWorkoutSurfaceActions {
   addExercise(): void;
-  addSet(exercise: NativeWorkoutExerciseSnapshot, draft: NativeWorkoutSetDraft): void | Promise<void>;
+  addSet(exercise: NativeWorkoutExerciseSnapshot): void | Promise<void>;
   updateSet(exercise: NativeWorkoutExerciseSnapshot, set: NativeWorkoutSetSnapshot, patch: NativeWorkoutSetPatch): void | Promise<void>;
+  openExerciseMenu(exercise: NativeWorkoutExerciseSnapshot, event: MouseEvent): void;
+  openSetMenu(exercise: NativeWorkoutExerciseSnapshot, set: NativeWorkoutSetSnapshot, event: MouseEvent): void;
   finish(): void | Promise<void>;
 }
 
@@ -36,7 +38,7 @@ const text = (tag: keyof HTMLElementTagNameMap, value: string, className = ''): 
   return element;
 };
 
-const button = (label: string, title: string, handler: () => void | Promise<void>, disabled = false): HTMLButtonElement => {
+const button = (label: string, title: string, handler: (event: MouseEvent) => void | Promise<void>, disabled = false): HTMLButtonElement => {
   const element = document.createElement('button');
   element.type = 'button';
   element.className = 'tps-health-native-workout-button';
@@ -47,7 +49,7 @@ const button = (label: string, title: string, handler: () => void | Promise<void
   element.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!element.disabled) void handler();
+    if (!element.disabled) void handler(event);
   });
   return element;
 };
@@ -130,7 +132,8 @@ export function renderNativeWorkoutSurface(
     status: snapshot.status,
     exercises: snapshot.exercises.map((exercise) => [
       exercise.id,
-      exercise.sets.map((set) => [set.id, set.reps, set.weight, set.weightUnit, set.rpe, set.restSeconds, set.setType]),
+      exercise.supersetGroupId,
+      exercise.sets.map((set) => [set.id, set.reps, set.weight, set.weightUnit, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId]),
     ]),
   });
   if (root.dataset.renderKey === signature) return;
@@ -177,8 +180,9 @@ export function renderNativeWorkoutSurface(
   exerciseList.className = 'tps-health-native-workout-exercises';
   for (const exercise of snapshot.exercises) {
     const group = document.createElement('section');
-    group.className = 'tps-health-native-workout-exercise';
+    group.className = `tps-health-native-workout-exercise${exercise.supersetGroupId ? ' is-superset' : ''}`;
     group.dataset.exerciseId = exercise.id;
+    if (exercise.supersetGroupId) group.dataset.supersetGroup = exercise.supersetGroupId;
     const exerciseHeader = document.createElement('header');
     exerciseHeader.className = 'tps-health-native-workout-exercise-header';
     const exerciseIdentity = document.createElement('div');
@@ -191,10 +195,20 @@ export function renderNativeWorkoutSurface(
         'tps-health-native-workout-exercise-total',
       ),
     );
-    let focusDraft = (): void => undefined;
+    if (exercise.supersetGroupId) {
+      exerciseIdentity.append(text('span', `Super ${exercise.supersetGroupId}`, 'tps-health-native-workout-group-badge is-superset'));
+    }
+    const exerciseActions = document.createElement('div');
+    exerciseActions.className = 'tps-health-native-workout-exercise-actions';
+    const more = button('⋯', `${exercise.name} actions`, (event) => options.actions.openExerciseMenu(exercise, event), !options.active);
+    more.classList.add('is-menu');
+    exerciseActions.append(
+      button('+ Set', `Add another ${exercise.name} set`, () => options.actions.addSet(exercise), !options.active),
+      more,
+    );
     exerciseHeader.append(
       exerciseIdentity,
-      button('+ Set', `Enter another ${exercise.name} set inline`, () => focusDraft(), !options.active),
+      exerciseActions,
     );
     group.append(exerciseHeader);
     const table = document.createElement('div');
@@ -212,9 +226,10 @@ export function renderNativeWorkoutSurface(
     table.append(tableHeader);
     for (const set of exercise.sets) {
       const row = document.createElement('div');
-      row.className = 'tps-health-native-workout-row';
+      row.className = `tps-health-native-workout-row${set.dropSetGroupId ? ' is-drop-set' : ''}`;
       row.setAttribute('role', 'row');
       row.dataset.setId = set.id;
+      if (set.dropSetGroupId) row.dataset.dropSetGroup = set.dropSetGroupId;
       const ordinal = text('span', String(set.ordinal), 'tps-health-native-workout-ordinal');
       ordinal.setAttribute('role', 'cell');
       row.append(ordinal);
@@ -284,67 +299,14 @@ export function renderNativeWorkoutSurface(
       row.append(rest);
       const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);
       setType.addEventListener('change', () => void commit(setType, { setType: setType.value }));
-      row.append(setType, status);
+      const rowActions = document.createElement('div');
+      rowActions.className = 'tps-health-native-workout-row-actions';
+      rowActions.setAttribute('role', 'cell');
+      const setMenu = button('⋯', `${exercise.name} set ${set.ordinal} actions`, (event) => options.actions.openSetMenu(exercise, set, event));
+      setMenu.classList.add('is-menu');
+      rowActions.append(status, setMenu);
+      row.append(setType, rowActions);
       table.append(row);
-    }
-
-    if (options.active) {
-      const previous = exercise.sets.at(-1);
-      const draft = document.createElement('div');
-      draft.className = 'tps-health-native-workout-row is-draft';
-      draft.setAttribute('role', 'row');
-      const ordinal = text('span', String(exercise.sets.length + 1), 'tps-health-native-workout-ordinal');
-      ordinal.setAttribute('role', 'cell');
-      const reps = numberInput(previous?.reps, `${exercise.name} new set reps`, { min: 0, step: '1', integer: true });
-      const weightCell = document.createElement('div');
-      weightCell.className = 'tps-health-native-workout-weight-cell';
-      weightCell.setAttribute('role', 'cell');
-      const weight = numberInput(previous?.weight, `${exercise.name} new set weight`, { min: 0 });
-      const previousUnit = previous?.weightUnit || 'lb';
-      const unitChoices: Array<[string, string]> = [['lb', 'lb'], ['kg', 'kg']];
-      if (!unitChoices.some(([unit]) => unit === previousUnit)) unitChoices.unshift([previousUnit, previousUnit]);
-      const unit = selectInput(previousUnit, `${exercise.name} new set weight unit`, unitChoices);
-      const perArm = document.createElement('label');
-      perArm.className = 'tps-health-native-workout-per-arm';
-      perArm.setAttribute('title', 'Weight is per arm');
-      const perArmToggle = document.createElement('input');
-      perArmToggle.type = 'checkbox';
-      perArmToggle.checked = previous?.perArm === true;
-      perArmToggle.setAttribute('aria-label', `${exercise.name} new set weight is per arm`);
-      perArm.append(perArmToggle, text('span', '×2'));
-      stopInteraction(perArm);
-      weightCell.append(weight, unit, perArm);
-      const rpe = numberInput(previous?.rpe, `${exercise.name} new set RPE`, { min: 0, max: 10, step: '0.5' });
-      const rest = numberInput(undefined, `${exercise.name} new set rest seconds`, { min: 0, step: '1', integer: true });
-      const setType = selectInput(previous?.setType || 'normal', `${exercise.name} new set type`, setTypeOptions);
-      const log = button('Log', `Log ${exercise.name} set`, async () => {
-        log.disabled = true;
-        log.textContent = 'Saving…';
-        try {
-          await options.actions.addSet(exercise, {
-            reps: parsedNumber(reps),
-            weight: parsedNumber(weight),
-            weightUnit: unit.value,
-            perArm: perArmToggle.checked,
-            rpe: parsedNumber(rpe),
-            restSeconds: parsedNumber(rest),
-            setType: setType.value,
-          });
-        } catch {
-          log.disabled = false;
-          log.textContent = 'Retry';
-        }
-      });
-      log.classList.add('is-compact', 'is-primary');
-      draft.append(ordinal, reps, weightCell, rpe, rest, setType, log);
-      table.append(draft);
-      focusDraft = () => {
-        draft.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        window.setTimeout(() => {
-          reps.focus();
-          reps.select();
-        }, 0);
-      };
     }
     group.append(table);
     exerciseList.append(group);
