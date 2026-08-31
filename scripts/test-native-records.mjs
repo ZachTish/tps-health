@@ -219,6 +219,12 @@ test('native Health filenames use the record date and plain human title', () => 
   assert.equal(buildNativeHealthRecordFileName('food-entry', {
     date: '2026-08-25', foodName: 'Honeycrisp apple, large', title: 'Ignored fallback',
   }), '2026-08-25 - Honeycrisp apple, large');
+  assert.equal(buildNativeHealthRecordFileName('activity-entry', {
+    completedDate: '2026-08-25T08:30:00.000Z', title: 'Morning walk',
+  }), '2026-08-25 - Morning walk');
+  assert.equal(buildNativeHealthRecordFileName('activity-entry', {
+    date: '2026-08-24', completedDate: '2026-08-25T00:30:00.000Z', title: 'Evening walk',
+  }), '2026-08-24 - Evening walk', 'an explicit normalized activity date remains authoritative');
   assert.equal(buildNativeHealthRecordFileName('workout-session', {
     date: '2026-08-25', title: 'Workout 2026-08-25 06.16',
   }), '2026-08-25 - Workout 06.16', 'the generated workout date is not duplicated');
@@ -240,21 +246,36 @@ test('GCM API v3 receives readable filenames while stable record IDs remain auth
     id: 'food-two', createdDate: '2026-08-25T13:00:00.000Z', completedDate: '2026-08-25T13:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
   });
+  const activity = await service.createActivityEntry({
+    id: 'activity-one', activity: 'Morning walk', activityType: 'walking',
+    startedAt: '2026-08-25T08:00:00.000Z', completedDate: '2026-08-25T08:30:00.000Z',
+    durationMinutes: 30, source: 'manual',
+  });
   const session = await service.createWorkoutSession({
     title: 'Workout 2026-08-25 06.16', startedAt: '2026-08-25T11:16:00.000Z', workoutDate: '2026-08-25',
   }, 'workout-one');
+  const authoredDateSession = await service.createWorkoutSession({
+    title: 'Backdated strength', startedAt: '2026-08-25T12:00:00.000Z', workoutDate: '2026-08-27',
+  }, 'workout-two');
   const exercise = await service.ensureWorkoutExercise(session, 'Leg curl', 'Health/Exercises/Leg curl.md');
 
   assert.equal(firstFood.id, 'food-one');
   assert.equal(firstFood.path, '_records/food-entries/2026-08-25 - Apple.md');
   assert.equal(secondFood.path, '_records/food-entries/2026-08-25 - Apple (2).md', 'GCM owns deterministic collision suffixes');
+  assert.equal(activity.id, 'activity-one');
+  assert.equal(activity.path, '_records/activity-entries/2026-08-25 - Morning walk.md');
   assert.equal(session.id, 'workout-one');
   assert.equal(session.path, '_records/workout-sessions/2026-08-25 - Workout 06.16.md');
+  assert.equal(authoredDateSession.id, 'workout-two');
+  assert.equal(authoredDateSession.path, '_records/workout-sessions/2026-08-27 - Backdated strength.md', 'the authored workout date wins over the started-at day');
+  assert.equal(Object.hasOwn(authoredDateSession.frontmatter, 'workoutDate'), false, 'the filename projection does not add a redundant stored date');
   assert.equal(exercise.path, session.path, 'embedded exercises live in the workout note');
   assert.deepEqual(createCalls.map((call) => call.options.fileName), [
     '2026-08-25 - Apple',
     '2026-08-25 - Apple',
+    '2026-08-25 - Morning walk',
     '2026-08-25 - Workout 06.16',
+    '2026-08-27 - Backdated strength',
   ]);
 });
 
@@ -263,6 +284,11 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   const food = await service.createFoodEntry({
     id: 'food-old', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
+  });
+  const activity = await service.createActivityEntry({
+    id: 'activity-old', activity: 'Walk', activityType: 'walking',
+    startedAt: '2026-08-24T07:00:00.000Z', completedDate: '2026-08-24T07:30:00.000Z',
+    durationMinutes: 30, source: 'manual',
   });
   const session = await service.createWorkoutSession({
     title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z', workoutDate: '2026-08-24',
@@ -275,28 +301,98 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   service.indexFile(custom, customFrontmatter);
 
   assert.equal(food.file.basename, 'food-old');
+  assert.equal(activity.file.basename, 'activity-old');
   assert.equal(session.file.basename, 'workout-old');
   assert.equal(exercise.file, session.file, 'adding an exercise does not create another note');
   api.version = 3;
   const first = await service.normalizeNativeRecordFilenames();
   assert.deepEqual(first, {
-    inspected: 3,
-    renamed: 2,
+    inspected: 4,
+    renamed: 3,
     unchanged: 1,
     failed: 0,
     renamedPaths: {
+      'activity-old': '_records/activity-entries/2026-08-24 - Walk.md',
       'food-old': '_records/food-entries/2026-08-24 - Apple.md',
       'workout-old': '_records/workout-sessions/2026-08-24 - Strength.md',
     },
   });
   assert.equal(food.path, '_records/food-entries/food-old.md', 'prior immutable handles are not treated as live path authority');
+  assert.equal(activity.file.path, '_records/activity-entries/2026-08-24 - Walk.md');
   assert.equal(food.file.path, '_records/food-entries/2026-08-24 - Apple.md');
   assert.equal(session.file.path, '_records/workout-sessions/2026-08-24 - Strength.md');
   assert.equal(exercise.file.path, '_records/workout-sessions/2026-08-24 - Strength.md');
   assert.equal(service.getWorkoutSnapshot('workout-old')?.path, '_records/workout-sessions/2026-08-24 - Strength.md', 'the live index resolves an active workout after its TFile moves');
   assert.equal(custom.path, '_records/food-entries/My custom apple.md', 'a user-owned filename is preserved');
   assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
-    inspected: 3, renamed: 0, unchanged: 3, failed: 0, renamedPaths: {},
+    inspected: 4, renamed: 0, unchanged: 4, failed: 0, renamedPaths: {},
+  });
+});
+
+test('readable filename migration narrowly repairs generated title-first workout names', async () => {
+  const { service, addFrontmatterFile } = createHarness({ apiVersion: 3 });
+  const localStartedAt = (hour, minute) => new Date(2026, 7, 24, hour, minute, 0, 0).toISOString();
+  const generatedFrontmatter = {
+    tpsId: 'workout-generated', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-24 06.16', workoutDate: '2026-08-24', startedAt: localStartedAt(6, 16),
+  };
+  const generated = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 06.16.md', generatedFrontmatter);
+  service.indexFile(generated, generatedFrontmatter);
+  const mismatchedDateFrontmatter = {
+    tpsId: 'workout-wrong-date', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-23 06.16', workoutDate: '2026-08-24', startedAt: localStartedAt(6, 16),
+  };
+  const mismatchedDate = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-23 06.16.md', mismatchedDateFrontmatter);
+  service.indexFile(mismatchedDate, mismatchedDateFrontmatter);
+  const customBasenameFrontmatter = {
+    tpsId: 'workout-custom-name', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-24 07.00', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 0),
+  };
+  const customBasename = addFrontmatterFile('_records/workout-sessions/My preferred workout.md', customBasenameFrontmatter);
+  service.indexFile(customBasename, customBasenameFrontmatter);
+  const manualTitleFirstFrontmatter = {
+    tpsId: 'workout-manual-title-first', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Strength', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 30),
+  };
+  const manualTitleFirst = addFrontmatterFile('_records/workout-sessions/Strength 2026-08-24 07.30.md', manualTitleFirstFrontmatter);
+  service.indexFile(manualTitleFirst, manualTitleFirstFrontmatter);
+  const nonGeneratedTimeFrontmatter = {
+    tpsId: 'workout-non-generated-time', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-24 7.45', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 45),
+  };
+  const nonGeneratedTime = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 7.45.md', nonGeneratedTimeFrontmatter);
+  service.indexFile(nonGeneratedTime, nonGeneratedTimeFrontmatter);
+  const mismatchedTimeFrontmatter = {
+    tpsId: 'workout-wrong-time', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-24 08.30', workoutDate: '2026-08-24', startedAt: localStartedAt(9, 30),
+  };
+  const mismatchedTime = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 08.30.md', mismatchedTimeFrontmatter);
+  service.indexFile(mismatchedTime, mismatchedTimeFrontmatter);
+  const missingStartedAtFrontmatter = {
+    tpsId: 'workout-missing-start', tpsSchemaVersion: 1, kind: 'workout-session',
+    title: 'Workout 2026-08-24 10.00', workoutDate: '2026-08-24',
+  };
+  const missingStartedAt = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 10.00.md', missingStartedAtFrontmatter);
+  service.indexFile(missingStartedAt, missingStartedAtFrontmatter);
+
+  assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
+    inspected: 7,
+    renamed: 1,
+    unchanged: 6,
+    failed: 0,
+    renamedPaths: {
+      'workout-generated': '_records/workout-sessions/2026-08-24 - Workout 06.16.md',
+    },
+  });
+  assert.equal(generated.path, '_records/workout-sessions/2026-08-24 - Workout 06.16.md');
+  assert.equal(mismatchedDate.path, '_records/workout-sessions/Workout 2026-08-23 06.16.md');
+  assert.equal(customBasename.path, '_records/workout-sessions/My preferred workout.md');
+  assert.equal(manualTitleFirst.path, '_records/workout-sessions/Strength 2026-08-24 07.30.md');
+  assert.equal(nonGeneratedTime.path, '_records/workout-sessions/Workout 2026-08-24 7.45.md');
+  assert.equal(mismatchedTime.path, '_records/workout-sessions/Workout 2026-08-24 08.30.md');
+  assert.equal(missingStartedAt.path, '_records/workout-sessions/Workout 2026-08-24 10.00.md');
+  assert.deepEqual(await service.normalizeNativeRecordFilenames(), {
+    inspected: 7, renamed: 0, unchanged: 7, failed: 0, renamedPaths: {},
   });
 });
 
@@ -1008,7 +1104,8 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /const capturedActiveWorkout = \{[\s\S]*?id: this\.settings\.activeWorkoutId[\s\S]*?path: this\.settings\.activeWorkoutPath/u);
   assert.match(mainSource, /resolveActiveWorkoutAfterFilenameMigration\(\{[\s\S]*?current: \{ id: this\.settings\.activeWorkoutId[\s\S]*?getWorkoutSnapshot\(capturedWorkoutId\)/u);
   assert.match(mainSource, /persistActiveWorkoutFilenameMigration\(capturedActiveWorkout, reconciledActiveWorkout\)/u);
-  assert.match(settingsSource, /GCM 1\.43\.1 or newer gives new food and workout records readable date-and-title filenames/u);
+  assert.match(mainSource, /buildNativeHealthRecordFileName\("workout-session", \{[\s\S]*?workoutDate: isoDateKey\(dailyNoteDate\)[\s\S]*?startedAt/u);
+  assert.match(settingsSource, /GCM 1\.43\.1 or newer gives new food, activity, and workout records readable date-and-title filenames/u);
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {

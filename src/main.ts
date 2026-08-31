@@ -13,7 +13,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   buildNativeDailyActivityModel,
@@ -910,7 +910,7 @@ export default class TPSHealthPlugin extends Plugin {
         const nativeRecords = this.getGcmNativeRecordsApi();
         if (!this.nativeRecordService?.isEnabled() || Number(nativeRecords?.version) < 3 || typeof nativeRecords?.rename !== "function") return false;
         if (!checking) void this.traceCommand("normalize-native-health-filenames", async () => {
-          const message = "Rename opaque food-log and workout record files to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and manually renamed files are left unchanged.";
+          const message = "Rename opaque food, activity, and workout record files—and exact generated title-first workout filenames—to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and other manually named files are left unchanged.";
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
           const capturedActiveWorkout = {
             id: this.settings.activeWorkoutId || "",
@@ -2296,7 +2296,12 @@ export default class TPSHealthPlugin extends Plugin {
     const dailyFile = await this.getOrCreateDailyNoteForDate(dailyNoteDate);
     try {
       if (logTarget === "both") {
-        path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${title}.md`));
+        const fileName = buildNativeHealthRecordFileName("workout-session", {
+          title,
+          workoutDate: isoDateKey(dailyNoteDate),
+          startedAt,
+        });
+        path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${sanitizeFileName(fileName)}.md`));
         await this.ensureFolder(this.settings.workoutsFolder);
         const template = await this.readWorkoutTemplate();
         const body = template

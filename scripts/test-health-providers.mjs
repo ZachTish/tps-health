@@ -7558,8 +7558,9 @@ test("blank active workouts can log sets with rest and save repeated planned set
     startedAt: "2026-07-06T10:00:00.000Z",
     openFile: false,
   });
-  assert.equal(workoutPath, "Health/Workouts/Blank Active QA.md");
+  assert.equal(workoutPath, "Health/Workouts/2026-07-06 - Blank Active QA.md");
   assert.match(fake.files.get(workoutPath), /kind: "workout"/);
+  assert.equal(parseFrontmatter(fake.files.get(workoutPath)).title, "Blank Active QA", "date-first filenames do not rewrite the workout title property");
   assert.doesNotMatch(fake.files.get(workoutPath), /## Sets|### Bench press/);
   const dailyWorkoutPath = "Daily/2026-07-06.md";
   assert.match(fake.files.get(dailyWorkoutPath), /## Workout\n/);
@@ -7956,7 +7957,7 @@ test("active workout set rows recover stale state and stay simple in the workout
 
   await plugin.addSetForExerciseToActiveWorkout("Squat");
   assert.notEqual(plugin.settings.activeWorkoutPath, "Health/Workouts/Missing Workout.md");
-  assert.match(plugin.settings.activeWorkoutPath, /^Health\/Workouts\/Workout /);
+  assert.match(plugin.settings.activeWorkoutPath, /^Health\/Workouts\/\d{4}-\d{2}-\d{2} - Workout(?: \d{2}\.\d{2})?\.md$/);
   const activePath = plugin.settings.activeWorkoutPath;
   assert.match(fake.files.get(activePath), /#tps\/workout\n\n- \[\[Health\/Exercises\/Squat\|Squat\]\] - 0 lb x 0 \[type:: workoutSet\]/);
   assert.match(fake.files.get(activePath), /\[exercisePath:: Health\/Exercises\/Squat\.md\]/);
