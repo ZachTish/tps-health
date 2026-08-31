@@ -443,6 +443,19 @@ test('native food and activity records keep typed quantities and indexed daily m
   assert.equal(totals.proteinG, 40.5);
   assert.equal(totals.fiberG, 11.4);
   assert.equal(totals.sodiumMg, 802);
+  assert.deepEqual(service.getDailyFoodEntries('2026-08-24').map((entry) => ({
+    id: entry.id,
+    title: entry.title,
+    quantity: entry.quantity,
+    unit: entry.unit,
+    calories: entry.calories,
+    proteinG: entry.proteinG,
+    carbsG: entry.carbsG,
+    fatG: entry.fatG,
+  })), [
+    { id: 'food-1', title: 'Apple', quantity: 1, unit: 'serving', calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3 },
+    { id: 'food-2', title: 'Dinner', quantity: 1, unit: 'serving', calories: 600, proteinG: 40, carbsG: 50, fatG: 20 },
+  ], 'macro contribution rows preserve chronological entry identity, serving, and projected core macros');
   const foodRecord = [...service.recordsByPath.values()].find((record) => record.id === 'food-1');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'tpsId is the only food-record identity');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingQuantity'), false, 'new records keep one authored quantity field');

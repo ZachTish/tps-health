@@ -4172,6 +4172,173 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   background: var(--text-error);
 }
 
+.tps-health-native-daily-rings {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 12px 8px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  padding: 12px 10px;
+}
+
+.tps-health-native-daily-ring-item {
+  --tps-health-native-ring-color: var(--interactive-accent);
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: center;
+}
+
+.tps-health-native-daily-ring-item.is-above {
+  --tps-health-native-ring-color: var(--text-error);
+}
+
+.tps-health-native-daily-ring {
+  align-items: center;
+  background: conic-gradient(
+    var(--tps-health-native-ring-color) var(--tps-health-native-ring-progress),
+    var(--background-modifier-border) 0
+  );
+  border-radius: 50%;
+  display: flex;
+  height: 72px;
+  justify-content: center;
+  position: relative;
+  width: 72px;
+}
+
+.tps-health-native-daily-ring::before {
+  background: var(--background-primary);
+  border-radius: inherit;
+  content: "";
+  inset: 7px;
+  position: absolute;
+}
+
+.tps-health-native-daily-ring-value {
+  align-items: baseline;
+  display: flex;
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+  gap: 2px;
+  position: relative;
+  z-index: 1;
+}
+
+.tps-health-native-daily-ring-value small {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+}
+
+.tps-health-native-daily-ring-label {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  margin-top: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-native-daily-ring-target {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  margin-top: 1px;
+}
+
+.tps-health-native-daily-foods {
+  border-top: 1px solid var(--background-modifier-border);
+  min-width: 0;
+}
+
+.tps-health-native-daily-foods-summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  min-height: 36px;
+  padding: 9px 10px;
+}
+
+.tps-health-native-daily-foods-summary:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.tps-health-native-daily-foods-summary:focus-visible,
+.tps-health-native-daily-food-title:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.tps-health-native-daily-food-list {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+}
+
+.tps-health-native-daily-food-row {
+  align-items: center;
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 2px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.tps-health-native-daily-food-row:first-child {
+  border-top: 0;
+}
+
+.tps-health-native-daily .tps-health-native-daily-food-title {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  color: var(--link-color);
+  display: block;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  height: auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.tps-health-native-daily .tps-health-native-daily-food-title:hover,
+.tps-health-native-daily .tps-health-native-daily-food-title:active {
+  background: transparent;
+  box-shadow: none;
+  color: var(--link-color-hover);
+  text-decoration: underline;
+}
+
+.tps-health-native-daily-food-calories,
+.tps-health-native-daily-food-serving,
+.tps-health-native-daily-food-macros {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tps-health-native-daily-food-calories {
+  font-weight: var(--font-semibold);
+  text-align: right;
+}
+
+.tps-health-native-daily-food-macros {
+  text-align: right;
+}
+
 .tps-health-native-daily-empty,
 .tps-health-native-daily-message {
   align-items: center;
@@ -4211,6 +4378,21 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-native-daily-metric {
     grid-template-columns: minmax(0, 1fr) auto minmax(68px, 0.9fr);
   }
+
+  .tps-health-native-daily-rings {
+    gap: 10px 6px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .tps-health-native-daily-food-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tps-health-native-daily-food-serving,
+  .tps-health-native-daily-food-macros {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
 }
 
 @media (hover: none) and (pointer: coarse) {
@@ -4222,5 +4404,10 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-native-daily-action {
     min-width: 44px;
     width: 44px;
+  }
+
+  .tps-health-native-daily-foods-summary,
+  .tps-health-native-daily-food-title {
+    min-height: 44px;
   }
 }

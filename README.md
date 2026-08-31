@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.29.0
+
+- Native macro blocks now support `style: rings`, rendering calories, protein, carbs, and fat as compact accessible progress rings against the configured Health goals. The existing Base-like table remains the compatibility default.
+- `foods: collapsed` adds a native disclosure below the totals, while `foods: expanded` opens it initially. Each compact contribution row shows the logged title, calories, consumed amount, and P/C/F snapshot and can open its owning food-entry record. Omitting `foods` keeps the list hidden.
+- Display options compose with the existing Bases-style date expression and work in both `tps-health-macros` and the compatibility `tps-health-daily` block. Invalid or repeated options fail visibly instead of silently choosing a layout.
+- Ring and contribution layouts use container queries, two-column narrow-pane rings, wrapping metadata, keyboard focus styles, semantic list/table roles, and coarse-pointer touch targets. No settings, records, public APIs, or existing blocks require migration; minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite ran 257 checks (256 passed and the intentionally credential-gated live USDA check skipped), followed by a separate byte-stable production build and isolated test-vault reload. Real renderer QA confirmed the rings and contribution disclosure in both Live Preview and Reading view, including open/close behavior and accessible labels. The pre-existing Legacy storage setting was restored, synthetic QA records were marked archived and moved to `_archive`, source/runtime artifacts are byte-identical, runtime-owned settings were preserved, and production was not accessed.
+
 ## 0.28.0
 
 - Camera scanning now adapts supported focus, exposure, white balance, point-of-interest, and zoom controls for glossy white and metallic packaging. The bounded fallback decoder cycles glare-reduced grayscale, auto-contrast, and thresholded center crops while preserving the existing multi-angle path.
@@ -653,6 +661,20 @@ filters:
 date(note.date) == today() - "1d"
 ```
 ````
+
+Macro and combined blocks also accept presentation options before the date filter:
+
+````markdown
+```tps-health-macros
+style: rings
+foods: collapsed
+filters:
+  and:
+    - date(note.date) == today()
+```
+````
+
+`style` is `table` (the default) or `rings`. `foods` is `hidden` (the default), `collapsed`, or `expanded`; `true` and `false` are accepted as shorthand for `collapsed` and `hidden`. The disclosure lists the exact native `food-entry` records included in that selected day's aggregate, preserves their saved nutrition snapshot, and opens an entry note when its title is selected. These options also work in `tps-health-daily`; `tps-health-activity` remains visually unchanged. Options and the date selector are render-only and never add properties to a note or alter a record. Rings collapse to two columns in narrow embeds, while contribution metadata wraps without requiring horizontal scrolling.
 
 The record-date operand may be `date`, `note.date`, or either wrapped in `date(...)`. The selected-date side supports `today()`, `now()` / `now().date()`, `date(...)`, a quoted or bare ISO date, `this.file.name`, `this.file.path`, `this.<property>`, and `this.file.properties.<property>`. As in Bases, date expressions may add or subtract duration strings using years, months, weeks, days, hours, minutes, or seconds. `this` refers to the embedding Markdown note; when that note is a recognized Daily Note, `this.file.name` and `this.file.path` resolve to its already-validated Core Daily Note date. Only one date equality selector is allowed because a Health section displays one day. Other Base filter clauses do not change Health data; missing, malformed, unsupported, or ambiguous date selectors render an explanatory error instead of falling back to the wrong day. **Add food**, **Log activity**, and **Start workout** all inherit the resolved displayed date.
 

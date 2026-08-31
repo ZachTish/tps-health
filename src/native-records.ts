@@ -221,6 +221,19 @@ export interface NativeDailyActivityTotals {
   steps: number;
 }
 
+export interface NativeDailyFoodEntrySnapshot {
+  id: string;
+  path: string;
+  title: string;
+  completedDate: string;
+  quantity: number;
+  unit: string;
+  calories: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
+}
+
 interface LegacyHealthCandidate {
   id: string;
   kind: NativeHealthKind;
@@ -1045,6 +1058,27 @@ export class HealthNativeRecordService {
       for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += numberValue(record.frontmatter[key]);
     }
     return { entryCount: records.length, ...totals };
+  }
+
+  getDailyFoodEntries(dateIso: string): NativeDailyFoodEntrySnapshot[] {
+    return this.getKindRecords('food-entry')
+      .filter((record) => (
+        record.frontmatter.archived !== true
+        && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
+      ))
+      .map((record) => ({
+        id: record.id,
+        path: record.file.path,
+        title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+        completedDate: String(record.frontmatter.completedDate || ''),
+        quantity: numberValue(record.frontmatter.quantity),
+        unit: String(record.frontmatter.unit || 'serving').trim() || 'serving',
+        calories: numberValue(record.frontmatter.calories),
+        proteinG: numberValue(record.frontmatter.proteinG),
+        carbsG: numberValue(record.frontmatter.carbsG),
+        fatG: numberValue(record.frontmatter.fatG),
+      }))
+      .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
   }
 
   getDailyActivityTotals(dateIso: string): NativeDailyActivityTotals {

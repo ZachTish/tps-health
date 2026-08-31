@@ -29,7 +29,7 @@ async function loadDateFilterModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue } = await loadModule();
+const { buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
 const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -87,6 +87,29 @@ test('daily dashboard formats whole and fractional values without noisy precisio
   assert.equal(formatNativeDailyMetricValue(Number.NaN), '0');
 });
 
+test('macro display options preserve the table default and separate Bases-style date filters', () => {
+  assert.deepEqual(parseNativeDailyDisplayOptions(''), {
+    kind: 'valid', options: { macroStyle: 'table', foodList: 'hidden' }, filterSource: '',
+  });
+  assert.deepEqual(parseNativeDailyDisplayOptions(`
+style: rings
+foods: expanded
+filters:
+  and:
+    - date(note.date) == today() - "1d"
+`), {
+    kind: 'valid',
+    options: { macroStyle: 'rings', foodList: 'expanded' },
+    filterSource: 'filters:\n  and:\n    - date(note.date) == today() - "1d"',
+  });
+  assert.deepEqual(parseNativeDailyDisplayOptions('style: rings\nfoods: true'), {
+    kind: 'valid', options: { macroStyle: 'rings', foodList: 'collapsed' }, filterSource: '',
+  });
+  assert.equal(parseNativeDailyDisplayOptions('style: cards').kind, 'invalid');
+  assert.equal(parseNativeDailyDisplayOptions('foods: maybe').kind, 'invalid');
+  assert.equal(parseNativeDailyDisplayOptions('style: rings\nstyle: table').kind, 'invalid');
+});
+
 test('daily dashboard date filters use Bases equality, variables, functions, and duration syntax', () => {
   const context = {
     todayIso: '2026-08-30',
@@ -130,8 +153,9 @@ test('Health registers independently embeddable macro and activity renderers plu
   assert.match(mainSource, /registerNativeDailySection\("tps-health-macros", "macros"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-activity", "activity"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-daily", "combined"\)/u);
-  assert.match(mainSource, /resolveNativeDailyDateFilter\(source/u);
-  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section\)/u);
+  assert.match(mainSource, /parseNativeDailyDisplayOptions\(source\)/u);
+  assert.match(mainSource, /resolveNativeDailyDateFilter\(display\.filterSource/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options\)/u);
   assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateContext\.dateIso\)/u);
   assert.match(mainSource, /if \(this\.section === "activity"\) \{[\s\S]*?renderNativeDailyActivity\([\s\S]*?return;[\s\S]*?getDailyFoodMacroTotals/u);
   assert.match(mainSource, /this\.section === "macros"[\s\S]*?\["food-entry"\][\s\S]*?this\.section === "activity"[\s\S]*?\["activity-entry", "workout-session"\]/u);
@@ -158,8 +182,24 @@ test('daily dashboard uses a compact Base-like table and accessible toolbar', ()
   assert.doesNotMatch(mainSource, /button\.createSpan\(\{ text: label \}\)/u);
 });
 
+test('macro dashboard supports accessible rings and an optional collapsible food contribution list', () => {
+  assert.match(mainSource, /display\.macroStyle === "rings"/u);
+  assert.match(mainSource, /aria-label": "Daily macro rings"/u);
+  assert.match(mainSource, /--tps-health-native-ring-progress/u);
+  assert.match(mainSource, /createEl\("details", \{ cls: "tps-health-native-daily-foods" \}\)/u);
+  assert.match(mainSource, /details\.open = expanded/u);
+  assert.match(mainSource, /aria-label": `Open food entry \$\{entry\.title\}`/u);
+  assert.match(mainSource, /getDailyFoodEntries\(this\.dateContext\.dateIso\)/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-rings\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit, minmax\(96px, 1fr\)\)/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-ring\s*\{[\s\S]*?conic-gradient/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-food-row\s*\{[\s\S]*?grid-template-columns:/u);
+  assert.match(stylesSource, /\.tps-health-native-daily \.tps-health-native-daily-food-title\s*\{[\s\S]*?background:\s*transparent[\s\S]*?box-shadow:\s*none[\s\S]*?text-align:\s*left/u);
+  assert.match(stylesSource, /@container \(max-width: 360px\)[\s\S]*?\.tps-health-native-daily-rings\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-foods-summary,[\s\S]*?min-height:\s*44px/u);
+});
+
 test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
-  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section\)/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options\)/u);
   assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /logActivity:\s*\(\) => this\.plugin\.openActivityLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /startWorkout:\s*\(\) => this\.plugin\.openWorkoutStarter\(\{ \.\.\.this\.dateContext \}\)/u);

@@ -1,6 +1,62 @@
 import type { DailyFoodMacroTotals, HealthMetricRenderConfig } from "./api";
 
 export type NativeDailyMetricState = "below" | "within" | "above" | "neutral";
+export type NativeDailyMacroStyle = "table" | "rings";
+export type NativeDailyFoodListMode = "hidden" | "collapsed" | "expanded";
+
+export interface NativeDailyDisplayOptions {
+  macroStyle: NativeDailyMacroStyle;
+  foodList: NativeDailyFoodListMode;
+}
+
+export type NativeDailyDisplayParseResult =
+  | { kind: "valid"; options: NativeDailyDisplayOptions; filterSource: string }
+  | { kind: "invalid"; message: string };
+
+const unquotedOptionValue = (value: string): string => {
+  const withoutComment = value.replace(/\s+#.*$/u, "").trim();
+  const quoted = withoutComment.match(/^(["'])([\s\S]*)\1$/u);
+  return String(quoted?.[2] ?? withoutComment).trim().toLowerCase();
+};
+
+export function parseNativeDailyDisplayOptions(source: string): NativeDailyDisplayParseResult {
+  let macroStyle: NativeDailyMacroStyle = "table";
+  let foodList: NativeDailyFoodListMode = "hidden";
+  let sawStyle = false;
+  let sawFoods = false;
+  const filterLines: string[] = [];
+  for (const line of String(source || "").split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const option = trimmed.match(/^(style|foods)\s*:\s*(.*?)\s*$/iu);
+    if (!option) {
+      filterLines.push(line);
+      continue;
+    }
+    const key = option[1].toLowerCase();
+    const value = unquotedOptionValue(option[2]);
+    if (key === "style") {
+      if (sawStyle) return { kind: "invalid", message: "Add at most one macro style option." };
+      sawStyle = true;
+      if (value !== "table" && value !== "rings") {
+        return { kind: "invalid", message: "Macro style must be table or rings." };
+      }
+      macroStyle = value;
+      continue;
+    }
+    if (sawFoods) return { kind: "invalid", message: "Add at most one foods option." };
+    sawFoods = true;
+    if (value === "true") foodList = "collapsed";
+    else if (value === "false") foodList = "hidden";
+    else if (value === "hidden" || value === "collapsed" || value === "expanded") foodList = value;
+    else return { kind: "invalid", message: "Foods must be hidden, collapsed, or expanded." };
+  }
+  return {
+    kind: "valid",
+    options: { macroStyle, foodList },
+    filterSource: filterLines.join("\n").trim(),
+  };
+}
 
 export interface NativeDailyMetricModel {
   propertyKey: string;
