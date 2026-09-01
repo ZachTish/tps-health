@@ -35,7 +35,9 @@ async function loadModule() {
                 const match = line.match(/^([A-Za-z0-9_-]+):\\s*(.*)$/);
                 if (!match) continue;
                 const raw = match[2].trim();
-                result[match[1]] = /^-?\\d+(?:\\.\\d+)?$/.test(raw) ? Number(raw) : /^(true|false)$/.test(raw) ? raw === 'true' : raw.replace(/^['"]|['"]$/g, '');
+                result[match[1]] = raw.startsWith('__json__:')
+                  ? JSON.parse(decodeURIComponent(raw.slice('__json__:'.length)))
+                  : /^-?\\d+(?:\\.\\d+)?$/.test(raw) ? Number(raw) : /^(true|false)$/.test(raw) ? raw === 'true' : raw.replace(/^['"]|['"]$/g, '');
               }
               return result;
             }
@@ -54,6 +56,7 @@ const {
   parseLegacyInlineFields,
   readWorkoutDataFromNoteContent,
   resolveActiveWorkoutAfterFilenameMigration,
+  workoutSessionPropertyValue,
   writeWorkoutDataToNoteContent,
 } = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
@@ -74,6 +77,17 @@ function createHarness(options = {}) {
   let processCalls = 0;
   const vaultEvents = new Map();
   const metadataEvents = new Map();
+  const encodedYamlValue = (value) => value && typeof value === 'object'
+    ? `__json__:${encodeURIComponent(JSON.stringify(value))}`
+    : String(value ?? '');
+  const writeFrontmatterContent = (file, frontmatter) => {
+    const current = contents.get(file.path) || '';
+    const body = current.replace(/^---\s*\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u, '');
+    const yaml = Object.entries(frontmatter)
+      .map(([key, value]) => `${key}: ${encodedYamlValue(value)}`)
+      .join('\n');
+    contents.set(file.path, `---\n${yaml}\n---\n${body}`);
+  };
   const recordFolder = (kind) => ({
     'food-entry': 'food-entries',
     'activity-entry': 'activity-entries',
@@ -104,7 +118,7 @@ function createHarness(options = {}) {
       const frontmatter = { ...properties, tpsId: id, tpsSchemaVersion: 1, kind, title: properties.title, createdDate: new Date().toISOString(), modifiedDate: new Date().toISOString() };
       files.set(file.path, file);
       frontmatters.set(file, frontmatter);
-      contents.set(file.path, `---\nkind: ${kind}\ntpsId: ${id}\ntpsSchemaVersion: 1\ntitle: ${String(properties.title || '')}\n---\n`);
+      writeFrontmatterContent(file, frontmatter);
       return { file, path: file.path, id, kind, frontmatter };
     },
     async resolve(reference) {
@@ -129,6 +143,7 @@ function createHarness(options = {}) {
       }
       frontmatter.modifiedDate = new Date().toISOString();
       frontmatters.set(current.file, frontmatter);
+      writeFrontmatterContent(current.file, frontmatter);
       return { ...current, frontmatter };
     },
     async rename(reference, fileName) {
@@ -173,6 +188,17 @@ function createHarness(options = {}) {
     settings: { storageMode: 'native-records' },
     manifest: { id: 'tps-health' },
     app: {
+      fileManager: {
+        async processFrontMatter(file, mutation) {
+          if (typeof options.beforeFrontmatterProcess === 'function') {
+            await options.beforeFrontmatterProcess({ file, files, frontmatters, contents, writeFrontmatterContent });
+          }
+          const frontmatter = { ...frontmatters.get(file) };
+          mutation(frontmatter);
+          frontmatters.set(file, frontmatter);
+          writeFrontmatterContent(file, frontmatter);
+        },
+      },
       workspace: {
         layoutReady: options.layoutReady ?? true,
         onLayoutReady(callback) {
@@ -242,6 +268,7 @@ function createHarness(options = {}) {
   const addFrontmatterFile = (path, frontmatter) => {
     const file = addLegacyFile(path, '');
     frontmatters.set(file, { ...frontmatter });
+    writeFrontmatterContent(file, frontmatter);
     return file;
   };
   const emitVault = (name, ...args) => {
@@ -286,12 +313,26 @@ test('native Health filenames use the record date and plain human title', () => 
   }, { date: '2026-08-25' }), '2026-08-25 - Leg curl');
 });
 
-test('workout structure is stored in one hidden body marker rather than a frontmatter property', () => {
+test('workout session data uses one compact Bases-queryable property while legacy body markers remain readable', () => {
+  const session = workoutSessionPropertyValue([{
+    id: 'exercise-one',
+    name: 'Bench press',
+    exercisePath: 'Health/Exercises/Bench press.md',
+    supersetGroupId: 'A',
+    sets: [{ id: 'set-one', reps: 8, weight: 135, weightUnit: 'lb', restSeconds: 90 }],
+  }]);
+  assert.deepEqual(session, {
+    version: 1,
+    exercises: [{
+      id: 'exercise-one', name: 'Bench press', exercise: '[[Health/Exercises/Bench press]]', superset: 'A',
+      sets: [{ id: 'set-one', reps: 8, weight: 135, unit: 'lb', rest: 90 }],
+    }],
+  });
+
   const original = '---\nkind: workout-session\ntpsId: workout-one\n---\nNotes stay here.\n';
   const firstData = JSON.stringify({ version: 1, exercises: [{ id: 'exercise-one', sets: [] }] });
   const first = writeWorkoutDataToNoteContent(original, firstData);
   assert.equal(readWorkoutDataFromNoteContent(first), firstData);
-  assert.equal(first.includes('workoutData:'), false);
   assert.equal(first.endsWith('Notes stay here.\n'), true, 'authored body content is preserved');
 
   const secondData = JSON.stringify({ version: 1, exercises: [] });
@@ -822,9 +863,10 @@ test('native workout session stores every exercise and set atomically in one not
   assert.equal(second.exercise.frontmatter.totalReps, 14);
   assert.equal(second.exercise.frontmatter.totalVolume, 1460);
   for (const derived of ['setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'lastSetEndedAt']) {
-    assert.equal(Object.hasOwn(second.session.frontmatter, derived), false, `${derived} derives from workoutData`);
+    assert.equal(Object.hasOwn(second.session.frontmatter, derived), false, `${derived} derives from the nested session graph`);
   }
-  assert.equal(Object.hasOwn(second.session.frontmatter, 'workoutData'), false, 'internal workout structure is not exposed as a property');
+  assert.equal(Object.hasOwn(second.session.frontmatter, 'workoutData'), false, 'the legacy JSON property is removed');
+  assert.equal(second.session.frontmatter.session.exercises[0].sets.length, 2, 'one nested property owns the complete graph');
   assert.deepEqual(second.session.frontmatter.tags, ['tps/record/v1/workout-session/workout-1', 'user/keep']);
   assert.equal(createCalls.filter((call) => call.kind === 'workout-exercise').length, 0, 'exercise occurrences never create child notes');
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0);
@@ -892,7 +934,7 @@ test('native workout session stores every exercise and set atomically in one not
 });
 
 test('one service-owned queue preserves concurrent workout-session mutations', async () => {
-  const { service, contents } = createHarness();
+  const { service, frontmatters } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Concurrent strength',
     startedAt: '2026-08-31T08:00:00.000Z',
@@ -908,23 +950,25 @@ test('one service-owned queue preserves concurrent workout-session mutations', a
 
   const snapshot = service.getWorkoutSnapshot(session.path);
   assert.deepEqual(snapshot.exercises[0].sets.map((set) => set.id), ['set-a', 'set-b']);
-  assert.equal(contents.get(session.path).match(/tps-health-workout-data:v1:/gu)?.length, 1);
+  assert.deepEqual(frontmatters.get(session.file).session.exercises[0].sets.map((set) => set.id), ['set-a', 'set-b']);
 });
 
-test('workout mutation retries from marker state changed immediately before Vault.process', async () => {
-  const externalData = JSON.stringify({
+test('workout mutation retries from frontmatter changed immediately before its atomic write', async () => {
+  const externalData = {
     version: 1,
     exercises: [{
       id: 'external-exercise',
       name: 'Row',
-      exercisePath: 'Health/Exercises/Row.md',
-      sets: [{ id: 'external-set', reps: 10, weight: 50, weightUnit: 'lb' }],
+      exercise: '[[Health/Exercises/Row]]',
+      sets: [{ id: 'external-set', reps: 10, weight: 50, unit: 'lb' }],
     }],
-  });
+  };
   const { service } = createHarness({
-    beforeVaultProcess({ call, file, contents }) {
-      if (call !== 1) return;
-      contents.set(file.path, writeWorkoutDataToNoteContent(contents.get(file.path), externalData));
+    beforeFrontmatterProcess({ file, frontmatters, writeFrontmatterContent }) {
+      const next = { ...frontmatters.get(file), session: externalData };
+      frontmatters.set(file, next);
+      writeFrontmatterContent(file, next);
+      this.beforeFrontmatterProcess = null;
     },
   });
   const session = await service.createWorkoutSession({
@@ -940,45 +984,72 @@ test('workout mutation retries from marker state changed immediately before Vaul
   assert.deepEqual(snapshot.exercises.flatMap((exercise) => exercise.sets.map((set) => set.id)), ['external-set', 'local-set']);
 });
 
-test('an unreadable workout marker fails closed instead of being mistaken for an empty session', async () => {
-  const { service, contents } = createHarness();
+test('the next workout edit migrates a legacy body comment into the nested session property', async () => {
+  const { service, contents, frontmatters } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Legacy comment workout', startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-legacy-comment');
+  const legacyData = JSON.stringify({
+    version: 1,
+    exercises: [{
+      id: 'legacy-exercise', name: 'Row', exercisePath: 'Health/Exercises/Row.md',
+      sets: [{ id: 'legacy-set', reps: 10, weight: 50, weightUnit: 'lb' }],
+    }],
+  });
+  const legacyFrontmatter = { ...frontmatters.get(session.file) };
+  delete legacyFrontmatter.session;
+  frontmatters.set(session.file, legacyFrontmatter);
+  const withoutSession = contents.get(session.path).replace(/^session:.*\n/mu, '');
+  contents.set(session.path, writeWorkoutDataToNoteContent(withoutSession, legacyData));
+
+  await service.appendWorkoutSet(session.file, {
+    id: 'new-set', exercise: 'Row', exercisePath: 'Health/Exercises/Row.md', reps: 8, weight: 60,
+  });
+
+  assert.deepEqual(frontmatters.get(session.file).session.exercises[0].sets.map((set) => set.id), ['legacy-set', 'new-set']);
+  assert.equal(readWorkoutDataFromNoteContent(contents.get(session.path)), null, 'the legacy comment is removed after the atomic property write');
+});
+
+test('an unreadable nested workout session fails closed instead of being mistaken for an empty session', async () => {
+  const { service, contents, frontmatters } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Corrupt sync payload', startedAt: '2026-08-31T08:00:00.000Z',
   }, 'workout-corrupt');
-  const corrupt = `${contents.get(session.path)}<!-- tps-health-workout-data:v1:%E0%A4%A -->\n`;
+  const corrupt = contents.get(session.path).replace(/^session:.*$/mu, 'session: invalid-synced-value');
   contents.set(session.path, corrupt);
+  frontmatters.set(session.file, { ...frontmatters.get(session.file), session: 'invalid-synced-value' });
   await assert.rejects(
     () => service.appendWorkoutSet(session.file, {
       id: 'must-not-write', exercise: 'Row', exercisePath: 'Health/Exercises/Row.md', reps: 10,
     }),
-    /body data is invalid/u,
+    /session property is invalid/u,
   );
   assert.equal(contents.get(session.path), corrupt);
 });
 
-test('body success plus a transient or repeated GCM failure cannot duplicate a workout set', async () => {
-  const transient = createHarness({ beforeApiUpdate: (call) => call === 1 ? null : undefined });
-  const transientSession = await transient.service.createWorkoutSession({
-    title: 'Transient retry', startedAt: '2026-08-31T08:00:00.000Z',
-  }, 'workout-transient');
-  await transient.service.appendWorkoutSet(transientSession.file, {
-    id: 'stable-set', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 8,
+test('a failed atomic frontmatter write can be retried without duplicating a workout set', async () => {
+  const harness = createHarness({
+    beforeFrontmatterProcess() {
+      this.beforeFrontmatterProcess = null;
+      throw new Error('simulated frontmatter failure');
+    },
   });
-  assert.equal(transient.updateCalls.length, 2, 'frontmatter reconciliation retries without replaying the body mutation');
-  assert.deepEqual(transient.service.getWorkoutSnapshot(transientSession.path).exercises[0].sets.map((set) => set.id), ['stable-set']);
-
-  const repeated = createHarness({ beforeApiUpdate: () => null });
-  const repeatedSession = await repeated.service.createWorkoutSession({
-    title: 'Deferred cleanup', startedAt: '2026-08-31T09:00:00.000Z',
-  }, 'workout-deferred');
-  const set = { id: 'retry-safe-set', exercise: 'Row', exercisePath: 'Health/Exercises/Row.md', reps: 10 };
-  await repeated.service.appendWorkoutSet(repeatedSession.file, set);
-  await repeated.service.appendWorkoutSet(repeatedSession.file, set);
-  assert.deepEqual(repeated.service.getWorkoutSnapshot(repeatedSession.path).exercises[0].sets.map((entry) => entry.id), ['retry-safe-set']);
+  const session = await harness.service.createWorkoutSession({
+    title: 'Retry-safe strength', startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-retry-safe');
+  const set = { id: 'stable-set', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 8 };
+  await assert.rejects(() => harness.service.appendWorkoutSet(session.file, set), /simulated frontmatter failure/u);
+  await harness.service.appendWorkoutSet(session.file, set);
+  await harness.service.appendWorkoutSet(session.file, set);
+  assert.deepEqual(harness.service.getWorkoutSnapshot(session.path).exercises[0].sets.map((entry) => entry.id), ['stable-set']);
 });
 
-test('a terminal workout update rolls back its body marker when GCM cannot commit the semantic state', async () => {
-  const failed = createHarness({ beforeApiUpdate: () => null });
+test('a failed terminal workout update leaves the nested session and semantic state untouched', async () => {
+  const failed = createHarness({
+    beforeFrontmatterProcess() {
+      throw new Error('simulated frontmatter failure');
+    },
+  });
   const session = await failed.service.createWorkoutSession({
     title: 'Failed finish', startedAt: '2026-08-31T10:00:00.000Z',
   }, 'workout-failed-finish');
@@ -986,14 +1057,14 @@ test('a terminal workout update rolls back its body marker when GCM cannot commi
 
   await assert.rejects(
     () => failed.service.finishWorkout(session.file, '2026-08-31T11:00:00.000Z'),
-    /not found/u,
+    /simulated frontmatter failure/u,
   );
-  assert.equal(failed.contents.get(session.path), before, 'the body and semantic frontmatter cannot split into two committed states');
+  assert.equal(failed.contents.get(session.path), before, 'session data and semantic frontmatter are one atomic write');
   assert.equal(failed.service.getWorkoutSnapshot(session.path).status, 'active');
 });
 
 test('native workout structure edits persist sets, exercise order, supersets, and drop sets in the session note', async () => {
-  const { service, files, contents } = createHarness();
+  const { service, files, frontmatters, contents } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Live strength',
     startedAt: '2026-08-31T08:00:00.000Z',
@@ -1060,8 +1131,9 @@ test('native workout structure edits persist sets, exercise order, supersets, an
   assert.equal(benchSets[1].setType, 'normal');
   assert.equal(benchSets[2].setType, 'drop');
 
-  const stored = JSON.parse(readWorkoutDataFromNoteContent(contents.get(session.file.path)));
+  const stored = frontmatters.get(session.file).session;
   assert.deepEqual(stored.exercises.map((exercise) => exercise.name), ['Bench press', 'Overhead press', 'Row']);
+  assert.equal(readWorkoutDataFromNoteContent(contents.get(session.file.path)), null, 'new storage never writes a body comment');
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0, 'structural edits never create child notes');
 });
 
@@ -1145,7 +1217,8 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
   assert.deepEqual(result, { sessions: 1, childNotes: 1, consolidated: 1, trashed: 1, failed: 0 });
   assert.equal(files.has(child.path), false);
   assert.equal(Object.hasOwn(frontmatters.get(session), 'workoutData'), false);
-  assert.equal(typeof readWorkoutDataFromNoteContent(contents.get(session.path)), 'string');
+  assert.equal(typeof frontmatters.get(session).session, 'object');
+  assert.equal(readWorkoutDataFromNoteContent(contents.get(session.path)), null);
   assert.equal(service.getWorkoutSnapshot(session.path).setCount, 1, 'the parent remains complete after child cleanup');
   assert.ok(exerciseDefinitions.has('Health/Exercises/Bench press.md'), 'consolidation backfills a reusable definition without moving session sets into it');
   assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].exercisePath, 'Health/Exercises/Bench press.md');

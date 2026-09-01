@@ -4,7 +4,7 @@ import { id, isoDateKey } from './format';
 import * as logger from './logger';
 import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
 
-export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 3;
+export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 4;
 const WORKOUT_DATA_VERSION = 1;
 const WORKOUT_DATA_BODY_PREFIX = '<!-- tps-health-workout-data:v1:';
 const WORKOUT_DATA_BODY_SUFFIX = ' -->';
@@ -34,10 +34,10 @@ interface NativeRecordsApi {
   } | null;
 }
 
-class WorkoutMarkerConflictError extends Error {
+class WorkoutSessionConflictError extends Error {
   constructor() {
-    super('Workout session body changed while the mutation was being prepared.');
-    this.name = 'WorkoutMarkerConflictError';
+    super('Workout session data changed while the mutation was being prepared.');
+    this.name = 'WorkoutSessionConflictError';
   }
 }
 
@@ -104,11 +104,6 @@ interface StoredWorkoutExercise {
   exercisePath: string;
   supersetGroupId?: string;
   sets: Array<Record<string, unknown>>;
-}
-
-interface StoredWorkoutData {
-  version: number;
-  exercises: StoredWorkoutExercise[];
 }
 
 export interface NativeWorkoutStoragePlan {
@@ -395,7 +390,36 @@ const numberValue = (value: unknown): number => {
 
 const storedWorkoutSets = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value)
   ? value.filter((set): set is Record<string, unknown> => !!set && typeof set === 'object' && !Array.isArray(set))
-    .map((set) => ({ ...set }))
+    .map((set) => ({
+      id: String(set.id || '').trim(),
+      ...(set.reps != null ? { reps: numberValue(set.reps) } : {}),
+      ...(set.weight != null ? { weight: numberValue(set.weight) } : {}),
+      weightUnit: String(set.unit || set.weightUnit || 'lb').trim() || 'lb',
+      ...(set.perArm === true ? { perArm: true } : {}),
+      ...(set.distance != null ? { distance: numberValue(set.distance) } : {}),
+      ...(String(set.distanceUnit || '').trim() ? { distanceUnit: String(set.distanceUnit).trim() } : {}),
+      ...(set.duration != null || set.durationSeconds != null
+        ? { durationSeconds: numberValue(set.duration ?? set.durationSeconds) }
+        : {}),
+      ...(set.rpe != null ? { rpe: numberValue(set.rpe) } : {}),
+      ...(set.rest != null || set.restSeconds != null
+        ? { restSeconds: numberValue(set.rest ?? set.restSeconds) }
+        : {}),
+      setType: String(set.type || set.setType || 'normal').trim() || 'normal',
+      ...(String(set.drop || set.dropSetGroupId || '').trim()
+        ? { dropSetGroupId: String(set.drop || set.dropSetGroupId).trim() }
+        : {}),
+      ...(String(set.completed || set.completedDate || set.endedAt || '').trim()
+        ? { completedDate: String(set.completed || set.completedDate || set.endedAt).trim() }
+        : {}),
+      ...(String(set.restStarted || set.restStartedAt || '').trim()
+        ? { restStartedAt: String(set.restStarted || set.restStartedAt).trim() }
+        : {}),
+      ...(String(set.started || set.startedAt || '').trim()
+        ? { startedAt: String(set.started || set.startedAt).trim() }
+        : {}),
+      ...(String(set.note || '').trim() ? { note: String(set.note).trim() } : {}),
+    }))
   : [];
 
 const storedWorkoutExercises = (value: unknown): StoredWorkoutExercise[] | null => {
@@ -410,28 +434,59 @@ const storedWorkoutExercises = (value: unknown): StoredWorkoutExercise[] | null 
   return raw.flatMap((entry, index): StoredWorkoutExercise[] => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
     const record = entry as Record<string, unknown>;
-    const name = String(record.name || record.exercise || record.title || '').trim();
+    const linkedExercise = wikilinkPath(record.exercise || record.exercisePath);
+    const name = String(record.name || record.title || linkedExercise.split('/').pop() || '').trim();
     if (!name) return [];
     return [{
       id: String(record.id || `exercise-${index + 1}`).trim() || `exercise-${index + 1}`,
       name,
-      exercisePath: wikilinkPath(record.exercisePath),
-      supersetGroupId: String(record.supersetGroupId || '').trim() || undefined,
+      exercisePath: linkedExercise,
+      supersetGroupId: String(record.superset || record.supersetGroupId || '').trim() || undefined,
       sets: storedWorkoutSets(record.sets),
     }];
   });
 };
 
-const workoutDataValue = (exercises: StoredWorkoutExercise[]): string => JSON.stringify({
+/**
+ * Public frontmatter uses short, human-facing nested keys while the service
+ * normalizes them back to its existing internal model. This keeps one Base-
+ * queryable top-level property without leaking implementation-shaped fields.
+ */
+export const workoutSessionPropertyValue = (exercises: StoredWorkoutExercise[]): Record<string, unknown> => ({
   version: WORKOUT_DATA_VERSION,
   exercises: exercises.map((exercise) => ({
     id: exercise.id,
     name: exercise.name,
-    exercisePath: exercise.exercisePath || '',
-    ...(exercise.supersetGroupId ? { supersetGroupId: exercise.supersetGroupId } : {}),
-    sets: exercise.sets.map((set) => ({ ...set })),
+    ...(exercise.exercisePath ? { exercise: `[[${exercise.exercisePath.replace(/\.md$/iu, '')}]]` } : {}),
+    ...(exercise.supersetGroupId ? { superset: exercise.supersetGroupId } : {}),
+    sets: exercise.sets.map((rawSet) => {
+      const set = storedWorkoutSets([rawSet])[0] || {};
+      return compactRecordProperties({
+        id: set.id,
+        reps: set.reps,
+        weight: set.weight,
+        unit: set.weightUnit,
+        perArm: set.perArm === true ? true : undefined,
+        distance: set.distance,
+        distanceUnit: set.distanceUnit,
+        duration: set.durationSeconds,
+        rpe: set.rpe,
+        rest: set.restSeconds,
+        type: String(set.setType || 'normal') === 'normal' ? undefined : set.setType,
+        drop: set.dropSetGroupId,
+        completed: set.completedDate,
+        restStarted: set.restStartedAt,
+        started: set.startedAt,
+        note: set.note,
+      });
+    }),
   })),
-} as StoredWorkoutData);
+});
+
+const workoutSessionState = (value: unknown): string | null => {
+  const exercises = storedWorkoutExercises(value);
+  return exercises ? JSON.stringify(workoutSessionPropertyValue(exercises)) : null;
+};
 
 function workoutDataBodyMatch(content: string): RegExpMatchArray | null {
   const escapedPrefix = WORKOUT_DATA_BODY_PREFIX.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -441,6 +496,34 @@ function workoutDataBodyMatch(content: string): RegExpMatchArray | null {
 
 function workoutDataMarkerState(content: string): string | null {
   return workoutDataBodyMatch(content)?.[0] || null;
+}
+
+function workoutFrontmatterFromContent(content: string): Record<string, unknown> {
+  const info = getFrontMatterInfo(String(content || ''));
+  if (!info.exists) return {};
+  const parsed = parseYaml(info.frontmatter);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
+function workoutStorageStateFromContent(content: string): string | null {
+  const frontmatter = workoutFrontmatterFromContent(content);
+  return workoutStorageState(frontmatter, workoutDataMarkerState(content));
+}
+
+function workoutStorageState(
+  frontmatter: Record<string, unknown>,
+  legacyMarker: string | null = null,
+): string | null {
+  if (Object.prototype.hasOwnProperty.call(frontmatter, 'session')) {
+    return `session:${workoutSessionState(frontmatter.session) || 'invalid'}`;
+  }
+  if (legacyMarker) return `body:${legacyMarker}`;
+  if (Object.prototype.hasOwnProperty.call(frontmatter, 'workoutData')) {
+    return `legacy-property:${workoutSessionState(frontmatter.workoutData) || 'invalid'}`;
+  }
+  return null;
 }
 
 function restoreWorkoutDataMarkerState(content: string, markerState: string | null): string {
@@ -603,16 +686,20 @@ const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
 };
 
 function workoutSessionDataUpdates(
+  exercises: StoredWorkoutExercise[],
   updates: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
     ...clearProperties(REDUNDANT_WORKOUT_SESSION_KEYS),
+    session: workoutSessionPropertyValue(exercises),
     workoutData: null,
     ...compactRecordProperties({
       status: updates.status,
       endedAt: updates.endedAt || updates.completedDate,
       caloriesBurned: updates.caloriesBurned,
+      archived: updates.archived,
     }),
+    ...(updates.archivedDate === null ? { archivedDate: null } : {}),
   };
 }
 
@@ -656,6 +743,9 @@ function minimalNativeRecordProperties(
       endedAt: properties.endedAt || properties.completedDate,
       workoutPlan: properties.workoutPlan || properties.workoutPlanPath,
       caloriesBurned: properties.caloriesBurned,
+      session: storedWorkoutExercises(properties.session)
+        ? workoutSessionPropertyValue(storedWorkoutExercises(properties.session) || [])
+        : undefined,
     });
   }
   return compactRecordProperties(properties);
@@ -875,7 +965,7 @@ export class HealthNativeRecordService {
         try {
           return await mutation(session);
         } catch (error) {
-          if (!(error instanceof WorkoutMarkerConflictError) || attempt >= 2) throw error;
+          if (!(error instanceof WorkoutSessionConflictError) || attempt >= 2) throw error;
           logger.flowWarn('WorkoutStorage', 'mutation:retry', {
             path: session.path,
             surface,
@@ -951,6 +1041,7 @@ export class HealthNativeRecordService {
       startedAt,
       workoutPlan: this.recordLink(properties.workoutPlan || properties.workoutPlanPath),
       caloriesBurned: properties.caloriesBurned,
+      session: workoutSessionPropertyValue([]),
     });
     const api = this.requireApi();
     const record = await api.create('workout-session', recordProperties, {
@@ -1243,83 +1334,58 @@ export class HealthNativeRecordService {
     exercises: StoredWorkoutExercise[],
     updates: Record<string, unknown>,
     surface: string,
-    expectedMarkerState: string | null,
+    expectedStorageState: string | null,
   ): Promise<NativeRecordHandle | null> {
-    const workoutData = workoutDataValue(exercises);
-    const committedMarkerState = workoutDataMarkerState(writeWorkoutDataToNoteContent('', workoutData));
-    let bodyWritten = false;
-    let markerConflict = false;
-    await this.plugin.app.vault.process(session.file, (content) => {
-      if (workoutDataMarkerState(content) !== expectedMarkerState) {
-        markerConflict = true;
-        return content;
+    const beforeContent = await this.plugin.app.vault.read(session.file);
+    const currentStorageState = workoutStorageStateFromContent(beforeContent);
+    if (currentStorageState !== expectedStorageState) throw new WorkoutSessionConflictError();
+    const legacyMarker = workoutDataMarkerState(beforeContent);
+    const nextValues = workoutSessionDataUpdates(exercises, updates);
+    let conflict = false;
+    let committedFrontmatter: Record<string, unknown> | null = null;
+    await this.plugin.app.fileManager.processFrontMatter(session.file, (frontmatter) => {
+      const current = frontmatter as Record<string, unknown>;
+      if (workoutStorageState(current, legacyMarker) !== expectedStorageState) {
+        conflict = true;
+        return;
       }
-      const current = readWorkoutDataFromNoteContent(content);
-      if (current === workoutData) {
-        bodyWritten = true;
-        return content;
+      for (const [key, value] of Object.entries(nextValues)) {
+        if (value == null) delete current[key];
+        else current[key] = value;
       }
-      bodyWritten = true;
-      return writeWorkoutDataToNoteContent(content, workoutData);
+      current.modifiedDate = new Date().toISOString();
+      committedFrontmatter = { ...current };
     });
-    if (markerConflict) throw new WorkoutMarkerConflictError();
-    if (!bodyWritten) return null;
+    if (conflict) throw new WorkoutSessionConflictError();
+    if (!committedFrontmatter) return null;
     this.workoutDataByPath.set(session.file.path, cloneStoredWorkoutExercises(exercises));
-    let lastError: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const updated = await this.requireApi().update(
-          { path: session.file.path, id: session.id },
-          workoutSessionDataUpdates(updates),
-          { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface },
-        );
-        if (updated) return updated;
-      } catch (error) {
-        lastError = error;
-      }
-      logger.flowWarn('WorkoutStorage', 'frontmatter:retry', {
-        path: session.file.path,
-        surface,
-        attempt: attempt + 1,
-      });
-    }
-    if (Object.keys(updates).length === 0) {
-      try {
-        const current = await this.requireApi().resolve({ path: session.file.path, id: session.id });
-        if (current?.kind === 'workout-session') {
-          logger.flowWarn('WorkoutStorage', 'frontmatter:deferred', {
-            path: session.file.path,
-            surface,
-          });
-          return current;
+    if (legacyMarker) {
+      let markerConflict = false;
+      await this.plugin.app.vault.process(session.file, (content) => {
+        const currentMarker = workoutDataMarkerState(content);
+        if (!currentMarker) return content;
+        if (currentMarker !== legacyMarker) {
+          markerConflict = true;
+          return content;
         }
-      } catch (error) {
-        lastError ||= error;
+        return restoreWorkoutDataMarkerState(content, null);
+      });
+      if (markerConflict) {
+        logger.flowWarn('WorkoutStorage', 'legacy-comment:changed', {
+          path: session.path,
+          surface,
+        });
+      } else {
+        logger.flow('WorkoutStorage', 'legacy-comment:removed', {
+          path: session.path,
+          surface,
+        });
       }
     }
-    let rolledBack = false;
-    await this.plugin.app.vault.process(session.file, (content) => {
-      if (workoutDataMarkerState(content) !== committedMarkerState) return content;
-      rolledBack = true;
-      return restoreWorkoutDataMarkerState(content, expectedMarkerState);
-    });
-    if (rolledBack) {
-      const priorValue = expectedMarkerState == null
-        ? null
-        : readWorkoutDataFromNoteContent(expectedMarkerState);
-      const priorExercises = priorValue == null ? null : storedWorkoutExercises(priorValue);
-      if (priorExercises) this.workoutDataByPath.set(session.file.path, priorExercises);
-      else this.workoutDataByPath.delete(session.file.path);
-      logger.flowWarn('WorkoutStorage', 'body:rolled-back', {
-        path: session.file.path,
-        surface,
-      });
-    } else {
-      this.workoutDataByPath.delete(session.file.path);
-      void this.refreshFile(session.file);
-    }
-    if (lastError instanceof Error) throw lastError;
-    return null;
+    return await this.requireApi().resolve({ path: session.path, id: session.id }) || {
+      ...session,
+      frontmatter: committedFrontmatter,
+    };
   }
 
   async ensureWorkoutExercise(
@@ -1388,11 +1454,13 @@ export class HealthNativeRecordService {
     const initialSession = await this.requireApi().resolve(reference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Native workout session was not found.');
     return this.serializeWorkoutSessionMutation(initialSession, 'health-workout-discard', async (session) => {
-      const updated = await this.requireApi().update({ path: session.path, id: session.id }, {
+      const { exercises, legacyChildren, markerState } = await this.workoutExercisesForWrite(session);
+      const updated = await this.updateWorkoutSessionData(session, exercises, {
         status: 'discarded', archived: true, archivedDate: null,
-      }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-discard' });
+      }, 'health-workout-discard', markerState);
       if (!updated) throw new Error('Native workout session was not found.');
       this.trackHandle(updated);
+      if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
       return updated;
     });
   }
@@ -1882,7 +1950,7 @@ export class HealthNativeRecordService {
         if (importedWorkoutExercises) {
           await this.serializeWorkoutSessionMutation(record, 'health-legacy-import', async (session) => {
             const content = await this.plugin.app.vault.read(session.file);
-            const markerState = workoutDataMarkerState(content);
+            const markerState = workoutStorageStateFromContent(content);
             const updated = await this.updateWorkoutSessionData(
               session,
               importedWorkoutExercises!,
@@ -2068,12 +2136,19 @@ export class HealthNativeRecordService {
   }
 
   private workoutExercisesForRead(session: IndexedHealthRecord | NativeRecordHandle): StoredWorkoutExercise[] {
+    if (Object.prototype.hasOwnProperty.call(session.frontmatter, 'session')) {
+      return cloneStoredWorkoutExercises(storedWorkoutExercises(session.frontmatter.session) || []);
+    }
     const bodyData = this.workoutDataByPath.get(session.file.path);
     if (bodyData) return cloneStoredWorkoutExercises(bodyData);
     return this.workoutExercisesWithoutBodyCache(session);
   }
 
   private workoutExercisesWithoutBodyCache(session: IndexedHealthRecord | NativeRecordHandle): StoredWorkoutExercise[] {
+    if (Object.prototype.hasOwnProperty.call(session.frontmatter, 'session')) {
+      const embedded = storedWorkoutExercises(session.frontmatter.session);
+      if (embedded) return embedded;
+    }
     if (Object.prototype.hasOwnProperty.call(session.frontmatter, 'workoutData')) {
       const embedded = storedWorkoutExercises(session.frontmatter.workoutData);
       if (embedded) return embedded;
@@ -2109,20 +2184,27 @@ export class HealthNativeRecordService {
     markerState: string | null;
   }> {
     const content = await this.plugin.app.vault.read(session.file);
+    const frontmatter = workoutFrontmatterFromContent(content);
+    const hasSession = Object.prototype.hasOwnProperty.call(frontmatter, 'session');
+    const nested = hasSession ? storedWorkoutExercises(frontmatter.session) : null;
+    if (hasSession && !nested) {
+      throw new Error('Workout session property is invalid; no changes were written.');
+    }
     const markerState = workoutDataMarkerState(content);
     const bodyValue = readWorkoutDataFromNoteContent(content);
     const stored = bodyValue == null ? null : storedWorkoutExercises(bodyValue);
-    if (markerState != null && !stored) {
+    if (!hasSession && markerState != null && !stored) {
       throw new Error('Workout session body data is invalid; no changes were written.');
     }
+    const authoritativeSession: NativeRecordHandle = { ...session, frontmatter };
     const legacyChildren = this.getWorkoutExerciseRecords(session);
     return {
       exercises: await this.ensureWorkoutExerciseDefinitionPaths(
-        stored || this.workoutExercisesWithoutBodyCache(session),
+        nested || stored || this.workoutExercisesWithoutBodyCache(authoritativeSession),
         resolver,
       ),
       legacyChildren,
-      markerState,
+      markerState: workoutStorageStateFromContent(content),
     };
   }
 
@@ -2330,8 +2412,12 @@ export class HealthNativeRecordService {
         ? parsed as Record<string, unknown>
         : null;
       if (String(resolvedFrontmatter?.kind || '') === 'workout-session') {
-        const bodyValue = readWorkoutDataFromNoteContent(content);
-        const exercises = bodyValue == null ? null : storedWorkoutExercises(bodyValue);
+        const workoutFrontmatter = resolvedFrontmatter as Record<string, unknown>;
+        const nested = Object.prototype.hasOwnProperty.call(workoutFrontmatter, 'session')
+          ? storedWorkoutExercises(workoutFrontmatter.session)
+          : null;
+        const bodyValue = nested ? null : readWorkoutDataFromNoteContent(content);
+        const exercises = nested || (bodyValue == null ? null : storedWorkoutExercises(bodyValue));
         if (exercises) this.workoutDataByPath.set(file.path, exercises);
         else this.workoutDataByPath.delete(file.path);
       } else {
