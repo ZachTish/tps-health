@@ -854,11 +854,11 @@ test('native workout session stores every exercise and set atomically in one not
       sets: [
         {
           id: 'set-1', ordinal: 1, reps: 8, weight: 100, weightUnit: 'lb', perArm: false,
-          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:05:00.000Z', note: '',
+          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:05:00.000Z', restStartedAt: '', note: '',
         },
         {
           id: 'set-2', ordinal: 2, reps: 6, weight: 110, weightUnit: 'lb', perArm: false,
-          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:10:00.000Z', note: '',
+          rpe: undefined, restSeconds: undefined, setType: 'normal', completedDate: '2026-08-24T08:10:00.000Z', restStartedAt: '', note: '',
         },
       ],
     }],
@@ -879,7 +879,7 @@ test('native workout session stores every exercise and set atomically in one not
   assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].totalVolume, 2900);
   assert.deepEqual(service.getWorkoutSnapshot(session.path).exercises[0].sets[1], {
     id: 'set-2', ordinal: 2, reps: 10, weight: 105, weightUnit: 'kg', perArm: true,
-    rpe: 8.5, restSeconds: 75, setType: 'drop', completedDate: '2026-08-24T08:10:00.000Z', note: '',
+    rpe: 8.5, restSeconds: 75, setType: 'drop', completedDate: '2026-08-24T08:10:00.000Z', restStartedAt: '', note: '',
   }, 'inline edits retain the stable set identity and update the indexed projection');
   await assert.rejects(
     () => service.updateWorkoutSet(session.file, 'missing-set', { reps: 1 }),
@@ -1027,6 +1027,7 @@ test('native workout structure edits persist sets, exercise order, supersets, an
     restSeconds: 90,
     setType: 'normal',
     completedDate: '',
+    restStartedAt: '',
     note: '',
   }, 'the new set is editable and seeded from the prior set without copying completion state');
 
@@ -1062,6 +1063,48 @@ test('native workout structure edits persist sets, exercise order, supersets, an
   const stored = JSON.parse(readWorkoutDataFromNoteContent(contents.get(session.file.path)));
   assert.deepEqual(stored.exercises.map((exercise) => exercise.name), ['Bench press', 'Overhead press', 'Row']);
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0, 'structural edits never create child notes');
+});
+
+test('native set completion starts rest only after the final superset exercise and can be undone', async () => {
+  const { service } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Superset timing',
+    startedAt: '2026-09-01T11:00:00.000Z',
+  }, 'workout-superset-timing');
+  await service.ensureWorkoutExercise(session, 'Pulldown', 'Health/Exercises/Pulldown.md');
+  await service.ensureWorkoutExercise(session, 'Pushdown', 'Health/Exercises/Pushdown.md');
+  let snapshot = service.getWorkoutSnapshot(session.path);
+  const pulldown = snapshot.exercises.find((exercise) => exercise.name === 'Pulldown');
+  const pushdown = snapshot.exercises.find((exercise) => exercise.name === 'Pushdown');
+  await service.addPlannedWorkoutSet(session.path, pulldown.id);
+  await service.addPlannedWorkoutSet(session.path, pulldown.id);
+  await service.addPlannedWorkoutSet(session.path, pushdown.id);
+  await service.addPlannedWorkoutSet(session.path, pushdown.id);
+  await service.setWorkoutSupersetLinks(session.path, pulldown.id, [pushdown.id]);
+
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const firstPulldown = snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[0];
+  const firstPushdown = snapshot.exercises.find((exercise) => exercise.id === pushdown.id).sets[0];
+  await service.updateWorkoutSet(session.path, firstPulldown.id, { completed: true });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  assert.ok(snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[0].completedDate);
+  assert.equal(snapshot.exercises.find((exercise) => exercise.id === pushdown.id).sets[0].restStartedAt, '', 'moving to the next superset member does not start rest');
+  assert.equal(snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt, '');
+
+  await service.updateWorkoutSet(session.path, firstPushdown.id, { completed: true });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const completedPushdownAt = snapshot.exercises.find((exercise) => exercise.id === pushdown.id).sets[0].completedDate;
+  assert.ok(completedPushdownAt);
+  assert.equal(
+    snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt,
+    completedPushdownAt,
+    'the next round starts resting only when the last superset member is complete',
+  );
+
+  await service.updateWorkoutSet(session.path, firstPushdown.id, { completed: false });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  assert.equal(snapshot.exercises.find((exercise) => exercise.id === pushdown.id).sets[0].completedDate, '');
+  assert.equal(snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt, '', 'undoing completion removes only the timer it started');
 });
 
 test('a blank native workout projects a newly attached exercise before its first set', async () => {
@@ -1250,9 +1293,12 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /getWorkoutProgress\(workoutId\)/u);
   assert.match(mainSource, /this\.updateNativeWorkoutSurfaces\(\)/u);
   assert.doesNotMatch(mainSource, /registerMarkdownCodeBlockProcessor\("tps-health-workout"/u);
-  assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', ''\]/u);
+  assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', 'Done'\]/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.updateSet\(exercise, set, patch\)/u);
+  assert.match(nativeWorkoutSurfaceSource, /completed\.type = 'checkbox'/u);
+  assert.match(nativeWorkoutSurfaceSource, /\{ completed: completed\.checked \}/u);
+  assert.match(nativeWorkoutSurfaceSource, /restCountdownLabel\(set\.restStartedAt, targetSeconds\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openExerciseMenu\(exercise, event\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openSetMenu\(exercise, set, event\)/u);
   assert.match(nativeWorkoutSurfaceSource, /tps-health-native-workout-row\$\{set\.dropSetGroupId \? ' is-drop-set' : ''\}/u);
@@ -1260,6 +1306,9 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(nativeWorkoutSurfaceSource, /root\.dataset\.renderKey === signature/u);
   assert.match(nativeWorkoutSurfaceSource, /instance: options\.instanceKey/u);
   assert.match(mainSource, /instanceKey: this\.workoutSurfaceInstanceKey/u);
+  assert.match(mainSource, /surface\.dataset\.renderContext = "reading"/u);
+  assert.match(mainSource, /for \(const duplicate of matches\) duplicate\.remove\(\)/u);
+  assert.match(mainSource, /if \(!target\?\.isConnected\) return false/u);
   assert.match(stylesSource, /\.markdown-source-view:not\(\.is-live-preview\) \.tps-health-native-workout-surface/u);
   assert.match(stylesSource, /\.tps-health-workout-entry-modal \.setting-item-control \{[\s\S]*?flex: 0 0 auto;/u, 'mobile set fields do not inherit a tall desktop flex basis');
   assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');

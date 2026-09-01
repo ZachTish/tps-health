@@ -2163,7 +2163,7 @@ body.is-phone .tps-health-selection-controls {
   font-size: var(--font-ui-small);
   font-variant-numeric: tabular-nums;
   gap: 6px;
-  grid-template-columns: 34px 56px minmax(132px, 1.4fr) 52px 62px 88px 58px;
+  grid-template-columns: 34px 56px minmax(132px, 1.4fr) 52px 76px 88px 92px;
   min-width: 520px;
   padding: 7px 4px;
 }
@@ -2214,6 +2214,27 @@ body.is-phone .tps-health-selection-controls {
   grid-template-columns: minmax(48px, 1fr) 45px auto;
 }
 
+.tps-health-native-workout-rest-cell {
+  align-items: center;
+  display: grid;
+  gap: 2px;
+  justify-items: stretch;
+}
+
+.tps-health-native-workout-rest-countdown {
+  color: var(--interactive-accent);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tps-health-native-workout-rest-countdown.is-ready {
+  color: var(--color-green);
+}
+
 .tps-health-native-workout-per-arm {
   align-items: center;
   color: var(--text-muted);
@@ -2236,6 +2257,14 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-native-workout-row-actions {
   gap: 3px;
   justify-content: flex-end;
+}
+
+.tps-health-native-workout-completed {
+  accent-color: var(--interactive-accent);
+  block-size: 20px;
+  flex: 0 0 auto;
+  inline-size: 20px;
+  margin: 0;
 }
 
 .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {

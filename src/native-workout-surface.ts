@@ -28,6 +28,7 @@ export interface NativeWorkoutSurfaceOptions {
   active: boolean;
   elapsedLabel: string;
   instanceKey: string;
+  defaultRestSeconds: number;
   actions: NativeWorkoutSurfaceActions;
 }
 
@@ -63,6 +64,14 @@ const formatRest = (seconds: number | undefined): string => {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return minutes ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
+};
+
+const restCountdownLabel = (startedAt: string, targetSeconds: number, now = Date.now()): string => {
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return '';
+  const elapsed = Math.max(0, Math.floor((now - started) / 1000));
+  const remaining = Math.max(0, targetSeconds - elapsed);
+  return remaining > 0 ? formatRest(remaining) : 'ready';
 };
 
 const stopInteraction = (element: HTMLElement): void => {
@@ -133,8 +142,9 @@ export function renderNativeWorkoutSurface(
     exercises: snapshot.exercises.map((exercise) => [
       exercise.id,
       exercise.supersetGroupId,
-      exercise.sets.map((set) => [set.id, set.reps, set.weight, set.weightUnit, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId]),
+      exercise.sets.map((set) => [set.id, set.reps, set.weight, set.weightUnit, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId, set.completedDate, set.restStartedAt]),
     ]),
+    defaultRestSeconds: options.defaultRestSeconds,
   });
   if (root.dataset.renderKey === signature) return;
   root.dataset.renderKey = signature;
@@ -218,7 +228,7 @@ export function renderNativeWorkoutSurface(
     const tableHeader = document.createElement('div');
     tableHeader.className = 'tps-health-native-workout-row is-header';
     tableHeader.setAttribute('role', 'row');
-    for (const label of ['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', '']) {
+    for (const label of ['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', 'Done']) {
       const cell = text('span', label);
       cell.setAttribute('role', 'columnheader');
       tableHeader.append(cell);
@@ -240,7 +250,7 @@ export function renderNativeWorkoutSurface(
           set.rpe == null ? '—' : formatNumber(set.rpe),
           formatRest(set.restSeconds),
           set.setType === 'normal' ? 'Normal' : set.setType.charAt(0).toUpperCase() + set.setType.slice(1),
-          '',
+          set.completedDate ? '✓' : '—',
         ];
         for (const value of values) {
           const cell = text('span', value);
@@ -294,17 +304,57 @@ export function renderNativeWorkoutSurface(
       const rpe = numberInput(set.rpe, `${exercise.name} set ${set.ordinal} RPE`, { min: 0, max: 10, step: '0.5' });
       rpe.addEventListener('change', () => void commit(rpe, { rpe: parsedNumber(rpe) ?? null }));
       row.append(rpe);
+      const restCell = document.createElement('div');
+      restCell.className = 'tps-health-native-workout-rest-cell';
+      restCell.setAttribute('role', 'cell');
       const rest = numberInput(set.restSeconds, `${exercise.name} set ${set.ordinal} rest seconds`, { min: 0, step: '1', integer: true });
       rest.addEventListener('change', () => void commit(rest, { restSeconds: parsedNumber(rest) ?? null }));
-      row.append(rest);
+      const restCountdown = text('span', '', 'tps-health-native-workout-rest-countdown');
+      const updateRestCountdown = (): void => {
+        const targetSeconds = Math.max(0, Math.round(parsedNumber(rest) ?? options.defaultRestSeconds));
+        const label = set.completedDate ? '' : restCountdownLabel(set.restStartedAt, targetSeconds);
+        restCountdown.textContent = label;
+        restCountdown.toggleAttribute('hidden', !label);
+        restCountdown.classList.toggle('is-ready', label === 'ready');
+      };
+      updateRestCountdown();
+      const restInterval = window.setInterval(() => {
+        if (!restCell.isConnected) {
+          window.clearInterval(restInterval);
+          return;
+        }
+        updateRestCountdown();
+      }, 1000);
+      restCell.append(rest, restCountdown);
+      row.append(restCell);
       const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);
       setType.addEventListener('change', () => void commit(setType, { setType: setType.value }));
       const rowActions = document.createElement('div');
       rowActions.className = 'tps-health-native-workout-row-actions';
       rowActions.setAttribute('role', 'cell');
+      const completed = document.createElement('input');
+      completed.type = 'checkbox';
+      completed.className = 'tps-health-native-workout-completed';
+      completed.checked = Boolean(set.completedDate);
+      completed.setAttribute('aria-label', `${exercise.name} set ${set.ordinal} complete`);
+      completed.setAttribute('title', completed.checked ? 'Mark set incomplete' : 'Finish set');
+      stopInteraction(completed);
+      completed.addEventListener('change', () => {
+        const prior = Boolean(set.completedDate);
+        completed.disabled = true;
+        status.textContent = 'Saving…';
+        void Promise.resolve(options.actions.updateSet(exercise, set, { completed: completed.checked })).then(() => {
+          status.textContent = 'Saved';
+        }).catch(() => {
+          completed.checked = prior;
+          status.textContent = 'Retry';
+        }).finally(() => {
+          completed.disabled = false;
+        });
+      });
       const setMenu = button('⋯', `${exercise.name} set ${set.ordinal} actions`, (event) => options.actions.openSetMenu(exercise, set, event));
       setMenu.classList.add('is-menu');
-      rowActions.append(status, setMenu);
+      rowActions.append(completed, status, setMenu);
       row.append(setType, rowActions);
       table.append(row);
     }

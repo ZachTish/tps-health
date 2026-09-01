@@ -7951,8 +7951,22 @@ export default class TPSHealthPlugin extends Plugin {
       document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surface.remove());
       return;
     }
+    const readingSurfacesByView = new Map<HTMLElement, Set<string>>();
     document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface[data-workout-path]").forEach((surface) => {
       const path = surface.dataset.workoutPath || "";
+      const preview = surface.closest<HTMLElement>(".markdown-preview-view");
+      if (surface.dataset.renderContext === "reading" || preview) {
+        if (preview) {
+          const paths = readingSurfacesByView.get(preview) || new Set<string>();
+          if (paths.has(path)) {
+            surface.remove();
+            logger.flow("WorkoutSurface", "reading:duplicate-removed", { path });
+            return;
+          }
+          paths.add(path);
+          readingSurfacesByView.set(preview, paths);
+        }
+      }
       const snapshot = this.nativeRecordService.getWorkoutSnapshot(path);
       if (!snapshot) {
         const active = this.getActiveWorkoutState();
@@ -7985,6 +7999,7 @@ export default class TPSHealthPlugin extends Plugin {
       active,
       elapsedLabel,
       instanceKey: this.workoutSurfaceInstanceKey,
+      defaultRestSeconds: this.settings.defaultRestSeconds,
       actions: {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
         addSet: async (exercise) => {
@@ -13667,6 +13682,7 @@ class NativeWorkoutSurfaceWidget extends WidgetType {
     const root = document.createElement("section");
     root.className = "tps-health-native-workout-surface";
     root.dataset.workoutPath = this.filePath;
+    root.dataset.renderContext = "live-preview";
     const snapshot = this.plugin.nativeRecordService?.getWorkoutSnapshot(this.filePath);
     if (snapshot) this.plugin.renderNativeWorkoutSurfaceElement(root, snapshot);
     return root;
@@ -13756,14 +13772,24 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
   if (!plugin.nativeRecordService?.isEnabled()) return;
   const snapshot = plugin.nativeRecordService.getWorkoutSnapshot(sourcePath);
   if (!snapshot) return;
-  const target = root.closest<HTMLElement>(".markdown-preview-sizer") || root;
-  const existing = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
-    .find((surface) => surface.dataset.workoutPath === snapshot.path);
-  const surface = existing || document.createElement("section");
-  surface.className = "tps-health-native-workout-surface";
-  surface.dataset.workoutPath = snapshot.path;
-  if (!existing) target.appendChild(surface);
-  plugin.renderNativeWorkoutSurfaceElement(surface, snapshot);
+  const mount = (): boolean => {
+    const target = root.closest<HTMLElement>(".markdown-preview-sizer");
+    if (!target?.isConnected) return false;
+    const matches = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
+      .filter((surface) => surface.dataset.workoutPath === snapshot.path);
+    const surface = matches.shift() || document.createElement("section");
+    for (const duplicate of matches) duplicate.remove();
+    surface.className = "tps-health-native-workout-surface";
+    surface.dataset.workoutPath = snapshot.path;
+    surface.dataset.renderContext = "reading";
+    if (surface.parentElement !== target) target.appendChild(surface);
+    plugin.renderNativeWorkoutSurfaceElement(surface, snapshot);
+    return true;
+  };
+  if (mount()) return;
+  window.requestAnimationFrame(() => {
+    if (!mount()) window.setTimeout(() => void mount(), 0);
+  });
 }
 
 function markdownFilePathForRenderedElement(plugin: TPSHealthPlugin, element: HTMLElement): string {

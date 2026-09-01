@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.32.0
+
+- Native workout sessions now reconcile to one Reading-mode surface per note pane. Obsidian may postprocess several detached Markdown fragments during a render; Health waits for the connected preview container, mounts there, and removes any duplicate surface left by an earlier render. Live Preview and Reading mode continue to use the same renderer and session snapshot.
+- Every active native workout set has an accessible completion checkbox. Completing a normal set starts the countdown on the next open set; completing a drop set advances through its linked drop chain without rest; completing a superset exercise advances to the next linked exercise and starts rest only when the final exercise in that superset round is complete.
+- The next set displays a live countdown using its saved rest duration or the configured default rest duration. Unchecking a completed set removes its completion timestamp and only the rest timer that completion started.
+- Completion, timer ownership, exercise order, supersets, drop sets, and set values remain inside the workout session's existing versioned hidden body marker. No child notes, new frontmatter properties, settings migration, or existing-workout migration are introduced. Existing completed sets remain readable and editable.
+- This is a backward-compatible workout reliability feature. Minimum supported Obsidian remains 1.12.0.
+- Validation: all 269 declared checks ran (268 passed; the one credential-gated live USDA check skipped), including the focused atomic superset timing/undo regression and Reading-mode single-surface guards. TypeScript and the mandatory separate production build passed. The final source artifacts deployed to the isolated test runtime; interactive Obsidian verification was not performed because the foreground app was a different non-production vault, which was left untouched. Production was not accessed.
+
 ## 0.31.0
 
 - Native Health notes now use the shared `tpsId` as their only TPS identity. GCM v6 reads and canonicalizes that key case-insensitively; Health cannot mint a second differently-cased ID. If GCM is absent or incompatible, reusable-note creation remains available but intentionally leaves identity absent or unchanged.
