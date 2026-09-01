@@ -894,7 +894,6 @@ export default class TPSHealthPlugin extends Plugin {
           const message = `Copy ${plan.childNotes} exercise ${plan.childNotes === 1 ? "note" : "notes"} into ${plan.sessions} workout ${plan.sessions === 1 ? "note" : "notes"}, then move the redundant child notes to trash? Workout history and reusable exercise notes are preserved.`;
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
           const result = await this.nativeRecordService.consolidateWorkoutStorage(
-            (path, mutation) => this.serializeWorkoutMutation(path, "consolidate-native-workout-storage", mutation),
             (name, existingPath) => this.ensureExerciseDefinitionForWorkout(name, existingPath)
               .then((exercise) => exercise.sourcePath || ""),
           );
@@ -908,7 +907,7 @@ export default class TPSHealthPlugin extends Plugin {
       name: "Native records: Apply readable Health filenames",
       checkCallback: (checking) => {
         const nativeRecords = this.getGcmNativeRecordsApi();
-        if (!this.nativeRecordService?.isEnabled() || Number(nativeRecords?.version) < 3 || typeof nativeRecords?.rename !== "function") return false;
+        if (!this.nativeRecordService?.isEnabled() || nativeRecords?.version !== 6 || typeof nativeRecords?.rename !== "function") return false;
         if (!checking) void this.traceCommand("normalize-native-health-filenames", async () => {
           const message = "Rename opaque food, activity, and workout record files—and exact generated title-first workout filenames—to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and other manually named files are left unchanged.";
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
@@ -3669,6 +3668,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async logSet(set: LogSetInput): Promise<WorkoutSet> {
+    if (this.nativeRecordService?.isEnabled()) return this.logSetNow(set);
     const mutationPath = this.settings.activeWorkoutPath || this.settings.activeWorkoutDailyNotePath;
     if (!mutationPath) return this.logSetNow(set);
     return this.serializeWorkoutMutation(mutationPath, "log-active-set", () => this.logSetNow(set));
@@ -4003,7 +4003,8 @@ export default class TPSHealthPlugin extends Plugin {
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
     const body = sanitizePermanentFoodNoteContent(renderedBody);
-    await this.app.vault.create(path, body);
+    const file = await this.app.vault.create(path, body);
+    await this.ensureAtomicHealthNote(file, type, normalizedItem.name);
     this.localFoodIndexDirty = true;
     logger.flow("Food", "note:create", {
       path,
@@ -4023,7 +4024,7 @@ export default class TPSHealthPlugin extends Plugin {
     return [
       "---",
       writesMetadata ? yamlScalarLine(foodFrontmatterKey(this.settings), foodFrontmatterValue(this.settings, type)) : "",
-      `name: "${item.name.replace(/"/g, '\\"')}"`,
+      `title: "${item.name.replace(/"/g, '\\"')}"`,
       writesTag ? yamlStringList("tags", [foodIdentityTagValue(tag)]) : "",
       item.brand ? `brand: "${item.brand.replace(/"/g, '\\"')}"` : "",
       yamlStringList("aliases", aliasesFromFrontmatter(item.aliases) || []),
@@ -4476,6 +4477,7 @@ export default class TPSHealthPlugin extends Plugin {
       }
       for (const key of FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
       applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
+      this.applyAtomicHealthFrontmatter(frontmatter, file, type, normalized.name);
     });
 
     if (recipeLike && recipeContent != null) {
@@ -5241,7 +5243,8 @@ export default class TPSHealthPlugin extends Plugin {
     const template = await this.readExerciseTemplate();
     const renderedBody = template ? this.renderExerciseTemplate(template, input) : this.defaultExerciseTemplate(input);
     const body = sanitizePermanentExerciseNoteContent(renderedBody);
-    await this.app.vault.create(path, body);
+    const file = await this.app.vault.create(path, body);
+    await this.ensureAtomicHealthNote(file, "exercise", input.name);
     this.exerciseSearchIndexDirty = true;
     this.exerciseSearchIndexGeneration++;
     logger.flow("Exercise", "note:create", { path, name: input.name, template: Boolean(template) });
@@ -5334,6 +5337,7 @@ export default class TPSHealthPlugin extends Plugin {
     await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, exerciseFrontmatter(input));
       for (const key of EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
+      this.applyAtomicHealthFrontmatter(frontmatter, file, "exercise", input.name);
     });
     logger.flow("Exercise", "upsert:merge", { path: file.path, name: input.name });
     return this.exerciseFromFrontmatter(file, {
@@ -5383,7 +5387,7 @@ export default class TPSHealthPlugin extends Plugin {
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!recognized) continue;
       stats.recognized++;
-      if (!`${fm.name || fm.title || file.basename}`.toLowerCase().includes(lowered)) {
+      if (!`${fm.title || fm.name || file.basename}`.toLowerCase().includes(lowered)) {
         stats.queryMiss++;
         continue;
       }
@@ -5399,7 +5403,8 @@ export default class TPSHealthPlugin extends Plugin {
     const path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutPlansFolder, `${sanitizeFileName(input.name)}.md`));
     const template = await this.readWorkoutPlanTemplate();
     const body = template ? this.renderWorkoutPlanTemplate(template, input) : this.defaultWorkoutPlanTemplate(input);
-    await this.app.vault.create(path, body);
+    const file = await this.app.vault.create(path, body);
+    await this.ensureAtomicHealthNote(file, "workout-plan", input.name);
     logger.flow("WorkoutPlan", "note:create", { path, name: input.name, template: Boolean(template) });
     return {
       id: path,
@@ -5429,6 +5434,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
       Object.assign(frontmatter, workoutPlanFrontmatter(input));
+      this.applyAtomicHealthFrontmatter(frontmatter, file, "workout-plan", input.name);
     });
     logger.flow("WorkoutPlan", "upsert:merge", { path: file.path, name: input.name });
     return this.workoutPlanFromFrontmatter(file, {
@@ -5494,7 +5500,7 @@ export default class TPSHealthPlugin extends Plugin {
     const isMeal = type === "meal";
     return normalizeFoodMetricServing({
       id: file.path,
-      name: String(fm.name || file.basename),
+      name: String(fm.title || fm.name || file.basename),
       brand: fm.brand ? String(fm.brand) : undefined,
       aliases: aliasesFromFrontmatter(fm.aliases),
       barcode: fm.barcode ? String(fm.barcode) : undefined,
@@ -7493,6 +7499,78 @@ export default class TPSHealthPlugin extends Plugin {
     return await this.app.fileManager.processFrontMatter(file, mutator);
   }
 
+  private async ensureAtomicHealthNote(file: TFile, kind: string, title: string): Promise<void> {
+    await this.processHealthFrontmatter(file, (frontmatter) => {
+      this.applyAtomicHealthFrontmatter(frontmatter, file, kind, title);
+    });
+  }
+
+  private applyAtomicHealthFrontmatter(
+    frontmatter: Record<string, any>,
+    file: TFile,
+    kind: string,
+    title: string,
+  ): void {
+    const normalizedKind = String(kind || "").trim();
+    const normalizedTitle = String(title || file.basename).replace(/\s+/gu, " ").trim() || file.basename;
+    const identity = this.getGcmAtomicHealthIdentityApi();
+    if (identity) {
+      const existingId = String(identity.getInternalId(frontmatter) || "").trim();
+      if (existingId) identity.setInternalId(frontmatter, existingId);
+      else identity.ensureInternalIdInFrontmatter(frontmatter);
+    }
+    const existingKindKey = this.findHealthFrontmatterKey(frontmatter, "kind");
+    const existingKind = existingKindKey ? String(frontmatter[existingKindKey] || "").trim() : "";
+    this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
+    const titleKey = this.findHealthFrontmatterKey(frontmatter, "title");
+    const nameKey = this.findHealthFrontmatterKey(frontmatter, "name");
+    const existingTitle = String(
+      (titleKey ? frontmatter[titleKey] : undefined)
+      || (nameKey ? frontmatter[nameKey] : undefined)
+      || normalizedTitle,
+    )
+      .replace(/\s+/gu, " ")
+      .trim();
+    this.setHealthFrontmatterValue(frontmatter, "title", existingTitle || normalizedTitle);
+    for (const retiredKey of ["name", "tpsSchemaVersion", "createdDate", "modifiedDate"]) {
+      this.deleteHealthFrontmatterValue(frontmatter, retiredKey);
+    }
+  }
+
+  private getGcmAtomicHealthIdentityApi(): {
+    getInternalId(frontmatter: Record<string, unknown>): string | null;
+    setInternalId(frontmatter: Record<string, unknown>, id: string): string;
+    ensureInternalIdInFrontmatter(frontmatter: Record<string, unknown>): string;
+  } | null {
+    const api = this.getGcmApi();
+    const identity = api?.identity;
+    if (
+      api?.nativeRecords?.version !== 6
+      || typeof api?.frontmatter?.process !== "function"
+      || typeof identity?.getInternalId !== "function"
+      || typeof identity?.setInternalId !== "function"
+      || typeof identity?.ensureInternalIdInFrontmatter !== "function"
+    ) return null;
+    return identity;
+  }
+
+  private findHealthFrontmatterKey(frontmatter: Record<string, unknown>, expectedKey: string): string | null {
+    const normalized = expectedKey.trim().toLocaleLowerCase();
+    return Object.keys(frontmatter).find((key) => key.trim().toLocaleLowerCase() === normalized) || null;
+  }
+
+  private setHealthFrontmatterValue(frontmatter: Record<string, unknown>, key: string, value: unknown): void {
+    this.deleteHealthFrontmatterValue(frontmatter, key);
+    frontmatter[key] = value;
+  }
+
+  private deleteHealthFrontmatterValue(frontmatter: Record<string, unknown>, key: string): void {
+    const normalized = key.trim().toLocaleLowerCase();
+    for (const candidate of Object.keys(frontmatter)) {
+      if (candidate.trim().toLocaleLowerCase() === normalized) delete frontmatter[candidate];
+    }
+  }
+
   private getGcmPluginState(): { present: boolean; api: any } {
     const plugins = (this.app as any).plugins;
     const mapped = plugins?.plugins?.["tps-global-context-menu"];
@@ -7962,9 +8040,7 @@ export default class TPSHealthPlugin extends Plugin {
       throw new Error("This workout is no longer active.");
     }
     try {
-      await this.serializeWorkoutMutation(snapshot.path, "native-add-planned-set", () => (
-        this.nativeRecordService!.addPlannedWorkoutSet(snapshot.path, exercise.id)
-      ));
+      await this.nativeRecordService.addPlannedWorkoutSet(snapshot.path, exercise.id);
       this.updateNativeWorkoutSurfaces();
       this.scheduleWorkoutActionBars();
       logger.flow("WorkoutSet", "planned-add:done", { path: snapshot.path, exerciseId: exercise.id, exercise: exercise.name });
@@ -8021,9 +8097,7 @@ export default class TPSHealthPlugin extends Plugin {
   ): Promise<void> {
     if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) return;
     try {
-      await this.serializeWorkoutMutation(snapshot.path, "native-reorder-exercise", () => (
-        this.nativeRecordService!.reorderWorkoutExercise(snapshot.path, exercise.id, direction)
-      ));
+      await this.nativeRecordService.reorderWorkoutExercise(snapshot.path, exercise.id, direction);
       this.updateNativeWorkoutSurfaces();
       logger.flow("Workout", "exercise:reordered", { path: snapshot.path, exerciseId: exercise.id, direction });
     } catch (error) {
@@ -8049,18 +8123,16 @@ export default class TPSHealthPlugin extends Plugin {
         if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) {
           throw new Error("This workout is no longer active.");
         }
-        await this.serializeWorkoutMutation(snapshot.path, "native-superset-link", async () => {
-          const selectedIds = [...selected];
-          if (created) {
-            const definition = await this.ensureExerciseDefinitionForWorkout(created);
-            await this.nativeRecordService!.ensureWorkoutExercise(snapshot.path, created, definition.sourcePath);
-            const refreshed = this.nativeRecordService!.getWorkoutSnapshot(snapshot.path);
-            const added = refreshed?.exercises.find((candidate) => normalizeLookup(candidate.name) === normalizeLookup(created));
-            if (!added) throw new Error("The new superset exercise could not be resolved.");
-            selectedIds.push(added.id);
-          }
-          await this.nativeRecordService!.setWorkoutSupersetLinks(snapshot.path, exercise.id, selectedIds);
-        });
+        const selectedIds = [...selected];
+        if (created) {
+          const definition = await this.ensureExerciseDefinitionForWorkout(created);
+          await this.nativeRecordService.ensureWorkoutExercise(snapshot.path, created, definition.sourcePath);
+          const refreshed = this.nativeRecordService.getWorkoutSnapshot(snapshot.path);
+          const added = refreshed?.exercises.find((candidate) => normalizeLookup(candidate.name) === normalizeLookup(created));
+          if (!added) throw new Error("The new superset exercise could not be resolved.");
+          selectedIds.push(added.id);
+        }
+        await this.nativeRecordService.setWorkoutSupersetLinks(snapshot.path, exercise.id, selectedIds);
         this.updateNativeWorkoutSurfaces();
         logger.flow("Workout", "superset:done", { path: snapshot.path, exerciseId: exercise.id, selected: selected.length, created: Boolean(created) });
       },
@@ -8087,9 +8159,7 @@ export default class TPSHealthPlugin extends Plugin {
         if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) {
           throw new Error("This workout is no longer active.");
         }
-        await this.serializeWorkoutMutation(snapshot.path, "native-drop-set-link", () => (
-          this.nativeRecordService!.setWorkoutDropSetLinks(snapshot.path, exercise.id, set.id, selected, Boolean(created))
-        ));
+        await this.nativeRecordService.setWorkoutDropSetLinks(snapshot.path, exercise.id, set.id, selected, Boolean(created));
         this.updateNativeWorkoutSurfaces();
         logger.flow("Workout", "drop-set:done", { path: snapshot.path, exerciseId: exercise.id, setId: set.id, selected: selected.length, created: Boolean(created) });
       },
@@ -8120,9 +8190,7 @@ export default class TPSHealthPlugin extends Plugin {
   private async updateNativeWorkoutSetInline(exercisePath: string, setId: string, patch: NativeWorkoutSetPatch): Promise<void> {
     if (!this.nativeRecordService?.isEnabled()) throw new Error("Native workout storage is not enabled.");
     try {
-      await this.serializeWorkoutMutation(exercisePath, "native-inline-set-edit", () => (
-        this.nativeRecordService!.updateWorkoutSet(exercisePath, setId, patch)
-      ));
+      await this.nativeRecordService.updateWorkoutSet(exercisePath, setId, patch);
       this.updateNativeWorkoutSurfaces();
       this.scheduleWorkoutActionBars();
       logger.flow("WorkoutSet", "inline-edit:done", {
@@ -8424,7 +8492,7 @@ export default class TPSHealthPlugin extends Plugin {
         fm.kind === "workout-plan" ||
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!isWorkoutPlan) continue;
-      if (normalizeLookup(String(fm.name || fm.title || file.basename)) === normalized) return this.workoutPlanFromFrontmatter(file, fm);
+      if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) return this.workoutPlanFromFrontmatter(file, fm);
     }
     return null;
   }
@@ -8602,7 +8670,7 @@ export default class TPSHealthPlugin extends Plugin {
     return [
 	      "---",
 	      "kind: workout-plan",
-	      `name: \"${escapeYamlString(name)}\"`,
+	      `title: \"${escapeYamlString(name)}\"`,
 	      `cooldownDays: ${cooldownDays}`,
 	      `defaultRestSeconds: ${defaultRestSeconds}`,
       "---",
@@ -8695,7 +8763,7 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutPlanFromFrontmatter(file: TFile, fm: any): WorkoutPlanItem {
     return {
 	      id: file.path,
-	      name: String(fm.name || fm.title || file.basename),
+	      name: String(fm.title || fm.name || file.basename),
 	      sourcePath: file.path,
 	      workflowKind: "workflow",
 	      workflowType: "workout",
@@ -8775,7 +8843,7 @@ export default class TPSHealthPlugin extends Plugin {
     return [
 	      "---",
 	      "kind: workout-plan",
-	      `name: "${escapeYamlString(input.name)}"`,
+	      `title: "${escapeYamlString(input.name)}"`,
 	      input.cooldownDays != null ? `cooldownDays: ${input.cooldownDays}` : "",
 	      input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
       "---",
@@ -8809,7 +8877,7 @@ export default class TPSHealthPlugin extends Plugin {
     return [
       "---",
       "kind: exercise",
-      `name: "${escapeYamlString(input.name)}"`,
+      `title: "${escapeYamlString(input.name)}"`,
       input.category ? `category: ${input.category}` : "",
       input.primaryMuscles?.length ? `primaryMuscles: [${input.primaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
       input.secondaryMuscles?.length ? `secondaryMuscles: [${input.secondaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
@@ -8817,7 +8885,7 @@ export default class TPSHealthPlugin extends Plugin {
       input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
       input.defaultSetType ? `defaultSetType: ${input.defaultSetType}` : "",
       input.recommendedRestDays != null ? `recommendedRestDays: ${input.recommendedRestDays}` : "",
-      configuredTag ? "tags:" : "tags: []",
+      configuredTag ? "tags:" : "",
       configuredTag ? `  - "${escapeYamlString(configuredTag)}"` : "",
       input.notes ? `notes: "${escapeYamlString(input.notes)}"` : "",
       "---",
@@ -9722,7 +9790,7 @@ export default class TPSHealthPlugin extends Plugin {
         fm.tpsType === "health-exercise" ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
-      if (normalizeLookup(String(fm.name || file.basename)) === normalized) {
+      if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) {
         return this.exerciseFromFrontmatter(file, fm);
       }
     }
@@ -9732,7 +9800,7 @@ export default class TPSHealthPlugin extends Plugin {
   private exerciseFromFrontmatter(file: TFile, fm: any): ExerciseItem {
     return {
       id: file.path,
-      name: String(fm.name || file.basename),
+      name: String(fm.title || fm.name || file.basename),
       sourcePath: file.path,
       category: fm.category || "strength",
       primaryMuscles: Array.isArray(fm.primaryMuscles) ? fm.primaryMuscles.map(String) : [],
@@ -18248,7 +18316,7 @@ function foodFrontmatter(
     ...(foodIdentificationWritesMetadata(settings.foodIdentificationMode)
       ? { [foodFrontmatterKey(settings)]: foodFrontmatterValue(settings, type) }
       : {}),
-    name: item.name,
+    title: item.name,
     brand: item.brand,
     aliases: foodAliasesForItem(item).length ? foodAliasesForItem(item) : undefined,
     barcode: item.barcode,
@@ -19120,7 +19188,7 @@ function yamlStringList(key: string, values: string[]): string {
 function exerciseFrontmatter(input: CreateExerciseInput): Record<string, unknown> {
   return compactObject({
     kind: "exercise",
-    name: input.name,
+    title: input.name,
     category: input.category,
     primaryMuscles: input.primaryMuscles?.length ? input.primaryMuscles : undefined,
     secondaryMuscles: input.secondaryMuscles?.length ? input.secondaryMuscles : undefined,
@@ -19135,7 +19203,7 @@ function exerciseFrontmatter(input: CreateExerciseInput): Record<string, unknown
 function workoutPlanFrontmatter(input: CreateWorkoutPlanInput): Record<string, unknown> {
   return compactObject({
     kind: "workout-plan",
-    name: input.name,
+    title: input.name,
     cooldownDays: input.cooldownDays,
     defaultRestSeconds: input.defaultRestSeconds,
     notes: input.notes,
@@ -20825,7 +20893,7 @@ function defaultFoodLogBaseContent(settings: TPSHealthSettings, dailyFolder: str
     "    sort:",
     "      - property: completedDate",
     "        direction: DESC",
-    "      - property: createdDate",
+    "      - property: file.mtime",
     "        direction: DESC",
     "",
   ].join("\n");
@@ -20931,7 +20999,7 @@ function repairFoodLogBaseContent(content: string, settings: TPSHealthSettings, 
     "    sort:",
     "      - property: completedDate",
     "        direction: DESC",
-    "      - property: createdDate",
+    "      - property: file.mtime",
     "        direction: DESC",
   ].join("\n");
   if (/^views:\s*$/m.test(next)) return `${next}\n${foodLogView}\n`;
@@ -20964,7 +21032,7 @@ function replaceLegacyFoodLogBaseViewConfig(content: string): string {
     "    sort:",
     "      - property: completedDate",
     "        direction: DESC",
-    "      - property: createdDate",
+    "      - property: file.mtime",
     "        direction: DESC",
   ].join("\n") + "\n");
 }
@@ -20972,7 +21040,10 @@ function replaceLegacyFoodLogBaseViewConfig(content: string): string {
 function repairLogBaseViewConfig(content: string): string {
   const viewPattern = new RegExp(`(^\\s*-\\s+type:\\s+(?:${GCM_TABLE_BASE_VIEW_TYPE}|${GCM_LEGACY_LOG_BASE_VIEW_TYPE})\\s*$)([\\s\\S]*?)(?=^\\s*-\\s+type:\\s+|(?![\\s\\S]))`, "m");
   return content.replace(viewPattern, (_match, _header: string, body: string) => {
-    let nextBody = body;
+    let nextBody = body.replace(
+      /^(\s+-\s+property:\s+)createdDate\s*$/gmu,
+      "$1file.mtime",
+    );
     if (!/^\s+lineFilterKey:\s+food\s*$/m.test(nextBody) && !/^\s+lineProperty:\s+food\s*$/m.test(nextBody)) {
       nextBody += "    lineFilterKey: food\n";
     }
@@ -21012,7 +21083,7 @@ function repairLogBaseViewConfig(content: string): string {
         "    sort:",
         "      - property: completedDate",
         "        direction: DESC",
-        "      - property: createdDate",
+        "      - property: file.mtime",
         "        direction: DESC",
       ].join("\n") + "\n";
     }

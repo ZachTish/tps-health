@@ -100,7 +100,8 @@ test("Every active user preference remains bound and exerciseTag is editable", (
       `${key} must remain connected to the settings UI`,
     );
   }
-  assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag[\s\S]+?DEFAULT_SETTINGS\.exerciseTag/);
+  assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag = value\.trim\(\)/);
+  assert.match(settingsSource, /\.setName\("Food tag"\)[\s\S]+?Blank disables this identity signal/);
   assert.match(settingsSource, /\.setName\("Food frontmatter key"\)/);
   assert.match(settingsSource, /addIdentifierValue\("Food value"/);
   assert.match(settingsSource, /addIdentifierValue\("Recipe value"/);

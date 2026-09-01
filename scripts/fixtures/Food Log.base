@@ -28,8 +28,8 @@ views:
     sort:
       - property: completedDate
         direction: DESC
-      - property: createdDate
-        direction: ASC
+      - property: file.mtime
+        direction: DESC
     lineFilterKey: food
     totalsRow: top
     createAction: command

@@ -2294,7 +2294,7 @@ test("per-100 nutrition basis defaults to metric quantities and survives default
   });
   const savedFile = fake.app.vault.getAbstractFileByPath(saved.sourcePath);
   const savedContent = fake.files.get(saved.sourcePath);
-  assert.match(savedContent, /nutritionBasis: per-100g/);
+  assert.match(savedContent, /nutritionBasis: ["']?per-100g["']?/);
   const reloaded = plugin.foodFromFrontmatter(savedFile, parseFrontmatter(savedContent));
   assert.equal(reloaded.nutritionBasis, "per-100g");
   assert.equal(defaultFoodLogQuantity(reloaded), 100);
@@ -2404,7 +2404,7 @@ test("upserting an explicit labeled can keeps manual macros and skips legacy dri
     "the legacy 355 ml heuristic must not scale explicitly labeled nutrition",
   );
   const content = fake.files.get(saved.sourcePath);
-  assert.match(content, /nutritionBasis: labeled-serving/);
+  assert.match(content, /nutritionBasis: ["']?labeled-serving["']?/);
   assert.doesNotMatch(content, /servingMl:/);
   assert.match(mainSource, /!metric && serving\.nutritionBasis == null/);
 });
@@ -2603,7 +2603,8 @@ test("stale local barcode foods are enriched once and persist the labeled servin
     assert.equal(requests.length, 1);
 
     const persisted = parseFrontmatter(fake.files.get(path));
-    assert.equal(persisted.name, "My Josephs Lavash");
+    assert.equal(persisted.title, "My Josephs Lavash");
+    assert.equal(persisted.name, undefined, "title is the single display-name property");
     assert.equal(persisted.aliases, "wrap bread, favorite lavash");
     assert.equal(persisted.notes, "Keep local note");
     assert.equal(persisted.nutritionBasis, "labeled-serving");
@@ -4037,7 +4038,7 @@ test("custom food creation validates manual input and writes to the configured d
   assert.equal(files.has("Inbox/Health QA Foods/Manual Shake.md"), true);
   const content = files.get("Inbox/Health QA Foods/Manual Shake.md");
   assert.match(content, /kind: ["']?food["']?/);
-  assert.match(content, /name: "Manual Shake"/);
+  assert.match(content, /title: "Manual Shake"/);
   assert.match(content, /servingAmount: 250/);
   assert.match(content, /servingUnit: "g"/);
   assert.match(content, /calories: 204/);
@@ -4688,6 +4689,28 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems.length, 1);
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].item.name, "Eggs");
   assert.equal(normalized.pendingFoodLogDraft?.selectionItems[0].quantity, 2);
+  const retiredTags = normalizeTPSHealthSettings({
+    storageMode: "native-records",
+    workoutTag: " ",
+    exerciseTag: "",
+    customFoodTag: "\t",
+    recipeTag: "",
+  });
+  assert.deepEqual(
+    [retiredTags.workoutTag, retiredTags.exerciseTag, retiredTags.customFoodTag, retiredTags.recipeTag],
+    ["", "", "", ""],
+    "blank identity tags remain retired across native/metadata settings normalization",
+  );
+  assert.deepEqual(
+    [
+      normalizeTPSHealthSettings(retiredTags).workoutTag,
+      normalizeTPSHealthSettings(retiredTags).exerciseTag,
+      normalizeTPSHealthSettings(retiredTags).customFoodTag,
+      normalizeTPSHealthSettings(retiredTags).recipeTag,
+    ],
+    ["", "", "", ""],
+    "saving and reloading does not resurrect legacy default tags",
+  );
   assert.deepEqual(normalized.healthGoals, [
     { propertyKey: "cal", label: "Calories", unit: "kcal", kind: "max", min: undefined, max: 2100, color: undefined },
     { propertyKey: "protein", label: "Protein", unit: "g", kind: "range", min: 50, max: 250, color: undefined },
@@ -5306,6 +5329,65 @@ test("Health frontmatter writes use the native standalone route exactly once and
   assert.equal(nativeCalls, 2);
 });
 
+test("atomic Health identity is case-insensitive, canonicalized by GCM v6, and never minted locally", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  const plugin = new TPSHealthPlugin(fake.app);
+  const file = new TFile("Health/Exercises/Identity QA.md");
+  let identityCalls = 0;
+  const identity = {
+    getInternalId(frontmatter) {
+      identityCalls += 1;
+      const key = Object.keys(frontmatter).find((candidate) => candidate.toLowerCase() === "tpsid");
+      return key ? String(frontmatter[key] || "").trim() || null : null;
+    },
+    setInternalId(frontmatter, value) {
+      identityCalls += 1;
+      for (const key of Object.keys(frontmatter)) if (key.toLowerCase() === "tpsid") delete frontmatter[key];
+      frontmatter.tpsId = value;
+      return value;
+    },
+    ensureInternalIdInFrontmatter(frontmatter) {
+      identityCalls += 1;
+      frontmatter.tpsId = "gcm-owned-id";
+      return frontmatter.tpsId;
+    },
+  };
+  fake.app.plugins.plugins["tps-global-context-menu"] = {
+    api: { nativeRecords: { version: 6 }, frontmatter: { process() {} }, identity },
+  };
+
+  const frontmatter = {
+    TPSID: "existing-id",
+    tPsId: "stale-duplicate",
+    Name: "Authored title",
+    CREATEDDATE: "retired",
+  };
+  plugin.applyAtomicHealthFrontmatter(frontmatter, file, "exercise", "Fallback title");
+  assert.equal(identityCalls, 2, "GCM reads and canonicalizes the existing identity without minting");
+  assert.equal(frontmatter.tpsId, "existing-id");
+  assert.deepEqual(Object.keys(frontmatter).filter((key) => key.toLowerCase() === "tpsid"), ["tpsId"]);
+  assert.equal(frontmatter.title, "Authored title");
+  assert.equal(frontmatter.name, undefined);
+  assert.equal(frontmatter.CREATEDDATE, undefined);
+
+  fake.app.plugins.plugins["tps-global-context-menu"].api.nativeRecords.version = 5;
+  const incompatible = { TPSID: "preserved-id" };
+  plugin.applyAtomicHealthFrontmatter(incompatible, file, "exercise", "Still usable");
+  assert.equal(identityCalls, 2, "an incompatible GCM boundary is never asked to mint identity");
+  assert.equal(incompatible.TPSID, "preserved-id");
+  assert.equal(Object.hasOwn(incompatible, "tpsId"), false, "Health does not add a differently-cased duplicate");
+
+  delete fake.app.plugins.plugins["tps-global-context-menu"];
+  const standalone = {};
+  plugin.applyAtomicHealthFrontmatter(standalone, file, "exercise", "Standalone note");
+  assert.equal(Object.keys(standalone).some((key) => key.toLowerCase() === "tpsid"), false);
+  assert.equal(standalone.kind, "exercise");
+  assert.equal(standalone.title, "Standalone note");
+});
+
 test("workout completion sends unchanged status and completedDate values through the GCM frontmatter route", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -5367,7 +5449,7 @@ test("workout completion sends unchanged status and completedDate values through
 });
 
 test("all Health-owned Markdown frontmatter writes share the explicit routing helper", () => {
-  assert.equal((mainSource.match(/await this\.processHealthFrontmatter\(/g) || []).length, 9);
+  assert.equal((mainSource.match(/await this\.processHealthFrontmatter\(/g) || []).length, 10);
   assert.equal((mainSource.match(/this\.app\.fileManager\.processFrontMatter\(/g) || []).length, 1);
 });
 
@@ -6918,7 +7000,7 @@ test("existing recipe upserts hold the mutation queue and preserve unsaved edito
   const diskBefore = fake.files.get(recipe.sourcePath);
   const originalBody = stripFrontmatter(diskBefore).trim();
   const originalIngredients = parseFrontmatter(diskBefore).ingredients;
-  let editorValue = diskBefore.replace(/^(name:.*)$/m, '$1\ncustomOwner: "unsaved editor"');
+  let editorValue = diskBefore.replace(/^(title:.*)$/m, '$1\ncustomOwner: "unsaved editor"');
   const MarkdownView = globalThis.__TPSHealthTestMarkdownView;
   const view = new MarkdownView();
   view.file = new globalThis.__TPSHealthTestTFile(recipe.sourcePath);
@@ -7131,6 +7213,10 @@ test("food logging uses TPS Table without registering the retired custom Bases v
   assert.match(mainSource, /"    groupBy:"/);
   assert.match(mainSource, /"      property: completedDate"/);
   assert.match(mainSource, /"        direction: DESC"/);
+  assert.match(mainSource, /"      - property: file\.mtime"/);
+  assert.doesNotMatch(mainSource, /property: createdDate/);
+  assert.match(foodLogBaseSource, /property: completedDate[\s\S]+property: file\.mtime/);
+  assert.doesNotMatch(foodLogBaseSource, /property: createdDate/);
   assert.match(mainSource, /function legacyBroadFoodLogBaseContent\(\): string/);
   assert.match(mainSource, /function replaceLegacyFoodLogBaseViewConfig\(content: string\): string/);
   assert.match(mainSource, /const migrated = replaceLegacyFoodLogBaseViewConfig\(normalized\)/);
@@ -7957,7 +8043,11 @@ test("active workout set rows recover stale state and stay simple in the workout
 
   await plugin.addSetForExerciseToActiveWorkout("Squat");
   assert.notEqual(plugin.settings.activeWorkoutPath, "Health/Workouts/Missing Workout.md");
-  assert.match(plugin.settings.activeWorkoutPath, /^Health\/Workouts\/\d{4}-\d{2}-\d{2} - Workout(?: \d{2}\.\d{2})?\.md$/);
+  assert.match(
+    plugin.settings.activeWorkoutPath,
+    /^Health\/Workouts\/\d{4}-\d{2}-\d{2} - Workout(?: \d{2}\.\d{2})?\.md$/,
+    "the generated workout filename has exactly one date prefix across a local/UTC day boundary",
+  );
   const activePath = plugin.settings.activeWorkoutPath;
   assert.match(fake.files.get(activePath), /#tps\/workout\n\n- \[\[Health\/Exercises\/Squat\|Squat\]\] - 0 lb x 0 \[type:: workoutSet\]/);
   assert.match(fake.files.get(activePath), /\[exercisePath:: Health\/Exercises\/Squat\.md\]/);
@@ -9672,7 +9762,8 @@ test("exercise definitions remain reusable counterparts without workout-session 
   const created = await plugin.createExercise({ name: "Definition-only press" });
   let frontmatter = parseFrontmatter(fake.files.get(created.sourcePath));
   assert.equal(frontmatter.kind, "exercise");
-  assert.equal(frontmatter.name, "Definition-only press");
+  assert.equal(frontmatter.title, "Definition-only press");
+  assert.equal(frontmatter.name, undefined);
   assert.equal(frontmatter.defaultRestSeconds, 90);
   assert.equal(frontmatter.sets, undefined);
   assert.equal(frontmatter.workoutPath, undefined);
@@ -9696,16 +9787,16 @@ test("exercise definitions remain reusable counterparts without workout-session 
   const minimalExerciseFrontmatter = parseFrontmatter(fake.files.get(minimalExercise.sourcePath));
   assert.deepEqual(
     Object.keys(minimalExerciseFrontmatter).sort(),
-    ["kind", "name", "tags"],
-    "a default definition should not persist empty arrays or inherited defaults",
+    ["kind", "tags", "title"],
+    "a standalone definition stays usable without minting a Health-owned identity",
   );
 
   const minimalPlan = await plugin.createWorkoutPlan({ name: "Minimal routine" });
   const minimalPlanFrontmatter = parseFrontmatter(fake.files.get(minimalPlan.sourcePath));
   assert.deepEqual(
     Object.keys(minimalPlanFrontmatter).sort(),
-    ["kind", "name"],
-    "a default workout plan should not persist fixed workflow fields, duplicate cooldowns, or blank history",
+    ["kind", "title"],
+    "a standalone workout plan does not mint identity or persist fixed workflow fields and blank history",
   );
 });
 
@@ -9746,7 +9837,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 10, carbsG: 8, fatG: 2 },
   });
   const taggedFoodContent = fake.files.get(taggedFood.sourcePath);
-  assert.equal(parseFrontmatter(taggedFoodContent).kind, undefined, "tag-only creation must remove a template's generated kind");
+  assert.equal(parseFrontmatter(taggedFoodContent).kind, "food", "kind remains the stable user-filterable classification");
   assert.deepEqual(parseFrontmatter(taggedFoodContent).tags, ["user/pantry", "tps/food"]);
   assert.doesNotMatch(stripFrontmatter(taggedFoodContent), /^#tps\/food\s*$/m);
 
@@ -9759,7 +9850,7 @@ test("food note creation and updates write only the selected identification sign
   });
   const taggedMealContent = fake.files.get(taggedMeal.sourcePath);
   const taggedMealFrontmatter = parseFrontmatter(taggedMealContent);
-  assert.equal(taggedMealFrontmatter.kind, undefined);
+  assert.equal(taggedMealFrontmatter.kind, "meal");
   assert.deepEqual(taggedMealFrontmatter.tags, ["tps/recipe"]);
   assert.equal(taggedMealFrontmatter.servingUnit, "meal");
   assert.equal(
@@ -9789,7 +9880,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 7, carbsG: 4, fatG: 1 },
   });
   let changingFrontmatter = parseFrontmatter(fake.files.get(changing.sourcePath));
-  assert.equal(changingFrontmatter.kind, undefined, "tag-only updates must remove TPS food kind metadata");
+  assert.equal(changingFrontmatter.kind, "food", "tag-only updates retain the stable kind classification");
   assert.deepEqual(changingFrontmatter.tags, ["tps/food", "user/pantry"]);
   assert.equal(changingFrontmatter.quantity, undefined, "updating a permanent food removes leaked consumption facts");
   assert.equal(changingFrontmatter.unit, undefined);
@@ -9817,7 +9908,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 5, carbsG: 5, fatG: 1 },
   });
   const folderFrontmatter = parseFrontmatter(fake.files.get(folderFood.sourcePath));
-  assert.equal(folderFrontmatter.kind, undefined);
+  assert.equal(folderFrontmatter.kind, "food");
   assert.equal(folderFrontmatter.tags, undefined);
 });
 
@@ -9849,7 +9940,7 @@ test("custom frontmatter identifiers create, recognize, and update each reusable
     const content = fake.files.get(created.sourcePath);
     const frontmatter = parseFrontmatter(content);
     assert.equal(frontmatter.healthEntity, value);
-    assert.equal(frontmatter.kind, undefined, `${type} must not receive the hardcoded kind property`);
+    assert.equal(frontmatter.kind, type, `${type} keeps its filterable kind alongside the configured identifier`);
     assert.equal(
       foodNoteTypeFromFrontmatter(frontmatter, fake.app.vault.getAbstractFileByPath(created.sourcePath), plugin.settings),
       type,
@@ -9867,7 +9958,7 @@ test("custom frontmatter identifiers create, recognize, and update each reusable
   });
   const updated = parseFrontmatter(fake.files.get(legacyPath));
   assert.equal(updated.healthEntity, "pantry-item");
-  assert.equal(updated.kind, undefined, "a touched legacy note should move to the configured identifier");
+  assert.equal(updated.kind, "food", "a touched legacy note keeps the canonical kind as well as the configured identifier");
 });
 
 test("identity tag migration preserves YAML comments and only removes actual body hashtags", async () => {

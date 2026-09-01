@@ -47,7 +47,15 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { HealthNativeRecordService, buildNativeHealthRecordFileName, deriveNativeFoodEntryProjection, parseLegacyInlineFields, resolveActiveWorkoutAfterFilenameMigration } = await loadModule();
+const {
+  HealthNativeRecordService,
+  buildNativeHealthRecordFileName,
+  deriveNativeFoodEntryProjection,
+  parseLegacyInlineFields,
+  readWorkoutDataFromNoteContent,
+  resolveActiveWorkoutAfterFilenameMigration,
+  writeWorkoutDataToNoteContent,
+} = await loadModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const nativeWorkoutSurfaceSource = readFileSync(new URL('../src/native-workout-surface.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
@@ -59,9 +67,11 @@ function createHarness(options = {}) {
   const frontmatters = new Map();
   const contents = new Map();
   const createCalls = [];
+  const updateCalls = [];
   const trashedPaths = [];
   const exerciseDefinitions = new Set();
   let generated = 0;
+  let processCalls = 0;
   const vaultEvents = new Map();
   const metadataEvents = new Map();
   const recordFolder = (kind) => ({
@@ -80,19 +90,21 @@ function createHarness(options = {}) {
     }
     throw new Error('No filename available.');
   };
+  const legacyFileNames = options.legacyFileNames === true;
   const api = {
-    version: options.apiVersion || 1,
-    isEnabled: () => true,
+    version: options.apiVersion ?? 6,
+    isEnabled: () => options.apiEnabled !== false,
     async create(kind, properties, options = {}) {
       const id = String(options.id || `${kind}-${++generated}`);
       createCalls.push({ kind, properties: { ...properties }, options: { ...options } });
-      const path = availablePath(kind, options.fileName || id);
+      const path = availablePath(kind, legacyFileNames ? id : options.fileName || id);
       const file = new (class TFile {
         constructor(path) { this.path = path; this.name = path.split('/').pop(); this.extension = 'md'; this.basename = this.name.replace(/\.md$/u, ''); }
       })(path);
       const frontmatter = { ...properties, tpsId: id, tpsSchemaVersion: 1, kind, title: properties.title, createdDate: new Date().toISOString(), modifiedDate: new Date().toISOString() };
       files.set(file.path, file);
       frontmatters.set(file, frontmatter);
+      contents.set(file.path, `---\nkind: ${kind}\ntpsId: ${id}\ntpsSchemaVersion: 1\ntitle: ${String(properties.title || '')}\n---\n`);
       return { file, path: file.path, id, kind, frontmatter };
     },
     async resolve(reference) {
@@ -103,6 +115,11 @@ function createHarness(options = {}) {
       return { file, path: file.path, id: frontmatter.tpsId, kind: frontmatter.kind, frontmatter: { ...frontmatter } };
     },
     async update(reference, updates) {
+      updateCalls.push({ reference, updates: { ...updates } });
+      if (typeof options.beforeApiUpdate === 'function') {
+        const outcome = await options.beforeApiUpdate(updateCalls.length, reference, updates);
+        if (outcome === null) return null;
+      }
       const current = await this.resolve(reference);
       if (!current) return null;
       const frontmatter = { ...current.frontmatter };
@@ -129,6 +146,18 @@ function createHarness(options = {}) {
       return { ...current, path: current.file.path, file: current.file, frontmatter: { ...frontmatters.get(current.file) } };
     },
     inspect(frontmatter) {
+      const physicalKeys = Object.keys(frontmatter || {});
+      const idKey = physicalKeys.find((key) => key.toLowerCase() === 'tpsid');
+      const schemaKey = physicalKeys.find((key) => key.toLowerCase() === 'tpsschemaversion');
+      const kindKey = physicalKeys.find((key) => key.toLowerCase() === 'kind');
+      if (idKey && schemaKey && kindKey && Number(frontmatter[schemaKey]) === 1) {
+        return {
+          id: String(frontmatter[idKey]),
+          kind: String(frontmatter[kindKey]),
+          schemaVersion: 1,
+          frontmatter: { ...frontmatter, tpsId: String(frontmatter[idKey]), tpsSchemaVersion: 1, kind: String(frontmatter[kindKey]) },
+        };
+      }
       const identityTag = Array.isArray(frontmatter?.tags)
         ? frontmatter.tags.find((tag) => String(tag).startsWith('tps/record/v1/'))
         : null;
@@ -154,6 +183,15 @@ function createHarness(options = {}) {
         getMarkdownFiles: () => [...files.values()],
         cachedRead: async (file) => contents.get(file.path) || '',
         read: async (file) => contents.get(file.path) || '',
+        process: async (file, mutation) => {
+          processCalls += 1;
+          if (typeof options.beforeVaultProcess === 'function') {
+            await options.beforeVaultProcess({ call: processCalls, file, contents });
+          }
+          const current = contents.get(file.path) || '';
+          const next = mutation(current);
+          contents.set(file.path, next);
+        },
         getAbstractFileByPath: (path) => files.get(path) || null,
         trash: async (file) => {
           trashedPaths.push(file.path);
@@ -212,7 +250,7 @@ function createHarness(options = {}) {
   const emitMetadata = (name, ...args) => {
     for (const listener of metadataEvents.get(name) || []) listener(...args);
   };
-  return { service, api, files, frontmatters, contents, createCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
+  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
 }
 
 test('native Health filenames use the record date and plain human title', () => {
@@ -226,8 +264,20 @@ test('native Health filenames use the record date and plain human title', () => 
     date: '2026-08-24', completedDate: '2026-08-25T00:30:00.000Z', title: 'Evening walk',
   }), '2026-08-24 - Evening walk', 'an explicit normalized activity date remains authoritative');
   assert.equal(buildNativeHealthRecordFileName('workout-session', {
-    date: '2026-08-25', title: 'Workout 2026-08-25 06.16',
+    date: '2026-08-25', startedAt: '2026-08-25T06:16:00', title: 'Workout 2026-08-25 06.16',
   }), '2026-08-25 - Workout 06.16', 'the generated workout date is not duplicated');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    workoutDate: '2026-08-25', startedAt: '2026-08-26T00:05:00', title: 'Workout 2026-08-26 00.05',
+  }), '2026-08-25 - Workout 00.05', 'a generated local-day title cannot add a second date beside the authoritative Daily Note date');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    workoutDate: '2026-08-25', startedAt: '2026-08-26T00:05:00', title: 'Strength cycle 2026-08-26 00.05',
+  }), '2026-08-25 - Strength cycle 00.05', 'generated plan titles use the same one-date filename projection');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    workoutDate: '2026-08-25', title: 'Anniversary workout 2026-08-25',
+  }), '2026-08-25 - Anniversary workout 2026-08-25', 'meaningful authored date-bearing titles remain intact');
+  assert.equal(buildNativeHealthRecordFileName('workout-session', {
+    workoutDate: '2026-08-25', startedAt: '2026-08-25T07:30:00', title: 'Race recap 2026-08-25 06.16',
+  }), '2026-08-25 - Race recap 2026-08-25 06.16', 'a timestamp-like authored title is preserved when it does not match the workout start');
   assert.equal(buildNativeHealthRecordFileName('workout-session', {
     workoutDate: '2026-08-25', title: 'Leg day',
   }), '2026-08-25 - Leg day');
@@ -236,8 +286,22 @@ test('native Health filenames use the record date and plain human title', () => 
   }, { date: '2026-08-25' }), '2026-08-25 - Leg curl');
 });
 
-test('GCM API v3 receives readable filenames while stable record IDs remain authoritative', async () => {
-  const { service, createCalls } = createHarness({ apiVersion: 3 });
+test('workout structure is stored in one hidden body marker rather than a frontmatter property', () => {
+  const original = '---\nkind: workout-session\ntpsId: workout-one\n---\nNotes stay here.\n';
+  const firstData = JSON.stringify({ version: 1, exercises: [{ id: 'exercise-one', sets: [] }] });
+  const first = writeWorkoutDataToNoteContent(original, firstData);
+  assert.equal(readWorkoutDataFromNoteContent(first), firstData);
+  assert.equal(first.includes('workoutData:'), false);
+  assert.equal(first.endsWith('Notes stay here.\n'), true, 'authored body content is preserved');
+
+  const secondData = JSON.stringify({ version: 1, exercises: [] });
+  const second = writeWorkoutDataToNoteContent(first, secondData);
+  assert.equal(readWorkoutDataFromNoteContent(second), secondData);
+  assert.equal(second.match(/tps-health-workout-data:v1:/gu)?.length, 1, 'updates replace the atomic marker');
+});
+
+test('GCM API v6 receives readable filenames while stable record IDs remain authoritative', async () => {
+  const { service, createCalls } = createHarness({ apiVersion: 6 });
   const firstFood = await service.createFoodEntry({
     id: 'food-one', createdDate: '2026-08-25T12:00:00.000Z', completedDate: '2026-08-25T12:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
@@ -279,8 +343,26 @@ test('GCM API v3 receives readable filenames while stable record IDs remain auth
   ]);
 });
 
+test('native Health writes fail closed before GCM API v6', () => {
+  const { service } = createHarness({ apiVersion: 5 });
+  assert.throws(
+    () => service.requireApi(),
+    /nativeRecords API v6/u,
+  );
+});
+
+test('native Health requires exactly API v6 and every method it uses', () => {
+  assert.throws(() => createHarness({ apiVersion: 7 }).service.requireApi(), /nativeRecords API v6/u);
+  assert.throws(() => createHarness({ apiEnabled: false }).service.requireApi(), /nativeRecords API v6/u);
+  for (const method of ['isEnabled', 'create', 'resolve', 'update', 'inspect']) {
+    const { service, api } = createHarness();
+    delete api[method];
+    assert.throws(() => service.requireApi(), /nativeRecords API v6/u, `${method} is required`);
+  }
+});
+
 test('readable filename migration renames only opaque ID paths and is idempotent', async () => {
-  const { service, api, addFrontmatterFile } = createHarness({ apiVersion: 1 });
+  const { service, api, addFrontmatterFile } = createHarness({ apiVersion: 6, legacyFileNames: true });
   const food = await service.createFoodEntry({
     id: 'food-old', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
@@ -304,7 +386,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   assert.equal(activity.file.basename, 'activity-old');
   assert.equal(session.file.basename, 'workout-old');
   assert.equal(exercise.file, session.file, 'adding an exercise does not create another note');
-  api.version = 3;
+  api.version = 6;
   const first = await service.normalizeNativeRecordFilenames();
   assert.deepEqual(first, {
     inspected: 4,
@@ -330,7 +412,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
 });
 
 test('readable filename migration narrowly repairs generated title-first workout names', async () => {
-  const { service, addFrontmatterFile } = createHarness({ apiVersion: 3 });
+  const { service, addFrontmatterFile } = createHarness({ apiVersion: 6 });
   const localStartedAt = (hour, minute) => new Date(2026, 7, 24, hour, minute, 0, 0).toISOString();
   const generatedFrontmatter = {
     tpsId: 'workout-generated', tpsSchemaVersion: 1, kind: 'workout-session',
@@ -397,7 +479,7 @@ test('readable filename migration narrowly repairs generated title-first workout
 });
 
 test('readable filename migration preserves a manual rename that lands while the batch is running', async () => {
-  const { service, api, files } = createHarness({ apiVersion: 1 });
+  const { service, api, files } = createHarness({ apiVersion: 6, legacyFileNames: true });
   await service.createFoodEntry({
     id: 'food-a', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
     item: { id: 'apple-a', name: 'Apple A', source: 'manual' }, quantity: 1, unit: 'serving',
@@ -406,7 +488,7 @@ test('readable filename migration preserves a manual rename that lands while the
     id: 'food-b', createdDate: '2026-08-24T13:00:00.000Z', completedDate: '2026-08-24T13:00:00.000Z',
     item: { id: 'apple-b', name: 'Apple B', source: 'manual' }, quantity: 1, unit: 'serving',
   });
-  api.version = 3;
+  api.version = 6;
   const rename = api.rename.bind(api);
   let injected = false;
   api.rename = async (...args) => {
@@ -494,8 +576,8 @@ test('native food projection derives every macro from the consumed amount and li
   assert.equal(deriveNativeFoodEntryProjection({ quantity: 2, unit: 'ml' }, food), null, 'an incompatible unit fails closed');
 });
 
-test('native Health indexing follows GCM API v2 tag identity without physical ID/schema properties', () => {
-  const { service } = createHarness({ apiVersion: 2 });
+test('native Health indexing follows GCM API v6 legacy tag inspection without physical ID/schema properties', () => {
+  const { service } = createHarness({ apiVersion: 6 });
   const file = { path: 'food-tagged.md', name: 'food-tagged.md', extension: 'md', basename: 'food-tagged' };
   service.indexFile(file, {
     tags: ['food-log', 'tps/record/v1/food-entry/food-tagged'],
@@ -742,7 +824,7 @@ test('native workout session stores every exercise and set atomically in one not
   for (const derived of ['setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'lastSetEndedAt']) {
     assert.equal(Object.hasOwn(second.session.frontmatter, derived), false, `${derived} derives from workoutData`);
   }
-  assert.equal(typeof second.session.frontmatter.workoutData, 'string');
+  assert.equal(Object.hasOwn(second.session.frontmatter, 'workoutData'), false, 'internal workout structure is not exposed as a property');
   assert.deepEqual(second.session.frontmatter.tags, ['tps/record/v1/workout-session/workout-1', 'user/keep']);
   assert.equal(createCalls.filter((call) => call.kind === 'workout-exercise').length, 0, 'exercise occurrences never create child notes');
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0);
@@ -809,8 +891,109 @@ test('native workout session stores every exercise and set atomically in one not
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
 });
 
+test('one service-owned queue preserves concurrent workout-session mutations', async () => {
+  const { service, contents } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Concurrent strength',
+    startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-concurrent');
+  await Promise.all([
+    service.appendWorkoutSet(session.file, {
+      id: 'set-a', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 8, weight: 100,
+    }),
+    service.appendWorkoutSet(session.file, {
+      id: 'set-b', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 6, weight: 110,
+    }),
+  ]);
+
+  const snapshot = service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(snapshot.exercises[0].sets.map((set) => set.id), ['set-a', 'set-b']);
+  assert.equal(contents.get(session.path).match(/tps-health-workout-data:v1:/gu)?.length, 1);
+});
+
+test('workout mutation retries from marker state changed immediately before Vault.process', async () => {
+  const externalData = JSON.stringify({
+    version: 1,
+    exercises: [{
+      id: 'external-exercise',
+      name: 'Row',
+      exercisePath: 'Health/Exercises/Row.md',
+      sets: [{ id: 'external-set', reps: 10, weight: 50, weightUnit: 'lb' }],
+    }],
+  });
+  const { service } = createHarness({
+    beforeVaultProcess({ call, file, contents }) {
+      if (call !== 1) return;
+      contents.set(file.path, writeWorkoutDataToNoteContent(contents.get(file.path), externalData));
+    },
+  });
+  const session = await service.createWorkoutSession({
+    title: 'Synced strength',
+    startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-synced');
+  await service.appendWorkoutSet(session.file, {
+    id: 'local-set', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 8, weight: 100,
+  });
+
+  const snapshot = service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(snapshot.exercises.map((exercise) => exercise.name), ['Row', 'Bench press']);
+  assert.deepEqual(snapshot.exercises.flatMap((exercise) => exercise.sets.map((set) => set.id)), ['external-set', 'local-set']);
+});
+
+test('an unreadable workout marker fails closed instead of being mistaken for an empty session', async () => {
+  const { service, contents } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Corrupt sync payload', startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-corrupt');
+  const corrupt = `${contents.get(session.path)}<!-- tps-health-workout-data:v1:%E0%A4%A -->\n`;
+  contents.set(session.path, corrupt);
+  await assert.rejects(
+    () => service.appendWorkoutSet(session.file, {
+      id: 'must-not-write', exercise: 'Row', exercisePath: 'Health/Exercises/Row.md', reps: 10,
+    }),
+    /body data is invalid/u,
+  );
+  assert.equal(contents.get(session.path), corrupt);
+});
+
+test('body success plus a transient or repeated GCM failure cannot duplicate a workout set', async () => {
+  const transient = createHarness({ beforeApiUpdate: (call) => call === 1 ? null : undefined });
+  const transientSession = await transient.service.createWorkoutSession({
+    title: 'Transient retry', startedAt: '2026-08-31T08:00:00.000Z',
+  }, 'workout-transient');
+  await transient.service.appendWorkoutSet(transientSession.file, {
+    id: 'stable-set', exercise: 'Bench press', exercisePath: 'Health/Exercises/Bench press.md', reps: 8,
+  });
+  assert.equal(transient.updateCalls.length, 2, 'frontmatter reconciliation retries without replaying the body mutation');
+  assert.deepEqual(transient.service.getWorkoutSnapshot(transientSession.path).exercises[0].sets.map((set) => set.id), ['stable-set']);
+
+  const repeated = createHarness({ beforeApiUpdate: () => null });
+  const repeatedSession = await repeated.service.createWorkoutSession({
+    title: 'Deferred cleanup', startedAt: '2026-08-31T09:00:00.000Z',
+  }, 'workout-deferred');
+  const set = { id: 'retry-safe-set', exercise: 'Row', exercisePath: 'Health/Exercises/Row.md', reps: 10 };
+  await repeated.service.appendWorkoutSet(repeatedSession.file, set);
+  await repeated.service.appendWorkoutSet(repeatedSession.file, set);
+  assert.deepEqual(repeated.service.getWorkoutSnapshot(repeatedSession.path).exercises[0].sets.map((entry) => entry.id), ['retry-safe-set']);
+});
+
+test('a terminal workout update rolls back its body marker when GCM cannot commit the semantic state', async () => {
+  const failed = createHarness({ beforeApiUpdate: () => null });
+  const session = await failed.service.createWorkoutSession({
+    title: 'Failed finish', startedAt: '2026-08-31T10:00:00.000Z',
+  }, 'workout-failed-finish');
+  const before = failed.contents.get(session.path);
+
+  await assert.rejects(
+    () => failed.service.finishWorkout(session.file, '2026-08-31T11:00:00.000Z'),
+    /not found/u,
+  );
+  assert.equal(failed.contents.get(session.path), before, 'the body and semantic frontmatter cannot split into two committed states');
+  assert.equal(failed.service.getWorkoutSnapshot(session.path).status, 'active');
+});
+
 test('native workout structure edits persist sets, exercise order, supersets, and drop sets in the session note', async () => {
-  const { service, files, frontmatters } = createHarness();
+  const { service, files, contents } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Live strength',
     startedAt: '2026-08-31T08:00:00.000Z',
@@ -876,7 +1059,7 @@ test('native workout structure edits persist sets, exercise order, supersets, an
   assert.equal(benchSets[1].setType, 'normal');
   assert.equal(benchSets[2].setType, 'drop');
 
-  const stored = JSON.parse(frontmatters.get(session.file).workoutData);
+  const stored = JSON.parse(readWorkoutDataFromNoteContent(contents.get(session.file.path)));
   assert.deepEqual(stored.exercises.map((exercise) => exercise.name), ['Bench press', 'Overhead press', 'Row']);
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0, 'structural edits never create child notes');
 });
@@ -900,7 +1083,7 @@ test('a blank native workout projects a newly attached exercise before its first
 });
 
 test('legacy workout child notes consolidate into the parent and follow it to trash', async () => {
-  const { service, addFrontmatterFile, files, frontmatters, trashedPaths, exerciseDefinitions, emitVault } = createHarness();
+  const { service, addFrontmatterFile, files, frontmatters, contents, trashedPaths, exerciseDefinitions, emitVault } = createHarness();
   const session = addFrontmatterFile('_records/workout-sessions/legacy-workout.md', {
     tpsId: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy strength', status: 'complete',
     startedAt: '2026-08-22T08:00:00.000Z', setCount: 1, workoutData: 'invalid synced value',
@@ -918,7 +1101,8 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
   const result = await service.consolidateWorkoutStorage();
   assert.deepEqual(result, { sessions: 1, childNotes: 1, consolidated: 1, trashed: 1, failed: 0 });
   assert.equal(files.has(child.path), false);
-  assert.equal(typeof frontmatters.get(session).workoutData, 'string');
+  assert.equal(Object.hasOwn(frontmatters.get(session), 'workoutData'), false);
+  assert.equal(typeof readWorkoutDataFromNoteContent(contents.get(session.path)), 'string');
   assert.equal(service.getWorkoutSnapshot(session.path).setCount, 1, 'the parent remains complete after child cleanup');
   assert.ok(exerciseDefinitions.has('Health/Exercises/Bench press.md'), 'consolidation backfills a reusable definition without moving session sets into it');
   assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].exercisePath, 'Health/Exercises/Bench press.md');
@@ -1033,7 +1217,7 @@ test('explicit identity normalization replaces legacy workout joins before remov
   assert.equal(Object.hasOwn(normalizedFood.frontmatter, 'foodId'), false);
   assert.equal(Object.hasOwn(normalizedSession.frontmatter, 'workoutId'), false);
   assert.equal(Object.hasOwn(normalizedSession.frontmatter, 'exerciseRecordIds'), false);
-  assert.equal(normalizedExercise.frontmatter.workout, `[[_records/workout-sessions/workout-old]]`);
+  assert.equal(normalizedExercise.frontmatter.workout, `[[${session.path.replace(/\.md$/u, '')}]]`);
   assert.equal(normalizedExercise.frontmatter.exerciseOrder, 1);
   assert.equal(Object.hasOwn(normalizedExercise.frontmatter, 'workoutId'), false);
   assert.equal(Object.hasOwn(normalizedExercise.frontmatter, 'workoutPath'), false);
@@ -1099,17 +1283,18 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /Native records: Apply readable Health filenames/u);
   assert.match(mainSource, /Native records: Consolidate workouts into one note each/u);
   assert.match(mainSource, /planWorkoutStorageConsolidation\(\)/u);
-  assert.match(mainSource, /consolidateWorkoutStorage\([\s\S]*?serializeWorkoutMutation\(path, "consolidate-native-workout-storage"[\s\S]*?ensureExerciseDefinitionForWorkout/u);
+  assert.match(mainSource, /consolidateWorkoutStorage\(\s*\(name, existingPath\) => this\.ensureExerciseDefinitionForWorkout/u);
+  assert.doesNotMatch(mainSource, /serializeWorkoutMutation\([^\n]*native-/u, 'native sessions have one queue owner inside the native-record service');
   assert.match(mainSource, /normalizeNativeRecordFilenames\(\)/u);
   assert.match(mainSource, /const capturedActiveWorkout = \{[\s\S]*?id: this\.settings\.activeWorkoutId[\s\S]*?path: this\.settings\.activeWorkoutPath/u);
   assert.match(mainSource, /resolveActiveWorkoutAfterFilenameMigration\(\{[\s\S]*?current: \{ id: this\.settings\.activeWorkoutId[\s\S]*?getWorkoutSnapshot\(capturedWorkoutId\)/u);
   assert.match(mainSource, /persistActiveWorkoutFilenameMigration\(capturedActiveWorkout, reconciledActiveWorkout\)/u);
   assert.match(mainSource, /buildNativeHealthRecordFileName\("workout-session", \{[\s\S]*?workoutDate: isoDateKey\(dailyNoteDate\)[\s\S]*?startedAt/u);
-  assert.match(settingsSource, /GCM 1\.43\.1 or newer gives new food, activity, and workout records readable date-and-title filenames/u);
+  assert.match(settingsSource, /nativeRecords API v6 owns the note's single tpsId and readable filename/u);
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {
-  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 3 });
+  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 6 });
   const legacy = [
     '- Apple <!-- [type:: foodLog] [food:: Apple] [foodId:: food-old-1] [servings:: 2] [unit:: serving] [cal:: 190] [protein:: 1] [carbs:: 50] [fat:: 0.6] [fiber:: 8.8] [sodium:: 4] [completedDate:: 2026-08-23T12:00:00.000Z] -->',
     '- Walk <!-- [type:: activityLog] [activity:: Walk] [activityType:: walking] [activityId:: activity-old-1] [source:: manual] [durationMinutes:: 30] [startedAt:: 2026-08-23T08:00:00.000Z] [completedDate:: 2026-08-23T08:30:00.000Z] -->',

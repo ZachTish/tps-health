@@ -58,13 +58,13 @@ test('food property catalog follows the configured Health identification mode', 
 test('catalog exposes only the compact user-facing native and reusable fields', () => {
   const catalog = buildHealthPropertyCatalog(settings('tag'));
   const byKey = (key) => catalog.nativeRecords.filter((property) => property.key === key);
-  assert.deepEqual(byKey('foodPath')[0].scope.kinds, ['food-entry']);
+  assert.deepEqual(byKey('food')[0].scope.kinds, ['food-entry']);
   assert.deepEqual(byKey('activityType')[0].scope.kinds, ['activity-entry']);
   assert.deepEqual(byKey('primaryMuscles')[0].scope.kinds, ['exercise']);
   assert.deepEqual(byKey('status')[0].scope.kinds, ['workout-session']);
   assert.deepEqual(byKey('startedAt')[0].scope.kinds, ['activity-entry', 'workout-session']);
-  assert.equal(catalog.food.find((property) => property.key === 'name').label, 'Name');
-  assert.ok(byKey('name').every((property) => property.label === 'Name'));
+  assert.equal(catalog.food.some((property) => property.key === 'name'), false, 'the shared title is the only display-name property');
+  assert.equal(byKey('name').length, 0);
   for (const redundant of ['foodName', 'brand', 'date', 'amount', 'amountUnit', 'durationSeconds', 'setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'workout', 'exercisePath', 'exerciseOrder', 'lastCompletedDate', 'nextEligibleDate']) {
     assert.equal(byKey(redundant).length, 0, `${redundant} is derived, duplicated, legacy-only, or internal`);
   }
@@ -93,7 +93,7 @@ test('daily rollup properties are generated from configured goals and require th
 
 test('catalog exposes the reusable food fields Health actually writes', () => {
   const keys = new Set(buildHealthPropertyCatalog(settings('tag')).food.map((property) => property.key));
-  for (const key of ['name', 'brand', 'aliases', 'barcode', 'servingAmount', 'servingUnit', 'calories', 'proteinG', 'ingredientStatement']) {
+  for (const key of ['brand', 'aliases', 'barcode', 'servingAmount', 'servingUnit', 'calories', 'proteinG', 'ingredientStatement']) {
     assert.equal(keys.has(key), true, `missing ${key}`);
   }
   for (const internal of ['nutritionBasis', 'imageUrl', 'sourceImagePath', 'confidence', 'notes']) {

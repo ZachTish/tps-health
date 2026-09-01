@@ -6,7 +6,6 @@ import type {
 import type { HealthGoal, TPSHealthSettings } from "./types";
 
 const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
-  { id: "name", key: "name", label: "Name", type: "text", icon: "utensils" },
   { id: "brand", key: "brand", label: "Brand", type: "text", icon: "badge" },
   { id: "aliases", key: "aliases", label: "Search aliases", type: "list", listItemType: "text", icon: "search" },
   { id: "barcode", key: "barcode", label: "Barcode", type: "text", icon: "scan-barcode" },
@@ -47,7 +46,7 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
     icon: 'circle-check', options: ['active', 'complete', 'discarded'],
   }),
   scoped('record-completed', 'completedDate', 'Completed', 'datetime', ['food-entry', 'activity-entry'], { icon: 'check-check' }),
-  scoped('food-link', 'foodPath', 'Food', 'list', ['food-entry'], { icon: 'utensils', listItemType: 'link' }),
+  scoped('food-link', 'food', 'Food', 'list', ['food-entry'], { icon: 'utensils', listItemType: 'link' }),
   scoped('food-quantity', 'quantity', 'Consumed quantity', 'number', ['food-entry'], { icon: 'scale' }),
   scoped('food-unit', 'unit', 'Consumed unit', 'text', ['food-entry'], { icon: 'ruler' }),
   scoped('record-calories', 'calories', 'Calculated calories', 'number', ['food-entry'], { icon: 'flame' }),
@@ -66,13 +65,11 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('activity-distance-unit', 'distanceUnit', 'Distance unit', 'text', ['activity-entry'], { icon: 'ruler' }),
   scoped('activity-steps', 'steps', 'Steps', 'number', ['activity-entry'], { icon: 'footprints' }),
   scoped('activity-calories', 'caloriesBurned', 'Calories burned', 'number', ['activity-entry', 'workout-session'], { icon: 'flame' }),
-  scoped('workout-plan', 'workoutPlanPath', 'Workout plan', 'list', ['workout-session'], { icon: 'clipboard-list', listItemType: 'link' }),
+  scoped('workout-plan', 'workoutPlan', 'Workout plan', 'list', ['workout-session'], { icon: 'clipboard-list', listItemType: 'link' }),
   scoped('workout-ended', 'endedAt', 'Ended', 'datetime', ['workout-session'], { icon: 'square' }),
-  scoped('exercise-name', 'name', 'Name', 'text', ['exercise'], { icon: 'dumbbell' }),
   scoped('exercise-primary-muscles', 'primaryMuscles', 'Primary muscles', 'list', ['exercise'], { icon: 'accessibility', listItemType: 'text' }),
   scoped('exercise-equipment', 'equipment', 'Equipment', 'list', ['exercise'], { icon: 'dumbbell', listItemType: 'text' }),
   scoped('exercise-rest', 'defaultRestSeconds', 'Default rest', 'number', ['exercise', 'workout-plan'], { icon: 'timer-reset' }),
-  scoped('plan-name', 'name', 'Name', 'text', ['workout-plan'], { icon: 'clipboard-list' }),
   scoped('plan-cooldown', 'cooldownDays', 'Cooldown days', 'number', ['workout-plan'], { icon: 'calendar-clock' }),
 ];
 

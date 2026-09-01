@@ -256,7 +256,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     new Setting(architecture)
       .setName("Health storage")
-      .setDesc("Native records writes one typed Markdown file per food, activity, workout, and performed exercise. GCM 1.43.1 or newer gives new food, activity, and workout records readable date-and-title filenames. Reload after changing this setting.")
+      .setDesc("Native records writes one atomic Markdown note per food, activity, or workout. TPS Global Context Menu nativeRecords API v6 owns the note's single tpsId and readable filename. Reload after changing this setting.")
       .addDropdown((dropdown) => dropdown
         .addOption("legacy", "Legacy Daily Note/body logs")
         .addOption("native-records", "Native TPS records")
@@ -595,41 +595,41 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(identification)
       .setName("Workout tag")
-      .setDesc("Used when workout identification includes tags. New workout notes include this tag.")
+      .setDesc("Used when workout identification includes tags. Blank disables this identity signal.")
       .addText((text) => text
-        .setValue(this.plugin.settings.workoutTag)
+      .setValue(this.plugin.settings.workoutTag)
         .onChange(async (value) => {
-          this.plugin.settings.workoutTag = value.trim() || DEFAULT_SETTINGS.workoutTag;
+          this.plugin.settings.workoutTag = value.trim();
           await this.plugin.saveSettings();
         }));
 
     new Setting(identification)
       .setName("Exercise tag")
-      .setDesc("Used to recognize reusable exercise notes and written to new exercise notes.")
+      .setDesc("Used to recognize reusable exercise notes. Blank disables this identity signal.")
       .addText((text) => text
-        .setValue(this.plugin.settings.exerciseTag)
+      .setValue(this.plugin.settings.exerciseTag)
         .onChange(async (value) => {
-          this.plugin.settings.exerciseTag = value.trim() || DEFAULT_SETTINGS.exerciseTag;
+          this.plugin.settings.exerciseTag = value.trim();
           await this.plugin.saveSettings();
         }));
 
     new Setting(identification)
       .setName("Food tag")
-      .setDesc("Used when food identification includes tags. New food notes include this tag.")
+      .setDesc("Used when food identification includes tags. Blank disables this identity signal.")
       .addText((text) => text
-        .setValue(this.plugin.settings.customFoodTag)
+      .setValue(this.plugin.settings.customFoodTag)
         .onChange(async (value) => {
-          this.plugin.settings.customFoodTag = value.trim() || DEFAULT_SETTINGS.customFoodTag;
+          this.plugin.settings.customFoodTag = value.trim();
           await this.plugin.saveSettings();
         }));
 
     new Setting(identification)
       .setName("Recipe/meal tag")
-      .setDesc("Used when food identification includes tags. New recipe and meal notes include this tag.")
+      .setDesc("Used when food identification includes tags. Blank disables this identity signal.")
       .addText((text) => text
-        .setValue(this.plugin.settings.recipeTag)
+      .setValue(this.plugin.settings.recipeTag)
         .onChange(async (value) => {
-          this.plugin.settings.recipeTag = value.trim() || DEFAULT_SETTINGS.recipeTag;
+          this.plugin.settings.recipeTag = value.trim();
           await this.plugin.saveSettings();
         }));
 
