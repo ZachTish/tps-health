@@ -198,6 +198,22 @@ test('macro dashboard supports accessible rings and an optional collapsible food
   assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-foods-summary,[\s\S]*?min-height:\s*44px/u);
 });
 
+test('macro and activity dashboards expose compact edit and remove lists in both rendered modes', () => {
+  assert.match(mainSource, /addAction\("Review logged foods", "list"/u);
+  assert.match(mainSource, /addActivityAction\("Review logged activity", "list"/u);
+  assert.match(mainSource, /getDailyActivityEntries\(this\.dateContext\.dateIso\)/u);
+  assert.match(mainSource, /renderNativeDailyRowAction\(rowActions, `Edit \$\{entry\.title\}`, "pencil", \(\) => actions\.editFoodEntry\(entry\)\)/u);
+  assert.match(mainSource, /renderNativeDailyRowAction\(rowActions, `Remove \$\{entry\.title\}`, "trash-2", \(\) => actions\.removeFoodEntry\(entry\), true\)/u);
+  assert.match(mainSource, /entry\.kind === "workout-session" \? `Open \$\{entry\.title\}` : `Edit \$\{entry\.title\}`/u);
+  assert.match(mainSource, /this\.openDiscardWorkoutConfirmation\(\)/u);
+  assert.match(mainSource, /updateDailyFoodEntry\(this\.entry\.path/u);
+  assert.match(mainSource, /updateDailyActivityEntry\(this\.entry\.path/u);
+  assert.match(mainSource, /archiveDailyEntry\(entry\.path/u);
+  assert.match(stylesSource, /\.tps-health-native-daily-row-actions\s*\{[\s\S]*?display:\s*flex[\s\S]*?grid-column:\s*3/u);
+  assert.match(stylesSource, /\.tps-health-native-daily \.tps-health-native-daily-row-action\s*\{[\s\S]*?height:\s*28px[\s\S]*?width:\s*28px/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily \.tps-health-native-daily-row-action\s*\{[\s\S]*?min-height:\s*44px/u);
+});
+
 test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
   assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options\)/u);
   assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
@@ -214,7 +230,7 @@ test('Daily Note actions use the exact resolved date context for every Health wo
   assert.match(stylesSource, /\.tps-health-native-daily-actions\s*\{[^}]*display:\s*flex/u);
   assert.match(stylesSource, /\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto auto/u);
   assert.match(stylesSource, /@container \(max-width: 360px\)[\s\S]*?\.tps-health-native-daily-active-workout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto/u);
-  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*,\s*\.tps-health-native-daily-active-workout-button\s*\{[^}]*min-height:\s*44px/u);
+  assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*,\s*\.tps-health-native-daily-active-workout-button\s*,[\s\S]*?\{[^}]*min-height:\s*44px/u);
   assert.match(stylesSource, /@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.tps-health-native-daily-action\s*\{[^}]*min-width:\s*44px/u);
 });
 

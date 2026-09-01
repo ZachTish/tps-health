@@ -696,6 +696,58 @@ test('native food and activity records keep typed quantities and indexed daily m
   });
 });
 
+test('daily dashboard record actions edit snapshots and archive only the selected entry', async () => {
+  const { service, addFrontmatterFile } = createHarness();
+  addFrontmatterFile('Apple.md', {
+    kind: 'food', servingAmount: 1, servingUnit: 'apple', servingGrams: 180,
+    calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2,
+  });
+  const food = await service.createFoodEntry({
+    id: 'food-edit', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
+    item: { id: 'apple', name: 'Apple', source: 'manual', sourcePath: 'Apple.md' },
+    quantity: 1, unit: 'serving', nutritionOverride: { calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3 },
+  });
+  const activity = await service.createActivityEntry({
+    id: 'activity-edit', activity: 'Walk', activityType: 'walking', startedAt: '2026-08-24T07:00:00.000Z',
+    completedDate: '2026-08-24T07:30:00.000Z', durationMinutes: 30, steps: 3200, source: 'manual',
+  });
+
+  const foodSnapshot = service.getDailyFoodEntries('2026-08-24')[0];
+  assert.equal(foodSnapshot.linkedFood, true);
+  await service.updateDailyFoodEntry(food.path, {
+    ...foodSnapshot,
+    title: 'Two apples',
+    quantity: 2,
+    calories: 999,
+  });
+  const editedFood = service.getDailyFoodEntries('2026-08-24')[0];
+  assert.equal(editedFood.title, 'Two apples');
+  assert.equal(editedFood.quantity, 2);
+  assert.equal(editedFood.calories, 190, 'linked logs reproject nutrition from their food definition instead of accepting stale manual macros');
+
+  const activitySnapshot = service.getDailyActivityEntries('2026-08-24')[0];
+  assert.deepEqual({ kind: activitySnapshot.kind, title: activitySnapshot.title, durationMinutes: activitySnapshot.durationMinutes, steps: activitySnapshot.steps }, {
+    kind: 'activity-entry', title: 'Walk', durationMinutes: 30, steps: 3200,
+  });
+  await service.updateDailyActivityEntry(activity.path, {
+    ...activitySnapshot,
+    title: 'Long walk',
+    durationMinutes: 45,
+    steps: 5000,
+  });
+  assert.deepEqual(service.getDailyActivityEntries('2026-08-24').map((entry) => [entry.title, entry.durationMinutes, entry.steps]), [
+    ['Long walk', 45, 5000],
+  ]);
+
+  await service.archiveDailyEntry(food.path, 'food-entry');
+  assert.equal(service.getDailyFoodEntries('2026-08-24').length, 0);
+  assert.equal(service.getDailyFoodTotals('2026-08-24').entryCount, 0);
+  assert.equal(service.getDailyActivityEntries('2026-08-24').length, 1, 'archiving food does not remove activity');
+  await service.archiveDailyEntry(activity.path, 'activity-entry');
+  assert.equal(service.getDailyActivityEntries('2026-08-24').length, 0);
+  assert.equal(service.getDailyActivityTotals('2026-08-24').entryCount, 0);
+});
+
 test('a Base quantity edit immediately updates indexed totals and persists Base-compatible macro projections', async () => {
   const { service, api, addFrontmatterFile, frontmatters } = createHarness();
   addFrontmatterFile('Yogurt.md', {

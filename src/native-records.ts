@@ -241,7 +241,34 @@ export interface NativeDailyFoodEntrySnapshot {
   proteinG: number;
   carbsG: number;
   fatG: number;
+  fiberG: number;
+  sugarG: number;
+  sugarAlcoholG: number;
+  alcoholG: number;
+  sodiumMg: number;
+  note: string;
+  linkedFood: boolean;
 }
+
+export interface NativeDailyActivityEntrySnapshot {
+  id: string;
+  path: string;
+  kind: 'activity-entry' | 'workout-session';
+  title: string;
+  activityType: string;
+  startedAt: string;
+  completedDate: string;
+  durationMinutes: number;
+  distance: number;
+  distanceUnit: string;
+  steps: number;
+  caloriesBurned: number;
+  note: string;
+  status: string;
+}
+
+export type NativeDailyFoodEntryPatch = Omit<NativeDailyFoodEntrySnapshot, 'id' | 'path'>;
+export type NativeDailyActivityEntryPatch = Omit<NativeDailyActivityEntrySnapshot, 'id' | 'path' | 'kind' | 'status'>;
 
 interface LegacyHealthCandidate {
   id: string;
@@ -387,6 +414,26 @@ const numberValue = (value: unknown): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const nonNegativeNumber = (value: unknown): number => Math.max(0, numberValue(value));
+
+const optionalNonNegativeNumber = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+function nativeActivityDurationMinutes(frontmatter: Record<string, unknown>): number {
+  return numberValue(frontmatter.durationMinutes)
+    || numberValue(frontmatter.timeEstimate)
+    || numberValue(frontmatter.durationSeconds) / 60
+    || (() => {
+      const startedAt = Date.parse(String(frontmatter.startedAt || ''));
+      const endedAt = Date.parse(String(frontmatter.endedAt || frontmatter.completedDate || ''));
+      return Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt
+        ? (endedAt - startedAt) / 60_000
+        : 0;
+    })();
+}
 
 const storedWorkoutSets = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value)
   ? value.filter((set): set is Record<string, unknown> => !!set && typeof set === 'object' && !Array.isArray(set))
@@ -1692,8 +1739,119 @@ export class HealthNativeRecordService {
         proteinG: numberValue(record.frontmatter.proteinG),
         carbsG: numberValue(record.frontmatter.carbsG),
         fatG: numberValue(record.frontmatter.fatG),
+        fiberG: numberValue(record.frontmatter.fiberG),
+        sugarG: numberValue(record.frontmatter.sugarG),
+        sugarAlcoholG: numberValue(record.frontmatter.sugarAlcoholG),
+        alcoholG: numberValue(record.frontmatter.alcoholG),
+        sodiumMg: numberValue(record.frontmatter.sodiumMg),
+        note: String(record.frontmatter.note || ''),
+        linkedFood: Boolean(foodReference(record.frontmatter)),
       }))
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
+  }
+
+  getDailyActivityEntries(dateIso: string): NativeDailyActivityEntrySnapshot[] {
+    return this.getKindRecords('activity-entry')
+      .concat(this.getKindRecords('workout-session'))
+      .filter((record) => (
+        record.frontmatter.archived !== true
+        && dateKey(
+          record.frontmatter.date
+          || record.frontmatter.workoutDate
+          || record.frontmatter.completedDate
+          || record.frontmatter.startedAt
+          || record.frontmatter.endedAt,
+        ) === dateIso
+      ))
+      .map((record) => ({
+        id: record.id,
+        path: record.file.path,
+        kind: record.kind as 'activity-entry' | 'workout-session',
+        title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+        activityType: String(record.frontmatter.activityType || (record.kind === 'workout-session' ? 'workout' : 'other')).trim(),
+        startedAt: String(record.frontmatter.startedAt || ''),
+        completedDate: String(record.frontmatter.completedDate || record.frontmatter.endedAt || record.frontmatter.startedAt || ''),
+        durationMinutes: nativeActivityDurationMinutes(record.frontmatter),
+        distance: numberValue(record.frontmatter.distance),
+        distanceUnit: String(record.frontmatter.distanceUnit || '').trim(),
+        steps: numberValue(record.frontmatter.steps),
+        caloriesBurned: numberValue(record.frontmatter.caloriesBurned),
+        note: String(record.frontmatter.note || ''),
+        status: String(record.frontmatter.status || (record.kind === 'workout-session' ? 'active' : 'complete')).trim().toLowerCase(),
+      }))
+      .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
+  }
+
+  async updateDailyFoodEntry(reference: string | TFile, patch: NativeDailyFoodEntryPatch): Promise<NativeRecordHandle> {
+    const api = this.requireApi();
+    const current = await api.resolve(reference);
+    if (!current || current.kind !== 'food-entry') throw new Error('Food log entry was not found.');
+    const title = String(patch.title || '').trim();
+    const completedDate = String(patch.completedDate || '').trim();
+    const unit = String(patch.unit || '').trim();
+    if (!title || !completedDate || !unit || !Number.isFinite(patch.quantity) || patch.quantity <= 0) {
+      throw new Error('Food log title, consumed time, quantity, and unit are required.');
+    }
+    const linkedFood = Boolean(foodReference(current.frontmatter));
+    const nutritionUpdates = linkedFood ? {} : {
+      calories: nonNegativeNumber(patch.calories),
+      proteinG: nonNegativeNumber(patch.proteinG),
+      carbsG: nonNegativeNumber(patch.carbsG),
+      fatG: nonNegativeNumber(patch.fatG),
+      fiberG: nonNegativeNumber(patch.fiberG),
+      sugarG: nonNegativeNumber(patch.sugarG),
+      sugarAlcoholG: nonNegativeNumber(patch.sugarAlcoholG),
+      alcoholG: nonNegativeNumber(patch.alcoholG),
+      sodiumMg: nonNegativeNumber(patch.sodiumMg),
+    };
+    const updated = await api.update(current.file, {
+      title,
+      completedDate,
+      quantity: patch.quantity,
+      unit,
+      ...nutritionUpdates,
+      note: String(patch.note || '').trim() || null,
+    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-food-edit' });
+    if (!updated) throw new Error('Food log entry changed before it could be saved.');
+    this.trackHandle(updated);
+    return updated;
+  }
+
+  async updateDailyActivityEntry(reference: string | TFile, patch: NativeDailyActivityEntryPatch): Promise<NativeRecordHandle> {
+    const api = this.requireApi();
+    const current = await api.resolve(reference);
+    if (!current || current.kind !== 'activity-entry') throw new Error('Activity log entry was not found.');
+    const title = String(patch.title || '').trim();
+    const completedDate = String(patch.completedDate || '').trim();
+    if (!title || !completedDate) throw new Error('Activity name and completed time are required.');
+    const updated = await api.update(current.file, {
+      title,
+      activityType: String(patch.activityType || 'other').trim() || 'other',
+      startedAt: String(patch.startedAt || '').trim() || null,
+      completedDate,
+      durationMinutes: optionalNonNegativeNumber(patch.durationMinutes),
+      distance: optionalNonNegativeNumber(patch.distance),
+      distanceUnit: patch.distance > 0 ? String(patch.distanceUnit || '').trim() || 'mi' : null,
+      steps: optionalNonNegativeNumber(patch.steps),
+      caloriesBurned: optionalNonNegativeNumber(patch.caloriesBurned),
+      note: String(patch.note || '').trim() || null,
+    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-activity-edit' });
+    if (!updated) throw new Error('Activity log entry changed before it could be saved.');
+    this.trackHandle(updated);
+    return updated;
+  }
+
+  async archiveDailyEntry(reference: string | TFile, expectedKind: 'food-entry' | 'activity-entry' | 'workout-session'): Promise<NativeRecordHandle> {
+    const api = this.requireApi();
+    const current = await api.resolve(reference);
+    if (!current || current.kind !== expectedKind) throw new Error('Health log entry was not found.');
+    const updated = await api.update(current.file, {
+      archived: true,
+      archivedDate: new Date().toISOString(),
+    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-entry-remove' });
+    if (!updated) throw new Error('Health log entry changed before it could be removed.');
+    this.trackHandle(updated);
+    return updated;
   }
 
   getDailyActivityTotals(dateIso: string): NativeDailyActivityTotals {
@@ -1709,16 +1867,7 @@ export class HealthNativeRecordService {
     let caloriesBurned = 0;
     let steps = 0;
     for (const record of [...activityRecords, ...workoutRecords]) {
-      const duration = numberValue(record.frontmatter.durationMinutes)
-        || numberValue(record.frontmatter.timeEstimate)
-        || numberValue(record.frontmatter.durationSeconds) / 60
-        || (() => {
-          const startedAt = Date.parse(String(record.frontmatter.startedAt || ''));
-          const endedAt = Date.parse(String(record.frontmatter.endedAt || record.frontmatter.completedDate || ''));
-          return Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt
-            ? (endedAt - startedAt) / 60_000
-            : 0;
-        })();
+      const duration = nativeActivityDurationMinutes(record.frontmatter);
       durationMinutes += duration;
       caloriesBurned += numberValue(record.frontmatter.caloriesBurned);
       steps += numberValue(record.frontmatter.steps);

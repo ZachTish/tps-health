@@ -13,7 +13,7 @@ import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescrib
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
-import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
+import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyActivityEntrySnapshot, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   buildNativeDailyActivityModel,
@@ -1493,6 +1493,46 @@ export default class TPSHealthPlugin extends Plugin {
   openActivityLogger(dateContext: FoodLogDateContext | null = null): void {
     logger.flow("ActivityLog", "open", { hasDateContext: !!dateContext, ...summarizeDateContext(dateContext) });
     new ActivityLogModal(this.app, this, dateContext).open();
+  }
+
+  openNativeFoodEntryEditor(entry: NativeDailyFoodEntrySnapshot): void {
+    new NativeFoodEntryEditModal(this.app, this, entry).open();
+  }
+
+  openNativeActivityEntryEditor(entry: NativeDailyActivityEntrySnapshot): void {
+    if (entry.kind === "workout-session") {
+      void this.openNativeDailyRecord(entry.path);
+      return;
+    }
+    new NativeActivityEntryEditModal(this.app, this, entry).open();
+  }
+
+  async openNativeDailyRecord(path: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice("Health log entry was not found.");
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  async removeNativeDailyEntry(entry: NativeDailyFoodEntrySnapshot | NativeDailyActivityEntrySnapshot): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled()) return;
+    if ("kind" in entry && entry.kind === "workout-session" && this.settings.activeWorkoutPath === entry.path) {
+      this.openDiscardWorkoutConfirmation();
+      return;
+    }
+    const label = "kind" in entry && entry.kind === "workout-session" ? "workout" : "kind" in entry ? "activity" : "food";
+    if (typeof window.confirm === "function" && !window.confirm(`Remove “${entry.title}” from this day's ${label} log?`)) return;
+    logger.flow("NativeDailyDashboard", "entry-remove:start", { path: entry.path, kind: "kind" in entry ? entry.kind : "food-entry" });
+    try {
+      await this.nativeRecordService.archiveDailyEntry(entry.path, "kind" in entry ? entry.kind : "food-entry");
+      new Notice(`Removed ${label} log entry`);
+      logger.flow("NativeDailyDashboard", "entry-remove:done", { path: entry.path, kind: "kind" in entry ? entry.kind : "food-entry" });
+    } catch (error) {
+      logger.flowError("NativeDailyDashboard", "entry-remove:failed", error, { path: entry.path, kind: "kind" in entry ? entry.kind : "food-entry" });
+      new Notice(`Could not remove the ${label} log entry.`);
+    }
   }
 
   async openFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {
@@ -12163,6 +12203,11 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
           const file = this.plugin.app.vault.getAbstractFileByPath(path);
           if (file instanceof TFile) void this.plugin.app.workspace.getLeaf(false).openFile(file);
         },
+        editFoodEntry: (entry) => this.plugin.openNativeFoodEntryEditor(entry),
+        removeFoodEntry: (entry) => void this.plugin.removeNativeDailyEntry(entry),
+        openActivityEntry: (path) => void this.plugin.openNativeDailyRecord(path),
+        editActivityEntry: (entry) => this.plugin.openNativeActivityEntryEditor(entry),
+        removeActivityEntry: (entry) => void this.plugin.removeNativeDailyEntry(entry),
       };
       if (this.section === "activity") {
         const activityTotals = this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso) ?? {
@@ -12175,6 +12220,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         renderNativeDailyActivity(
           this.containerEl,
           buildNativeDailyActivityModel(activityTotals, this.plugin.getMetricRenderConfigs()),
+          this.plugin.nativeRecordService?.getDailyActivityEntries(this.dateContext.dateIso) ?? [],
           actions,
         );
         this.syncActiveWorkoutTimer(activeWorkout);
@@ -12189,9 +12235,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
           ? this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso)
           : undefined,
       );
-      const foodEntries = this.display.foodList === "hidden"
-        ? []
-        : this.plugin.nativeRecordService?.getDailyFoodEntries(this.dateContext.dateIso) ?? [];
+      const foodEntries = this.plugin.nativeRecordService?.getDailyFoodEntries(this.dateContext.dateIso) ?? [];
       if (this.section === "macros") {
         renderNativeDailyMacros(this.containerEl, model, foodEntries, this.display, actions);
         this.syncActiveWorkoutTimer(null);
@@ -12201,6 +12245,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         this.containerEl,
         model,
         foodEntries,
+        this.plugin.nativeRecordService?.getDailyActivityEntries(this.dateContext.dateIso) ?? [],
         this.display,
         actions,
       );
@@ -12234,6 +12279,11 @@ interface NativeDailyDashboardActions {
   resumeWorkout(): void;
   finishWorkout(): void;
   openFoodEntry(path: string): void;
+  editFoodEntry(entry: NativeDailyFoodEntrySnapshot): void;
+  removeFoodEntry(entry: NativeDailyFoodEntrySnapshot): void;
+  openActivityEntry(path: string): void;
+  editActivityEntry(entry: NativeDailyActivityEntrySnapshot): void;
+  removeActivityEntry(entry: NativeDailyActivityEntrySnapshot): void;
 }
 
 function renderNativeDailyDashboardMessage(container: HTMLElement, message: string): void {
@@ -12247,13 +12297,14 @@ function renderNativeDailyDashboard(
   container: HTMLElement,
   model: NativeDailyDashboardModel,
   foodEntries: NativeDailyFoodEntrySnapshot[],
+  activityEntries: NativeDailyActivityEntrySnapshot[],
   display: NativeDailyDisplayOptions,
   actions: NativeDailyDashboardActions,
 ): void {
   prepareNativeDailyDashboardHost(container);
   const stack = container.createDiv({ cls: "tps-health-native-daily-stack" });
   renderNativeDailyMacrosBlock(stack, model, foodEntries, display, actions);
-  renderNativeDailyActivityBlock(stack, model.activity, actions);
+  renderNativeDailyActivityBlock(stack, model.activity, activityEntries, actions);
 }
 
 function prepareNativeDailyDashboardHost(container: HTMLElement): void {
@@ -12300,15 +12351,22 @@ function renderNativeDailyMacrosBlock(
     cls: "tps-health-native-daily-actions",
     attr: { role: "toolbar", "aria-label": "Macro actions" },
   });
-  const addAction = (label: string, icon: string, onClick: () => void) => {
+  const addAction = (label: string, icon: string, onClick: () => void): HTMLButtonElement => {
     const button = actionBar.createEl("button", {
       cls: "tps-health-native-daily-action clickable-icon",
       attr: { type: "button", "aria-label": label, title: label },
     });
     setIcon(button, icon);
     button.addEventListener("click", onClick);
+    return button;
   };
   addAction("Add food", "utensils", actions.addFood);
+  let reviewFoodButton: HTMLButtonElement | null = null;
+  if (model.entryCount) {
+    reviewFoodButton = addAction("Review logged foods", "list", () => {
+      if (reviewFoodButton) toggleNativeDailyEntryList(root, ".tps-health-native-daily-foods", reviewFoodButton);
+    });
+  }
 
   if (!model.entryCount) {
     root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });
@@ -12317,9 +12375,33 @@ function renderNativeDailyMacrosBlock(
   } else {
     renderNativeDailyMetrics(root, model.metrics, "Daily macro totals");
   }
-  if (model.entryCount && display.foodList !== "hidden") {
-    renderNativeDailyFoodEntries(root, foodEntries, display.foodList === "expanded", actions);
+  if (model.entryCount) {
+    renderNativeDailyFoodEntries(root, foodEntries, display.foodList === "expanded", actions, reviewFoodButton);
   }
+}
+
+function toggleNativeDailyEntryList(root: HTMLElement, selector: string, button: HTMLButtonElement): void {
+  const details = root.querySelector<HTMLDetailsElement>(selector);
+  if (!details) return;
+  details.open = !details.open;
+  button.setAttr("aria-expanded", details.open ? "true" : "false");
+  if (details.open) details.querySelector<HTMLElement>("button")?.focus();
+}
+
+function renderNativeDailyRowAction(
+  container: HTMLElement,
+  label: string,
+  icon: string,
+  onClick: () => void,
+  danger = false,
+): HTMLButtonElement {
+  const button = container.createEl("button", {
+    cls: `tps-health-native-daily-row-action clickable-icon${danger ? " is-danger" : ""}`,
+    attr: { type: "button", "aria-label": label, title: label },
+  });
+  setIcon(button, icon);
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"]): void {
@@ -12348,9 +12430,11 @@ function renderNativeDailyFoodEntries(
   entries: NativeDailyFoodEntrySnapshot[],
   expanded: boolean,
   actions: NativeDailyDashboardActions,
+  toggleButton: HTMLButtonElement | null,
 ): void {
   const details = root.createEl("details", { cls: "tps-health-native-daily-foods" });
   details.open = expanded;
+  toggleButton?.setAttr("aria-expanded", details.open ? "true" : "false");
   const summary = details.createEl("summary", { cls: "tps-health-native-daily-foods-summary" });
   summary.createSpan({ text: entries.length === 1 ? "1 food item" : `${entries.length} food items` });
   const list = details.createDiv({ cls: "tps-health-native-daily-food-list", attr: { role: "list" } });
@@ -12371,21 +12455,27 @@ function renderNativeDailyFoodEntries(
       cls: "tps-health-native-daily-food-macros",
       text: `P ${formatNativeDailyMetricValue(entry.proteinG)}g · C ${formatNativeDailyMetricValue(entry.carbsG)}g · F ${formatNativeDailyMetricValue(entry.fatG)}g`,
     });
+    const rowActions = row.createDiv({ cls: "tps-health-native-daily-row-actions", attr: { role: "group", "aria-label": `${entry.title} actions` } });
+    renderNativeDailyRowAction(rowActions, `Edit ${entry.title}`, "pencil", () => actions.editFoodEntry(entry));
+    renderNativeDailyRowAction(rowActions, `Remove ${entry.title}`, "trash-2", () => actions.removeFoodEntry(entry), true);
   }
+  details.addEventListener("toggle", () => toggleButton?.setAttr("aria-expanded", details.open ? "true" : "false"));
 }
 
 function renderNativeDailyActivity(
   container: HTMLElement,
   model: NativeDailyActivityModel,
+  entries: NativeDailyActivityEntrySnapshot[],
   actions: NativeDailyDashboardActions,
 ): void {
   prepareNativeDailyDashboardHost(container);
-  renderNativeDailyActivityBlock(container, model, actions);
+  renderNativeDailyActivityBlock(container, model, entries, actions);
 }
 
 function renderNativeDailyActivityBlock(
   container: HTMLElement,
   model: NativeDailyActivityModel,
+  entries: NativeDailyActivityEntrySnapshot[],
   actions: NativeDailyDashboardActions,
 ): void {
   const activity = container.createDiv({ cls: "tps-health-native-daily tps-health-native-daily--activity" });
@@ -12408,15 +12498,22 @@ function renderNativeDailyActivityBlock(
     cls: "tps-health-native-daily-actions",
     attr: { role: "toolbar", "aria-label": "Activity actions" },
   });
-  const addActivityAction = (label: string, icon: string, onClick: () => void) => {
+  const addActivityAction = (label: string, icon: string, onClick: () => void): HTMLButtonElement => {
     const button = activityActions.createEl("button", {
       cls: "tps-health-native-daily-action clickable-icon",
       attr: { type: "button", "aria-label": label, title: label },
     });
     setIcon(button, icon);
     button.addEventListener("click", onClick);
+    return button;
   };
   addActivityAction("Log activity", "activity", actions.logActivity);
+  let reviewActivityButton: HTMLButtonElement | null = null;
+  if (model.entryCount) {
+    reviewActivityButton = addActivityAction("Review logged activity", "list", () => {
+      if (reviewActivityButton) toggleNativeDailyEntryList(activity, ".tps-health-native-daily-activities", reviewActivityButton);
+    });
+  }
   if (actions.activeWorkout) {
     const activeWorkout = activity.createDiv({ cls: "tps-health-native-daily-active-workout" });
     activeWorkout.createSpan({
@@ -12446,7 +12543,62 @@ function renderNativeDailyActivityBlock(
     activity.createDiv({ cls: "tps-health-native-daily-empty", text: "No activity logged for this day yet." });
   } else {
     renderNativeDailyMetrics(activity, model.metrics, "Daily activity totals");
+    renderNativeDailyActivityEntries(activity, entries, actions, reviewActivityButton);
   }
+}
+
+function renderNativeDailyActivityEntries(
+  root: HTMLElement,
+  entries: NativeDailyActivityEntrySnapshot[],
+  actions: NativeDailyDashboardActions,
+  toggleButton: HTMLButtonElement | null,
+): void {
+  const details = root.createEl("details", { cls: "tps-health-native-daily-activities" });
+  toggleButton?.setAttr("aria-expanded", "false");
+  const summary = details.createEl("summary", { cls: "tps-health-native-daily-foods-summary" });
+  summary.createSpan({ text: entries.length === 1 ? "1 activity item" : `${entries.length} activity items` });
+  const list = details.createDiv({ cls: "tps-health-native-daily-food-list", attr: { role: "list" } });
+  for (const entry of entries) {
+    const row = list.createDiv({ cls: "tps-health-native-daily-food-row tps-health-native-daily-activity-row", attr: { role: "listitem" } });
+    const title = row.createEl("button", {
+      cls: "tps-health-native-daily-food-title",
+      text: entry.title,
+      attr: { type: "button", title: `Open ${entry.title}`, "aria-label": `Open activity entry ${entry.title}` },
+    });
+    title.addEventListener("click", () => actions.openActivityEntry(entry.path));
+    row.createSpan({
+      cls: "tps-health-native-daily-food-calories",
+      text: entry.durationMinutes > 0 ? `${formatNativeDailyMetricValue(entry.durationMinutes)} min` : entry.kind === "workout-session" ? "Workout" : "Activity",
+    });
+    const facts = [
+      entry.caloriesBurned > 0 ? `${formatNativeDailyMetricValue(entry.caloriesBurned)} kcal` : "",
+      entry.distance > 0 ? `${formatNativeDailyMetricValue(entry.distance)} ${entry.distanceUnit || "mi"}` : "",
+      entry.steps > 0 ? `${formatNativeDailyMetricValue(entry.steps)} steps` : "",
+    ].filter(Boolean);
+    row.createSpan({
+      cls: "tps-health-native-daily-food-serving",
+      text: facts.join(" · ") || entry.activityType || "Activity",
+    });
+    row.createSpan({
+      cls: "tps-health-native-daily-food-macros",
+      text: nativeDailyEntryTimeLabel(entry.completedDate || entry.startedAt),
+    });
+    const rowActions = row.createDiv({ cls: "tps-health-native-daily-row-actions", attr: { role: "group", "aria-label": `${entry.title} actions` } });
+    renderNativeDailyRowAction(
+      rowActions,
+      entry.kind === "workout-session" ? `Open ${entry.title}` : `Edit ${entry.title}`,
+      entry.kind === "workout-session" ? "square-arrow-out-up-right" : "pencil",
+      () => actions.editActivityEntry(entry),
+    );
+    renderNativeDailyRowAction(rowActions, `Remove ${entry.title}`, "trash-2", () => actions.removeActivityEntry(entry), true);
+  }
+  details.addEventListener("toggle", () => toggleButton?.setAttr("aria-expanded", details.open ? "true" : "false"));
+}
+
+function nativeDailyEntryTimeLabel(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return "";
+  return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], ariaLabel: string): void {
@@ -15939,6 +16091,178 @@ class ActivityLogModal extends Modal {
       } catch (error) {
         logger.flowError("ActivityLogModal", "failed", error, { activity, activityType });
         new Notice(`Could not log ${activity}.`);
+      }
+    }));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+class NativeFoodEntryEditModal extends Modal {
+  private submitting = false;
+
+  constructor(app: App, private plugin: TPSHealthPlugin, private entry: NativeDailyFoodEntrySnapshot) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-native-entry-editor-frame");
+    this.contentEl.empty();
+    this.contentEl.addClass("tps-health-modal");
+    this.contentEl.createEl("h2", { text: "Edit logged food" });
+    this.contentEl.createEl("p", {
+      cls: "tps-health-status",
+      text: this.entry.linkedFood
+        ? "Amount changes recalculate this log from its linked food. The saved food definition is not changed."
+        : "Edit this estimate only. No reusable food note will be created or changed.",
+    });
+    let title = this.entry.title;
+    let quantity = String(this.entry.quantity);
+    let unit = this.entry.unit;
+    let completedDateInput = foodLogDateTimeLocalFromTimestamp(this.entry.completedDate);
+    let note = this.entry.note;
+    const nutrition = {
+      calories: String(this.entry.calories), proteinG: String(this.entry.proteinG), carbsG: String(this.entry.carbsG),
+      fatG: String(this.entry.fatG), fiberG: String(this.entry.fiberG), sugarG: String(this.entry.sugarG),
+      sugarAlcoholG: String(this.entry.sugarAlcoholG), alcoholG: String(this.entry.alcoholG), sodiumMg: String(this.entry.sodiumMg),
+    };
+    new Setting(this.contentEl).setName("Name").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
+    new Setting(this.contentEl).setName("Amount").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0.000001";
+      text.inputEl.step = "any";
+      text.setValue(quantity).onChange((value) => quantity = value.trim());
+    });
+    new Setting(this.contentEl).setName("Unit").addText((text) => text.setValue(unit).onChange((value) => unit = value.trim()));
+    new Setting(this.contentEl).setName("Consumed time").addText((text) => {
+      configureFoodLogDateTimeInput(text.inputEl);
+      text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
+    });
+    if (!this.entry.linkedFood) {
+      const fields: Array<[keyof typeof nutrition, string, string]> = [
+        ["calories", "Calories", "1"], ["proteinG", "Protein (g)", "any"], ["carbsG", "Carbs (g)", "any"],
+        ["fatG", "Fat (g)", "any"], ["fiberG", "Fiber (g)", "any"], ["sugarG", "Sugar (g)", "any"],
+        ["sugarAlcoholG", "Sugar alcohol (g)", "any"], ["alcoholG", "Alcohol (g)", "any"], ["sodiumMg", "Sodium (mg)", "any"],
+      ];
+      for (const [key, label, step] of fields) {
+        new Setting(this.contentEl).setName(label).addText((text) => {
+          text.inputEl.type = "number";
+          text.inputEl.min = "0";
+          text.inputEl.step = step;
+          text.setValue(nutrition[key]).onChange((value) => nutrition[key] = value.trim());
+        });
+      }
+    }
+    new Setting(this.contentEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
+    new Setting(this.contentEl).addButton((button) => button.setButtonText("Save log entry").setCta().onClick(async () => {
+      if (this.submitting) return;
+      this.submitting = true;
+      button.setDisabled(true);
+      try {
+        await this.plugin.nativeRecordService.updateDailyFoodEntry(this.entry.path, {
+          ...this.entry,
+          title,
+          quantity: Number(quantity),
+          unit,
+          completedDate: resolveBatchFoodCompletedDate(completedDateInput, null) || this.entry.completedDate,
+          calories: Number(nutrition.calories),
+          proteinG: Number(nutrition.proteinG),
+          carbsG: Number(nutrition.carbsG),
+          fatG: Number(nutrition.fatG),
+          fiberG: Number(nutrition.fiberG),
+          sugarG: Number(nutrition.sugarG),
+          sugarAlcoholG: Number(nutrition.sugarAlcoholG),
+          alcoholG: Number(nutrition.alcoholG),
+          sodiumMg: Number(nutrition.sodiumMg),
+          note,
+        });
+        logger.flow("NativeDailyDashboard", "food-edit:done", { path: this.entry.path, linkedFood: this.entry.linkedFood });
+        new Notice("Updated food log entry");
+        this.close();
+      } catch (error) {
+        logger.flowError("NativeDailyDashboard", "food-edit:failed", error, { path: this.entry.path });
+        new Notice("Could not update the food log entry.");
+      } finally {
+        this.submitting = false;
+        button.setDisabled(false);
+      }
+    }));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+class NativeActivityEntryEditModal extends Modal {
+  private submitting = false;
+
+  constructor(app: App, private plugin: TPSHealthPlugin, private entry: NativeDailyActivityEntrySnapshot) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-native-entry-editor-frame");
+    this.contentEl.empty();
+    this.contentEl.addClass("tps-health-modal");
+    this.contentEl.createEl("h2", { text: "Edit logged activity" });
+    let title = this.entry.title;
+    let activityType = this.entry.activityType || "other";
+    let durationMinutes = String(this.entry.durationMinutes || "");
+    let distance = String(this.entry.distance || "");
+    let distanceUnit = this.entry.distanceUnit || "mi";
+    let steps = String(this.entry.steps || "");
+    let caloriesBurned = String(this.entry.caloriesBurned || "");
+    let completedDateInput = foodLogDateTimeLocalFromTimestamp(this.entry.completedDate || this.entry.startedAt);
+    let note = this.entry.note;
+    new Setting(this.contentEl).setName("Activity").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
+    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown
+      .addOptions({ walking: "Walking", running: "Running", cycling: "Cycling", hiking: "Hiking", mobility: "Mobility", other: "Other" })
+      .setValue(activityType).onChange((value) => activityType = value));
+    const numberField = (name: string, initial: string, onChange: (value: string) => void, step = "any") => new Setting(this.contentEl).setName(name).addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.step = step;
+      text.setValue(initial).onChange((value) => onChange(value.trim()));
+    });
+    numberField("Duration (minutes)", durationMinutes, (value) => durationMinutes = value, "1");
+    numberField("Distance", distance, (value) => distance = value).addDropdown((dropdown) => dropdown
+      .addOptions({ mi: "mi", km: "km", m: "m" }).setValue(distanceUnit).onChange((value) => distanceUnit = value));
+    numberField("Steps", steps, (value) => steps = value, "1");
+    numberField("Calories burned", caloriesBurned, (value) => caloriesBurned = value);
+    new Setting(this.contentEl).setName("Completed time").addText((text) => {
+      configureFoodLogDateTimeInput(text.inputEl);
+      text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
+    });
+    new Setting(this.contentEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
+    new Setting(this.contentEl).addButton((button) => button.setButtonText("Save activity").setCta().onClick(async () => {
+      if (this.submitting) return;
+      this.submitting = true;
+      button.setDisabled(true);
+      try {
+        await this.plugin.nativeRecordService.updateDailyActivityEntry(this.entry.path, {
+          title,
+          activityType,
+          startedAt: this.entry.startedAt,
+          completedDate: resolveBatchFoodCompletedDate(completedDateInput, null) || this.entry.completedDate,
+          durationMinutes: Number(durationMinutes),
+          distance: Number(distance),
+          distanceUnit,
+          steps: Number(steps),
+          caloriesBurned: Number(caloriesBurned),
+          note,
+        });
+        logger.flow("NativeDailyDashboard", "activity-edit:done", { path: this.entry.path });
+        new Notice("Updated activity log entry");
+        this.close();
+      } catch (error) {
+        logger.flowError("NativeDailyDashboard", "activity-edit:failed", error, { path: this.entry.path });
+        new Notice("Could not update the activity log entry.");
+      } finally {
+        this.submitting = false;
+        button.setDisabled(false);
       }
     }));
   }

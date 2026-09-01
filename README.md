@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.34.0
+
+- Native Macros and Activity blocks now include a compact list button in the header. It opens the records contributing to the displayed date in both Live Preview and Reading mode, including when the macro block does not specify a `foods:` option. `foods: expanded` still opens food rows initially; `foods: hidden` now means initially collapsed so logged items remain reachable.
+- Food rows show the consumed amount, calorie and P/C/F snapshot, plus small edit and remove actions. Editing a linked food log changes only the consumption record and recalculates its nutrition from the linked food definition; editing a quick estimate exposes its saved macro fields. Neither route edits a reusable food note.
+- Activity rows include manual activity entries and workout sessions with their duration, time, and available calories/distance/steps. Manual activity records open a focused editor; workout records open their full workout note. Completed records can be removed from the displayed log, while an active workout keeps the existing protected discard confirmation.
+- Remove is recoverable: Health marks the selected native record archived instead of deleting its note. Indexed totals and both lists refresh from the same native-record change signal, without writing dashboard state or log data into the embedding note body.
+- Row controls stay 28 px visually on desktop and expose 44 px touch targets on coarse-pointer devices. The list uses the same code-block renderer in Reading mode and Live Preview, preserves keyboard focus/labels, and collapses its metadata cleanly in narrow containers.
+- This is a backward-compatible dashboard-management feature. Existing native records, code blocks, date filters, `foods:` options, workout session schema, settings, and public APIs remain compatible. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.33.0
 
 - Native workout notes now keep their complete ordered exercise/set graph in one nested `session` frontmatter property. The nested keys are intentionally concise and readable: exercises use `name`, `exercise`, and optional `superset`; sets use values such as `reps`, `weight`, `unit`, `rest`, `type`, `drop`, and `completed` only when they apply.
