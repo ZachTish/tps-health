@@ -2254,8 +2254,13 @@ body.is-phone .tps-health-selection-controls {
 }
 
 .tps-health-native-workout-save-state {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
 }
 
 .tps-health-native-workout-row-actions {
@@ -2263,12 +2268,17 @@ body.is-phone .tps-health-selection-controls {
   justify-content: flex-end;
 }
 
-.tps-health-native-workout-completed {
-  accent-color: var(--interactive-accent);
-  block-size: 20px;
-  flex: 0 0 auto;
-  inline-size: 20px;
-  margin: 0;
+.tps-health-native-workout-button.is-complete-toggle {
+  flex: 1 1 auto;
+  min-height: 30px;
+  min-width: 64px;
+  padding-inline: 7px;
+}
+
+.tps-health-native-workout-button.is-complete-toggle[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--color-green) 18%, var(--background-modifier-hover));
+  border-color: color-mix(in srgb, var(--color-green) 62%, var(--background-modifier-border));
+  color: var(--color-green);
 }
 
 .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
@@ -2308,11 +2318,36 @@ body.is-phone .tps-health-selection-controls {
   .tps-health-native-workout-exercise-header {
     align-items: flex-start;
   }
+
+  .tps-health-native-workout-table {
+    overflow-x: hidden;
+  }
+
+  .tps-health-native-workout-row {
+    gap: 5px;
+    grid-template-columns: 24px minmax(38px, 0.55fr) minmax(96px, 1.25fr) minmax(50px, 0.7fr) minmax(100px, 1fr);
+    min-width: 0;
+  }
+
+  .tps-health-native-workout-row > :nth-child(4),
+  .tps-health-native-workout-row > :nth-child(6) {
+    display: none;
+  }
+
+  .tps-health-native-workout-weight-cell {
+    grid-template-columns: minmax(40px, 1fr) 38px auto;
+  }
+
+  .tps-health-native-workout-input,
+  .tps-health-native-workout-select {
+    padding-inline: 3px;
+  }
 }
 
 @media (hover: none) and (pointer: coarse) {
   .tps-health-native-workout-exercise-actions .tps-health-native-workout-button,
-  .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
+  .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu,
+  .tps-health-native-workout-button.is-complete-toggle {
     min-height: 44px;
     min-width: 44px;
   }

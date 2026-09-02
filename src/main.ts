@@ -7991,6 +7991,7 @@ export default class TPSHealthPlugin extends Plugin {
       document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surface.remove());
       return;
     }
+    this.ensureNativeWorkoutReadingSurfaces();
     const readingSurfacesByView = new Map<HTMLElement, Set<string>>();
     document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface[data-workout-path]").forEach((surface) => {
       const path = surface.dataset.workoutPath || "";
@@ -8026,6 +8027,26 @@ export default class TPSHealthPlugin extends Plugin {
         return;
       }
       this.renderNativeWorkoutSurfaceElement(surface, snapshot);
+    });
+  }
+
+  private ensureNativeWorkoutReadingSurfaces(): void {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || !(view.file instanceof TFile) || view.getMode() !== "preview") return;
+      const snapshot = this.nativeRecordService?.getWorkoutSnapshot(view.file.path);
+      if (!snapshot) return;
+      const container = (leaf as any).containerEl as HTMLElement | undefined;
+      const target = container?.querySelector<HTMLElement>(".markdown-preview-view .markdown-preview-sizer");
+      if (!target?.isConnected) return;
+      const matches = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
+        .filter((surface) => surface.dataset.workoutPath === snapshot.path);
+      const surface = matches.shift() || document.createElement("section");
+      for (const duplicate of matches) duplicate.remove();
+      surface.className = "tps-health-native-workout-surface";
+      surface.dataset.workoutPath = snapshot.path;
+      surface.dataset.renderContext = "reading";
+      if (surface.parentElement !== target) target.appendChild(surface);
     });
   }
 
@@ -8139,10 +8160,35 @@ export default class TPSHealthPlugin extends Plugin {
   ): void {
     const menu = new Menu();
     menu.addItem((item) => item
-      .setTitle(set.dropSetGroupId ? "Edit drop set…" : "Create drop set…")
+      .setTitle("Add drop set")
       .setIcon("list-plus")
+      .onClick(() => void this.addNativeWorkoutDropSet(snapshot, exercise, set)));
+    menu.addItem((item) => item
+      .setTitle(set.dropSetGroupId ? "Edit drop-set links…" : "Link existing drop sets…")
+      .setIcon("link")
       .onClick(() => this.openNativeWorkoutDropSetLinker(snapshot, exercise, set)));
     menu.showAtMouseEvent(event);
+  }
+
+  private async addNativeWorkoutDropSet(
+    snapshot: NativeWorkoutSnapshot,
+    exercise: NativeWorkoutExerciseSnapshot,
+    set: NativeWorkoutSetSnapshot,
+  ): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) return;
+    try {
+      const linkedSetIds = set.dropSetGroupId
+        ? exercise.sets
+          .filter((candidate) => candidate.id !== set.id && candidate.dropSetGroupId === set.dropSetGroupId)
+          .map((candidate) => candidate.id)
+        : [];
+      await this.nativeRecordService.setWorkoutDropSetLinks(snapshot.path, exercise.id, set.id, linkedSetIds, true);
+      this.updateNativeWorkoutSurfaces();
+      logger.flow("Workout", "drop-set:added", { path: snapshot.path, exerciseId: exercise.id, setId: set.id });
+    } catch (error) {
+      logger.flowError("Workout", "drop-set:add-failed", error, { path: snapshot.path, exerciseId: exercise.id, setId: set.id });
+      new Notice("Could not add a drop set. The workout was left unchanged.");
+    }
   }
 
   private async reorderNativeWorkoutExercise(

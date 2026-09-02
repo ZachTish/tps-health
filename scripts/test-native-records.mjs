@@ -1231,6 +1231,47 @@ test('native set completion starts rest only after the final superset exercise a
   assert.equal(snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt, '', 'undoing completion removes only the timer it started');
 });
 
+test('a one-set exercise can add a drop set directly and completion starts rest only after the drop chain', async () => {
+  const { service } = createHarness();
+  const session = await service.createWorkoutSession({
+    title: 'Direct drop set',
+    startedAt: '2026-09-02T11:00:00.000Z',
+  }, 'workout-direct-drop');
+  await service.ensureWorkoutExercise(session, 'Curl', 'Health/Exercises/Curl.md');
+  let snapshot = service.getWorkoutSnapshot(session.path);
+  const curl = snapshot.exercises[0];
+  await service.addPlannedWorkoutSet(session.path, curl.id);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const rootSet = snapshot.exercises[0].sets[0];
+  await service.setWorkoutDropSetLinks(session.path, curl.id, rootSet.id, [], true);
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const firstDropSet = snapshot.exercises[0].sets[1];
+  await service.setWorkoutDropSetLinks(session.path, curl.id, rootSet.id, [firstDropSet.id], true);
+  await service.addPlannedWorkoutSet(session.path, curl.id);
+
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const sets = snapshot.exercises[0].sets;
+  assert.equal(sets.length, 4);
+  assert.ok(sets[0].dropSetGroupId);
+  assert.equal(sets[1].dropSetGroupId, sets[0].dropSetGroupId);
+  assert.equal(sets[2].dropSetGroupId, sets[0].dropSetGroupId, 'adding another drop set keeps the existing chain linked');
+  assert.equal(sets[1].setType, 'drop');
+  assert.equal(sets[2].setType, 'drop');
+
+  await service.updateWorkoutSet(session.path, sets[0].id, { completed: true });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  assert.equal(snapshot.exercises[0].sets[1].restStartedAt, '', 'the linked drop set follows immediately without rest');
+
+  await service.updateWorkoutSet(session.path, sets[1].id, { completed: true });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  assert.equal(snapshot.exercises[0].sets[2].restStartedAt, '', 'every linked drop set remains immediate');
+
+  await service.updateWorkoutSet(session.path, sets[2].id, { completed: true });
+  snapshot = service.getWorkoutSnapshot(session.path);
+  const completedDropAt = snapshot.exercises[0].sets[2].completedDate;
+  assert.equal(snapshot.exercises[0].sets[3].restStartedAt, completedDropAt, 'the first normal set after the drop chain receives the rest timer');
+});
+
 test('a blank native workout projects a newly attached exercise before its first set', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({
@@ -1396,6 +1437,9 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /new NativeWorkoutSurfaceWidget\(plugin, filePath\)/u);
   assert.match(mainSource, /sourceView\.classList\.contains\("is-live-preview"\)/u);
   assert.match(mainSource, /renderNativeWorkoutSurfaceInReadingView\(this\.containerEl, this\.plugin, this\.ctx\.sourcePath\)/u);
+  assert.match(mainSource, /this\.ensureNativeWorkoutReadingSurfaces\(\);/u);
+  assert.match(mainSource, /view\.getMode\(\) !== "preview"/u);
+  assert.match(mainSource, /\.markdown-preview-view \.markdown-preview-sizer/u);
   assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
   assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
@@ -1421,8 +1465,9 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(nativeWorkoutSurfaceSource, /\['Set', 'Reps', 'Weight', 'RPE', 'Rest', 'Type', 'Done'\]/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.addSet\(exercise\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.updateSet\(exercise, set, patch\)/u);
-  assert.match(nativeWorkoutSurfaceSource, /completed\.type = 'checkbox'/u);
-  assert.match(nativeWorkoutSurfaceSource, /\{ completed: completed\.checked \}/u);
+  assert.match(nativeWorkoutSurfaceSource, /priorCompleted \? 'Done ✓' : 'Complete'/u);
+  assert.match(nativeWorkoutSurfaceSource, /\{ completed: !priorCompleted \}/u);
+  assert.match(nativeWorkoutSurfaceSource, /aria-pressed/u);
   assert.match(nativeWorkoutSurfaceSource, /restCountdownLabel\(set\.restStartedAt, targetSeconds\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openExerciseMenu\(exercise, event\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openSetMenu\(exercise, set, event\)/u);
@@ -1439,6 +1484,10 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');
   assert.match(stylesSource, /\.tps-health-native-workout-exercise\.is-superset/u);
   assert.match(stylesSource, /\.tps-health-native-workout-row\.is-drop-set/u);
+  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 470px\)[\s\S]*?\.tps-health-native-workout-row \{[\s\S]*?min-width: 0;/u, 'narrow workout rows keep completion and the set menu on screen');
+  assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle/u);
+  assert.match(mainSource, /\.setTitle\("Add drop set"\)[\s\S]*?addNativeWorkoutDropSet\(snapshot, exercise, set\)/u);
+  assert.match(mainSource, /const linkedSetIds = set\.dropSetGroupId[\s\S]*?candidate\.dropSetGroupId === set\.dropSetGroupId/u, 'direct add extends an existing drop chain');
 });
 
 test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {

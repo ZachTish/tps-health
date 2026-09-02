@@ -332,26 +332,29 @@ export function renderNativeWorkoutSurface(
       const rowActions = document.createElement('div');
       rowActions.className = 'tps-health-native-workout-row-actions';
       rowActions.setAttribute('role', 'cell');
-      const completed = document.createElement('input');
-      completed.type = 'checkbox';
-      completed.className = 'tps-health-native-workout-completed';
-      completed.checked = Boolean(set.completedDate);
-      completed.setAttribute('aria-label', `${exercise.name} set ${set.ordinal} complete`);
-      completed.setAttribute('title', completed.checked ? 'Mark set incomplete' : 'Finish set');
-      stopInteraction(completed);
-      completed.addEventListener('change', () => {
-        const prior = Boolean(set.completedDate);
-        completed.disabled = true;
-        status.textContent = 'Saving…';
-        void Promise.resolve(options.actions.updateSet(exercise, set, { completed: completed.checked })).then(() => {
-          status.textContent = 'Saved';
-        }).catch(() => {
-          completed.checked = prior;
-          status.textContent = 'Retry';
-        }).finally(() => {
-          completed.disabled = false;
-        });
-      });
+      const priorCompleted = Boolean(set.completedDate);
+      const completed = button(
+        priorCompleted ? 'Done ✓' : 'Complete',
+        priorCompleted ? `Mark ${exercise.name} set ${set.ordinal} incomplete` : `Complete ${exercise.name} set ${set.ordinal}`,
+        async () => {
+          completed.disabled = true;
+          completed.textContent = 'Saving…';
+          status.textContent = 'Saving…';
+          try {
+            await options.actions.updateSet(exercise, set, { completed: !priorCompleted });
+            completed.textContent = priorCompleted ? 'Complete' : 'Done ✓';
+            completed.setAttribute('aria-pressed', priorCompleted ? 'false' : 'true');
+            status.textContent = 'Saved';
+          } catch {
+            completed.textContent = priorCompleted ? 'Done ✓' : 'Complete';
+            status.textContent = 'Retry';
+          } finally {
+            completed.disabled = false;
+          }
+        },
+      );
+      completed.classList.add('is-complete-toggle');
+      completed.setAttribute('aria-pressed', priorCompleted ? 'true' : 'false');
       const setMenu = button('⋯', `${exercise.name} set ${set.ordinal} actions`, (event) => options.actions.openSetMenu(exercise, set, event));
       setMenu.classList.add('is-menu');
       rowActions.append(completed, status, setMenu);

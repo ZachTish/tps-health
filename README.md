@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.34.1
+
+- Active native-workout rows now keep **Set**, **Reps**, **Weight**, **Rest**, and a labeled **Complete** button on screen in narrow/mobile panes. Secondary RPE and set-type controls remain available on wider panes, and the table no longer requires horizontal scrolling to reach completion or the set menu.
+- Completing a set writes its completion atomically and starts the countdown on the next open normal set. Drop-set members advance immediately without rest; the timer begins only after the last open drop-set member. Superset timing continues to wait until the final linked exercise in the round.
+- Every set menu now has a direct **Add drop set** action. It creates and links a new set in one mutation, and using it again extends the existing chain instead of replacing earlier drop sets. **Link existing drop sets…** remains available for explicit multi-set grouping.
+- The completion control uses visible `Complete` / `Done ✓` states with `aria-pressed`, stable saving feedback, keyboard focus, and coarse-pointer touch sizing in both Live Preview and Reading mode.
+- Reading mode now mounts the workout surface from the active Markdown view even when the session note body is empty, which is the normal shape for frontmatter-owned native sessions. It reuses or removes matching surfaces so a later Markdown postprocess cannot duplicate the workout.
+- This patch is backward-compatible with existing workout notes, nested `session` data, group IDs, settings, and APIs. Minimum supported Obsidian remains 1.12.0.
+
 ## 0.34.0
 
 - Native Macros and Activity blocks now include a compact list button in the header. It opens the records contributing to the displayed date in both Live Preview and Reading mode, including when the macro block does not specify a `foods:` option. `foods: expanded` still opens food rows initially; `foods: hidden` now means initially collapsed so logged items remain reachable.
