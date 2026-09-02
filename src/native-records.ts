@@ -2,7 +2,13 @@ import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { id, isoDateKey } from './format';
 import * as logger from './logger';
-import type { ActivityLogEntry, FoodLogEntry, Nutrition, WorkoutSet } from './types';
+import type { ActivityLogEntry, FoodLogEntry, Nutrition, TPSHealthSettings, WorkoutSet } from './types';
+import {
+  workoutDurationMinutes,
+  workoutEndedAt,
+  workoutStartedAt,
+  workoutTemporalPropertyUpdates,
+} from './workout-properties';
 
 export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 4;
 const WORKOUT_DATA_VERSION = 1;
@@ -363,7 +369,7 @@ const hasExactGeneratedTitleFirstWorkoutBasename = (record: IndexedHealthRecord)
   if (!title || record.file.basename !== title) return false;
   const match = title.match(GENERATED_TITLE_FIRST_WORKOUT_PATTERN);
   if (!match) return false;
-  const startedAtRaw = String(record.frontmatter.startedAt || '').trim();
+  const startedAtRaw = String(record.frontmatter.scheduled || record.frontmatter.startedAt || '').trim();
   if (!/[T\s]\d{2}:\d{2}/u.test(startedAtRaw)) return false;
   const startedAt = new Date(startedAtRaw);
   if (!Number.isFinite(startedAt.getTime())) return false;
@@ -398,8 +404,9 @@ export function buildNativeHealthRecordFileName(
     return [date, title].filter(Boolean).join(' - ');
   }
   if (kind === 'workout-session') {
-    const date = strictDateKey(properties.date, properties.workoutDate, properties.startedAt, properties.createdDate);
-    const title = workoutFileTitle(readableTitle(properties.title, 'Workout'), properties.startedAt);
+    const startedAt = properties.scheduled || properties.startedAt;
+    const date = strictDateKey(properties.date, properties.workoutDate, startedAt, properties.createdDate);
+    const title = workoutFileTitle(readableTitle(properties.title, 'Workout'), startedAt);
     return [date, title].filter(Boolean).join(' - ');
   }
   if (kind === 'workout-exercise') {
@@ -422,8 +429,9 @@ const optionalNonNegativeNumber = (value: unknown): number | null => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
-function nativeActivityDurationMinutes(frontmatter: Record<string, unknown>): number {
-  return numberValue(frontmatter.durationMinutes)
+function nativeActivityDurationMinutes(frontmatter: Record<string, unknown>, settings?: Partial<TPSHealthSettings>): number {
+  return (settings ? workoutDurationMinutes(frontmatter, settings) : 0)
+    || numberValue(frontmatter.durationMinutes)
     || numberValue(frontmatter.timeEstimate)
     || numberValue(frontmatter.durationSeconds) / 60
     || (() => {
@@ -735,14 +743,26 @@ const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
 function workoutSessionDataUpdates(
   exercises: StoredWorkoutExercise[],
   updates: Record<string, unknown> = {},
+  current: Record<string, unknown> = {},
+  settings: TPSHealthPlugin['settings'],
 ): Record<string, unknown> {
+  const terminal = String(updates.status || current.status || '').trim().toLocaleLowerCase() !== 'active';
+  const durationMinutes = numberValue(updates.durationMinutes)
+    || numberValue(updates.timeEstimate)
+    || numberValue(updates.durationSeconds) / 60
+    || workoutDurationMinutes(current, settings);
   return {
     ...clearProperties(REDUNDANT_WORKOUT_SESSION_KEYS),
+    ...workoutTemporalPropertyUpdates(settings, current, {
+      startedAt: updates.startedAt,
+      endedAt: updates.endedAt || updates.completedDate,
+      durationMinutes,
+      terminal,
+    }),
     session: workoutSessionPropertyValue(exercises),
     workoutData: null,
     ...compactRecordProperties({
       status: updates.status,
-      endedAt: updates.endedAt || updates.completedDate,
       caloriesBurned: updates.caloriesBurned,
       archived: updates.archived,
     }),
@@ -1085,10 +1105,10 @@ export class HealthNativeRecordService {
     const recordProperties = compactRecordProperties({
       title: properties.title,
       status: 'active',
-      startedAt,
       workoutPlan: this.recordLink(properties.workoutPlan || properties.workoutPlanPath),
       caloriesBurned: properties.caloriesBurned,
       session: workoutSessionPropertyValue([]),
+      ...workoutTemporalPropertyUpdates(this.plugin.settings, {}, { startedAt }),
     });
     const api = this.requireApi();
     const record = await api.create('workout-session', recordProperties, {
@@ -1098,6 +1118,7 @@ export class HealthNativeRecordService {
         ? buildNativeHealthRecordFileName('workout-session', {
           ...recordProperties,
           workoutDate: properties.workoutDate,
+          startedAt,
         })
         : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-start' },
@@ -1387,7 +1408,7 @@ export class HealthNativeRecordService {
     const currentStorageState = workoutStorageStateFromContent(beforeContent);
     if (currentStorageState !== expectedStorageState) throw new WorkoutSessionConflictError();
     const legacyMarker = workoutDataMarkerState(beforeContent);
-    const nextValues = workoutSessionDataUpdates(exercises, updates);
+    const nextValues = workoutSessionDataUpdates(exercises, updates, session.frontmatter, this.plugin.settings);
     let conflict = false;
     let committedFrontmatter: Record<string, unknown> | null = null;
     await this.plugin.app.fileManager.processFrontMatter(session.file, (frontmatter) => {
@@ -1636,7 +1657,7 @@ export class HealthNativeRecordService {
       path: record.file.path,
       title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
       status,
-      startedAt: String(record.frontmatter.startedAt || '').trim(),
+      startedAt: workoutStartedAt(record.frontmatter, this.plugin.settings),
     };
   }
 
@@ -1700,8 +1721,8 @@ export class HealthNativeRecordService {
       path: session.file.path,
       title: String(session.frontmatter.title || session.file.basename).trim() || session.file.basename,
       status: String(session.frontmatter.status || 'active').trim().toLowerCase() || 'active',
-      startedAt: String(session.frontmatter.startedAt || ''),
-      endedAt: String(session.frontmatter.endedAt || ''),
+      startedAt: workoutStartedAt(session.frontmatter, this.plugin.settings),
+      endedAt: workoutEndedAt(session.frontmatter, this.plugin.settings),
       exerciseCount: exercises.length,
       setCount: exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0),
       exercises,
@@ -1759,26 +1780,36 @@ export class HealthNativeRecordService {
           record.frontmatter.date
           || record.frontmatter.workoutDate
           || record.frontmatter.completedDate
-          || record.frontmatter.startedAt
-          || record.frontmatter.endedAt,
+          || (record.kind === 'workout-session'
+            ? workoutStartedAt(record.frontmatter, this.plugin.settings) || workoutEndedAt(record.frontmatter, this.plugin.settings)
+            : record.frontmatter.startedAt || record.frontmatter.endedAt),
         ) === dateIso
       ))
-      .map((record) => ({
-        id: record.id,
-        path: record.file.path,
-        kind: record.kind as 'activity-entry' | 'workout-session',
-        title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
-        activityType: String(record.frontmatter.activityType || (record.kind === 'workout-session' ? 'workout' : 'other')).trim(),
-        startedAt: String(record.frontmatter.startedAt || ''),
-        completedDate: String(record.frontmatter.completedDate || record.frontmatter.endedAt || record.frontmatter.startedAt || ''),
-        durationMinutes: nativeActivityDurationMinutes(record.frontmatter),
-        distance: numberValue(record.frontmatter.distance),
-        distanceUnit: String(record.frontmatter.distanceUnit || '').trim(),
-        steps: numberValue(record.frontmatter.steps),
-        caloriesBurned: numberValue(record.frontmatter.caloriesBurned),
-        note: String(record.frontmatter.note || ''),
-        status: String(record.frontmatter.status || (record.kind === 'workout-session' ? 'active' : 'complete')).trim().toLowerCase(),
-      }))
+      .map((record) => {
+        const workout = record.kind === 'workout-session';
+        const startedAt = workout
+          ? workoutStartedAt(record.frontmatter, this.plugin.settings)
+          : String(record.frontmatter.startedAt || '');
+        const endedAt = workout
+          ? workoutEndedAt(record.frontmatter, this.plugin.settings)
+          : String(record.frontmatter.completedDate || record.frontmatter.endedAt || startedAt);
+        return {
+          id: record.id,
+          path: record.file.path,
+          kind: record.kind as 'activity-entry' | 'workout-session',
+          title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
+          activityType: String(record.frontmatter.activityType || (workout ? 'workout' : 'other')).trim(),
+          startedAt,
+          completedDate: endedAt || startedAt,
+          durationMinutes: nativeActivityDurationMinutes(record.frontmatter, workout ? this.plugin.settings : undefined),
+          distance: numberValue(record.frontmatter.distance),
+          distanceUnit: String(record.frontmatter.distanceUnit || '').trim(),
+          steps: numberValue(record.frontmatter.steps),
+          caloriesBurned: numberValue(record.frontmatter.caloriesBurned),
+          note: String(record.frontmatter.note || ''),
+          status: String(record.frontmatter.status || (workout ? 'active' : 'complete')).trim().toLowerCase(),
+        };
+      })
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
   }
 
@@ -1860,14 +1891,22 @@ export class HealthNativeRecordService {
     ));
     const workoutRecords = this.getKindRecords('workout-session').filter((record) => (
       record.frontmatter.archived !== true && dateKey(
-        record.frontmatter.date || record.frontmatter.workoutDate || record.frontmatter.completedDate || record.frontmatter.startedAt || record.frontmatter.endedAt,
+        record.frontmatter.date || record.frontmatter.workoutDate
+        || workoutStartedAt(record.frontmatter, this.plugin.settings)
+        || workoutEndedAt(record.frontmatter, this.plugin.settings),
       ) === dateIso
     ));
     let durationMinutes = 0;
     let caloriesBurned = 0;
     let steps = 0;
-    for (const record of [...activityRecords, ...workoutRecords]) {
+    for (const record of activityRecords) {
       const duration = nativeActivityDurationMinutes(record.frontmatter);
+      durationMinutes += duration;
+      caloriesBurned += numberValue(record.frontmatter.caloriesBurned);
+      steps += numberValue(record.frontmatter.steps);
+    }
+    for (const record of workoutRecords) {
+      const duration = nativeActivityDurationMinutes(record.frontmatter, this.plugin.settings);
       durationMinutes += duration;
       caloriesBurned += numberValue(record.frontmatter.caloriesBurned);
       steps += numberValue(record.frontmatter.steps);
@@ -1976,14 +2015,20 @@ export class HealthNativeRecordService {
         ? this.getKindRecords('workout-session').filter((candidate) => this.recordBelongsToWorkout(record, candidate))
         : [];
       const sessionDate = session.length === 1
-        ? session[0].frontmatter.date || session[0].frontmatter.workoutDate || session[0].frontmatter.startedAt
+        ? session[0].frontmatter.date || session[0].frontmatter.workoutDate
+          || workoutStartedAt(session[0].frontmatter, this.plugin.settings)
         : undefined;
+      const projectedFrontmatter = record.kind === 'workout-session'
+        ? { ...record.frontmatter, startedAt: workoutStartedAt(record.frontmatter, this.plugin.settings) }
+        : record.frontmatter;
+      const projectedRecord = { ...record, frontmatter: projectedFrontmatter };
       return {
         record,
+        projectedRecord,
         originalBasename: record.file.basename,
         opaque: record.file.basename === record.id,
-        generatedTitleFirstWorkout: hasExactGeneratedTitleFirstWorkoutBasename(record),
-        fileName: buildNativeHealthRecordFileName(record.kind, record.frontmatter, { date: sessionDate }),
+        generatedTitleFirstWorkout: hasExactGeneratedTitleFirstWorkoutBasename(projectedRecord),
+        fileName: buildNativeHealthRecordFileName(record.kind, projectedFrontmatter, { date: sessionDate }),
       };
     });
     let renamed = 0;
@@ -1995,7 +2040,7 @@ export class HealthNativeRecordService {
         ? target.record.file.basename === target.record.id
         : target.generatedTitleFirstWorkout
           && target.record.file.basename === target.originalBasename
-          && hasExactGeneratedTitleFirstWorkoutBasename(target.record);
+          && hasExactGeneratedTitleFirstWorkoutBasename(target.projectedRecord);
       if (!stillEligible) {
         unchanged += 1;
         continue;
@@ -2088,11 +2133,24 @@ export class HealthNativeRecordService {
             .filter((exercise) => Boolean(exercise.name));
           importedWorkoutExercises = await this.ensureWorkoutExerciseDefinitionPaths(exercises, resolveDefinition);
         }
-        const persistedProperties = minimalNativeRecordProperties(candidate.kind, properties);
+        const minimalProperties = minimalNativeRecordProperties(candidate.kind, properties);
+        const persistedProperties = candidate.kind === 'workout-session'
+          ? compactRecordProperties({
+            ...minimalProperties,
+            ...workoutTemporalPropertyUpdates(this.plugin.settings, properties, {
+              startedAt: workoutStartedAt(properties, this.plugin.settings),
+              endedAt: workoutEndedAt(properties, this.plugin.settings),
+              durationMinutes: workoutDurationMinutes(properties, this.plugin.settings),
+              terminal: String(properties.status || 'complete').trim().toLocaleLowerCase() !== 'active',
+            }),
+          })
+          : minimalProperties;
         const record = await api.create(candidate.kind, persistedProperties, {
           id: candidate.id,
           fileName: Number(api.version) >= 3
-            ? buildNativeHealthRecordFileName(candidate.kind, persistedProperties) || undefined
+            ? buildNativeHealthRecordFileName(candidate.kind, candidate.kind === 'workout-session'
+              ? { ...persistedProperties, startedAt: workoutStartedAt(properties, this.plugin.settings) }
+              : persistedProperties) || undefined
             : undefined,
           cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-legacy-import' },
         });
@@ -2699,9 +2757,17 @@ export class HealthNativeRecordService {
 
   private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {
     const kinds = [...new Set([previous?.kind, current?.kind].filter((kind): kind is NativeHealthKind => !!kind))];
+    const recordDate = (record: IndexedHealthRecord): string => dateKey(
+      record.frontmatter.date
+      || record.frontmatter.workoutDate
+      || record.frontmatter.completedDate
+      || (record.kind === 'workout-session'
+        ? workoutStartedAt(record.frontmatter, this.plugin.settings) || workoutEndedAt(record.frontmatter, this.plugin.settings)
+        : record.frontmatter.startedAt || record.frontmatter.endedAt),
+    );
     const dates = [...new Set([
-      previous && dateKey(previous.frontmatter.date || previous.frontmatter.workoutDate || previous.frontmatter.completedDate || previous.frontmatter.startedAt || previous.frontmatter.endedAt),
-      current && dateKey(current.frontmatter.date || current.frontmatter.workoutDate || current.frontmatter.completedDate || current.frontmatter.startedAt || current.frontmatter.endedAt),
+      previous && recordDate(previous),
+      current && recordDate(current),
     ].filter((date): date is string => !!date))];
     if (!kinds.length) return;
     const change = { path, kinds, dates };

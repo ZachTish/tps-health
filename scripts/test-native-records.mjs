@@ -185,7 +185,7 @@ function createHarness(options = {}) {
     },
   };
   const plugin = {
-    settings: { storageMode: 'native-records' },
+    settings: { storageMode: 'native-records', ...(options.settings || {}) },
     manifest: { id: 'tps-health' },
     app: {
       fileManager: {
@@ -983,6 +983,63 @@ test('native workout session stores every exercise and set atomically in one not
   const finished = await service.finishWorkout(session.file, { endedAt: '2026-08-24T09:00:00.000Z' });
   assert.equal(finished.frontmatter.status, 'complete');
   assert.equal(service.getWorkoutSnapshot('workout-1').setCount, 2, 'finished sessions retain their table projection after active state clears');
+});
+
+test('native workouts use the calendar-friendly start and duration properties without temporal duplicates', async () => {
+  const { service } = createHarness();
+  const startedAt = '2026-08-24T15:00:00.000Z';
+  const endedAt = '2026-08-24T15:35:30.000Z';
+  const session = await service.createWorkoutSession({ title: 'Calendar strength', startedAt }, 'workout-calendar');
+
+  assert.equal(session.frontmatter.scheduled, startedAt);
+  for (const redundant of ['startedAt', 'end', 'endedAt', 'completedDate', 'timeEstimate', 'durationMinutes', 'durationSeconds']) {
+    assert.equal(Object.hasOwn(session.frontmatter, redundant), false, `${redundant} is absent while the workout is active`);
+  }
+
+  const finished = await service.finishWorkout(session.file, { endedAt });
+  assert.equal(finished.frontmatter.scheduled, startedAt);
+  assert.equal(finished.frontmatter.timeEstimate, 35.5);
+  for (const redundant of ['startedAt', 'end', 'endedAt', 'completedDate', 'durationMinutes', 'durationSeconds']) {
+    assert.equal(Object.hasOwn(finished.frontmatter, redundant), false, `${redundant} is not duplicated after finishing`);
+  }
+  assert.equal(service.getWorkoutSnapshot(session.path).startedAt, startedAt);
+  assert.equal(service.getWorkoutSnapshot(session.path).endedAt, endedAt);
+  assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 35.5);
+});
+
+test('native workouts honor custom start and end property keys and migrate legacy timing aliases on edit', async () => {
+  const { service, frontmatters } = createHarness({
+    settings: {
+      workoutStartPropertyKey: 'calendarStart',
+      workoutIntervalMode: 'end',
+      workoutIntervalPropertyKey: 'calendarEnd',
+    },
+  });
+  const startedAt = '2026-08-24T16:00:00.000Z';
+  const endedAt = '2026-08-24T16:42:00.000Z';
+  const session = await service.createWorkoutSession({ title: 'Custom calendar strength', startedAt }, 'workout-custom-calendar');
+
+  assert.equal(session.frontmatter.calendarStart, startedAt);
+  assert.equal(Object.hasOwn(session.frontmatter, 'scheduled'), false);
+  assert.equal(Object.hasOwn(session.frontmatter, 'startedAt'), false);
+
+  frontmatters.set(session.file, {
+    ...frontmatters.get(session.file),
+    startedAt,
+    endedAt,
+    durationMinutes: 42,
+    timeEstimate: 42,
+  });
+  service.indexFile(session.file, frontmatters.get(session.file));
+  const finished = await service.finishWorkout(session.file, { endedAt });
+
+  assert.equal(finished.frontmatter.calendarStart, startedAt);
+  assert.equal(finished.frontmatter.calendarEnd, endedAt);
+  for (const redundant of ['scheduled', 'startedAt', 'end', 'endedAt', 'completedDate', 'timeEstimate', 'durationMinutes', 'durationSeconds']) {
+    assert.equal(Object.hasOwn(finished.frontmatter, redundant), false, `${redundant} is removed during the normal mutation`);
+  }
+  assert.equal(service.getWorkoutSnapshot(session.path).startedAt, startedAt);
+  assert.equal(service.getWorkoutSnapshot(session.path).endedAt, endedAt);
 });
 
 test('one service-owned queue preserves concurrent workout-session mutations', async () => {

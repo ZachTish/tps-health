@@ -2,7 +2,8 @@ import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFo
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { isValidWorkoutPropertyKey } from "./workout-properties";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
 type OptionalDisclosureId = "custom-goals" | "templates" | "provider-credentials";
@@ -446,6 +447,64 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.workoutDailyNotePlacement = value as typeof this.plugin.settings.workoutDailyNotePlacement;
           await this.plugin.saveSettings();
         }));
+
+    const calendarProperties = createSettingsGroup(
+      page,
+      "Calendar properties",
+      "Choose the two frontmatter properties that represent a workout on a calendar. New sessions use this mapping; the next edit to a session with standard legacy timing aliases migrates them without keeping duplicate temporal fields.",
+    );
+    const addWorkoutPropertyKey = (
+      name: string,
+      description: string,
+      settingKey: "workoutStartPropertyKey" | "workoutIntervalPropertyKey",
+    ) => {
+      const setting = new Setting(calendarProperties).setName(name).setDesc(description);
+      setting.addText((text) => {
+        const commit = async () => {
+          const value = text.getValue().trim();
+          const other = settingKey === "workoutStartPropertyKey"
+            ? this.plugin.settings.workoutIntervalPropertyKey
+            : this.plugin.settings.workoutStartPropertyKey;
+          if (!isValidWorkoutPropertyKey(value) || value.toLocaleLowerCase() === other.toLocaleLowerCase()) {
+            text.setValue(this.plugin.settings[settingKey]);
+            return;
+          }
+          this.plugin.settings[settingKey] = value;
+          await this.plugin.saveSettings();
+          logger.flow("Settings", "workout-calendar-property:changed", { settingKey, propertyKey: value });
+        };
+        text.setValue(this.plugin.settings[settingKey]);
+        text.inputEl.dataset.tpsHealthWorkoutProperty = settingKey;
+        text.inputEl.addEventListener("change", () => void commit());
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          text.inputEl.blur();
+        });
+      });
+    };
+    addWorkoutPropertyKey(
+      "Workout start property",
+      "Datetime key used to place the workout on a calendar. The default is scheduled.",
+      "workoutStartPropertyKey",
+    );
+    new Setting(calendarProperties)
+      .setName("Workout interval style")
+      .setDesc("Store either one numeric duration in minutes or one ending datetime. Only the selected interval property is written.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("duration", "Duration in minutes")
+        .addOption("end", "Ending datetime")
+        .setValue(this.plugin.settings.workoutIntervalMode)
+        .onChange(async (value) => {
+          this.plugin.settings.workoutIntervalMode = value as WorkoutIntervalMode;
+          await this.plugin.saveSettings();
+          logger.flow("Settings", "workout-calendar-interval:changed", { mode: value });
+        }));
+    addWorkoutPropertyKey(
+      "Workout interval property",
+      "Numeric minutes in duration mode or a datetime in ending-time mode. The default is timeEstimate.",
+      "workoutIntervalPropertyKey",
+    );
 
     const sessionDefaults = createSettingsGroup(
       page,

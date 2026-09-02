@@ -1,5 +1,14 @@
 # TPS Health
 
+## 0.35.0
+
+- Workout timing properties are now configurable under **Workouts → Calendar properties**. **Workout start property** chooses the datetime key, **Workout interval style** chooses duration-in-minutes or ending-datetime storage, and **Workout interval property** chooses the corresponding number/datetime key.
+- Calendar-friendly defaults use exactly `scheduled` plus `timeEstimate` (minutes). Choosing ending-datetime storage instead writes the configured end key. Health no longer writes parallel `startedAt`, `endedAt`, `completedDate`, `durationMinutes`, and `durationSeconds` copies on the same native workout.
+- Existing standard timing aliases remain readable. The next ordinary mutation of a workout maps those aliases to the configured pair and removes the redundant copies; there is no automatic bulk rewrite on upgrade. Reserved Health keys such as `status`, `session`, identity, and workout-plan fields cannot be selected as timing keys, and the start and interval keys cannot collide.
+- Workout snapshots, Daily Activity totals, readable filenames, legacy import, the public schema, and the GCM property catalog all resolve the same configured mapping. Importing or refreshing Health properties in GCM therefore exposes the selected workout keys with the correct datetime/number types for Bases and Calendar views.
+- This is a backward-compatible settings and storage feature. Existing nested `session` graphs, reusable exercise notes, workout UI, and Legacy Daily Note blocks remain compatible. Settings schema advances to 5; minimum supported Obsidian remains 1.12.0.
+- Validation: the final declared suite passed 275 checks with only the intentionally credential-gated live USDA check skipped, followed by a separate byte-identical production build/deploy to the isolated test runtime. Obsidian 1.13.7 loaded the new **Calendar properties** group; custom start/end keys and both interval modes persisted, reserved `status` was rejected, and the original `scheduled` / duration / `timeEstimate` settings were restored. No workout or note data was created, production was not accessed, and the previously open vault was restored after QA.
+
 ## 0.34.1
 
 - Active native-workout rows now keep **Set**, **Reps**, **Weight**, **Rest**, and a labeled **Complete** button on screen in narrow/mobile panes. Secondary RPE and set-type controls remain available on wider panes, and the table no longer requires horizontal scrolling to reach completion or the set menu.
@@ -1007,7 +1016,7 @@ The settings UI is a five-destination hub. Only the selected page is rendered, a
 
 - **Daily logging** hands Daily Note folder/format changes to Obsidian Core and owns the food-log target, the single-file path when relevant, section, and automatic rollups.
 - **Food & goals** owns branded nutrition search, the canonical calorie/protein/activity fields, and one optional **Custom goal JSON** disclosure for labels, colors, ranges, and additional metrics.
-- **Workouts** owns the workout target, daily summary link, rest behavior, cooldown default, and set notation.
+- **Workouts** owns the workout target, daily summary link, the configurable two-property Calendar mapping, rest behavior, cooldown default, and set notation. Calendar mapping defaults to `scheduled` plus numeric `timeEstimate`, or it can store a configured ending-datetime key instead; reserved Health keys and duplicate start/interval keys are rejected.
 - **Note library** owns reusable-note folders, identification modes, workout/exercise/food/recipe tags (including the existing **Exercise tag** value), and one optional Templates disclosure.
 - **Integrations & advanced** owns the GCM food button, a direct **Open AI Gateway settings** handoff, one optional **Provider credentials** disclosure for Open Food Facts and ordered USDA references, and diagnostics.
 
@@ -1249,7 +1258,7 @@ api.getPropertyCatalog()
 
 `createFood`, `upsertFood`, and `createFoodFromLabel` accept an optional `duplicateStrategy`. `reuse` returns the matching saved food without changing it, `combine` updates that note with the incoming reviewed serving/nutrition while preserving its path and merged aliases, and `create` deliberately writes a separate unique note. `createFood` defaults to `reuse`; callers must opt into `create` when a same-food duplicate is intentional. Barcode and direct-name collision checks are serialized across API and UI writes.
 
-`getPropertyCatalog()` is the opt-in GCM integration contract for reusable food-note fields and automatic Daily Note rollups. Food definitions carry the current Health identification scope: tag-only uses the configured food tag, folder-only uses the configured foods folder, frontmatter-only requires `kind: food`, and the combined mode accepts any of those signals. Rollup definitions are generated only for configured food-rollup goals and require both `healthUpdatedAt` and the individual rollup key, so they do not become generic properties on unrelated notes. GCM imports a snapshot only when the user presses its Health import action; changing Health folders, tags, identification mode, or goals requires **Import / refresh** again.
+`getPropertyCatalog()` is the opt-in GCM integration contract for reusable food-note fields, workout Calendar fields, and automatic Daily Note rollups. Food definitions carry the current Health identification scope: tag-only uses the configured food tag, folder-only uses the configured foods folder, frontmatter-only requires `kind: food`, and the combined mode accepts any of those signals. Workout-session definitions expose the configured start key as a datetime and the configured interval key as either numeric minutes or a datetime. Rollup definitions are generated only for configured food-rollup goals and require both `healthUpdatedAt` and the individual rollup key, so they do not become generic properties on unrelated notes. GCM imports a snapshot only when the user presses its Health import action; changing Health folders, tags, identification mode, goals, or workout Calendar keys requires **Import / refresh** again.
 
 Deterministic agent food logging should use a barcode or exact food note path. These calls do not accept free-text food names and do not fall back to search matching:
 

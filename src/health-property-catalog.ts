@@ -4,6 +4,7 @@ import type {
   HealthPropertyCatalogScope,
 } from "./api";
 import type { HealthGoal, TPSHealthSettings } from "./types";
+import { workoutIntervalMode, workoutIntervalPropertyKey, workoutStartPropertyKey } from "./workout-properties";
 
 const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
   { id: "brand", key: "brand", label: "Brand", type: "text", icon: "badge" },
@@ -59,19 +60,34 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('record-alcohol', 'alcoholG', 'Calculated alcohol', 'number', ['food-entry'], { icon: 'wine' }),
   scoped('record-sodium', 'sodiumMg', 'Calculated sodium', 'number', ['food-entry'], { icon: 'shaker' }),
   scoped('activity-type', 'activityType', 'Activity type', 'text', ['activity-entry'], { icon: 'list-filter' }),
-  scoped('activity-started', 'startedAt', 'Started', 'datetime', ['activity-entry', 'workout-session'], { icon: 'play' }),
+  scoped('activity-started', 'startedAt', 'Started', 'datetime', ['activity-entry'], { icon: 'play' }),
   scoped('activity-duration', 'durationMinutes', 'Duration', 'number', ['activity-entry'], { icon: 'timer' }),
   scoped('activity-distance', 'distance', 'Distance', 'number', ['activity-entry'], { icon: 'route' }),
   scoped('activity-distance-unit', 'distanceUnit', 'Distance unit', 'text', ['activity-entry'], { icon: 'ruler' }),
   scoped('activity-steps', 'steps', 'Steps', 'number', ['activity-entry'], { icon: 'footprints' }),
   scoped('activity-calories', 'caloriesBurned', 'Calories burned', 'number', ['activity-entry', 'workout-session'], { icon: 'flame' }),
   scoped('workout-plan', 'workoutPlan', 'Workout plan', 'list', ['workout-session'], { icon: 'clipboard-list', listItemType: 'link' }),
-  scoped('workout-ended', 'endedAt', 'Ended', 'datetime', ['workout-session'], { icon: 'square' }),
   scoped('exercise-primary-muscles', 'primaryMuscles', 'Primary muscles', 'list', ['exercise'], { icon: 'accessibility', listItemType: 'text' }),
   scoped('exercise-equipment', 'equipment', 'Equipment', 'list', ['exercise'], { icon: 'dumbbell', listItemType: 'text' }),
   scoped('exercise-rest', 'defaultRestSeconds', 'Default rest', 'number', ['exercise', 'workout-plan'], { icon: 'timer-reset' }),
   scoped('plan-cooldown', 'cooldownDays', 'Cooldown days', 'number', ['workout-plan'], { icon: 'calendar-clock' }),
 ];
+
+function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCatalogEntry[] {
+  const intervalMode = workoutIntervalMode(settings);
+  return [
+    ...NATIVE_RECORD_PROPERTIES,
+    scoped('workout-start', workoutStartPropertyKey(settings), 'Workout start', 'datetime', ['workout-session'], { icon: 'calendar-clock' }),
+    scoped(
+      'workout-interval',
+      workoutIntervalPropertyKey(settings),
+      intervalMode === 'end' ? 'Workout end' : 'Workout duration',
+      intervalMode === 'end' ? 'datetime' : 'number',
+      ['workout-session'],
+      { icon: intervalMode === 'end' ? 'square' : 'timer' },
+    ),
+  ];
+}
 
 const FOOD_ROLLUP_KEYS = new Set([
   "consumedcalories",
@@ -176,7 +192,7 @@ export function buildHealthPropertyCatalog(settings: TPSHealthSettings): HealthP
       },
     })),
     dailyRollups: rollups,
-    nativeRecords: NATIVE_RECORD_PROPERTIES.map((property) => ({
+    nativeRecords: nativeRecordProperties(settings).map((property) => ({
       ...property,
       options: property.options ? [...property.options] : undefined,
       scope: {

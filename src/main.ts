@@ -25,6 +25,7 @@ import {
   type NativeDailyDisplayOptions,
 } from "./native-daily-dashboard";
 import { buildVaultDestinationPath, fileIsInVaultDestination, normalizeVaultDestinationFolder, VAULT_ROOT_DESTINATION } from "./vault-destination";
+import { workoutDurationMinutes, workoutEndedAt, workoutIntervalPropertyKey, workoutStartedAt, workoutStartPropertyKey, workoutTemporalPropertyUpdates } from "./workout-properties";
 import {
   DEFAULT_SETTINGS,
   ActivityLogEntry,
@@ -2526,7 +2527,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const endedAt = input.endedAt || isoNow();
     const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
-    const startedAt = typeof fm.startedAt === "string" ? fm.startedAt : this.settings.activeWorkoutStartedAt;
+    const startedAt = workoutStartedAt(fm, this.settings) || this.settings.activeWorkoutStartedAt;
     const durationSeconds = workoutDurationSeconds(startedAt, endedAt);
     const durationMinutes = durationSeconds != null ? Math.max(1, Math.round(durationSeconds / 60)) : undefined;
     const cooldownDays = input.cooldownDays ?? numberOrUndefined(fm.cooldownDays) ?? this.settings.activeWorkoutCooldownDays ?? this.settings.defaultWorkoutCooldownDays;
@@ -2553,10 +2554,16 @@ export default class TPSHealthPlugin extends Plugin {
         frontmatter.status = "complete";
         frontmatter.workoutDate = frontmatter.workoutDate || isoDateKey(startedAt || endedAt);
         frontmatter.cssclasses = withCssClass(frontmatter.cssclasses, "tps-health-workout");
-        frontmatter.endedAt = endedAt;
-        frontmatter.completedDate = endedAt;
-        if (durationSeconds != null) frontmatter.durationSeconds = durationSeconds;
-        if (durationMinutes != null) frontmatter.timeEstimate = durationMinutes;
+        const temporalUpdates = workoutTemporalPropertyUpdates(this.settings, frontmatter, {
+          startedAt,
+          endedAt,
+          durationMinutes,
+          terminal: true,
+        });
+        for (const [key, value] of Object.entries(temporalUpdates)) {
+          if (value == null) delete frontmatter[key];
+          else frontmatter[key] = value;
+        }
         const setCount = Math.max(this.settings.activeWorkoutSetCount || 0, normalizedSetCount);
         if (setCount > 0) frontmatter.setCount = setCount;
         frontmatter.allDay = false;
@@ -2634,9 +2641,7 @@ export default class TPSHealthPlugin extends Plugin {
     const nextEligibleDate = cooldownDays > 0 ? addDaysIsoDate(endedAt, cooldownDays) : undefined;
     await this.nativeRecordService.finishWorkout(file, {
       endedAt,
-      completedDate: endedAt,
-      durationSeconds,
-      timeEstimate: durationMinutes,
+      durationMinutes,
       setCount: operationActive.setCount,
       cooldownDays,
       targetGapDays: cooldownDays,
@@ -6783,7 +6788,11 @@ export default class TPSHealthPlugin extends Plugin {
       if (plan?.name) frontmatter.workflowName = frontmatter.workflowName || plan.name;
       if (plan?.lastCompletedDate) frontmatter.previousCompletedDate = frontmatter.previousCompletedDate || plan.lastCompletedDate;
       if (secondsSincePreviousCompletion != null) frontmatter.secondsSincePreviousCompletion = frontmatter.secondsSincePreviousCompletion ?? secondsSincePreviousCompletion;
-      frontmatter.startedAt = frontmatter.startedAt || startedAt;
+      const temporalUpdates = workoutTemporalPropertyUpdates(this.settings, frontmatter, { startedAt });
+      for (const [key, value] of Object.entries(temporalUpdates)) {
+        if (value == null) delete frontmatter[key];
+        else frontmatter[key] = value;
+      }
       frontmatter.workoutDate = frontmatter.workoutDate || isoDateKey(startedAt);
       frontmatter.status = frontmatter.status || "active";
       frontmatter.allDay = frontmatter.allDay ?? false;
@@ -7919,7 +7928,7 @@ export default class TPSHealthPlugin extends Plugin {
       });
     }
     const summary = label.createSpan({ cls: "tps-health-workout-action-summary", text: "Workout • 0/0" });
-    const startedAt = String(frontmatter.startedAt || "");
+    const startedAt = nativeSnapshot?.startedAt || workoutStartedAt(frontmatter, this.settings);
     const updateSummary = (performed = 0, total = 0) => {
       const started = Date.parse(startedAt);
       const elapsed = Number.isFinite(started) ? formatRestDuration(Math.max(0, Math.floor((Date.now() - started) / 1000))) : "--:--";
@@ -8895,7 +8904,7 @@ export default class TPSHealthPlugin extends Plugin {
 	      plan?.lastCompletedDate ? `previousCompletedDate: ${plan.lastCompletedDate}` : "",
 	      nullableSecondsBetween(plan?.lastCompletedDate, startedAt) != null ? `secondsSincePreviousCompletion: ${nullableSecondsBetween(plan?.lastCompletedDate, startedAt)}` : "",
 	      `workoutDate: ${isoDateKey(startedAt)}`,
-	      `startedAt: ${startedAt}`,
+	      `${this.settings.workoutStartPropertyKey}: ${startedAt}`,
       "status: active",
       "allDay: false",
       "cssclasses:",
@@ -9036,7 +9045,7 @@ export default class TPSHealthPlugin extends Plugin {
         activityLog: ["type", "activity", "activityType", "activityId", "source", "sourceId", "device", "startedAt", "completedDate", "durationMinutes", "distance", "distanceUnit", "steps", "caloriesBurned", "dailyNotePath", "note"],
         exercise: ["name", "category", "primaryMuscles", "secondaryMuscles", "equipment", "defaultRestSeconds", "defaultSetType", "recommendedRestDays"],
         workoutPlan: ["name", "cooldownDays", "defaultRestSeconds", "lastCompletedDate", "nextEligibleDate", "lastSessionPath"],
-        workoutSession: ["workoutId", "workout", "workoutPlanPath", "workoutDate", "startedAt", "endedAt", "timeEstimate", "durationSeconds", "caloriesBurned", "status", "allDay", "setCount", "cooldownDays", "completedDate", "nextEligibleDate"],
+        workoutSession: ["workoutId", "workout", "workoutPlanPath", "workoutDate", workoutStartPropertyKey(this.settings), workoutIntervalPropertyKey(this.settings), "caloriesBurned", "status", "allDay", "setCount", "cooldownDays", "nextEligibleDate"],
         workoutSet: ["type", "exercise", "exercisePath", "workoutPath", "workoutPlanPath", "setId", "createdDate", "completedDate", "startedAt", "endedAt", "setType", "reps", "weight", "unit", "perArm", "duration", "distance", "rest", "dropSet", "superset"],
       },
       examples: {

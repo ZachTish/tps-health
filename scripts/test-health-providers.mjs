@@ -4676,8 +4676,11 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.includeBrandedFoodSearch, true);
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
+  assert.equal(normalized.workoutStartPropertyKey, "scheduled");
+  assert.equal(normalized.workoutIntervalMode, "duration");
+  assert.equal(normalized.workoutIntervalPropertyKey, "timeEstimate");
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
-  assert.equal(normalized.settingsVersion, 4);
+  assert.equal(normalized.settingsVersion, 5);
   assert.equal(normalized.foodFrontmatterKey, "kind");
   assert.equal(normalized.foodFrontmatterFoodValue, "food");
   assert.equal(normalized.foodFrontmatterRecipeValue, "recipe");
@@ -4748,6 +4751,28 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(Object.hasOwn(migratedWorkout, "workoutSessionBodyMode"), false);
   assert.equal(Object.hasOwn(migratedWorkout, "workoutExerciseLayout"), false);
   assert.equal(normalizeTPSHealthSettings({ workoutLogTarget: "session-note" }).workoutLogTarget, "both", "legacy dedicated-only storage must retain its note and add the Daily Note surface");
+  const customCalendar = normalizeTPSHealthSettings({
+    workoutStartPropertyKey: "calendarStart",
+    workoutIntervalMode: "end",
+    workoutIntervalPropertyKey: "calendarEnd",
+  });
+  assert.equal(customCalendar.workoutStartPropertyKey, "calendarStart");
+  assert.equal(customCalendar.workoutIntervalMode, "end");
+  assert.equal(customCalendar.workoutIntervalPropertyKey, "calendarEnd");
+  const invalidCalendar = normalizeTPSHealthSettings({
+    workoutStartPropertyKey: "not valid",
+    workoutIntervalMode: "invalid",
+    workoutIntervalPropertyKey: "scheduled",
+  });
+  assert.equal(invalidCalendar.workoutStartPropertyKey, "scheduled");
+  assert.equal(invalidCalendar.workoutIntervalMode, "duration");
+  assert.notEqual(invalidCalendar.workoutIntervalPropertyKey.toLowerCase(), invalidCalendar.workoutStartPropertyKey.toLowerCase());
+  const reservedCalendar = normalizeTPSHealthSettings({
+    workoutStartPropertyKey: "status",
+    workoutIntervalPropertyKey: "session",
+  });
+  assert.equal(reservedCalendar.workoutStartPropertyKey, "scheduled");
+  assert.equal(reservedCalendar.workoutIntervalPropertyKey, "timeEstimate");
   const preservedUnknown = normalizeTPSHealthSettings({
     settingsVersion: 2,
     dailyNoteFolder: "Dailynotes",
@@ -4756,12 +4781,12 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
   assert.equal(Object.hasOwn(preservedUnknown, "dailyNoteFolder"), false);
   const futureSettings = normalizeTPSHealthSettings({
-    settingsVersion: 5,
+    settingsVersion: 6,
     dailyNoteFolder: "Future Dailynotes",
     futureOnlySetting: { mode: "new" },
   });
   assert.equal(isFutureTPSHealthSettings(futureSettings), true);
-  assert.equal(futureSettings.settingsVersion, 5, "normalization must never downgrade a future schema");
+  assert.equal(futureSettings.settingsVersion, 6, "normalization must never downgrade a future schema");
   assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
@@ -5388,7 +5413,7 @@ test("atomic Health identity is case-insensitive, canonicalized by GCM v6, and n
   assert.equal(standalone.title, "Standalone note");
 });
 
-test("workout completion sends unchanged status and completedDate values through the GCM frontmatter route", async () => {
+test("workout completion sends the configured calendar interval through the GCM frontmatter route", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -5444,8 +5469,11 @@ test("workout completion sends unchanged status and completedDate values through
   assert.equal(gcmCalls, 1);
   assert.equal(nativeCalls, 0);
   assert.equal(capturedFrontmatter.status, "complete");
-  assert.equal(capturedFrontmatter.completedDate, endedAt);
-  assert.equal(capturedFrontmatter.endedAt, endedAt);
+  assert.equal(capturedFrontmatter.scheduled, "2026-07-30T11:34:56.000Z");
+  assert.equal(capturedFrontmatter.timeEstimate, 60);
+  assert.equal(Object.hasOwn(capturedFrontmatter, "completedDate"), false);
+  assert.equal(Object.hasOwn(capturedFrontmatter, "endedAt"), false);
+  assert.equal(Object.hasOwn(capturedFrontmatter, "startedAt"), false);
 });
 
 test("all Health-owned Markdown frontmatter writes share the explicit routing helper", () => {
@@ -5624,7 +5652,7 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   assert.match(readmeSource, /Every workout is anchored by a real level-2 heading in the Daily Note/);
 });
 
-test("whole-note workouts use workout-specific date fields and plain set logs", async () => {
+test("whole-note workouts use configurable calendar properties and plain set logs", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   const typesSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/types.ts", import.meta.url)), "utf8"));
   assert.match(typesSource, /activeWorkoutSetCount: number/);
@@ -5633,11 +5661,12 @@ test("whole-note workouts use workout-specific date fields and plain set logs", 
   assert.match(typesSource, /foodIdentificationMode: "metadata-folder-tag"/);
   assert.match(typesSource, /workoutIdentificationMode: "metadata-folder-tag"/);
   assert.match(typesSource, /workoutTag: "#tps\/workout"/);
-  assert.match(mainSource, /frontmatter\.workoutDate = frontmatter\.workoutDate \|\| isoDateKey\(startedAt\)/);
-  assert.doesNotMatch(mainSource, /frontmatter\.scheduled =/);
-  assert.match(mainSource, /frontmatter\.timeEstimate = durationMinutes/);
-  assert.match(mainSource, /frontmatter\.durationSeconds = durationSeconds/);
-  assert.match(mainSource, /frontmatter\.allDay = false/);
+  assert.match(typesSource, /workoutStartPropertyKey: "scheduled"/);
+  assert.match(typesSource, /workoutIntervalMode: "duration"/);
+  assert.match(typesSource, /workoutIntervalPropertyKey: "timeEstimate"/);
+  assert.match(mainSource, /workoutTemporalPropertyUpdates\(this\.settings, frontmatter, \{ startedAt \}\)/);
+  assert.match(mainSource, /workoutTemporalPropertyUpdates\(this\.settings, frontmatter, \{[\s\S]+?endedAt,[\s\S]+?durationMinutes,[\s\S]+?terminal: true/);
+  assert.doesNotMatch(mainSource, /frontmatter\.(scheduled|startedAt|endedAt|timeEstimate|durationSeconds)\s*=/);
   assert.match(mainSource, /frontmatter\.setCount = Math\.max/);
   assert.doesNotMatch(mainSource, /asTask:|this\.settings\.workoutSetStorage/);
   assert.match(mainSource, /appendSetToWorkoutNote/);
@@ -5647,7 +5676,7 @@ test("whole-note workouts use workout-specific date fields and plain set logs", 
   assert.match(mainSource, /normalizeWorkoutNoteSetTasks/);
   assert.match(mainSource, /frontmatterLineEnd\(lines\)/);
   assert.match(mainSource, /if \(isWorkoutSetLine\(line\) && existingEndedAt\)/);
-  assert.match(mainSource, /workoutSession: \["workoutId", "workout", "workoutPlanPath", "workoutDate", "startedAt", "endedAt", "timeEstimate", "durationSeconds", "caloriesBurned"/);
+  assert.match(mainSource, /workoutSession: \["workoutId", "workout", "workoutPlanPath", "workoutDate", workoutStartPropertyKey\(this\.settings\), workoutIntervalPropertyKey\(this\.settings\), "caloriesBurned"/);
   assert.match(typesSource, /export type WorkflowRecurrenceMode = "completion-triggered"/);
   assert.match(typesSource, /export type WorkflowRunKind = "run"/);
   assert.match(mainSource, /frontmatter\.runKind = frontmatter\.runKind \|\| "run"/);
@@ -9457,8 +9486,9 @@ test("native Finish and Discard keep operation metadata bound to the revalidated
 
     await plugin.finishWorkout({ endedAt: "2026-08-26T11:00:00.000Z" });
 
-    assert.equal(finishOptions.durationSeconds, 3600);
-    assert.equal(finishOptions.timeEstimate, 60);
+    assert.equal(finishOptions.durationMinutes, 60);
+    assert.equal(Object.hasOwn(finishOptions, "durationSeconds"), false);
+    assert.equal(Object.hasOwn(finishOptions, "timeEstimate"), false);
     assert.equal(finishOptions.cooldownDays, 3);
     assert.equal(finishOptions.setCount, 7);
     assert.equal(planOwner, "Plan A.md");

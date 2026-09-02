@@ -62,6 +62,9 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "healthGoals",
     "workoutLogTarget",
     "workoutDailyNotePlacement",
+    "workoutStartPropertyKey",
+    "workoutIntervalMode",
+    "workoutIntervalPropertyKey",
     "restTimerMode",
     "defaultRestSeconds",
     "defaultWorkoutCooldownDays",
@@ -118,6 +121,12 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /\.addOption\("after-frontmatter", "Top, after properties"\)/);
   assert.match(settingsSource, /\.addOption\("before-first-h2", "Above the first level-2 heading"\)/);
   assert.match(settingsSource, /\.addOption\("bottom", "Bottom of note"\)/);
+  assert.match(settingsSource, /addWorkoutPropertyKey\(\s*"Workout start property"/);
+  assert.match(settingsSource, /\.setName\("Workout interval style"\)/);
+  assert.match(settingsSource, /\.addOption\("duration", "Duration in minutes"\)/);
+  assert.match(settingsSource, /\.addOption\("end", "Ending datetime"\)/);
+  assert.match(settingsSource, /addWorkoutPropertyKey\(\s*"Workout interval property"/);
+  assert.match(settingsSource, /dataset\.tpsHealthWorkoutProperty = settingKey/);
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);

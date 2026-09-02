@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 import { normalizeVaultDestinationFolder } from "./vault-destination";
+import { isValidWorkoutPropertyKey } from "./workout-properties";
 
 export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
 
@@ -12,6 +13,7 @@ const WORKOUT_DAILY_NOTE_PLACEMENTS = ["after-frontmatter", "before-first-h2", "
 const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
 const REST_TIMER_MODES = ["count-up", "count-down"];
 const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
+const WORKOUT_INTERVAL_MODES = ["duration", "end"];
 const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["metadata-folder-tag", "folder", "tag", "metadata"];
 const HEALTH_STORAGE_MODES = ["legacy", "native-records"];
 const HEALTH_GOAL_KINDS: HealthGoalKind[] = ["min", "max", "range", "counter"];
@@ -44,6 +46,17 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.foodFrontmatterFoodValue = stringSetting(settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue);
   settings.foodFrontmatterRecipeValue = stringSetting(settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue);
   settings.foodFrontmatterMealValue = stringSetting(settings.foodFrontmatterMealValue, DEFAULT_SETTINGS.foodFrontmatterMealValue);
+  settings.workoutStartPropertyKey = isValidWorkoutPropertyKey(settings.workoutStartPropertyKey)
+    ? String(settings.workoutStartPropertyKey).trim()
+    : DEFAULT_SETTINGS.workoutStartPropertyKey;
+  settings.workoutIntervalPropertyKey = isValidWorkoutPropertyKey(settings.workoutIntervalPropertyKey)
+    ? String(settings.workoutIntervalPropertyKey).trim()
+    : DEFAULT_SETTINGS.workoutIntervalPropertyKey;
+  if (settings.workoutIntervalPropertyKey.toLocaleLowerCase() === settings.workoutStartPropertyKey.toLocaleLowerCase()) {
+    settings.workoutIntervalPropertyKey = settings.workoutStartPropertyKey.toLocaleLowerCase() === DEFAULT_SETTINGS.workoutIntervalPropertyKey.toLocaleLowerCase()
+      ? "workoutDuration"
+      : DEFAULT_SETTINGS.workoutIntervalPropertyKey;
+  }
   settings.rollupHeading = stringSetting(settings.rollupHeading, DEFAULT_SETTINGS.rollupHeading);
   settings.openFoodFactsUserAgent = stringSetting(settings.openFoodFactsUserAgent, DEFAULT_SETTINGS.openFoodFactsUserAgent);
   const storedUsdaReferences = Object.prototype.hasOwnProperty.call(storedRecord, "usdaApiKeySecrets")
@@ -67,6 +80,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   if (!FOOD_LOG_TARGETS.includes(settings.foodLogTarget)) settings.foodLogTarget = DEFAULT_SETTINGS.foodLogTarget;
   if (!REST_TIMER_MODES.includes(settings.restTimerMode)) settings.restTimerMode = DEFAULT_SETTINGS.restTimerMode;
   if (!WORKOUT_SET_NOTATIONS.includes(settings.workoutSetNotation)) settings.workoutSetNotation = DEFAULT_SETTINGS.workoutSetNotation;
+  if (!WORKOUT_INTERVAL_MODES.includes(settings.workoutIntervalMode)) settings.workoutIntervalMode = DEFAULT_SETTINGS.workoutIntervalMode;
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.foodIdentificationMode)) settings.foodIdentificationMode = DEFAULT_SETTINGS.foodIdentificationMode;
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.workoutIdentificationMode)) settings.workoutIdentificationMode = DEFAULT_SETTINGS.workoutIdentificationMode;
   if (!WORKOUT_LOG_TARGETS.includes(settings.activeWorkoutTarget)) settings.activeWorkoutTarget = "";

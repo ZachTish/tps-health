@@ -3,12 +3,27 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
 
+const compilerOptions = { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 };
+const workoutSource = readFileSync(new URL('../src/workout-properties.ts', import.meta.url), 'utf8');
+const workoutCompiled = ts.transpileModule(workoutSource, {
+  compilerOptions,
+}).outputText;
+const workoutModule = { exports: {} };
+new Function('module', 'exports', workoutCompiled)(workoutModule, workoutModule.exports);
+
 const source = readFileSync(new URL('../src/health-property-catalog.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  compilerOptions,
 }).outputText;
 const moduleRecord = { exports: {} };
-new Function('module', 'exports', compiled)(moduleRecord, moduleRecord.exports);
+new Function('module', 'exports', 'require', compiled)(
+  moduleRecord,
+  moduleRecord.exports,
+  (specifier) => {
+    if (specifier === './workout-properties') return workoutModule.exports;
+    throw new Error(`Unexpected test import: ${specifier}`);
+  },
+);
 const { buildHealthPropertyCatalog } = moduleRecord.exports;
 
 const settings = (mode) => ({
@@ -17,6 +32,9 @@ const settings = (mode) => ({
   foodFrontmatterFoodValue: 'pantry-item',
   customFoodTag: '#my/food',
   foodsFolder: 'Health/My Foods',
+  workoutStartPropertyKey: 'scheduled',
+  workoutIntervalMode: 'duration',
+  workoutIntervalPropertyKey: 'timeEstimate',
   healthGoals: [
     { propertyKey: 'consumedCalories', label: 'Consumed calories', unit: 'kcal', kind: 'max' },
     { propertyKey: 'protein', label: 'Protein', unit: 'g', kind: 'min' },
@@ -62,13 +80,31 @@ test('catalog exposes only the compact user-facing native and reusable fields', 
   assert.deepEqual(byKey('activityType')[0].scope.kinds, ['activity-entry']);
   assert.deepEqual(byKey('primaryMuscles')[0].scope.kinds, ['exercise']);
   assert.deepEqual(byKey('status')[0].scope.kinds, ['workout-session']);
-  assert.deepEqual(byKey('startedAt')[0].scope.kinds, ['activity-entry', 'workout-session']);
+  assert.deepEqual(byKey('startedAt')[0].scope.kinds, ['activity-entry']);
+  assert.deepEqual(byKey('scheduled')[0].scope.kinds, ['workout-session']);
+  assert.equal(byKey('scheduled')[0].type, 'datetime');
+  assert.deepEqual(byKey('timeEstimate')[0].scope.kinds, ['workout-session']);
+  assert.equal(byKey('timeEstimate')[0].type, 'number');
   assert.equal(catalog.food.some((property) => property.key === 'name'), false, 'the shared title is the only display-name property');
   assert.equal(byKey('name').length, 0);
   for (const redundant of ['foodName', 'brand', 'date', 'amount', 'amountUnit', 'durationSeconds', 'setCount', 'exerciseCount', 'totalReps', 'totalVolume', 'workout', 'exercisePath', 'exerciseOrder', 'lastCompletedDate', 'nextEligibleDate']) {
     assert.equal(byKey(redundant).length, 0, `${redundant} is derived, duplicated, legacy-only, or internal`);
   }
-  assert.ok(new Set(catalog.nativeRecords.map((property) => property.key)).size <= 28, 'the imported native catalog stays intentionally small');
+  assert.ok(new Set(catalog.nativeRecords.map((property) => property.key)).size <= 29, 'the imported native catalog stays intentionally small');
+});
+
+test('catalog follows custom workout calendar property names and interval type', () => {
+  const catalog = buildHealthPropertyCatalog({
+    ...settings('tag'),
+    workoutStartPropertyKey: 'calendarStart',
+    workoutIntervalMode: 'end',
+    workoutIntervalPropertyKey: 'calendarEnd',
+  });
+  const byKey = (key) => catalog.nativeRecords.filter((property) => property.key === key);
+  assert.equal(byKey('calendarStart')[0].type, 'datetime');
+  assert.equal(byKey('calendarEnd')[0].type, 'datetime');
+  assert.equal(byKey('scheduled').length, 0);
+  assert.equal(byKey('timeEstimate').length, 0);
 });
 
 test('daily rollup properties are generated from configured goals and require their own rollup key', () => {
