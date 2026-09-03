@@ -1532,7 +1532,12 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.doesNotMatch(nativeWorkoutSurfaceSource, /tps-health-native-workout-row is-draft/u);
   assert.match(nativeWorkoutSurfaceSource, /root\.dataset\.renderKey === signature/u);
   assert.match(nativeWorkoutSurfaceSource, /instance: options\.instanceKey/u);
+  assert.match(nativeWorkoutSurfaceSource, /showSessionActions: options\.showSessionActions/u);
+  assert.match(nativeWorkoutSurfaceSource, /if \(options\.showSessionActions\) \{[\s\S]*?button\('\+ Exercise'[\s\S]*?button\('Finish'/u, 'inline mode owns the session actions inside the workout card');
+  assert.match(nativeWorkoutSurfaceSource, /if \(options\.showSessionActions\) \{[\s\S]*?button\('\+ Exercise', 'Add first exercise'/u, 'floating mode does not leave a duplicate empty-state action');
   assert.match(mainSource, /instanceKey: this\.workoutSurfaceInstanceKey/u);
+  assert.match(mainSource, /showSessionActions: !this\.workoutActionBarOwnsNativeSession\(snapshot\)/u);
+  assert.match(mainSource, /private workoutActionBarOwnsNativeSession\(snapshot: NativeWorkoutSnapshot\): boolean \{[\s\S]*?workoutControlPlacement !== "floating"[\s\S]*?\.tps-health-workout-action-bar\[data-path\][\s\S]*?bar\.dataset\.path === snapshot\.path/u, 'floating mode hides native session actions only after its action bar owns them');
   assert.match(mainSource, /surface\.dataset\.renderContext = "reading"/u);
   assert.match(mainSource, /for \(const duplicate of matches\) duplicate\.remove\(\)/u);
   assert.match(mainSource, /if \(!target\?\.isConnected\) return false/u);
@@ -1547,7 +1552,8 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle\[aria-pressed="true"\]::before \{[\s\S]*?content: "✓"/u);
   assert.match(stylesSource, /\.tps-health-native-workout-per-arm > span \{[\s\S]*?display: none/u, 'the redundant per-arm text does not force the weight cell wider than the phone');
   assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 360px\)[\s\S]*?grid-template-columns: 18px minmax\(32px, \.55fr\) minmax\(74px, 1\.2fr\) minmax\(38px, \.68fr\) minmax\(70px, \.86fr\)/u, 'the smallest supported phone width retains every visible control');
-  assert.match(mainSource, /nativeRecordService\?\.isEnabled\(\) && this\.nativeRecordService\.getWorkoutSnapshot\(view\.file\.path\)[\s\S]*?mobile:native-surface-owns-actions[\s\S]*?return null/u, 'the native surface is the single owner of mobile workout actions');
+  assert.match(mainSource, /nativeSnapshot && this\.settings\.workoutControlPlacement === "inline"[\s\S]*?native:inline-surface-owns-actions[\s\S]*?return null/u, 'inline mode suppresses the floating or sticky native action bar');
+  assert.match(mainSource, /this\.settings\.workoutControlPlacement === "inline" && this\.nativeRecordService\?\.isEnabled\(\)[\s\S]*?mobile:native-surface-owns-actions[\s\S]*?return null/u, 'mobile target selection follows the configured action owner');
   assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle/u);
   assert.match(mainSource, /\.setTitle\("Add drop set"\)[\s\S]*?addNativeWorkoutDropSet\(snapshot, exercise, set\)/u);
   assert.match(mainSource, /const linkedSetIds = set\.dropSetGroupId[\s\S]*?candidate\.dropSetGroupId === set\.dropSetGroupId/u, 'direct add extends an existing drop chain');

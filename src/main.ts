@@ -7868,6 +7868,13 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("WorkoutActionBar", "render:no-host", { path: file.path, source });
       return null;
     }
+    const nativeSnapshot = this.nativeRecordService?.isEnabled()
+      ? this.nativeRecordService.getWorkoutSnapshot(file.path)
+      : null;
+    if (nativeSnapshot && this.settings.workoutControlPlacement === "inline") {
+      logger.flow("WorkoutActionBar", "native:inline-surface-owns-actions", { path: file.path, mobileFloating, source });
+      return null;
+    }
     // Markdown source/preview roots are replaced during mode switches and
     // metadata rerenders. Mount desktop controls on the stable MarkdownView
     // content root so Obsidian cannot discard them while the workout remains
@@ -7900,9 +7907,6 @@ export default class TPSHealthPlugin extends Plugin {
     const activeForFile = this.nativeRecordService?.isEnabled()
       ? activeNativeWorkout?.path === file.path
       : this.settings.activeWorkoutPath === file.path;
-    const nativeSnapshot = this.nativeRecordService?.isEnabled()
-      ? this.nativeRecordService.getWorkoutSnapshot(file.path)
-      : null;
     const workoutId = nativeSnapshot?.id || this.settings.activeWorkoutId;
     const nativeProgress = nativeSnapshot
       ? { exerciseCount: nativeSnapshot.exerciseCount, setCount: nativeSnapshot.setCount }
@@ -7993,7 +7997,7 @@ export default class TPSHealthPlugin extends Plugin {
       // Native workout notes already render their complete action surface in
       // both Reading mode and Live Preview. A second body-level action bar
       // repeats Add exercise / Finish and obscures the last set rows on phones.
-      if (this.nativeRecordService?.isEnabled() && this.nativeRecordService.getWorkoutSnapshot(view.file.path)) {
+      if (this.settings.workoutControlPlacement === "inline" && this.nativeRecordService?.isEnabled() && this.nativeRecordService.getWorkoutSnapshot(view.file.path)) {
         logger.flow("WorkoutActionBar", "mobile:native-surface-owns-actions", { path: view.file.path });
         return null;
       }
@@ -8077,6 +8081,7 @@ export default class TPSHealthPlugin extends Plugin {
       elapsedLabel,
       instanceKey: this.workoutSurfaceInstanceKey,
       defaultRestSeconds: this.settings.defaultRestSeconds,
+      showSessionActions: !this.workoutActionBarOwnsNativeSession(snapshot),
       actions: {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
         addSet: async (exercise) => {
@@ -8097,6 +8102,12 @@ export default class TPSHealthPlugin extends Plugin {
         },
       },
     });
+  }
+
+  private workoutActionBarOwnsNativeSession(snapshot: NativeWorkoutSnapshot): boolean {
+    if (this.settings.workoutControlPlacement !== "floating") return false;
+    return Array.from(document.querySelectorAll<HTMLElement>(".tps-health-workout-action-bar[data-path]"))
+      .some((bar) => bar.dataset.path === snapshot.path);
   }
 
   private isActiveNativeWorkoutSnapshot(snapshot: NativeWorkoutSnapshot): boolean {

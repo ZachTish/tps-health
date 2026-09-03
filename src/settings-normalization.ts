@@ -13,6 +13,7 @@ const WORKOUT_DAILY_NOTE_PLACEMENTS = ["after-frontmatter", "before-first-h2", "
 const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
 const REST_TIMER_MODES = ["count-up", "count-down"];
 const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
+const WORKOUT_CONTROL_PLACEMENTS = ["inline", "floating"];
 const WORKOUT_INTERVAL_MODES = ["duration", "end"];
 const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["metadata-folder-tag", "folder", "tag", "metadata"];
 const HEALTH_STORAGE_MODES = ["legacy", "native-records"];
@@ -80,6 +81,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   if (!FOOD_LOG_TARGETS.includes(settings.foodLogTarget)) settings.foodLogTarget = DEFAULT_SETTINGS.foodLogTarget;
   if (!REST_TIMER_MODES.includes(settings.restTimerMode)) settings.restTimerMode = DEFAULT_SETTINGS.restTimerMode;
   if (!WORKOUT_SET_NOTATIONS.includes(settings.workoutSetNotation)) settings.workoutSetNotation = DEFAULT_SETTINGS.workoutSetNotation;
+  if (!WORKOUT_CONTROL_PLACEMENTS.includes(settings.workoutControlPlacement)) settings.workoutControlPlacement = DEFAULT_SETTINGS.workoutControlPlacement;
   if (!WORKOUT_INTERVAL_MODES.includes(settings.workoutIntervalMode)) settings.workoutIntervalMode = DEFAULT_SETTINGS.workoutIntervalMode;
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.foodIdentificationMode)) settings.foodIdentificationMode = DEFAULT_SETTINGS.foodIdentificationMode;
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.workoutIdentificationMode)) settings.workoutIdentificationMode = DEFAULT_SETTINGS.workoutIdentificationMode;

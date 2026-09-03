@@ -9,6 +9,7 @@ export type ActivitySource = "manual" | "workout" | "apple-health";
 export type HealthStorageMode = "legacy" | "native-records";
 export type WorkoutSetNotation = "compact" | "verbose";
 export type WorkoutIntervalMode = "duration" | "end";
+export type WorkoutControlPlacement = "inline" | "floating";
 export type HealthEntityIdentificationMode = "metadata-folder-tag" | "folder" | "tag" | "metadata";
 export type WorkflowRecurrenceMode = "completion-triggered";
 export type WorkflowTemplateKind = "workflow";
@@ -18,7 +19,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 5;
+export const TPS_HEALTH_SCHEMA_VERSION = 6;
 
 export interface HealthGoal {
   propertyKey: string;
@@ -46,6 +47,7 @@ export interface TPSHealthSettings {
   defaultRestSeconds: number;
   defaultWorkoutCooldownDays: number;
   workoutSetNotation: WorkoutSetNotation;
+  workoutControlPlacement: WorkoutControlPlacement;
   workoutStartPropertyKey: string;
   workoutIntervalMode: WorkoutIntervalMode;
   workoutIntervalPropertyKey: string;
@@ -283,6 +285,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   defaultRestSeconds: 90,
   defaultWorkoutCooldownDays: 0,
   workoutSetNotation: "compact",
+  workoutControlPlacement: "inline",
   workoutStartPropertyKey: "scheduled",
   workoutIntervalMode: "duration",
   workoutIntervalPropertyKey: "timeEstimate",

@@ -2,7 +2,7 @@ import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFo
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
@@ -446,6 +446,20 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.workoutDailyNotePlacement = value as typeof this.plugin.settings.workoutDailyNotePlacement;
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(storage)
+      .setName("Workout controls")
+      .setDesc("Inline keeps session actions in the workout card. Floating moves Add Exercise and Finish into the persistent note bar; exercise and set-specific actions stay beside their targets.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("inline", "Inline with workout")
+        .addOption("floating", "Floating over note")
+        .setValue(this.plugin.settings.workoutControlPlacement)
+        .onChange(async (value) => {
+          this.plugin.settings.workoutControlPlacement = value as WorkoutControlPlacement;
+          await this.plugin.saveSettings();
+          this.plugin.scheduleWorkoutActionBars();
+          logger.flow("Settings", "workout-controls:changed", { placement: value });
         }));
 
     const calendarProperties = createSettingsGroup(

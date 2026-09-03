@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.36.0
+
+- **Workouts → Workout placement → Workout controls** now chooses **Inline with workout** or **Floating over note** for native workout sessions. Inline remains the default and keeps Add Exercise and Finish in the shared Reading/Live Preview workout card. Floating moves those session actions into the persistent desktop/mobile note bar.
+- The two modes have one action owner: choosing Floating removes Add Exercise and Finish from the native card and its empty state, while choosing Inline suppresses the sticky/floating bar. Per-exercise Add Set and exercise/set menus remain beside their targets in both modes, so a floating session bar never loses the context required for a set mutation.
+- The setting applies immediately after save, syncs normally between devices, and invalid values fall back to Inline. Existing settings gain the default during normal settings normalization; workout notes and nested `session` data are not rewritten. Settings schema advances to 6, and minimum supported Obsidian remains 1.12.0.
+- Validation: all 276 declared checks ran against 0.36.0 (275 passed; the credential-gated live USDA check skipped), including focused settings normalization, action ownership, embedded-surface fallback, and native-workout rendering coverage. The final production-mode build deployed only to the isolated test-vault runtime. Interactive Obsidian verification was intentionally skipped because the foreground app was TishOS v0.2 rather than the test vault; that vault was not clicked, reloaded, or modified.
+
 ## 0.35.1
 
 - Native workout notes now have one action owner on phones. Their Reading-mode and Live Preview card keeps **+ Exercise**, **Finish**, each exercise's **+ Set**, and row menus; the old body-level floating bar is suppressed for that same native session, so those actions no longer appear twice or cover the bottom of the workout.

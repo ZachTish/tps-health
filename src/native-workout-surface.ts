@@ -29,6 +29,7 @@ export interface NativeWorkoutSurfaceOptions {
   elapsedLabel: string;
   instanceKey: string;
   defaultRestSeconds: number;
+  showSessionActions: boolean;
   actions: NativeWorkoutSurfaceActions;
 }
 
@@ -139,6 +140,7 @@ export function renderNativeWorkoutSurface(
     elapsed: options.elapsedLabel,
     id: snapshot.id,
     status: snapshot.status,
+    showSessionActions: options.showSessionActions,
     exercises: snapshot.exercises.map((exercise) => [
       exercise.id,
       exercise.supersetGroupId,
@@ -165,23 +167,26 @@ export function renderNativeWorkoutSurface(
       'tps-health-native-workout-summary',
     ),
   );
-  const actions = document.createElement('div');
-  actions.className = 'tps-health-native-workout-actions';
-  actions.append(
-    button('+ Exercise', 'Add exercise', options.actions.addExercise, !options.active),
-    button('Finish', 'Finish active workout', options.actions.finish, !options.active),
-  );
-  actions.lastElementChild?.classList.add('is-primary');
-  header.append(identity, actions);
+  header.append(identity);
+  if (options.showSessionActions) {
+    const actions = document.createElement('div');
+    actions.className = 'tps-health-native-workout-actions';
+    actions.append(
+      button('+ Exercise', 'Add exercise', options.actions.addExercise, !options.active),
+      button('Finish', 'Finish active workout', options.actions.finish, !options.active),
+    );
+    actions.lastElementChild?.classList.add('is-primary');
+    header.append(actions);
+  }
   root.append(header);
 
   if (!snapshot.exercises.length) {
     const empty = document.createElement('div');
     empty.className = 'tps-health-native-workout-empty';
-    empty.append(
-      text('span', options.active ? 'No exercises yet. Add one to log your first set.' : 'No exercises were logged.'),
-      button('+ Exercise', 'Add first exercise', options.actions.addExercise, !options.active),
-    );
+    empty.append(text('span', options.active ? 'No exercises yet. Add one to log your first set.' : 'No exercises were logged.'));
+    if (options.showSessionActions) {
+      empty.append(button('+ Exercise', 'Add first exercise', options.actions.addExercise, !options.active));
+    }
     root.append(empty);
     return;
   }

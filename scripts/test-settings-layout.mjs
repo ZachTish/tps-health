@@ -69,6 +69,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "defaultRestSeconds",
     "defaultWorkoutCooldownDays",
     "workoutSetNotation",
+    "workoutControlPlacement",
     "workoutsFolder",
     "workoutPlansFolder",
     "exercisesFolder",
@@ -126,6 +127,10 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /\.addOption\("duration", "Duration in minutes"\)/);
   assert.match(settingsSource, /\.addOption\("end", "Ending datetime"\)/);
   assert.match(settingsSource, /addWorkoutPropertyKey\(\s*"Workout interval property"/);
+  assert.match(settingsSource, /\.setName\("Workout controls"\)/);
+  assert.match(settingsSource, /\.addOption\("inline", "Inline with workout"\)/);
+  assert.match(settingsSource, /\.addOption\("floating", "Floating over note"\)/);
+  assert.match(settingsSource, /workout-controls:changed/);
   assert.match(settingsSource, /dataset\.tpsHealthWorkoutProperty = settingKey/);
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);

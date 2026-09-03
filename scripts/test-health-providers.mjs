@@ -4680,7 +4680,10 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.workoutIntervalMode, "duration");
   assert.equal(normalized.workoutIntervalPropertyKey, "timeEstimate");
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
-  assert.equal(normalized.settingsVersion, 5);
+  assert.equal(normalized.settingsVersion, 6);
+  assert.equal(normalized.workoutControlPlacement, "inline");
+  assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "floating" }).workoutControlPlacement, "floating");
+  assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "sideways" }).workoutControlPlacement, "inline");
   assert.equal(normalized.foodFrontmatterKey, "kind");
   assert.equal(normalized.foodFrontmatterFoodValue, "food");
   assert.equal(normalized.foodFrontmatterRecipeValue, "recipe");
@@ -4781,12 +4784,12 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
   assert.equal(Object.hasOwn(preservedUnknown, "dailyNoteFolder"), false);
   const futureSettings = normalizeTPSHealthSettings({
-    settingsVersion: 6,
+    settingsVersion: 7,
     dailyNoteFolder: "Future Dailynotes",
     futureOnlySetting: { mode: "new" },
   });
   assert.equal(isFutureTPSHealthSettings(futureSettings), true);
-  assert.equal(futureSettings.settingsVersion, 6, "normalization must never downgrade a future schema");
+  assert.equal(futureSettings.settingsVersion, 7, "normalization must never downgrade a future schema");
   assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
