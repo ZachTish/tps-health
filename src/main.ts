@@ -8059,6 +8059,8 @@ export default class TPSHealthPlugin extends Plugin {
       const container = (leaf as any).containerEl as HTMLElement | undefined;
       const target = container?.querySelector<HTMLElement>(".markdown-preview-view .markdown-preview-sizer");
       if (!target?.isConnected) return;
+      const mountTarget = nativeWorkoutReadingMountTarget(target);
+      if (!mountTarget) return;
       const matches = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
         .filter((surface) => surface.dataset.workoutPath === snapshot.path);
       const surface = matches.shift() || document.createElement("section");
@@ -8066,7 +8068,7 @@ export default class TPSHealthPlugin extends Plugin {
       surface.className = "tps-health-native-workout-surface";
       surface.dataset.workoutPath = snapshot.path;
       surface.dataset.renderContext = "reading";
-      if (surface.parentElement !== target) target.appendChild(surface);
+      if (surface.parentElement !== mountTarget) mountTarget.appendChild(surface);
     });
   }
 
@@ -9164,7 +9166,14 @@ export default class TPSHealthPlugin extends Plugin {
       logSet: (input) => this.traceApiCall("logSet", input, () => this.logSet(input)),
       getActiveWorkoutPath: () => this.settings.activeWorkoutPath,
       getActiveWorkout: () => this.getActiveWorkoutState(),
-      getSettings: () => ({ ...this.settings, healthGoals: this.settings.healthGoals.map((goal) => ({ ...goal })) }),
+      getSettings: () => ({
+        ...this.settings,
+        healthGoals: this.settings.healthGoals.map((goal) => ({ ...goal })),
+        nativeRecordKinds: { ...this.settings.nativeRecordKinds },
+        nativeRecordProperties: { ...this.settings.nativeRecordProperties },
+        nativeRecordKindAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordKindAliases).map(([key, values]) => [key, [...values]])),
+        nativeRecordPropertyAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordPropertyAliases).map(([key, values]) => [key, [...values]])),
+      }),
       getDailyRollup: () => this.traceApiCall("getDailyRollup", {}, () => this.getDailyRollup()),
       updateDailyRollup: () => this.traceApiCall("updateDailyRollup", {}, () => this.updateDailyRollup()),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
@@ -14000,6 +14009,8 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
   const mount = (): boolean => {
     const target = root.closest<HTMLElement>(".markdown-preview-sizer");
     if (!target?.isConnected) return false;
+    const mountTarget = nativeWorkoutReadingMountTarget(target, root);
+    if (!mountTarget) return false;
     const matches = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
       .filter((surface) => surface.dataset.workoutPath === snapshot.path);
     const surface = matches.shift() || document.createElement("section");
@@ -14007,7 +14018,7 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
     surface.className = "tps-health-native-workout-surface";
     surface.dataset.workoutPath = snapshot.path;
     surface.dataset.renderContext = "reading";
-    if (surface.parentElement !== target) target.appendChild(surface);
+    if (surface.parentElement !== mountTarget) mountTarget.appendChild(surface);
     plugin.renderNativeWorkoutSurfaceElement(surface, snapshot);
     return true;
   };
@@ -14015,6 +14026,14 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
   window.requestAnimationFrame(() => {
     if (!mount()) window.setTimeout(() => void mount(), 0);
   });
+}
+
+function nativeWorkoutReadingMountTarget(previewSizer: HTMLElement, renderedRoot?: HTMLElement): HTMLElement | null {
+  const owningSection = renderedRoot?.closest<HTMLElement>(".markdown-preview-section");
+  if (owningSection?.isConnected && previewSizer.contains(owningSection)) return owningSection;
+  const managedSections = Array.from(previewSizer.children)
+    .filter((child): child is HTMLElement => child instanceof HTMLElement && child.matches(".markdown-preview-section"));
+  return managedSections.at(-1) || null;
 }
 
 function markdownFilePathForRenderedElement(plugin: TPSHealthPlugin, element: HTMLElement): string {

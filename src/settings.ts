@@ -2,11 +2,17 @@ import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFo
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
+import {
+  DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
+  DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES,
+  isValidFrontmatterPropertyKey,
+  isValidNativeRecordKindValue,
+} from "./native-record-schema";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
-type OptionalDisclosureId = "custom-goals" | "templates" | "provider-credentials";
+type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter" | "provider-credentials";
 type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exercisesFolder" | "foodsFolder" | "recipesFolder";
 
 interface HealthSettingsDestination {
@@ -816,6 +822,21 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.refreshGcmFoodLogButtonRegistration();
         }));
 
+    new Setting(gcm)
+      .setName("Shared record envelope")
+      .setDesc("GCM owns the fixed shared identity, kind, title, created, and modified envelope used by every TPS plugin. Health controls its kind values and Health-specific fields below.")
+      .addButton((button) => button
+        .setButtonText("Open GCM settings")
+        .onClick(() => this.openPluginSettings("tps-global-context-menu")));
+
+    const nativeFrontmatter = this.createOptionalDisclosure(
+      page,
+      "native-frontmatter",
+      "Health record frontmatter",
+      "Configure every Health-owned property key and the kind values used by new food, activity, and workout records. Existing default keys remain readable; changing a key never rewrites old notes automatically.",
+    );
+    this.renderNativeFrontmatterSettings(nativeFrontmatter);
+
     const aiGateway = createSettingsGroup(
       page,
       "TPS AI Gateway",
@@ -850,6 +871,122 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.enableLogging = value;
           await this.plugin.saveSettings();
         }));
+  }
+
+  private renderNativeFrontmatterSettings(section: HTMLElement): void {
+    const kindFields: Array<[HealthNativeRecordKindKey, string]> = [
+      ["foodEntry", "Food entry kind value"],
+      ["activityEntry", "Activity entry kind value"],
+      ["workoutSession", "Workout session kind value"],
+      ["workoutExercise", "Legacy workout exercise kind value"],
+    ];
+    for (const [key, label] of kindFields) {
+      new Setting(section)
+        .setName(label)
+        .setDesc("Lowercase words separated by hyphens. Prior values remain readable as aliases.")
+        .addText((text) => {
+          let committedValue = this.plugin.settings.nativeRecordKinds[key];
+          const commit = async (): Promise<void> => {
+            const candidate = text.getValue().trim();
+            if (!isValidNativeRecordKindValue(candidate)) {
+              text.setValue(committedValue);
+              return;
+            }
+            const duplicate = Object.entries(this.plugin.settings.nativeRecordKinds)
+              .some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLocaleLowerCase() === candidate.toLocaleLowerCase());
+            if (duplicate) {
+              text.setValue(committedValue);
+              return;
+            }
+            const previous = committedValue;
+            if (previous === candidate) return;
+            this.plugin.settings.nativeRecordKindAliases[key] = [
+              ...new Set([...(this.plugin.settings.nativeRecordKindAliases[key] || []), previous]),
+            ];
+            this.plugin.settings.nativeRecordKinds[key] = candidate;
+            await this.plugin.saveSettings();
+            committedValue = this.plugin.settings.nativeRecordKinds[key];
+            text.setValue(committedValue);
+            this.plugin.nativeRecordService?.refreshConfiguration();
+          };
+          text.setPlaceholder(DEFAULT_HEALTH_NATIVE_RECORD_KINDS[key]).setValue(committedValue);
+          text.inputEl.addEventListener("change", () => void commit());
+          text.inputEl.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void commit();
+            text.inputEl.blur();
+          });
+        });
+    }
+
+    section.createEl("h5", { cls: "tps-health-settings-subheading", text: "Food and nutrition fields" });
+    const propertyGroups: Array<[string, Array<[HealthNativeRecordPropertyKey, string]>]> = [
+      ["Food and nutrition fields", [
+        ["completedDate", "Logged/completed time"], ["food", "Food link"], ["quantity", "Quantity"], ["unit", "Unit"],
+        ["calories", "Calories"], ["proteinG", "Protein"], ["carbsG", "Carbohydrates"], ["fatG", "Fat"],
+        ["fiberG", "Fiber"], ["sugarG", "Sugar"], ["sugarAlcoholG", "Sugar alcohol"], ["alcoholG", "Alcohol"], ["sodiumMg", "Sodium"],
+      ]],
+      ["Activity fields", [
+        ["activityType", "Activity type"], ["startedAt", "Activity start"], ["durationMinutes", "Activity duration"],
+        ["distance", "Distance"], ["distanceUnit", "Distance unit"], ["steps", "Steps"],
+        ["caloriesBurned", "Calories burned"], ["source", "Source"], ["device", "Device"],
+      ]],
+      ["Workout and shared Health fields", [
+        ["status", "Workout status"], ["workoutPlan", "Workout plan"], ["session", "Workout session data"],
+        ["note", "Note"], ["archived", "Archived"], ["archivedDate", "Archived time"],
+      ]],
+    ];
+    for (const [groupLabel, fields] of propertyGroups) {
+      if (groupLabel !== "Food and nutrition fields") {
+        section.createEl("h5", { cls: "tps-health-settings-subheading", text: groupLabel });
+      }
+      for (const [key, label] of fields) this.addNativePropertyKeySetting(section, key, label);
+    }
+  }
+
+  private addNativePropertyKeySetting(
+    section: HTMLElement,
+    key: HealthNativeRecordPropertyKey,
+    label: string,
+  ): void {
+    new Setting(section)
+      .setName(label)
+      .setDesc(`Default: ${DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]}. Prior values remain readable as aliases; shared TPS envelope keys are reserved.`)
+      .addText((text) => {
+        let committedValue = this.plugin.settings.nativeRecordProperties[key];
+        const commit = async (): Promise<void> => {
+          const candidate = text.getValue().trim();
+          if (!isValidFrontmatterPropertyKey(candidate)) {
+            text.setValue(committedValue);
+            return;
+          }
+          const duplicate = Object.entries(this.plugin.settings.nativeRecordProperties)
+            .some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLocaleLowerCase() === candidate.toLocaleLowerCase());
+          if (duplicate) {
+            text.setValue(committedValue);
+            return;
+          }
+          const previous = committedValue;
+          if (previous === candidate) return;
+          this.plugin.settings.nativeRecordPropertyAliases[key] = [
+            ...new Set([...(this.plugin.settings.nativeRecordPropertyAliases[key] || []), previous]),
+          ];
+          this.plugin.settings.nativeRecordProperties[key] = candidate;
+          await this.plugin.saveSettings();
+          committedValue = this.plugin.settings.nativeRecordProperties[key];
+          text.setValue(committedValue);
+          this.plugin.nativeRecordService?.refreshConfiguration();
+        };
+        text.setPlaceholder(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]).setValue(committedValue);
+        text.inputEl.addEventListener("change", () => void commit());
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void commit();
+          text.inputEl.blur();
+        });
+      });
   }
 
   private renderProviderCredentials(section: HTMLElement): void {

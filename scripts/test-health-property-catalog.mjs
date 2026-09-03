@@ -10,6 +10,10 @@ const workoutCompiled = ts.transpileModule(workoutSource, {
 }).outputText;
 const workoutModule = { exports: {} };
 new Function('module', 'exports', workoutCompiled)(workoutModule, workoutModule.exports);
+const nativeSchemaSource = readFileSync(new URL('../src/native-record-schema.ts', import.meta.url), 'utf8');
+const nativeSchemaCompiled = ts.transpileModule(nativeSchemaSource, { compilerOptions }).outputText;
+const nativeSchemaModule = { exports: {} };
+new Function('module', 'exports', nativeSchemaCompiled)(nativeSchemaModule, nativeSchemaModule.exports);
 
 const source = readFileSync(new URL('../src/health-property-catalog.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {
@@ -21,6 +25,7 @@ new Function('module', 'exports', 'require', compiled)(
   moduleRecord.exports,
   (specifier) => {
     if (specifier === './workout-properties') return workoutModule.exports;
+    if (specifier === './native-record-schema') return nativeSchemaModule.exports;
     throw new Error(`Unexpected test import: ${specifier}`);
   },
 );
@@ -35,6 +40,11 @@ const settings = (mode) => ({
   workoutStartPropertyKey: 'scheduled',
   workoutIntervalMode: 'duration',
   workoutIntervalPropertyKey: 'timeEstimate',
+  nativeRecordKinds: {
+    foodEntry: 'food-entry', activityEntry: 'activity-entry', workoutSession: 'workout-session', workoutExercise: 'workout-exercise',
+  },
+  nativeRecordKindAliases: {},
+  nativeRecordProperties: {},
   healthGoals: [
     { propertyKey: 'consumedCalories', label: 'Consumed calories', unit: 'kcal', kind: 'max' },
     { propertyKey: 'protein', label: 'Protein', unit: 'g', kind: 'min' },
@@ -105,6 +115,26 @@ test('catalog follows custom workout calendar property names and interval type',
   assert.equal(byKey('calendarEnd')[0].type, 'datetime');
   assert.equal(byKey('scheduled').length, 0);
   assert.equal(byKey('timeEstimate').length, 0);
+});
+
+test('catalog scopes configurable Health fields to configurable native kind values', () => {
+  const catalog = buildHealthPropertyCatalog({
+    ...settings('tag'),
+    nativeRecordKinds: {
+      foodEntry: 'nutrition-log', activityEntry: 'movement-log', workoutSession: 'training-session', workoutExercise: 'training-exercise',
+    },
+    nativeRecordKindAliases: { foodEntry: ['meal-log'] },
+    nativeRecordProperties: { food: 'foodRef', calories: 'energyKcal', status: 'trainingStatus' },
+  });
+  const food = catalog.nativeRecords.find((property) => property.id === 'food-link');
+  const calories = catalog.nativeRecords.find((property) => property.id === 'record-calories');
+  const status = catalog.nativeRecords.find((property) => property.id === 'record-status');
+  assert.equal(food.key, 'foodRef');
+  assert.deepEqual(food.scope.kinds, ['nutrition-log', 'food-entry', 'meal-log']);
+  assert.equal(calories.key, 'energyKcal');
+  assert.deepEqual(calories.scope.kinds, ['nutrition-log', 'food-entry', 'meal-log']);
+  assert.equal(status.key, 'trainingStatus');
+  assert.deepEqual(status.scope.kinds, ['training-session', 'workout-session']);
 });
 
 test('daily rollup properties are generated from configured goals and require their own rollup key', () => {

@@ -1,5 +1,19 @@
 # TPS Health
 
+## 0.37.0
+
+- Native workout surfaces in Reading mode now mount inside Obsidian-managed preview sections instead of directly under the virtualized preview sizer. Scrolling can detach and recreate preview sections without orphaning or deleting the workout UI; the existing one-surface dedupe still applies in every pane.
+- **Integrations & advanced → Health record frontmatter** exposes the native food-entry, activity-entry, workout-session, and legacy workout-exercise kind values plus every Health-owned log/workout property key. The fixed shared `tpsId`, `kind`, `title`, created, and modified envelope remains owned once by TPS Global Context Menu, with a direct settings handoff from Health.
+- New records write only the currently configured Health keys. Existing default keys and every value/key previously changed through the settings UI remain readable as aliases; an ordinary later edit migrates touched Health fields to the current keys and clears their retired aliases rather than creating duplicate data. Changing settings never bulk-rewrites notes.
+- Custom kind values use strict lowercase hyphenated slugs, reject collisions, and fail closed unless GCM nativeRecords API v6 advertises custom-kind support. Health's runtime index and exported GCM property catalog translate custom stored values back to stable food/activity/workout semantics, so dashboards, Bases scopes, editing, archiving, and workout recovery do not depend on hard-coded `food-entry` or `activity-entry` values.
+- Settings schema advances to 7. This is a backward-compatible configuration feature: existing defaults require no migration, existing native records remain readable, Legacy storage is unchanged, and minimum supported Obsidian remains 1.12.0.
+
+### Nutrition and provider architecture assessment
+
+The Macros community plugin was reviewed as an architecture reference, not copied. Its strongest applicable ideas are a canonical micronutrient registry grouped into vitamins, minerals, and other nutrients; separate macro and micronutrient presentation; explicit provider capability/quality metadata; and multiple independently testable food providers. TPS Health already searches its local catalog, curated data, USDA FoodData Central, Open Food Facts, and bounded AI research, so the next improvement should extend that unified model instead of adding product-specific fallbacks or a second search stack.
+
+The recommended follow-on is to add typed micronutrients to the canonical nutrition model, keep macro and micro goals/renderers separate, merge provider fields by evidence and serving coherence rather than choosing one whole provider row, and expose provider enable/order/quality controls with connection tests. FatSecret is a reasonable optional authenticated provider candidate, but it should be introduced only through device-local SecretStorage and the same request caching/rate-limit safeguards already used for USDA. Existing food notes and log snapshots need an additive, versioned migration before micronutrients ship; this release intentionally does not rewrite nutrition data.
+
 ## 0.36.0
 
 - **Workouts → Workout placement → Workout controls** now chooses **Inline with workout** or **Floating over note** for native workout sessions. Inline remains the default and keeps Add Exercise and Finish in the shared Reading/Live Preview workout card. Floating moves those session actions into the persistent desktop/mobile note bar.
@@ -1452,7 +1466,7 @@ TPS Health exposes `api.homeActions` for `tps-health:log-food` and `tps-health:s
 
 ## Settings layout
 
-TPS Health uses five shallow routed pages: **Daily logging**, **Food & goals**, **Workouts**, **Note library**, and **Integrations & advanced**. Only Custom goal JSON, Templates, and Provider credentials use optional disclosures; there are no nested accordions. The default route is Daily logging, navigation state is not persisted into plugin data, and credential rerenders retain route, disclosure, scroll, and keyboard-focus context.
+TPS Health uses five shallow routed pages: **Daily logging**, **Food & goals**, **Workouts**, **Note library**, and **Integrations & advanced**. Only Custom goal JSON, Templates, Health record frontmatter, and Provider credentials use optional disclosures; there are no nested accordions. The default route is Daily logging, navigation state is not persisted into plugin data, and credential rerenders retain route, disclosure, scroll, and keyboard-focus context. Health record frontmatter keeps the common defaults collapsed, groups food/nutrition, activity, and workout fields once, and links to GCM for the fixed shared native-record envelope rather than duplicating system controls.
 
 - 2026-07-13: Audited settings navigation, promoted daily log storage to the root, and made every optional group initially collapsed. Validation: settings hierarchy audit, full test suite, production build/deploy, and Obsidian reload.
 - 2026-07-13: Restored the declared activity API contract by exporting the existing `ensureActivityLogBase` and `logActivity` implementations through `api`; both routes retain structured call and mutation logging. Added source regression coverage after the settings-audit build exposed the omission.

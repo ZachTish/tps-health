@@ -9,6 +9,13 @@ import {
   workoutStartedAt,
   workoutTemporalPropertyUpdates,
 } from './workout-properties';
+import {
+  canonicalNativeKind,
+  configuredNativeKind,
+  decodeNativeRecordFrontmatter,
+  encodeNativeRecordProperties,
+  hasCustomNativeKindValues,
+} from './native-record-schema';
 
 export const TPS_HEALTH_NATIVE_RECORDS_VERSION = 4;
 const WORKOUT_DATA_VERSION = 1;
@@ -25,13 +32,18 @@ export interface NativeRecordHandle {
   frontmatter: Record<string, unknown>;
 }
 
+interface RawNativeRecordHandle extends Omit<NativeRecordHandle, 'kind'> {
+  kind: string;
+}
+
 interface NativeRecordsApi {
   version: number;
+  capabilities?: { customKinds?: boolean };
   isEnabled(): boolean;
-  create(kind: NativeHealthKind, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<NativeRecordHandle>;
-  resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<NativeRecordHandle | null>;
-  update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<NativeRecordHandle | null>;
-  rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<NativeRecordHandle | null>;
+  create(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
+  resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<RawNativeRecordHandle | null>;
+  update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
+  rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
   inspect(frontmatter: unknown): {
     id: string;
     kind: string;
@@ -562,8 +574,9 @@ function workoutFrontmatterFromContent(content: string): Record<string, unknown>
     : {};
 }
 
-function workoutStorageStateFromContent(content: string): string | null {
-  const frontmatter = workoutFrontmatterFromContent(content);
+function workoutStorageStateFromContent(content: string, settings?: TPSHealthSettings): string | null {
+  const rawFrontmatter = workoutFrontmatterFromContent(content);
+  const frontmatter = settings ? decodeNativeRecordFrontmatter(settings, rawFrontmatter) : rawFrontmatter;
   return workoutStorageState(frontmatter, workoutDataMarkerState(content));
 }
 
@@ -994,6 +1007,11 @@ export class HealthNativeRecordService {
     this.foodProjectionGenerations.clear();
   }
 
+  refreshConfiguration(): void {
+    this.rebuild();
+    this.plugin.scheduleWorkoutActionBars();
+  }
+
   onRecordsChanged(listener: (change: NativeHealthRecordChange) => void): () => void {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
@@ -1010,7 +1028,54 @@ export class HealthNativeRecordService {
     ) {
       throw new Error('TPS Health native records require TPS GCM native-record mode and nativeRecords API v6.');
     }
+    if (hasCustomNativeKindValues(this.plugin.settings) && api.capabilities?.customKinds !== true) {
+      throw new Error('Custom Health record kind values require a TPS GCM native-record build with custom-kind support.');
+    }
     return api as NativeRecordsApi;
+  }
+
+  private canonicalHandle(handle: RawNativeRecordHandle | null): NativeRecordHandle | null {
+    if (!handle) return null;
+    const kind = canonicalNativeKind(this.plugin.settings, handle.kind);
+    if (!kind) return null;
+    return {
+      ...handle,
+      kind,
+      frontmatter: decodeNativeRecordFrontmatter(this.plugin.settings, handle.frontmatter),
+    };
+  }
+
+  private async resolveRecord(
+    reference: string | TFile | { path?: string; id?: string; tpsId?: string },
+  ): Promise<NativeRecordHandle | null> {
+    return this.canonicalHandle(await this.requireApi().resolve(reference));
+  }
+
+  private async createRecord(
+    kind: NativeHealthKind,
+    properties: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<NativeRecordHandle> {
+    const created = await this.requireApi().create(
+      configuredNativeKind(this.plugin.settings, kind),
+      encodeNativeRecordProperties(this.plugin.settings, properties),
+      options,
+    );
+    const canonical = this.canonicalHandle(created);
+    if (!canonical) throw new Error(`TPS GCM returned an unrecognized Health record kind for ${kind}.`);
+    return canonical;
+  }
+
+  private async updateRecord(
+    reference: string | TFile | { path?: string; id?: string; tpsId?: string },
+    updates: Record<string, unknown>,
+    cause?: Record<string, unknown>,
+  ): Promise<NativeRecordHandle | null> {
+    return this.canonicalHandle(await this.requireApi().update(
+      reference,
+      encodeNativeRecordProperties(this.plugin.settings, updates, true),
+      cause,
+    ));
   }
 
   private async serializeWorkoutSessionMutation<T>(
@@ -1022,7 +1087,7 @@ export class HealthNativeRecordService {
     const previous = this.workoutMutationQueues.get(queuePath) || Promise.resolve();
     const run = previous.catch(() => undefined).then(async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const session = await this.requireApi().resolve({
+        const session = await this.resolveRecord({
           path: initialSession.file.path,
           id: initialSession.id,
         });
@@ -1064,7 +1129,7 @@ export class HealthNativeRecordService {
       note: entry.note,
     });
     const api = this.requireApi();
-    const record = await api.create('food-entry', properties, {
+    const record = await this.createRecord('food-entry', properties, {
       id: entry.id,
       now: new Date(entry.createdDate),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('food-entry', properties) : undefined,
@@ -1090,7 +1155,7 @@ export class HealthNativeRecordService {
       note: entry.note,
     });
     const api = this.requireApi();
-    const record = await api.create('activity-entry', properties, {
+    const record = await this.createRecord('activity-entry', properties, {
       id: entry.id,
       now: new Date(entry.startedAt),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('activity-entry', properties) : undefined,
@@ -1111,7 +1176,7 @@ export class HealthNativeRecordService {
       ...workoutTemporalPropertyUpdates(this.plugin.settings, {}, { startedAt }),
     });
     const api = this.requireApi();
-    const record = await api.create('workout-session', recordProperties, {
+    const record = await this.createRecord('workout-session', recordProperties, {
       id: recordId,
       now: new Date(startedAt),
       fileName: Number(api.version) >= 3
@@ -1129,8 +1194,7 @@ export class HealthNativeRecordService {
   }
 
   async appendWorkoutSet(sessionReference: string | TFile, set: WorkoutSet): Promise<{ session: NativeRecordHandle; exercise: NativeRecordHandle }> {
-    const api = this.requireApi();
-    const initialSession = await api.resolve(sessionReference);
+    const initialSession = await this.resolveRecord(sessionReference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const exerciseName = String(set.exercise || '').trim();
     if (!exerciseName) throw new Error('Workout exercise name is required.');
@@ -1175,8 +1239,7 @@ export class HealthNativeRecordService {
     setId: string,
     patch: NativeWorkoutSetPatch,
   ): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const reference = await api.resolve(exerciseReference);
+    const reference = await this.resolveRecord(exerciseReference);
     const initialSession = reference?.kind === 'workout-session'
       ? reference
       : reference?.kind === 'workout-exercise'
@@ -1382,8 +1445,7 @@ export class HealthNativeRecordService {
     surface: string,
     mutation: (exercises: StoredWorkoutExercise[], session: NativeRecordHandle) => void,
   ): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const initialSession = await api.resolve(sessionReference);
+    const initialSession = await this.resolveRecord(sessionReference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Workout session was not found.');
     return this.serializeWorkoutSessionMutation(initialSession, surface, async (session) => {
       const { exercises: priorExercises, legacyChildren, markerState } = await this.workoutExercisesForWrite(session);
@@ -1405,15 +1467,19 @@ export class HealthNativeRecordService {
     expectedStorageState: string | null,
   ): Promise<NativeRecordHandle | null> {
     const beforeContent = await this.plugin.app.vault.read(session.file);
-    const currentStorageState = workoutStorageStateFromContent(beforeContent);
+    const currentStorageState = workoutStorageStateFromContent(beforeContent, this.plugin.settings);
     if (currentStorageState !== expectedStorageState) throw new WorkoutSessionConflictError();
     const legacyMarker = workoutDataMarkerState(beforeContent);
-    const nextValues = workoutSessionDataUpdates(exercises, updates, session.frontmatter, this.plugin.settings);
+    const nextValues = encodeNativeRecordProperties(
+      this.plugin.settings,
+      workoutSessionDataUpdates(exercises, updates, session.frontmatter, this.plugin.settings),
+      true,
+    );
     let conflict = false;
     let committedFrontmatter: Record<string, unknown> | null = null;
     await this.plugin.app.fileManager.processFrontMatter(session.file, (frontmatter) => {
       const current = frontmatter as Record<string, unknown>;
-      if (workoutStorageState(current, legacyMarker) !== expectedStorageState) {
+      if (workoutStorageState(decodeNativeRecordFrontmatter(this.plugin.settings, current), legacyMarker) !== expectedStorageState) {
         conflict = true;
         return;
       }
@@ -1450,9 +1516,9 @@ export class HealthNativeRecordService {
         });
       }
     }
-    return await this.requireApi().resolve({ path: session.path, id: session.id }) || {
+    return await this.resolveRecord({ path: session.path, id: session.id }) || {
       ...session,
-      frontmatter: committedFrontmatter,
+      frontmatter: decodeNativeRecordFrontmatter(this.plugin.settings, committedFrontmatter),
     };
   }
 
@@ -1461,11 +1527,10 @@ export class HealthNativeRecordService {
     exerciseName: string,
     exercisePath?: string,
   ): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
     const resolvedReference = typeof sessionReference === 'object' && sessionReference !== null && 'kind' in sessionReference
       ? (sessionReference as NativeRecordHandle).file
       : sessionReference as string | TFile;
-    const initialSession = await api.resolve(resolvedReference);
+    const initialSession = await this.resolveRecord(resolvedReference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Active native workout session was not found.');
     const name = exerciseName.trim();
     if (!name) throw new Error('Workout exercise name is required.');
@@ -1502,8 +1567,7 @@ export class HealthNativeRecordService {
   }
 
   async finishWorkout(reference: string | TFile, updates: Record<string, unknown>): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const initialSession = await api.resolve(reference);
+    const initialSession = await this.resolveRecord(reference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Native workout session was not found.');
     return this.serializeWorkoutSessionMutation(initialSession, 'health-workout-finish', async (session) => {
       const { exercises, legacyChildren, markerState } = await this.workoutExercisesForWrite(session);
@@ -1519,7 +1583,7 @@ export class HealthNativeRecordService {
   }
 
   async discardWorkout(reference: string | TFile): Promise<NativeRecordHandle> {
-    const initialSession = await this.requireApi().resolve(reference);
+    const initialSession = await this.resolveRecord(reference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Native workout session was not found.');
     return this.serializeWorkoutSessionMutation(initialSession, 'health-workout-discard', async (session) => {
       const { exercises, legacyChildren, markerState } = await this.workoutExercisesForWrite(session);
@@ -1814,8 +1878,7 @@ export class HealthNativeRecordService {
   }
 
   async updateDailyFoodEntry(reference: string | TFile, patch: NativeDailyFoodEntryPatch): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const current = await api.resolve(reference);
+    const current = await this.resolveRecord(reference);
     if (!current || current.kind !== 'food-entry') throw new Error('Food log entry was not found.');
     const title = String(patch.title || '').trim();
     const completedDate = String(patch.completedDate || '').trim();
@@ -1835,7 +1898,7 @@ export class HealthNativeRecordService {
       alcoholG: nonNegativeNumber(patch.alcoholG),
       sodiumMg: nonNegativeNumber(patch.sodiumMg),
     };
-    const updated = await api.update(current.file, {
+    const updated = await this.updateRecord(current.file, {
       title,
       completedDate,
       quantity: patch.quantity,
@@ -1849,13 +1912,12 @@ export class HealthNativeRecordService {
   }
 
   async updateDailyActivityEntry(reference: string | TFile, patch: NativeDailyActivityEntryPatch): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const current = await api.resolve(reference);
+    const current = await this.resolveRecord(reference);
     if (!current || current.kind !== 'activity-entry') throw new Error('Activity log entry was not found.');
     const title = String(patch.title || '').trim();
     const completedDate = String(patch.completedDate || '').trim();
     if (!title || !completedDate) throw new Error('Activity name and completed time are required.');
-    const updated = await api.update(current.file, {
+    const updated = await this.updateRecord(current.file, {
       title,
       activityType: String(patch.activityType || 'other').trim() || 'other',
       startedAt: String(patch.startedAt || '').trim() || null,
@@ -1873,10 +1935,9 @@ export class HealthNativeRecordService {
   }
 
   async archiveDailyEntry(reference: string | TFile, expectedKind: 'food-entry' | 'activity-entry' | 'workout-session'): Promise<NativeRecordHandle> {
-    const api = this.requireApi();
-    const current = await api.resolve(reference);
+    const current = await this.resolveRecord(reference);
     if (!current || current.kind !== expectedKind) throw new Error('Health log entry was not found.');
-    const updated = await api.update(current.file, {
+    const updated = await this.updateRecord(current.file, {
       archived: true,
       archivedDate: new Date().toISOString(),
     }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-entry-remove' });
@@ -1925,7 +1986,6 @@ export class HealthNativeRecordService {
    * workout child-ID joins with one durable wikilink relationship.
    */
   async normalizeNativeRecordIdentities(): Promise<NativeIdentityNormalizationResult> {
-    const api = this.requireApi();
     const records = [...this.recordsByPath.values()]
       .sort((left, right) => left.file.path.localeCompare(right.file.path));
     let updated = 0;
@@ -1983,7 +2043,7 @@ export class HealthNativeRecordService {
         }
       }
       if (Object.keys(updates).length === 0) continue;
-      const write = (reference: NativeRecordHandle) => api.update(reference.file, updates, {
+      const write = (reference: NativeRecordHandle) => this.updateRecord(reference.file, updates, {
         kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-identity-normalization',
       });
       const result = record.kind === 'workout-session'
@@ -2051,9 +2111,9 @@ export class HealthNativeRecordService {
       }
       const oldPath = target.record.file.path;
       try {
-        const result = await api.rename(target.record.file, target.fileName, {
+        const result = this.canonicalHandle(await api.rename(target.record.file, target.fileName, {
           kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-readable-filenames',
-        });
+        }));
         if (!result) {
           failed += 1;
           continue;
@@ -2113,7 +2173,7 @@ export class HealthNativeRecordService {
     let failed = 0;
     const exerciseGroups = collected.records.filter((candidate) => candidate.kind === 'workout-exercise');
     for (const candidate of collected.records.filter((record) => record.kind !== 'workout-exercise')) {
-      const existing = this.findRecordById(candidate.id) || await api.resolve(candidate.id);
+      const existing = this.findRecordById(candidate.id) || await this.resolveRecord(candidate.id);
       if (existing) {
         skipped += 1;
         continue;
@@ -2145,7 +2205,7 @@ export class HealthNativeRecordService {
             }),
           })
           : minimalProperties;
-        const record = await api.create(candidate.kind, persistedProperties, {
+        const record = await this.createRecord(candidate.kind, persistedProperties, {
           id: candidate.id,
           fileName: Number(api.version) >= 3
             ? buildNativeHealthRecordFileName(candidate.kind, candidate.kind === 'workout-session'
@@ -2157,7 +2217,7 @@ export class HealthNativeRecordService {
         if (importedWorkoutExercises) {
           await this.serializeWorkoutSessionMutation(record, 'health-legacy-import', async (session) => {
             const content = await this.plugin.app.vault.read(session.file);
-            const markerState = workoutStorageStateFromContent(content);
+            const markerState = workoutStorageStateFromContent(content, this.plugin.settings);
             const updated = await this.updateWorkoutSessionData(
               session,
               importedWorkoutExercises!,
@@ -2411,7 +2471,7 @@ export class HealthNativeRecordService {
         resolver,
       ),
       legacyChildren,
-      markerState: workoutStorageStateFromContent(content),
+      markerState: workoutStorageStateFromContent(content, this.plugin.settings),
     };
   }
 
@@ -2530,8 +2590,7 @@ export class HealthNativeRecordService {
     if (typeof vault?.getMarkdownFiles !== 'function') return;
     for (const file of vault.getMarkdownFiles()) {
       this.indexFile(file);
-      const frontmatter = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
-      if (String(frontmatter?.kind || '') === 'workout-session') void this.refreshFile(file);
+      if (this.recordsByPath.get(file.path)?.kind === 'workout-session') void this.refreshFile(file);
     }
   }
 
@@ -2543,10 +2602,10 @@ export class HealthNativeRecordService {
     const inspected = api?.version === 6 && typeof api.inspect === 'function' && api.isEnabled?.() === true
       ? api.inspect(resolved)
       : null;
-    const kind = String(inspected?.kind || '') as NativeHealthKind;
+    const kind = canonicalNativeKind(this.plugin.settings, inspected?.kind);
     const recordId = String(inspected?.id || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion);
-    if (!recordId || schemaVersion !== 1 || !HEALTH_KINDS.has(kind)) {
+    if (!recordId || schemaVersion !== 1 || !kind || !HEALTH_KINDS.has(kind)) {
       if (resolved && this.entryPathsByFoodPath.has(file.path)) {
         this.foodDefinitionsByPath.set(file.path, { ...resolved });
         this.refreshLinkedFoodEntries(file.path);
@@ -2554,7 +2613,10 @@ export class HealthNativeRecordService {
       if (previous) this.emitChange(file.path, previous, null);
       return;
     }
-    const rawFrontmatter = { ...(inspected?.frontmatter || resolved) };
+    const rawFrontmatter = decodeNativeRecordFrontmatter(
+      this.plugin.settings,
+      { ...(inspected?.frontmatter || resolved) },
+    );
     const projected = kind === 'food-entry'
       ? this.projectFoodEntry(rawFrontmatter, file.path)
       : null;
@@ -2725,7 +2787,7 @@ export class HealthNativeRecordService {
     try {
       const indexed = this.recordsByPath.get(path);
       if (!indexed || indexed.kind !== 'food-entry') return;
-      const current = await this.requireApi().resolve(indexed.file);
+      const current = await this.resolveRecord(indexed.file);
       if (this.foodProjectionGenerations.get(path) !== generation) return;
       if (!current || current.kind !== 'food-entry') return;
       const projected = this.projectFoodEntry(current.frontmatter, current.path);
@@ -2734,7 +2796,7 @@ export class HealthNativeRecordService {
         ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
         ...foodNutritionStorageValues(projected.frontmatter, true),
       };
-      const updated = await this.requireApi().update(current.file, updates, {
+      const updated = await this.updateRecord(current.file, updates, {
         kind: 'automation',
         sourcePluginId: this.plugin.manifest.id,
         surface: 'health-food-projection',

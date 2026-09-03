@@ -37,16 +37,17 @@ test("Health settings expose five shallow routed destinations", () => {
   assert.doesNotMatch(summarySource, /this\.plugin\.settings/);
 });
 
-test("Health settings keep only the three intentional optional disclosures", () => {
+test("Health settings keep only the four intentional optional disclosures", () => {
   const disclosureIds = [...settingsSource.matchAll(
     /this\.createOptionalDisclosure\(\s*page,\s*"([^"]+)"/g,
   )].map((match) => match[1]);
-  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "provider-credentials"]);
+  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter", "provider-credentials"]);
   assert.equal((settingsSource.match(/createEl\("details"/g) || []).length, 1);
   assert.doesNotMatch(settingsSource, /createCollapsibleSection|tps-collapsible-section/);
   assert.match(settingsSource, /"Custom goal JSON"/);
   assert.match(settingsSource, /"Templates"/);
   assert.match(settingsSource, /"Provider credentials"/);
+  assert.match(settingsSource, /"Health record frontmatter"/);
 });
 
 test("Every active user preference remains bound and exerciseTag is editable", () => {
@@ -80,6 +81,10 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "foodFrontmatterFoodValue",
     "foodFrontmatterRecipeValue",
     "foodFrontmatterMealValue",
+    "nativeRecordKinds",
+    "nativeRecordProperties",
+    "nativeRecordKindAliases",
+    "nativeRecordPropertyAliases",
     "workoutIdentificationMode",
     "workoutTag",
     "exerciseTag",
@@ -110,6 +115,11 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /addIdentifierValue\("Food value"/);
   assert.match(settingsSource, /addIdentifierValue\("Recipe value"/);
   assert.match(settingsSource, /addIdentifierValue\("Meal value"/);
+  assert.match(settingsSource, /"Food entry kind value"/);
+  assert.match(settingsSource, /"Activity entry kind value"/);
+  assert.match(settingsSource, /renderNativeFrontmatterSettings/);
+  assert.match(settingsSource, /addNativePropertyKeySetting/);
+  assert.match(settingsSource, /setButtonText\("Open GCM settings"\)/);
   assert.match(settingsSource, /foodIdentificationMode === "metadata" \|\| this\.plugin\.settings\.foodIdentificationMode === "metadata-folder-tag"/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(dailyNoteFormat|dailyNoteFolder)/);
   assert.match(settingsSource, /\.setName\("Daily Notes source"\)/);

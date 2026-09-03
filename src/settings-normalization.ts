@@ -1,6 +1,14 @@
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 import { normalizeVaultDestinationFolder } from "./vault-destination";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
+import {
+  DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
+  DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES,
+  HEALTH_NATIVE_RECORD_KIND_KEYS,
+  HEALTH_NATIVE_RECORD_PROPERTY_KEYS,
+  isValidFrontmatterPropertyKey,
+  isValidNativeRecordKindValue,
+} from "./native-record-schema";
 
 export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
 
@@ -47,6 +55,10 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.foodFrontmatterFoodValue = stringSetting(settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue);
   settings.foodFrontmatterRecipeValue = stringSetting(settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue);
   settings.foodFrontmatterMealValue = stringSetting(settings.foodFrontmatterMealValue, DEFAULT_SETTINGS.foodFrontmatterMealValue);
+  settings.nativeRecordKinds = normalizedNativeRecordKinds(settings.nativeRecordKinds);
+  settings.nativeRecordProperties = normalizedNativeRecordProperties(settings.nativeRecordProperties);
+  settings.nativeRecordKindAliases = normalizedNativeAliases(settings.nativeRecordKindAliases, isValidNativeRecordKindValue);
+  settings.nativeRecordPropertyAliases = normalizedNativeAliases(settings.nativeRecordPropertyAliases, isValidFrontmatterPropertyKey);
   settings.workoutStartPropertyKey = isValidWorkoutPropertyKey(settings.workoutStartPropertyKey)
     ? String(settings.workoutStartPropertyKey).trim()
     : DEFAULT_SETTINGS.workoutStartPropertyKey;
@@ -116,6 +128,41 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
     preserved[key] = cloneSettingValue(value);
   }
   return preserved as unknown as TPSHealthSettings;
+}
+
+function normalizedNativeRecordKinds(value: unknown): TPSHealthSettings["nativeRecordKinds"] {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as SettingsRecord : {};
+  return Object.fromEntries(HEALTH_NATIVE_RECORD_KIND_KEYS.map((key) => {
+    const candidate = String(input[key] || "").trim();
+    return [key, isValidNativeRecordKindValue(candidate) ? candidate : DEFAULT_HEALTH_NATIVE_RECORD_KINDS[key]];
+  })) as TPSHealthSettings["nativeRecordKinds"];
+}
+
+function normalizedNativeRecordProperties(value: unknown): TPSHealthSettings["nativeRecordProperties"] {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as SettingsRecord : {};
+  const used = new Set<string>();
+  return Object.fromEntries(HEALTH_NATIVE_RECORD_PROPERTY_KEYS.map((key) => {
+    const candidate = String(input[key] || "").trim();
+    const fallback = DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key];
+    const normalized = isValidFrontmatterPropertyKey(candidate) && !used.has(candidate.toLocaleLowerCase())
+      ? candidate
+      : fallback;
+    used.add(normalized.toLocaleLowerCase());
+    return [key, normalized];
+  })) as TPSHealthSettings["nativeRecordProperties"];
+}
+
+function normalizedNativeAliases<T extends string>(
+  value: unknown,
+  isValid: (candidate: unknown) => boolean,
+): Partial<Record<T, string[]>> {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as SettingsRecord : {};
+  return Object.fromEntries(Object.entries(input).flatMap(([key, aliases]) => {
+    const normalized = Array.isArray(aliases)
+      ? [...new Set(aliases.map((entry) => String(entry || "").trim()).filter((entry) => isValid(entry)))].slice(0, 12)
+      : [];
+    return normalized.length ? [[key, normalized]] : [];
+  })) as Partial<Record<T, string[]>>;
 }
 
 export function healthSettingsVersion(value: unknown): number {

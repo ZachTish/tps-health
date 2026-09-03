@@ -19,7 +19,14 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 6;
+export const TPS_HEALTH_SCHEMA_VERSION = 7;
+
+export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workoutSession" | "workoutExercise";
+export type HealthNativeRecordPropertyKey =
+  | "completedDate" | "food" | "quantity" | "unit"
+  | "calories" | "proteinG" | "carbsG" | "fatG" | "fiberG" | "sugarG" | "sugarAlcoholG" | "alcoholG" | "sodiumMg"
+  | "note" | "activityType" | "startedAt" | "durationMinutes" | "distance" | "distanceUnit" | "steps"
+  | "caloriesBurned" | "source" | "device" | "status" | "workoutPlan" | "session" | "archived" | "archivedDate";
 
 export interface HealthGoal {
   propertyKey: string;
@@ -62,6 +69,10 @@ export interface TPSHealthSettings {
   foodFrontmatterFoodValue: string;
   foodFrontmatterRecipeValue: string;
   foodFrontmatterMealValue: string;
+  nativeRecordKinds: Record<HealthNativeRecordKindKey, string>;
+  nativeRecordProperties: Record<HealthNativeRecordPropertyKey, string>;
+  nativeRecordKindAliases: Partial<Record<HealthNativeRecordKindKey, string[]>>;
+  nativeRecordPropertyAliases: Partial<Record<HealthNativeRecordPropertyKey, string[]>>;
   workoutTag: string;
   exerciseTag: string;
   customFoodTag: string;
@@ -300,6 +311,44 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   foodFrontmatterFoodValue: "food",
   foodFrontmatterRecipeValue: "recipe",
   foodFrontmatterMealValue: "meal",
+  nativeRecordKinds: {
+    foodEntry: "food-entry",
+    activityEntry: "activity-entry",
+    workoutSession: "workout-session",
+    workoutExercise: "workout-exercise",
+  },
+  nativeRecordProperties: {
+    completedDate: "completedDate",
+    food: "food",
+    quantity: "quantity",
+    unit: "unit",
+    calories: "calories",
+    proteinG: "proteinG",
+    carbsG: "carbsG",
+    fatG: "fatG",
+    fiberG: "fiberG",
+    sugarG: "sugarG",
+    sugarAlcoholG: "sugarAlcoholG",
+    alcoholG: "alcoholG",
+    sodiumMg: "sodiumMg",
+    note: "note",
+    activityType: "activityType",
+    startedAt: "startedAt",
+    durationMinutes: "durationMinutes",
+    distance: "distance",
+    distanceUnit: "distanceUnit",
+    steps: "steps",
+    caloriesBurned: "caloriesBurned",
+    source: "source",
+    device: "device",
+    status: "status",
+    workoutPlan: "workoutPlan",
+    session: "session",
+    archived: "archived",
+    archivedDate: "archivedDate",
+  },
+  nativeRecordKindAliases: {},
+  nativeRecordPropertyAliases: {},
   workoutTag: "#tps/workout",
   exerciseTag: "#tps/exercise",
   customFoodTag: "#tps/food",

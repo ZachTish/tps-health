@@ -5,6 +5,8 @@ import type {
 } from "./api";
 import type { HealthGoal, TPSHealthSettings } from "./types";
 import { workoutIntervalMode, workoutIntervalPropertyKey, workoutStartPropertyKey } from "./workout-properties";
+import { configuredNativePropertyKey, readableNativeKinds } from "./native-record-schema";
+import type { CanonicalHealthNativeKind } from "./native-record-schema";
 
 const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
   { id: "brand", key: "brand", label: "Brand", type: "text", icon: "badge" },
@@ -75,15 +77,32 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
 
 function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCatalogEntry[] {
   const intervalMode = workoutIntervalMode(settings);
+  const configurableKinds = new Set<CanonicalHealthNativeKind>([
+    'food-entry', 'activity-entry', 'workout-session', 'workout-exercise',
+  ]);
+  const configuredKinds = (kinds: string[]): string[] => kinds.flatMap((kind) => (
+    configurableKinds.has(kind as CanonicalHealthNativeKind)
+      ? readableNativeKinds(settings, kind as CanonicalHealthNativeKind)
+      : [kind]
+  ));
   return [
-    ...NATIVE_RECORD_PROPERTIES,
-    scoped('workout-start', workoutStartPropertyKey(settings), 'Workout start', 'datetime', ['workout-session'], { icon: 'calendar-clock' }),
+    ...NATIVE_RECORD_PROPERTIES.map((property) => ({
+      ...property,
+      key: Object.prototype.hasOwnProperty.call(settings.nativeRecordProperties, property.key)
+        ? configuredNativePropertyKey(settings, property.key as keyof TPSHealthSettings['nativeRecordProperties'])
+        : property.key,
+      scope: {
+        ...property.scope,
+        kinds: configuredKinds(property.scope.kinds || []),
+      },
+    })),
+    scoped('workout-start', workoutStartPropertyKey(settings), 'Workout start', 'datetime', configuredKinds(['workout-session']), { icon: 'calendar-clock' }),
     scoped(
       'workout-interval',
       workoutIntervalPropertyKey(settings),
       intervalMode === 'end' ? 'Workout end' : 'Workout duration',
       intervalMode === 'end' ? 'datetime' : 'number',
-      ['workout-session'],
+      configuredKinds(['workout-session']),
       { icon: intervalMode === 'end' ? 'square' : 'timer' },
     ),
   ];

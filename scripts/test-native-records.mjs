@@ -107,6 +107,7 @@ function createHarness(options = {}) {
   const legacyFileNames = options.legacyFileNames === true;
   const api = {
     version: options.apiVersion ?? 6,
+    capabilities: options.customKinds === true ? { customKinds: true } : undefined,
     isEnabled: () => options.apiEnabled !== false,
     async create(kind, properties, options = {}) {
       const id = String(options.id || `${kind}-${++generated}`);
@@ -630,6 +631,59 @@ test('native Health indexing follows GCM API v6 legacy tag inspection without ph
   assert.equal(indexed?.id, 'food-tagged');
   assert.equal(indexed?.kind, 'food-entry');
   assert.equal(indexed?.frontmatter.calories, 325);
+});
+
+test('custom Health kind values and property keys write once and decode to the canonical runtime model', async () => {
+  const settings = {
+    nativeRecordKinds: {
+      foodEntry: 'nutrition-log',
+      activityEntry: 'movement-log',
+      workoutSession: 'training-session',
+      workoutExercise: 'training-exercise',
+    },
+    nativeRecordKindAliases: {},
+    nativeRecordProperties: {
+      completedDate: 'loggedAt',
+      food: 'foodRef',
+      quantity: 'consumedQuantity',
+      unit: 'consumedUnit',
+      calories: 'energyKcal',
+      proteinG: 'protein',
+    },
+    nativeRecordPropertyAliases: {},
+  };
+  const { service, createCalls } = createHarness({ settings, customKinds: true });
+  const created = await service.createFoodEntry({
+    id: 'custom-food-1',
+    createdDate: '2026-09-03T12:00:00.000Z',
+    completedDate: '2026-09-03T12:05:00.000Z',
+    item: { id: 'sandwich', name: 'Sandwich', source: 'manual' },
+    quantity: 1,
+    unit: 'serving',
+    nutritionOverride: { calories: 410, proteinG: 24, carbsG: 38, fatG: 18 },
+  });
+  assert.equal(createCalls[0].kind, 'nutrition-log');
+  assert.equal(createCalls[0].properties.loggedAt, '2026-09-03T12:05:00.000Z');
+  assert.equal(createCalls[0].properties.energyKcal, 410);
+  assert.equal(createCalls[0].properties.protein, 24);
+  assert.equal(Object.hasOwn(createCalls[0].properties, 'completedDate'), false);
+  assert.equal(Object.hasOwn(createCalls[0].properties, 'calories'), false);
+  assert.equal(created.kind, 'food-entry');
+  assert.equal(created.frontmatter.completedDate, '2026-09-03T12:05:00.000Z');
+  assert.equal(created.frontmatter.calories, 410);
+  assert.deepEqual(service.getDailyFoodTotals('2026-09-03'), {
+    entryCount: 1,
+    calories: 410,
+    proteinG: 24,
+    carbsG: 38,
+    fatG: 18,
+    fiberG: 0,
+    sugarG: 0,
+    sugarAlcoholG: 0,
+    sugarAlcoholCaloriesPerG: 0,
+    alcoholG: 0,
+    sodiumMg: 0,
+  });
 });
 
 test('native food and activity records keep typed quantities and indexed daily macro totals', async () => {
@@ -1497,6 +1551,10 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /this\.ensureNativeWorkoutReadingSurfaces\(\);/u);
   assert.match(mainSource, /view\.getMode\(\) !== "preview"/u);
   assert.match(mainSource, /\.markdown-preview-view \.markdown-preview-sizer/u);
+  assert.match(mainSource, /nativeWorkoutReadingMountTarget\(target, root\)/u);
+  assert.match(mainSource, /renderedRoot\?\.closest<HTMLElement>\("\.markdown-preview-section"\)/u);
+  assert.match(mainSource, /previewSizer\.children/u);
+  assert.doesNotMatch(mainSource, /target\.appendChild\(surface\)/u, 'Reading surfaces must stay inside an Obsidian-managed preview section so scroll virtualization cannot delete them');
   assert.match(mainSource, /getWorkoutSnapshot\(file\.path\)/u);
   assert.match(mainSource, /getWorkoutSnapshot\(active\.path\)\?\.exercises/u);
   assert.match(mainSource, /updateNativeWorkoutSetInline\(exercise\.path, set\.id, patch\)/u);
