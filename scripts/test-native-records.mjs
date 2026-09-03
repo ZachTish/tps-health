@@ -1542,6 +1542,12 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(stylesSource, /\.tps-health-native-workout-exercise\.is-superset/u);
   assert.match(stylesSource, /\.tps-health-native-workout-row\.is-drop-set/u);
   assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 470px\)[\s\S]*?\.tps-health-native-workout-row \{[\s\S]*?min-width: 0;/u, 'narrow workout rows keep completion and the set menu on screen');
+  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 470px\)[\s\S]*?grid-template-columns: 20px minmax\(36px, \.55fr\) minmax\(82px, 1\.25fr\) minmax\(42px, \.72fr\) minmax\(72px, \.9fr\)/u, 'phone rows fit their five visible columns without horizontal clipping');
+  assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle::before \{[\s\S]*?content: "○"/u, 'phone completion remains a clear compact toggle');
+  assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle\[aria-pressed="true"\]::before \{[\s\S]*?content: "✓"/u);
+  assert.match(stylesSource, /\.tps-health-native-workout-per-arm > span \{[\s\S]*?display: none/u, 'the redundant per-arm text does not force the weight cell wider than the phone');
+  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 360px\)[\s\S]*?grid-template-columns: 18px minmax\(32px, \.55fr\) minmax\(74px, 1\.2fr\) minmax\(38px, \.68fr\) minmax\(70px, \.86fr\)/u, 'the smallest supported phone width retains every visible control');
+  assert.match(mainSource, /nativeRecordService\?\.isEnabled\(\) && this\.nativeRecordService\.getWorkoutSnapshot\(view\.file\.path\)[\s\S]*?mobile:native-surface-owns-actions[\s\S]*?return null/u, 'the native surface is the single owner of mobile workout actions');
   assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle/u);
   assert.match(mainSource, /\.setTitle\("Add drop set"\)[\s\S]*?addNativeWorkoutDropSet\(snapshot, exercise, set\)/u);
   assert.match(mainSource, /const linkedSetIds = set\.dropSetGroupId[\s\S]*?candidate\.dropSetGroupId === set\.dropSetGroupId/u, 'direct add extends an existing drop chain');

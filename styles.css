@@ -2324,9 +2324,10 @@ body.is-phone .tps-health-selection-controls {
   }
 
   .tps-health-native-workout-row {
-    gap: 5px;
-    grid-template-columns: 24px minmax(38px, 0.55fr) minmax(96px, 1.25fr) minmax(50px, 0.7fr) minmax(100px, 1fr);
+    gap: 3px;
+    grid-template-columns: 20px minmax(36px, .55fr) minmax(82px, 1.25fr) minmax(42px, .72fr) minmax(72px, .9fr);
     min-width: 0;
+    padding-inline: 0;
   }
 
   .tps-health-native-workout-row > :nth-child(4),
@@ -2335,12 +2336,52 @@ body.is-phone .tps-health-selection-controls {
   }
 
   .tps-health-native-workout-weight-cell {
-    grid-template-columns: minmax(40px, 1fr) 38px auto;
+    gap: 2px;
+    grid-template-columns: minmax(34px, 1fr) 32px 18px;
+  }
+
+  .tps-health-native-workout-per-arm {
+    gap: 0;
+    justify-content: center;
+  }
+
+  .tps-health-native-workout-per-arm > span {
+    display: none;
   }
 
   .tps-health-native-workout-input,
   .tps-health-native-workout-select {
     padding-inline: 3px;
+  }
+
+  .tps-health-native-workout-row-actions {
+    gap: 2px;
+  }
+
+  .tps-health-native-workout-button.is-complete-toggle {
+    flex: 0 0 34px;
+    font-size: 0;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+    width: 34px;
+  }
+
+  .tps-health-native-workout-button.is-complete-toggle::before {
+    content: "○";
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .tps-health-native-workout-button.is-complete-toggle[aria-pressed="true"]::before {
+    content: "✓";
+  }
+
+  .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+    width: 34px;
   }
 }
 
@@ -2350,6 +2391,35 @@ body.is-phone .tps-health-selection-controls {
   .tps-health-native-workout-button.is-complete-toggle {
     min-height: 44px;
     min-width: 44px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  @container tps-health-native-workout (max-width: 470px) {
+    .tps-health-native-workout-button.is-complete-toggle,
+    .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
+      min-height: 38px;
+      min-width: 36px;
+      width: 36px;
+    }
+  }
+}
+
+@container tps-health-native-workout (max-width: 360px) {
+  .tps-health-native-workout-row {
+    gap: 2px;
+    grid-template-columns: 18px minmax(32px, .55fr) minmax(74px, 1.2fr) minmax(38px, .68fr) minmax(70px, .86fr);
+  }
+
+  .tps-health-native-workout-weight-cell {
+    gap: 1px;
+    grid-template-columns: minmax(28px, 1fr) 28px 16px;
+  }
+
+  .tps-health-native-workout-input,
+  .tps-health-native-workout-select {
+    font-size: var(--font-ui-smaller);
+    padding-inline: 1px;
   }
 }
 

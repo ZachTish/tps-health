@@ -7990,6 +7990,13 @@ export default class TPSHealthPlugin extends Plugin {
   private resolveMobileWorkoutActionBarTarget(): { view: MarkdownView; file: TFile; source: "active-view" } | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view?.file instanceof TFile && isWorkoutLikeMarkdownFile(this, view.file, this.app.metadataCache.getFileCache(view.file))) {
+      // Native workout notes already render their complete action surface in
+      // both Reading mode and Live Preview. A second body-level action bar
+      // repeats Add exercise / Finish and obscures the last set rows on phones.
+      if (this.nativeRecordService?.isEnabled() && this.nativeRecordService.getWorkoutSnapshot(view.file.path)) {
+        logger.flow("WorkoutActionBar", "mobile:native-surface-owns-actions", { path: view.file.path });
+        return null;
+      }
       return { view, file: view.file, source: "active-view" };
     }
     return null;
