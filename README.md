@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.37.1
+
+- Describe now recognizes written fractions such as `a half of` before estimating portions. The reported breakfast example becomes two stable tray rows—one egg-and-cheese bowl and one half egg-and-bacon bagel sandwich—instead of allowing the half sandwich to be treated as a whole generic egg serving.
+- Composed dishes use form-aware portion weights, so an egg bowl is not sized as one loose egg and an egg-containing sandwich is not sized from the egg token before the sandwich itself.
+- AI review, repair, and last-resort estimate prompts explicitly preserve fractions and account for every named dish component. A conservative semantic audit rejects an internally consistent calorie total that is too small to contain named egg, cheese, bacon, or bagel components, then retries that individual row.
+- Saved-food and provider fallbacks must cover all meaningful component tokens for a composed dish. A generic egg result can no longer replace an egg-and-cheese bowl or egg-and-bacon bagel sandwich merely because one word matched.
+- Durable Describe stage versions advance so an unfinished phone workflow cannot reuse an older low-quality cached review after installing this patch. Existing food notes, completed logs, pending trays, settings, and native-record schemas require no migration; minimum supported Obsidian remains 1.12.0.
+
 ## 0.37.0
 
 - Native workout surfaces in Reading mode now mount inside Obsidian-managed preview sections instead of directly under the virtualized preview sizer. Scrolling can detach and recreate preview sections without orphaning or deleting the workout UI; the existing one-surface dedupe still applies in every pane.

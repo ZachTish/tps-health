@@ -3147,6 +3147,107 @@ test("AI Describe recovers a Honeycrisp apple omitted by cloud review before com
   assert.equal(plugin.settings.pendingFoodLogDraft?.selectionItems?.[1]?.item?.nutrition?.calories, 126);
 });
 
+test("AI Describe separates a breakfast bowl from a half bagel sandwich and repairs component-omitting estimates", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe composed breakfast vault";
+  const requests = [];
+  const lowEstimate = (food) => ({
+    ...food,
+    confidence: 0.84,
+    calories: 60,
+    proteinG: 5,
+    carbsG: 4,
+    fatG: 2.7,
+    fiberG: 0,
+    sugarG: 1,
+    sugarAlcoholG: 0,
+    alcoholG: 0,
+    sodiumMg: 150,
+  });
+  fake.app.tpsAiGateway = {
+    completeStructured: async (request) => {
+      requests.push(request);
+      const payload = JSON.parse(request.messages[1].content);
+      if (request.taskId === "health.describe-food.review") {
+        assert.equal(payload.extraction.foods.length, 2);
+        assert.deepEqual(payload.extraction.foods.map((food) => food.quantity), [1, 0.5]);
+        return {
+          data: { mealName: "Breakfast", foods: payload.extraction.foods.map(lowEstimate) },
+          provider: "gemini", model: "test", traceId: "review", attempts: 1,
+        };
+      }
+      if (request.taskId === "health.describe-food.repair") {
+        assert.ok(payload.issues.includes("named-components-underestimated"));
+        return {
+          data: lowEstimate(payload.extracted),
+          provider: "gemini", model: "test", traceId: `repair-${payload.extracted.itemId}`, attempts: 1,
+        };
+      }
+      assert.equal(request.taskId, "health.describe-food.estimate");
+      const isBowl = payload.extracted.itemId === "item-1";
+      return {
+        data: {
+          ...payload.extracted,
+          confidence: 0.62,
+          calories: isBowl ? 250 : 270,
+          proteinG: isBowl ? 18 : 14,
+          carbsG: isBowl ? 5 : 27,
+          fatG: isBowl ? 17 : 12,
+          fiberG: isBowl ? 0 : 1.5,
+          sugarG: isBowl ? 2 : 4,
+          sugarAlcoholG: 0,
+          alcoholG: 0,
+          sodiumMg: isBowl ? 480 : 620,
+        },
+        provider: "gemini", model: "test", traceId: `estimate-${payload.extracted.itemId}`, attempts: 1,
+      };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  plugin.getLoggedFoodStats = async () => new Map();
+  plugin.searchLocalFoods = async () => [{
+    id: "generic-egg",
+    name: "Egg, whole, cooked",
+    aliases: ["egg"],
+    servingAmount: 1,
+    servingUnit: "egg",
+    servingGrams: 50,
+    source: "custom-note",
+    nutrition: { calories: 78, proteinG: 6.3, carbsG: 0.6, fatG: 5.3, sodiumMg: 62 },
+  }];
+
+  await plugin.openFoodDescriberWithAi(
+    "an egg and cheese bowl and a half of an egg and bacon bagel sandwich",
+    null,
+    undefined,
+    { version: 2, id: "describe-composed-breakfast", description: "an egg and cheese bowl and a half of an egg and bacon bagel sandwich", createdAt: new Date().toISOString(), dateContext: null },
+  );
+
+  assert.deepEqual(requests.map((request) => request.taskId), [
+    "health.describe-food.review",
+    "health.describe-food.repair",
+    "health.describe-food.estimate",
+    "health.describe-food.repair",
+    "health.describe-food.estimate",
+  ]);
+  const selections = plugin.settings.pendingFoodLogDraft?.selectionItems || [];
+  assert.equal(selections.length, 2);
+  assert.deepEqual(selections.map((selection) => selection.quantity), [1, 0.5]);
+  assert.deepEqual(selections.map((selection) => selection.item.name), ["egg and cheese bowl", "egg and bacon bagel sandwich"]);
+  assert.deepEqual(selections.map((selection) => selection.item.nutrition?.calories), [250, 270]);
+  assert.equal(selections.reduce((sum, selection) => sum + (selection.item.nutrition?.calories || 0), 0), 520);
+});
+
 test("AI Describe replaces an empty result with a final Gemini estimate after database matching misses", async () => {
   installDeterministicBrowserGlobals();
   const storage = new Map();

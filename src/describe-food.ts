@@ -147,7 +147,22 @@ export function describeFoodPlanFromReview(extraction: DescribeFoodExtraction, r
   };
 }
 
-export function describeFoodEstimateIssues(food: DescribePlannedFood): string[] {
+function conservativeNamedComponentCalories(label: string, quantity: number): number {
+  const normalized = label.trim().toLowerCase();
+  const perUnit = (
+    (/\bbagels?\b/.test(normalized) ? 170 : 0)
+    + (/\beggs?\b/.test(normalized) ? 60 : 0)
+    + (/\bcheese\b/.test(normalized) ? 50 : 0)
+    + (/\bbacon\b/.test(normalized) ? 30 : 0)
+  );
+  if (!perUnit) return 0;
+  return perUnit * Math.max(0.01, Number(quantity) || 1);
+}
+
+export function describeFoodEstimateIssues(
+  food: DescribePlannedFood,
+  expected?: Pick<DescribeExtractedFood, "label" | "quantity">,
+): string[] {
   const issues: string[] = [];
   if (food.confidence < 0.55) issues.push("low-confidence");
   const nutrition = food.estimatedNutritionForAmount;
@@ -175,6 +190,11 @@ export function describeFoodEstimateIssues(food: DescribePlannedFood): string[] 
   const macroMass = nutrition.proteinG + nutrition.carbsG + nutrition.fatG + nutrition.alcoholG;
   if (food.estimatedWeightG > 0 && macroMass > food.estimatedWeightG * 1.2) issues.push("macro-mass-high");
   if (food.estimatedWeightG > 0 && nutrition.calories / food.estimatedWeightG * 100 > 950) issues.push("calorie-density-impossible");
+  const expectedCaloriesFloor = conservativeNamedComponentCalories(
+    expected?.label || food.label,
+    expected?.quantity ?? food.quantity,
+  );
+  if (expectedCaloriesFloor && nutrition.calories + 5 < expectedCaloriesFloor) issues.push("named-components-underestimated");
   return issues;
 }
 
@@ -309,8 +329,15 @@ export function parseFoodDescription(value: string): DescribedFoodPart[] {
   return splitTopLevelFoodParts(cleaned)
     .map((original) => {
       const amountMatch = original.match(/^(\d+(?:\.\d+)?|\d+\/\d+)\s+(.+)$/);
-      const amount = amountMatch ? numberFromToken(amountMatch[1]) : 1;
-      const remainder = (amountMatch?.[2] || original).trim();
+      const fractionMatch = !amountMatch
+        ? original.match(/^(?:a\s+)?(half|quarter|third)(?:\s+of)?\s+(.+)$/i)
+        : null;
+      const amount = amountMatch
+        ? numberFromToken(amountMatch[1])
+        : fractionMatch
+          ? ({ half: 0.5, quarter: 0.25, third: 1 / 3 } as const)[fractionMatch[1].toLowerCase() as "half" | "quarter" | "third"]
+          : 1;
+      const remainder = (amountMatch?.[2] || fractionMatch?.[2] || original).trim();
       const unitMatch = remainder.match(/^([a-zA-Z]+)\s+(?:of\s+)?(.+)$/);
       const candidateUnit = String(unitMatch?.[1] || "").toLowerCase();
       const unit = UNIT_ALIASES[candidateUnit];
@@ -340,9 +367,15 @@ export function localDescribeFoodEstimate(food: DescribeExtractedFood): Describe
   } else if (/\bapples?\b/.test(normalized)) {
     per100 = { calories: 52, proteinG: 0.3, carbsG: 13.8, fatG: 0.2, fiberG: 2.4, sugarG: 10.4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 1 };
     confidence = 0.58;
+  } else if (/\bbagels?\b/.test(normalized) && /\b(?:sandwich|egg|bacon|cheese)\b/.test(normalized)) {
+    per100 = { calories: 270, proteinG: 14, carbsG: 29, fatG: 11, fiberG: 1.5, sugarG: 4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 650 };
+    confidence = 0.42;
   } else if (/\b(?:sandwich|burger|wrap|burrito)\b/.test(normalized)) {
     per100 = { calories: 220, proteinG: 13, carbsG: 24, fatG: 8, fiberG: 1.5, sugarG: 3, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 700 };
     confidence = 0.38;
+  } else if (/\bbowl\b/.test(normalized) && /\beggs?\b/.test(normalized)) {
+    per100 = { calories: 170, proteinG: 12, carbsG: 4, fatG: 12, fiberG: 0.3, sugarG: 1.5, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 350 };
+    confidence = 0.4;
   } else if (/\byogurts?\b/.test(normalized)) {
     per100 = { calories: 80, proteinG: 6, carbsG: 9, fatG: 2.2, fiberG: 0, sugarG: 7, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 60 };
     confidence = 0.42;

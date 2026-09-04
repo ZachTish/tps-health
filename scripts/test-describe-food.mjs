@@ -31,6 +31,13 @@ test("Describe food keeps four yogurts and a large Honeycrisp apple as two expli
   ]);
 });
 
+test("Describe separates composed breakfast foods and preserves an explicit half portion", () => {
+  assert.deepEqual(parseFoodDescription("an egg and cheese bowl and a half of an egg and bacon bagel sandwich"), [
+    { original: "an egg and cheese bowl", query: "egg and cheese bowl", quantity: 1 },
+    { original: "a half of an egg and bacon bagel sandwich", query: "egg and bacon bagel sandwich", quantity: 0.5 },
+  ]);
+});
+
 test("Describe keeps measured ingredients inside one named sandwich row", () => {
   assert.deepEqual(parseFoodDescription("diet coke, honeycrisp apple, and a ham sandwich with 56g ham and 1 slice velveeta cheese"), [
     { original: "diet coke", query: "diet coke", quantity: 1 },
@@ -148,6 +155,30 @@ test("Describe audit retries empty nutrition unless the food is credibly zero nu
   assert.deepEqual(describeFoodEstimateIssues({ ...emptyEstimate, label: "vanilla ice cream", confidence: 0.95 }), ["nutrition-empty"]);
 });
 
+test("Describe audit rejects estimates that omit calories from named dish components", () => {
+  const bowl = {
+    itemId: "item-1",
+    label: "egg and cheese bowl",
+    quantity: 1,
+    unit: "bowl",
+    estimatedWeightG: 150,
+    confidence: 0.8,
+    estimatedNutritionForAmount: { calories: 60, proteinG: 5, carbsG: 1, fatG: 4, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 100 },
+  };
+  assert.deepEqual(describeFoodEstimateIssues(bowl, { label: bowl.label, quantity: 1 }), ["named-components-underestimated"]);
+  const halfSandwich = {
+    ...bowl,
+    itemId: "item-2",
+    label: "egg and bacon bagel sandwich",
+    quantity: 0.5,
+    estimatedWeightG: 100,
+    estimatedNutritionForAmount: { calories: 60, proteinG: 4, carbsG: 6, fatG: 2, fiberG: 0.5, sugarG: 1, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 180 },
+  };
+  assert.deepEqual(describeFoodEstimateIssues(halfSandwich, { label: halfSandwich.label, quantity: 0.5 }), ["named-components-underestimated"]);
+  assert.ok(localDescribeFoodEstimate(bowl).estimatedNutritionForAmount.calories >= 200);
+  assert.ok(localDescribeFoodEstimate(halfSandwich).estimatedNutritionForAmount.calories >= 200);
+});
+
 test("Describe delegates its review pipeline to TPS AI Gateway and retains the local parser", () => {
   assert.match(mainSource, /getAiGatewayApi/);
   assert.match(mainSource, /gateway\.completeStructured<T>/);
@@ -198,9 +229,9 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
 
 test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
   assert.doesNotMatch(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v5` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v4-\$\{index \+ 1\}` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v2-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v6` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v5-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v3-\$\{index \+ 1\}` : undefined/);
   assert.match(mainSource, /version: 2 as const/);
   assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);
