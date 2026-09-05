@@ -38,6 +38,12 @@ test("Describe separates composed breakfast foods and preserves an explicit half
   ]);
 });
 
+test("Describe removes portion grammar from a numeric half bagel description", () => {
+  assert.deepEqual(parseFoodDescription("0.5 of a bagel with chive and onion cream cheese"), [
+    { original: "0.5 of a bagel with chive and onion cream cheese", query: "bagel with chive and onion cream cheese", quantity: 0.5 },
+  ]);
+});
+
 test("Describe keeps measured ingredients inside one named sandwich row", () => {
   assert.deepEqual(parseFoodDescription("diet coke, honeycrisp apple, and a ham sandwich with 56g ham and 1 slice velveeta cheese"), [
     { original: "diet coke", query: "diet coke", quantity: 1 },
@@ -177,6 +183,14 @@ test("Describe audit rejects estimates that omit calories from named dish compon
   assert.deepEqual(describeFoodEstimateIssues(halfSandwich, { label: halfSandwich.label, quantity: 0.5 }), ["named-components-underestimated"]);
   assert.ok(localDescribeFoodEstimate(bowl).estimatedNutritionForAmount.calories >= 200);
   assert.ok(localDescribeFoodEstimate(halfSandwich).estimatedNutritionForAmount.calories >= 200);
+  const creamCheeseBagel = localDescribeFoodEstimate({
+    itemId: "item-3",
+    label: "bagel with chive and onion cream cheese",
+    quantity: 0.5,
+    unit: "serving",
+    estimatedWeightG: 62.5,
+  });
+  assert.ok(creamCheeseBagel.estimatedNutritionForAmount.calories >= 180);
 });
 
 test("Describe delegates its review pipeline to TPS AI Gateway and retains the local parser", () => {
@@ -229,9 +243,9 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
 
 test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
   assert.doesNotMatch(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v6` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v5-\$\{index \+ 1\}` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v3-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v7` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v6-\$\{index \+ 1\}` : undefined/);
+  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v4-\$\{index \+ 1\}` : undefined/);
   assert.match(mainSource, /version: 2 as const/);
   assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);

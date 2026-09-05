@@ -150,9 +150,9 @@ export function describeFoodPlanFromReview(extraction: DescribeFoodExtraction, r
 function conservativeNamedComponentCalories(label: string, quantity: number): number {
   const normalized = label.trim().toLowerCase();
   const perUnit = (
-    (/\bbagels?\b/.test(normalized) ? 170 : 0)
+    (/\bbagels?\b/.test(normalized) ? 200 : 0)
     + (/\beggs?\b/.test(normalized) ? 60 : 0)
-    + (/\bcheese\b/.test(normalized) ? 50 : 0)
+    + (/\bcheese\b/.test(normalized) ? 60 : 0)
     + (/\bbacon\b/.test(normalized) ? 30 : 0)
   );
   if (!perUnit) return 0;
@@ -342,6 +342,7 @@ export function parseFoodDescription(value: string): DescribedFoodPart[] {
       const candidateUnit = String(unitMatch?.[1] || "").toLowerCase();
       const unit = UNIT_ALIASES[candidateUnit];
       const query = (unit ? unitMatch?.[2] || remainder : remainder)
+        .replace(/^of\s+/i, "")
         .replace(/^(?:a|an|some)\s+/i, "")
         .trim();
       return { original, query: query || original, quantity: amount, ...(unit ? { unit } : {}) };
@@ -367,6 +368,9 @@ export function localDescribeFoodEstimate(food: DescribeExtractedFood): Describe
   } else if (/\bapples?\b/.test(normalized)) {
     per100 = { calories: 52, proteinG: 0.3, carbsG: 13.8, fatG: 0.2, fiberG: 2.4, sugarG: 10.4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 1 };
     confidence = 0.58;
+  } else if (/\bbagels?\b/.test(normalized) && /\bcream cheese\b/.test(normalized)) {
+    per100 = { calories: 300, proteinG: 9, carbsG: 43, fatG: 10, fiberG: 1.5, sugarG: 6, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 510 };
+    confidence = 0.45;
   } else if (/\bbagels?\b/.test(normalized) && /\b(?:sandwich|egg|bacon|cheese)\b/.test(normalized)) {
     per100 = { calories: 270, proteinG: 14, carbsG: 29, fatG: 11, fiberG: 1.5, sugarG: 4, sugarAlcoholG: 0, alcoholG: 0, sodiumMg: 650 };
     confidence = 0.42;

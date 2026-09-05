@@ -1,5 +1,13 @@
 # TPS Health
 
+## 0.37.2
+
+- Describe now removes portion grammar from numeric phrases such as `0.5 of a bagel`, fixing the malformed `of a bagel…` tray label shown on iPhone.
+- Bagels with cream cheese are sized as a composed base plus spread instead of a generic 50 g food. The bounded offline estimate is about 188 kcal for a normal half bagel with cream cheese, while the tray remains editable for unusually light or heavy portions.
+- An unresolved AI row now searches the configured nutrition providers after exact local/curated matching and before free-form estimation. Composite matching requires broad component coverage, so a provider's generic bagel-with-cream-cheese evidence can help while a one-word egg result still cannot replace a breakfast dish.
+- Describe prompts now explicitly include spreads, sauces, and toppings. Conservative component checks reject a 100 kcal half bagel with cream cheese and retry it rather than accepting a mathematically tidy estimate that omitted the spread.
+- Durable Describe stage versions advance again so a queued phone request cannot reuse the prior response contract. Existing food notes, completed logs, pending trays, settings, and native-record schemas require no migration; minimum supported Obsidian remains 1.12.0.
+
 ## 0.37.1
 
 - Describe now recognizes written fractions such as `a half of` before estimating portions. The reported breakfast example becomes two stable tray rows—one egg-and-cheese bowl and one half egg-and-bacon bagel sandwich—instead of allowing the half sandwich to be treated as a whole generic egg serving.

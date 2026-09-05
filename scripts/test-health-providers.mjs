@@ -3225,6 +3225,7 @@ test("AI Describe separates a breakfast bowl from a half bagel sandwich and repa
     source: "custom-note",
     nutrition: { calories: 78, proteinG: 6.3, carbsG: 0.6, fatG: 5.3, sodiumMg: 62 },
   }];
+  plugin.searchFoods = async () => [];
 
   await plugin.openFoodDescriberWithAi(
     "an egg and cheese bowl and a half of an egg and bacon bagel sandwich",
@@ -3246,6 +3247,89 @@ test("AI Describe separates a breakfast bowl from a half bagel sandwich and repa
   assert.deepEqual(selections.map((selection) => selection.item.name), ["egg and cheese bowl", "egg and bacon bagel sandwich"]);
   assert.deepEqual(selections.map((selection) => selection.item.nutrition?.calories), [250, 270]);
   assert.equal(selections.reduce((sum, selection) => sum + (selection.item.nutrition?.calories || 0), 0), 520);
+});
+
+test("AI Describe uses provider evidence for a numeric half bagel with cream cheese before free-form fallback", async () => {
+  installDeterministicBrowserGlobals();
+  const storage = new Map();
+  window.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.vault.getName = () => "Describe provider-backed half bagel vault";
+  const requests = [];
+  const lowEstimate = (food) => ({
+    ...food,
+    confidence: 0.8,
+    calories: 100,
+    proteinG: 4,
+    carbsG: 12.5,
+    fatG: 4,
+    fiberG: 0,
+    sugarG: 1,
+    sugarAlcoholG: 0,
+    alcoholG: 0,
+    sodiumMg: 180,
+  });
+  fake.app.tpsAiGateway = {
+    completeStructured: async (request) => {
+      requests.push(request);
+      const payload = JSON.parse(request.messages[1].content);
+      if (request.taskId === "health.describe-food.review") {
+        assert.equal(payload.extraction.foods[0].label, "bagel with chive and onion cream cheese");
+        assert.equal(payload.extraction.foods[0].quantity, 0.5);
+        assert.equal(payload.extraction.foods[0].estimatedWeightG, 62.5);
+        return {
+          data: { mealName: "Half bagel", foods: payload.extraction.foods.map(lowEstimate) },
+          provider: "gemini", model: "test", traceId: "review", attempts: 1,
+        };
+      }
+      assert.equal(request.taskId, "health.describe-food.repair");
+      assert.ok(payload.issues.includes("named-components-underestimated"));
+      return {
+        data: lowEstimate(payload.extracted),
+        provider: "gemini", model: "test", traceId: "repair", attempts: 1,
+      };
+    },
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  plugin.settings = { ...plugin.settings };
+  plugin.getLoggedFoodStats = async () => new Map();
+  plugin.searchLocalFoods = async () => [];
+  let remoteSearches = 0;
+  plugin.searchFoods = async () => {
+    remoteSearches++;
+    return [{
+      id: "usda-bagel-cream-cheese",
+      name: "Bagel with cream cheese",
+      aliases: ["cream cheese bagel"],
+      servingAmount: 100,
+      servingUnit: "g",
+      servingGrams: 100,
+      nutritionBasis: "per-100g",
+      source: "usda",
+      nutrition: { calories: 300, proteinG: 9, carbsG: 43, fatG: 10, fiberG: 1.5, sugarG: 6, sodiumMg: 510 },
+    }];
+  };
+
+  await plugin.openFoodDescriberWithAi(
+    "0.5 of a bagel with chive and onion cream cheese",
+    null,
+    undefined,
+    { version: 2, id: "describe-half-bagel", description: "0.5 of a bagel with chive and onion cream cheese", createdAt: new Date().toISOString(), dateContext: null },
+  );
+
+  assert.deepEqual(requests.map((request) => request.taskId), ["health.describe-food.review", "health.describe-food.repair"]);
+  assert.equal(remoteSearches, 1);
+  const selection = plugin.settings.pendingFoodLogDraft?.selectionItems?.[0];
+  assert.equal(selection?.quantity, 0.5);
+  assert.equal(selection?.item.name, "Bagel with cream cheese");
+  assert.equal(selection?.item.servingGrams, 62.5);
+  assert.equal(selection?.item.nutrition?.calories, 187.5);
 });
 
 test("AI Describe replaces an empty result with a final Gemini estimate after database matching misses", async () => {
@@ -3280,6 +3364,7 @@ test("AI Describe replaces an empty result with a final Gemini estimate after da
   plugin.settings = { ...plugin.settings };
   plugin.getLoggedFoodStats = async () => new Map();
   plugin.searchLocalFoods = async () => [];
+  plugin.searchFoods = async () => [];
   await plugin.openFoodDescriberWithAi("one mystery saffron dumpling", null, undefined, {
     version: 1,
     id: "describe-estimate-fallback",
