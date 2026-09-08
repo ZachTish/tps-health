@@ -1,5 +1,12 @@
 # TPS Health
 
+## 0.37.3
+
+- Fix startup file-queue starvation: Obsidian replays `vault.create` for every existing file during vault discovery. Health previously queued a raw read for every Markdown file, including unrelated notes, before Obsidian could read its workspace layout. The native-record listener now waits for workspace readiness before treating create events as new user files.
+- Startup records are still indexed from metadata. Recognized workout bodies hydrate after layout readiness, preserving legacy workout graphs without replaying a whole-vault scan. Notes created after startup still refresh immediately, before MetadataCache catches up.
+- This is a backward-compatible startup fix for both Legacy and Native records modes. No settings, record schemas, provider behavior, or minimum supported Obsidian version (1.12.0) changes.
+- Regression coverage reproduces 2,048 startup discovery events in each storage mode, delayed metadata and legacy workout hydration, and immediate indexing of a post-startup creation. The full 0.37.3 suite passed 287 checks; the one live USDA check remained credential-gated and skipped. TypeScript and the separate production build passed and deployed only to the test vault. Two instrumented reloads on Obsidian 1.14.0 eliminated all 2,022 discovery-triggered raw reads and reduced the observed file-queue peak from 2,041 to 49/48 pending operations. Workspace readiness was observed at 10.665 and 9.054 seconds; total startup still varies with filesystem and metadata work, so this is not a claim that all startup latency is eliminated. A final normal reload with the observer removed restored all eight panes and all fourteen originally enabled community plugins. The Kanban completed-task toggle showed both expected tasks and was restored. No settings/schema changes or production deployment were performed.
+
 ## 0.37.2
 
 - Describe now removes portion grammar from numeric phrases such as `0.5 of a bagel`, fixing the malformed `of a bagel…` tray label shown on iPhone.

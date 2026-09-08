@@ -966,6 +966,10 @@ export class HealthNativeRecordService {
       this.plugin.scheduleWorkoutActionBars();
     });
     this.plugin.registerEvent(vault.on('create', (file) => {
+      // Obsidian replays create for every existing file while loading the vault.
+      // Metadata events and the layout-ready rebuild cover discovery without
+      // queuing the entire vault ahead of Obsidian's workspace-file read.
+      if (!this.plugin.app.workspace?.layoutReady) return;
       if (file instanceof TFile) void this.refreshFile(file);
     }));
     this.plugin.registerEvent(vault.on('modify', (file) => {
@@ -2590,7 +2594,9 @@ export class HealthNativeRecordService {
     if (typeof vault?.getMarkdownFiles !== 'function') return;
     for (const file of vault.getMarkdownFiles()) {
       this.indexFile(file);
-      if (this.recordsByPath.get(file.path)?.kind === 'workout-session') void this.refreshFile(file);
+      if (this.plugin.app.workspace?.layoutReady && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
+        void this.refreshFile(file);
+      }
     }
   }
 

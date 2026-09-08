@@ -71,6 +71,8 @@ function createHarness(options = {}) {
   const contents = new Map();
   const createCalls = [];
   const updateCalls = [];
+  const readCalls = [];
+  const layoutReadyCallbacks = [];
   const trashedPaths = [];
   const exerciseDefinitions = new Set();
   let generated = 0;
@@ -204,12 +206,16 @@ function createHarness(options = {}) {
         layoutReady: options.layoutReady ?? true,
         onLayoutReady(callback) {
           if (this.layoutReady) callback();
+          else layoutReadyCallbacks.push(callback);
         },
       },
       vault: {
         getMarkdownFiles: () => [...files.values()],
         cachedRead: async (file) => contents.get(file.path) || '',
-        read: async (file) => contents.get(file.path) || '',
+        read: async (file) => {
+          readCalls.push(file.path);
+          return contents.get(file.path) || '';
+        },
         process: async (file, mutation) => {
           processCalls += 1;
           if (typeof options.beforeVaultProcess === 'function') {
@@ -278,8 +284,71 @@ function createHarness(options = {}) {
   const emitMetadata = (name, ...args) => {
     for (const listener of metadataEvents.get(name) || []) listener(...args);
   };
-  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata };
+  const finishLayout = () => {
+    plugin.app.workspace.layoutReady = true;
+    for (const callback of layoutReadyCallbacks.splice(0)) callback();
+  };
+  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, readCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata, finishLayout };
 }
+
+test('startup discovery does not queue a body read for every Markdown file in either storage mode', async () => {
+  for (const storageMode of ['legacy', 'native-records']) {
+    const harness = createHarness({ layoutReady: false, metadataInitialized: false, settings: { storageMode } });
+    for (let index = 0; index < 2048; index++) {
+      const file = harness.addLegacyFile(`Inbox/discovered-${index}.md`, 'Unrelated note.');
+      harness.emitVault('create', file);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(harness.readCalls, [], `${storageMode}: startup discovery must leave the adapter queue available to workspace restoration`);
+    harness.finishLayout();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(harness.readCalls, [], 'layout readiness must not replay a whole-vault body scan');
+    harness.service.dispose();
+  }
+});
+
+test('startup metadata restores food records and hydrates legacy workout bodies after layout readiness', async () => {
+  const harness = createHarness({ layoutReady: false, metadataInitialized: false });
+  const food = harness.addFrontmatterFile('Inbox/startup-food.md', {
+    tpsId: 'startup-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 210,
+  });
+  const workout = harness.addFrontmatterFile('Inbox/startup-workout.md', {
+    tpsId: 'startup-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Startup workout', status: 'active',
+  });
+  harness.contents.set(workout.path, writeWorkoutDataToNoteContent(harness.contents.get(workout.path), JSON.stringify({
+    version: 1, exercises: [{ id: 'legacy-exercise', name: 'Bench press', sets: [{ id: 'legacy-set', reps: 8 }] }],
+  })));
+  for (const file of [food, workout]) {
+    harness.emitVault('create', file);
+    harness.emitMetadata('changed', file, harness.contents.get(file.path), { frontmatter: harness.frontmatters.get(file) });
+  }
+  harness.plugin.app.metadataCache.initialized = true;
+  harness.emitMetadata('resolved');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.readCalls, [], 'metadata indexing must not hydrate bodies before workspace restoration');
+  assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 210);
+
+  harness.finishLayout();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.readCalls, [workout.path], 'only a recognized workout needs legacy body hydration');
+  assert.equal(harness.service.getWorkoutSnapshot('startup-workout').exercises[0].sets[0].reps, 8);
+  assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 210);
+  harness.service.dispose();
+});
+
+test('a user-created record after startup is indexed before MetadataCache catches up', async () => {
+  const harness = createHarness({ layoutReady: false });
+  harness.finishLayout();
+  const file = harness.addLegacyFile('Inbox/new-food.md', [
+    '---', 'tpsId: new-food', 'tpsSchemaVersion: 1', 'kind: food-entry',
+    'date: 2026-09-08', 'calories: 320', '---',
+  ].join('\n'));
+  harness.emitVault('create', file);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.readCalls, [file.path]);
+  assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 320);
+  harness.service.dispose();
+});
 
 test('native Health filenames use the record date and plain human title', () => {
   assert.equal(buildNativeHealthRecordFileName('food-entry', {
