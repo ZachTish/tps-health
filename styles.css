@@ -4771,3 +4771,21 @@ body:has(.workspace-drawer:not(.is-collapsed)) .tps-health-workout-action-bar--m
 .tps-health-native-daily-metric-label > .tps-health-native-daily-breakdown[open] > summary { max-width: 40%; }
 .tps-health-native-daily-ring-item:has(.tps-health-native-daily-breakdown[open]) { grid-column: 1 / -1; }
 .tps-health-native-daily-components { width: 100%; white-space: normal; }
+
+/* Keep the recipe disclosure beside its food, without a second label row. */
+.tps-health-native-daily-has-components { position: relative; padding-inline-start: 28px; }
+.tps-health-native-daily-components > summary {
+  position: absolute; inset-inline-start: 0; top: 3px; width: 26px; min-height: 28px;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+  list-style: none; border-radius: 4px;
+}
+.tps-health-native-daily-components > summary::-webkit-details-marker { display: none; }
+.tps-health-native-daily-components > summary svg { width: 16px; height: 16px; }
+.tps-health-native-daily-components[open] > summary svg { transform: rotate(90deg); }
+.tps-health-native-daily-components > summary:hover { background: var(--background-modifier-hover); }
+.tps-health-native-daily-components > div { padding-top: 6px; }
+.tps-health-native-daily-breakdown-item > button {
+  background: transparent; box-shadow: none; border: none; padding: 0;
+  color: var(--text-normal); text-decoration: none;
+}
+.tps-health-native-daily-breakdown-item > button:hover { color: var(--text-accent); text-decoration: underline; }

@@ -12727,7 +12727,9 @@ function renderNativeDailyComponents(
   const type = foodNoteTypeFromFrontmatter(foodFm, file, plugin.settings);
   if (!isRecipeLikeFoodType(type)) return;
   const details = container.createEl("details", { cls: "tps-health-native-daily-breakdown tps-health-native-daily-components" });
-  details.createEl("summary", { text: "Components", attr: { "aria-label": `Components of ${entry.title}` } });
+  container.addClass("tps-health-native-daily-has-components");
+  const toggle = details.createEl("summary", { attr: { "aria-label": `Components of ${entry.title}`, title: `Expand ${entry.title}` } });
+  setIcon(toggle.createSpan({ attr: { "aria-hidden": "true" } }), "chevron-right");
   const body = details.createDiv();
   let loaded = false;
   const load = async () => {
