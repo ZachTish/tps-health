@@ -18,7 +18,7 @@ function nativeTrayTestElement(tag = "div", options = {}) {
     attributes: { ...options.attr }, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
     addClass() {}, removeClass() {}, toggleClass() {}, empty() { this.children = []; }, setText(value) { this.text = value; },
     setAttr(key, value) { this.attributes[key] = value; }, removeAttribute(key) { delete this.attributes[key]; },
-    addEventListener(name, fn) { listeners.set(name, fn); }, removeEventListener() {}, listeners,
+    addEventListener(name, fn) { const previous = listeners.get(name); listeners.set(name, (...args) => { previous?.(...args); return fn(...args); }); }, removeEventListener() {}, listeners,
     createEl(tag, options) { const child = nativeTrayTestElement(tag, options); child.parentElement = this; this.children.push(child); return child; },
     createDiv(options) { return this.createEl("div", options); }, createSpan(options) { return this.createEl("span", options); },
     querySelector() { return null; }, querySelectorAll() { return []; }, closest() { return null; }, focus() {}, blur() {}, scrollIntoView() {},
@@ -113,4 +113,40 @@ test("two food tabs preserve five settings destinations and narrow tray controls
   assert.match(css, /\.tps-health-food-tabs \{[^}]*grid-template-columns: repeat\(2,/);
   assert.match(css, /\.tps-health-settings-route-grid \{[^}]*grid-template-columns: repeat\(5,/);
   assert.match(css, /@container tps-health-food-search \(max-width: 520px\)[\s\S]*?min-height: 44px/);
+});
+
+
+test("Create meal sits with the tray's top actions and preserves the existing flow", async () => {
+  const { tray } = await setup();
+  tray.selectionItems = [{ item: food('Oats'), quantity: 1, unit: 'serving' }];
+  tray.renderSelection();
+  const button = walk(tray.selectionEl).find(n => n.text === 'Create meal');
+  assert.equal(button.parentElement.className, 'tps-health-selection-header-actions');
+  let calls = 0; tray.createRecipeFromSelection = () => calls++;
+  button.listeners.get('click')(); assert.equal(calls, 1);
+  assert.equal(walk(tray.selectionEl).filter(n => n.text === 'Create recipe').length, 0);
+});
+
+test('recipe component disclosure scales half a serving and keeps missing ingredients explicit', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, renderNativeDailyComponents } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  fake.files.set('entry.md', '---\nfood: "[[recipe]]"\n---\n');
+  fake.files.set('recipe.md', '---\nkind: recipe\nrecipeServings: 4\nservingAmount: 1\nservingUnit: serving\n---\n- 8 serving - [[oats]]\n- 2 serving - [[missing]]\n');
+  fake.files.set('oats.md', '---\nkind: food\nservingAmount: 1\nservingUnit: serving\ncalories: 100\nproteinG: 10\n---\n');
+  fake.app.metadataCache.getFirstLinkpathDest = path => fake.app.vault.getAbstractFileByPath(path.endsWith('.md') ? path : path + '.md');
+  plugin.settings.foodIdentificationMode = 'frontmatter';
+  plugin.settings.foodFrontmatterKey = 'kind';
+  plugin.settings.foodFrontmatterRecipeValue = 'recipe';
+  plugin.findRecipeIngredientFoodByName = () => null;
+  const root = nativeTrayTestElement();
+  renderNativeDailyComponents(root, plugin, {path:'entry.md',title:'Recipe',quantity:0.5,unit:'serving'}, new Map());
+  const details = root.children[0]; assert.ok(details);
+  details.open = true; details.listeners.get('toggle')(); await turn(); await turn();
+  const text = walk(root).map(n => n.text).join(' ');
+  assert.match(text, /1 serving · oats/);
+  assert.match(text, /100 kcal/);
+  assert.match(text, /0.25 serving · missing/);
+  assert.match(text, /Nutrition unavailable/);
+  assert.equal(fake.writes.length, 0);
 });

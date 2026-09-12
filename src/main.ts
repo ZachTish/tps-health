@@ -17,6 +17,7 @@ import * as logger from "./logger";
 import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyActivityEntrySnapshot, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
+  nativeDailyNutrientContributors,
   buildNativeDailyActivityModel,
   buildNativeDailyDashboardModel,
   formatNativeDailyMetricValue,
@@ -11182,6 +11183,9 @@ class FoodSearchModal extends Modal {
     logButton.disabled = this.selectionSubmitting;
     logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
     logButton.addEventListener("click", () => this.logSelected());
+    const recipeButton = headerActions.createEl("button", { text: "Create meal", attr: { type: "button" } });
+    recipeButton.disabled = this.selectionSubmitting;
+    recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
     const clearButton = headerActions.createEl("button", { text: "Clear tray", cls: "mod-muted", attr: { type: "button" } });
     clearButton.disabled = this.selectionSubmitting;
     clearButton.addEventListener("click", () => {
@@ -11280,11 +11284,6 @@ class FoodSearchModal extends Modal {
         });
       });
     consumedTimeSetting.settingEl.addClass("tps-health-selection-time");
-
-    const buttons = this.selectionEl.createDiv({ cls: "tps-health-selection-actions" });
-    const recipeButton = buttons.createEl("button", { text: "Create recipe", attr: { type: "button" } });
-    recipeButton.disabled = this.selectionSubmitting;
-    recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
   }
 
   private selectionTrayTitle(): string {
@@ -12423,6 +12422,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private refreshTimer: number | null = null;
   private activeWorkoutTimer: number | null = null;
   private renderGeneration = 0;
+  private readonly disclosures = new Map<string, boolean>();
 
   constructor(
     containerEl: HTMLElement,
@@ -12470,6 +12470,8 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     try {
       const activeWorkout = this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
+        disclosures: this.disclosures,
+        components: (container, entry) => renderNativeDailyComponents(container, this.plugin, entry, this.disclosures),
         addFood: () => this.plugin.openFoodLogger({ ...this.dateContext }),
         logActivity: () => this.plugin.openActivityLogger({ ...this.dateContext }),
         startWorkout: () => this.plugin.openWorkoutStarter({ ...this.dateContext }),
@@ -12549,6 +12551,8 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 }
 
 interface NativeDailyDashboardActions {
+  disclosures: Map<string, boolean>;
+  components(container: HTMLElement, entry: NativeDailyFoodEntrySnapshot): void;
   addFood(): void;
   logActivity(): void;
   startWorkout(): void;
@@ -12648,9 +12652,9 @@ function renderNativeDailyMacrosBlock(
   if (!model.entryCount) {
     root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });
   } else if (display.macroStyle === "rings") {
-    renderNativeDailyMetricRings(root, model.metrics);
+    renderNativeDailyMetricRings(root, model.metrics, foodEntries, actions);
   } else {
-    renderNativeDailyMetrics(root, model.metrics, "Daily macro totals");
+    renderNativeDailyMetrics(root, model.metrics, "Daily macro totals", foodEntries, actions);
   }
   if (model.entryCount) {
     renderNativeDailyFoodEntries(root, foodEntries, display.foodList === "expanded", actions, reviewFoodButton);
@@ -12681,7 +12685,99 @@ function renderNativeDailyRowAction(
   return button;
 }
 
-function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"]): void {
+function rememberDailyDisclosure(details: HTMLDetailsElement, key: string, state: Map<string, boolean>, initial = false): void {
+  // These are dashboard controls, not editable Markdown list bullets.
+  details.addEventListener("click", event => event.stopPropagation());
+  details.open = state.get(key) ?? initial;
+  details.addEventListener("toggle", () => {
+    if (details.isConnected) state.set(key, details.open);
+  });
+}
+
+function renderNativeDailyContributors(
+  container: HTMLElement, metric: NativeDailyDashboardModel["metrics"][number],
+  entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions, label = "Contributing foods",
+): void {
+  const details = container.createEl("details", { cls: "tps-health-native-daily-breakdown" });
+  details.createEl("summary", { text: label, attr: { "aria-label": `${metric.label}: contributing foods` } });
+  details.setAttr("data-contribution-key", metric.propertyKey);
+  const list = details.createDiv({ cls: "tps-health-native-daily-breakdown-list", attr: { role: "list" } });
+  const contributors = nativeDailyNutrientContributors(metric.propertyKey, entries);
+  for (const { entry, value } of contributors) {
+    const row = list.createDiv({ cls: "tps-health-native-daily-breakdown-item", attr: { role: "listitem" } });
+    const button = row.createEl("button", { text: entry.title, attr: { type: "button", "aria-label": `Open food entry ${entry.title}` } });
+    button.addEventListener("click", () => actions.openFoodEntry(entry.path));
+    row.createSpan({ text: ` ${formatNativeDailyMetricValue(value)} ${metric.unit}` });
+    actions.components(row, entry);
+  }
+  if (!contributors.length) list.createDiv({ attr: { role: "listitem" }, text: "No recorded contributions." });
+  rememberDailyDisclosure(details, `nutrient:${metric.propertyKey}`, actions.disclosures);
+}
+
+function renderNativeDailyComponents(
+  container: HTMLElement, plugin: TPSHealthPlugin, entry: NativeDailyFoodEntrySnapshot,
+  state: Map<string, boolean>, foodOverride?: { file: TFile; servings: number; ancestors: string[] },
+): void {
+  const entryFile = plugin.app.vault.getAbstractFileByPath(entry.path);
+  const fm = entryFile instanceof TFile ? plugin.app.metadataCache.getFileCache(entryFile)?.frontmatter : null;
+  const raw = String(fm?.food ?? fm?.foodPath ?? "").replace(/^\[\[|\]\]$/g, "").split("|")[0];
+  const file = foodOverride?.file ?? (raw ? plugin.app.metadataCache.getFirstLinkpathDest(raw, entry.path) : null);
+  if (!(file instanceof TFile)) return;
+  const foodFm = plugin.app.metadataCache.getFileCache(file)?.frontmatter || {};
+  const type = foodNoteTypeFromFrontmatter(foodFm, file, plugin.settings);
+  if (!isRecipeLikeFoodType(type)) return;
+  const details = container.createEl("details", { cls: "tps-health-native-daily-breakdown tps-health-native-daily-components" });
+  details.createEl("summary", { text: "Components", attr: { "aria-label": `Components of ${entry.title}` } });
+  const body = details.createDiv();
+  let loaded = false;
+  const load = async () => {
+    if (!details.open || loaded) return;
+    loaded = true;
+    body.setText("Loading components…");
+    try {
+      const ancestors = foodOverride?.ancestors ?? [];
+      if (ancestors.includes(file.path) || ancestors.length >= 8) throw new Error("Circular or overly nested recipe");
+      const food = foodFromFileCache(plugin, file);
+      const serving = resolveFoodLogServing(food, entry.quantity, entry.unit);
+      if (!foodOverride && serving.unsupportedUnit) throw new Error("Unsupported consumed unit");
+      const factor = (foodOverride?.servings ?? serving.servings) / recipeServingsForFood(food, type);
+      const content = await plugin.app.vault.cachedRead(file);
+      const lines = recipeIngredientsFromContent(content, foodFm, plugin.settings.recipeTag, name => plugin.findRecipeIngredientFoodByName(name)).split(/\r?\n/).filter(line => line.trim());
+      body.empty();
+      body.createEl("small", { text: "Current recipe, scaled to the logged portion. Ingredient edits may differ from recorded totals." });
+      const list = body.createDiv({ cls: "tps-health-native-daily-breakdown-list", attr: { role: "list" } });
+      for (const line of lines) {
+        const parsed = parseRecipeIngredientLine(line, name => plugin.findRecipeIngredientFoodByName(name));
+        const row = list.createDiv({ cls: "tps-health-native-daily-breakdown-item", attr: { role: "listitem" } });
+        if (!parsed) { row.setText("An ingredient could not be read."); continue; }
+        const target = parsed.foodPath ? plugin.app.metadataCache.getFirstLinkpathDest(parsed.foodPath, file.path) : null;
+        const child = target instanceof TFile ? foodFromFileCache(plugin, target) : plugin.findRecipeIngredientFoodByName(parsed.foodName);
+        const quantity = parsed.quantity * factor;
+        row.createSpan({ text: `${quantity.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${parsed.unit} · ${parsed.foodName}` });
+        const resolved = child ? resolveFoodLogServing(child, quantity, parsed.unit) : null;
+        if (!child?.nutrition || !resolved || resolved.unsupportedUnit) {
+          row.createDiv({ text: "Nutrition unavailable for this ingredient." });
+          continue;
+        }
+        renderMacroPills(row.createDiv({ cls: "tps-health-selection-macros" }), multiplyNutrition(child.nutrition, resolved.servings));
+        const childFile = target instanceof TFile ? target : child.sourcePath ? plugin.app.vault.getAbstractFileByPath(child.sourcePath) : null;
+        if (childFile instanceof TFile) renderNativeDailyComponents(row, plugin,
+          { ...entry, title: parsed.foodName, quantity, unit: parsed.unit }, state,
+          { file: childFile, servings: resolved.servings, ancestors: [...ancestors, file.path] });
+      }
+      if (!lines.length) list.createDiv({ attr: { role: "listitem" }, text: "No saved components are available." });
+    } catch (error) {
+      loaded = false;
+      body.setText("Components unavailable. Check the recipe links and portions, then close and reopen to retry.");
+      logger.flowError("NativeDailyDashboard", "components:failed", error, { path: file.path });
+    }
+  };
+  details.addEventListener("toggle", () => void load());
+  rememberDailyDisclosure(details, `components:${container.closest("[data-contribution-key]")?.getAttribute("data-contribution-key") || "foods"}:${entry.path}:${[...(foodOverride?.ancestors ?? []), file.path].join(">")}`, state);
+  void load();
+}
+
+function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions): void {
   const rings = root.createDiv({ cls: "tps-health-native-daily-rings", attr: { role: "list", "aria-label": "Daily macro rings" } });
   for (const metric of metricModels) {
     const item = rings.createDiv({
@@ -12699,6 +12795,7 @@ function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDai
     value.createEl("small", { text: metric.unit });
     item.createDiv({ cls: "tps-health-native-daily-ring-label", text: metric.label });
     item.createDiv({ cls: "tps-health-native-daily-ring-target", text: metric.targetLabel });
+    renderNativeDailyContributors(item, metric, entries, actions);
   }
 }
 
@@ -12710,7 +12807,7 @@ function renderNativeDailyFoodEntries(
   toggleButton: HTMLButtonElement | null,
 ): void {
   const details = root.createEl("details", { cls: "tps-health-native-daily-foods" });
-  details.open = expanded;
+  rememberDailyDisclosure(details, "foods", actions.disclosures, expanded);
   toggleButton?.setAttr("aria-expanded", details.open ? "true" : "false");
   const summary = details.createEl("summary", { cls: "tps-health-native-daily-foods-summary" });
   summary.createSpan({ text: entries.length === 1 ? "1 food item" : `${entries.length} food items` });
@@ -12732,6 +12829,7 @@ function renderNativeDailyFoodEntries(
       cls: "tps-health-native-daily-food-macros",
       text: `P ${formatNativeDailyMetricValue(entry.proteinG)}g · C ${formatNativeDailyMetricValue(entry.carbsG)}g · F ${formatNativeDailyMetricValue(entry.fatG)}g`,
     });
+    actions.components(row, entry);
     const rowActions = row.createDiv({ cls: "tps-health-native-daily-row-actions", attr: { role: "group", "aria-label": `${entry.title} actions` } });
     renderNativeDailyRowAction(rowActions, `Edit ${entry.title}`, "pencil", () => actions.editFoodEntry(entry));
     renderNativeDailyRowAction(rowActions, `Remove ${entry.title}`, "trash-2", () => actions.removeFoodEntry(entry), true);
@@ -12878,7 +12976,7 @@ function nativeDailyEntryTimeLabel(value: string): string {
   return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], ariaLabel: string): void {
+function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], ariaLabel: string, entries?: NativeDailyFoodEntrySnapshot[], actions?: NativeDailyDashboardActions): void {
   const metrics = root.createDiv({ cls: "tps-health-native-daily-metrics" });
   metrics.setAttr("role", "table");
   metrics.setAttr("aria-label", ariaLabel);
@@ -12892,7 +12990,9 @@ function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDa
     row.setAttr("data-property-key", metric.propertyKey);
     row.setAttr("role", "row");
     if (metric.color) row.style.setProperty("--tps-health-native-metric-color", metric.color);
-    row.createSpan({ cls: "tps-health-native-daily-metric-label", text: metric.label, attr: { role: "cell" } });
+    const label = row.createSpan({ cls: "tps-health-native-daily-metric-label", attr: { role: "cell" } });
+    if (entries && actions) renderNativeDailyContributors(label, metric, entries, actions, metric.label);
+    else label.setText(metric.label);
     row.createSpan({
       cls: "tps-health-native-daily-metric-value",
       text: `${formatNativeDailyMetricValue(metric.value)} ${metric.unit}`,

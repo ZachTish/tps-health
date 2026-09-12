@@ -200,3 +200,18 @@ export function formatNativeDailyMetricValue(value: number): string {
   if (!Number.isFinite(value)) return "0";
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
 }
+
+/** Rank logged entries, never add recipe children a second time to daily totals. */
+export function nativeDailyNutrientContributors<T extends { title: string; path: string }>(
+  propertyKey: string, entries: T[],
+): Array<{ entry: T; value: number }> {
+  const keys: Record<string, string> = {
+    consumedCalories: 'calories', calories: 'calories', protein: 'proteinG', carbs: 'carbsG',
+    fat: 'fatG', fiber: 'fiberG', sugar: 'sugarG', sugarAlcohol: 'sugarAlcoholG', alcohol: 'alcoholG', sodium: 'sodiumMg',
+  };
+  const key = keys[propertyKey];
+  if (!key) return [];
+  return entries.map(entry => ({ entry, value: Number((entry as Record<string, unknown>)[key]) }))
+    .filter(({ value }) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b.value - a.value || a.entry.title.localeCompare(b.entry.title) || a.entry.path.localeCompare(b.entry.path));
+}

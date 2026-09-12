@@ -29,7 +29,7 @@ async function loadDateFilterModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
+const { nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
 const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -187,7 +187,7 @@ test('macro dashboard supports accessible rings and an optional collapsible food
   assert.match(mainSource, /aria-label": "Daily macro rings"/u);
   assert.match(mainSource, /--tps-health-native-ring-progress/u);
   assert.match(mainSource, /createEl\("details", \{ cls: "tps-health-native-daily-foods" \}\)/u);
-  assert.match(mainSource, /details\.open = expanded/u);
+  assert.match(mainSource, /rememberDailyDisclosure\(details, "foods", actions\.disclosures, expanded\)/u);
   assert.match(mainSource, /aria-label": `Open food entry \$\{entry\.title\}`/u);
   assert.match(mainSource, /getDailyFoodEntries\(this\.dateContext\.dateIso\)/u);
   assert.match(stylesSource, /\.tps-health-native-daily-rings\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit, minmax\(96px, 1fr\)\)/u);
@@ -239,4 +239,23 @@ test('dashboard refreshes from the indexed record signal instead of racing Metad
   assert.match(mainSource, /change\.dates\.includes\(this\.dateContext\.dateIso\)/u);
   assert.match(mainSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.render\(\);[\s\S]*?\}, 0\)/u);
   assert.doesNotMatch(mainSource, /metadataCache\.on\("changed"[\s\S]{0,600}?scheduleRefresh/u);
+});
+
+
+test('nutrient drilldowns rank actual logged portions and exclude unknown or zero contributions', () => {
+  const meal = { title: 'Half recipe', path: 'meal.md', proteinG: 12.5, sodiumMg: 200 };
+  const snack = { title: 'Snack', path: 'snack.md', proteinG: 3, sodiumMg: 300 };
+  const unknown = { title: 'Unknown', path: 'unknown.md', proteinG: NaN };
+  assert.deepEqual(nativeDailyNutrientContributors('protein', [snack, unknown, meal]).map(x => [x.entry.title, x.value]), [['Half recipe', 12.5], ['Snack', 3]]);
+  assert.deepEqual(nativeDailyNutrientContributors('sodium', [meal, snack]).map(x => x.value), [300, 200]);
+  assert.deepEqual(nativeDailyNutrientContributors('unmapped', [meal]), []);
+});
+
+
+test('dashboard disclosures avoid editable Markdown bullets and keep open content across the row', () => {
+  const start = mainSource.indexOf('function renderNativeDailyContributors(');
+  const end = mainSource.indexOf('function renderNativeDailyMetricRings(', start);
+  assert.doesNotMatch(mainSource.slice(start, end), /createEl\("(?:li|ul)"/);
+  assert.match(mainSource.slice(start, end), /role: "listitem"/);
+  assert.match(stylesSource, /grid-column: 1 \/ -1; grid-row: 1; overflow: visible; white-space: normal/);
 });
