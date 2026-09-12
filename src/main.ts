@@ -1,3 +1,4 @@
+import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
@@ -2605,7 +2606,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async finishNativeWorkout(path: string, workoutId: string, input: FinishWorkoutInput): Promise<void> {
     const active = this.getActiveWorkoutState();
-    if (!this.nativeRecordService.isWorkoutIndexSettled()) {
+    if (!this.nativeRecordService.isWorkoutIndexSettled()
+      && !await this.nativeRecordService.waitForWorkoutIndexSettled?.()) {
       new Notice("TPS Health is still indexing workout records. Try finishing the workout again in a moment.");
       return;
     }
@@ -4325,7 +4327,8 @@ export default class TPSHealthPlugin extends Plugin {
     const markdownFiles = this.app.vault.getMarkdownFiles();
     const files = markdownFiles
       .map((file) => ({ file, cache: this.app.metadataCache.getFileCache(file) }))
-      .filter(({ file, cache }) => isFoodLikeMarkdownFile(this, file, cache))
+      .filter(({ file, cache }) => isFoodLikeMarkdownFile(this, file, cache)
+        && !isArchivedFoodDefinition(file.path, cache?.frontmatter))
       .sort((a, b) => (b.file.stat?.ctime || b.file.stat?.mtime || 0) - (a.file.stat?.ctime || a.file.stat?.mtime || 0));
     const items: FoodItem[] = [];
     const byBarcode = new Map<string, FoodItem>();
@@ -8642,7 +8645,7 @@ export default class TPSHealthPlugin extends Plugin {
     input: { name: string; cooldownDays?: number; defaultRestSeconds?: number }
   ): Promise<string> {
     const rawLayoutEntries = state.path
-      ? await this.extractWorkoutLayoutEntriesFromSession(state.path)
+      ? await this.extractWorkoutLayoutEntriesFromSession(state.path, state.id)
       : state.dailyNotePath
         ? await this.extractWorkoutLayoutEntriesFromDaily(state.dailyNotePath, state.id)
         : [];
@@ -8652,7 +8655,7 @@ export default class TPSHealthPlugin extends Plugin {
       workoutId: state.id || "",
       structuredEntries: rawLayoutEntries.length,
     });
-    const layoutEntries = rawLayoutEntries.length
+    const layoutEntries = this.nativeRecordService?.isEnabled() || rawLayoutEntries.length
       ? rawLayoutEntries
       : [...new Set((state.path
         ? await this.extractWorkoutTaskExerciseNamesFromSession(state.path)
@@ -8702,11 +8705,26 @@ export default class TPSHealthPlugin extends Plugin {
     return path;
   }
 
-  private async extractWorkoutLayoutEntriesFromSession(workoutPath: string): Promise<string[]> {
+  private async extractWorkoutLayoutEntriesFromSession(workoutPath: string, expectedId?: string): Promise<string[]> {
     const file = this.app.vault.getAbstractFileByPath(workoutPath);
     if (!(file instanceof TFile)) {
       logger.flowWarn("WorkoutPlan", "layout-extract:missing-session", { workoutPath });
+      if (this.nativeRecordService?.isEnabled()) throw new Error("The workout was moved or removed. Reopen it before saving a layout.");
       return [];
+    }
+    if (this.nativeRecordService?.isEnabled()) {
+      if (!this.nativeRecordService.isWorkoutIndexSettled()
+        && !await this.nativeRecordService.waitForWorkoutIndexSettled()) {
+        throw new Error("Workout records are still being indexed. Try saving the layout again.");
+      }
+      const snapshot = this.nativeRecordService.getWorkoutSnapshot(workoutPath);
+      if (!snapshot || (expectedId && snapshot.id !== expectedId)) throw new Error("The workout could not be read safely. No layout was saved.");
+      return snapshot.exercises.flatMap(exercise => exercise.sets.length
+        ? exercise.sets.map(set => workoutLayoutEntryFromSet({ ...set,
+          exercise: exercise.name, exercisePath: exercise.exercisePath,
+          setType: normalizeWorkoutSetType(set.setType), supersetGroupId: exercise.supersetGroupId,
+        })).filter((entry): entry is string => Boolean(entry))
+        : [exercise.exercisePath ? `[[${exercise.exercisePath.replace(/\.md$/i, "")}|${exercise.name}]]` : exercise.name]);
     }
     const content = await this.app.vault.read(file);
     const entries = this.extractWorkoutLayoutEntries(content);
@@ -8791,7 +8809,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private extractTaskExerciseNames(content: string): string[] {
     const names: string[] = [];
-    for (const line of content.split("\n")) {
+    const lines = content.split("\n");
+    for (const line of lines.slice(frontmatterLineEnd(lines))) {
       if (!/^\s*-\s+/.test(line)) continue;
       const parsed = parseWorkoutTaskSetLine(line);
       const exercise = parsed.exercise?.trim();
@@ -8825,7 +8844,7 @@ export default class TPSHealthPlugin extends Plugin {
     ].join("\n");
   }
 
-  private extractWorkoutExerciseListFromPlan(content: string): string[] {
+  private extractWorkoutExerciseListFromPlan(content: string, preserveFields = false): string[] {
     const lines = content.split("\n");
     let inExercises = false;
     const output: string[] = [];
@@ -8840,7 +8859,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (/^##\s+/.test(trimmed)) break;
       const match = line.match(/^\s*-\s*(?:\[[ xX]\]\s*)?(.*)$/);
       if (!match) continue;
-      const entry = stripDataviewFields(match[1]).trim();
+      const entry = (preserveFields ? match[1] : stripDataviewFields(match[1])).trim();
       if (!entry) continue;
       output.push(entry.replace(/^\[[ xX]\]\s*/, "").trim());
     }
@@ -8882,16 +8901,33 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("WorkoutPlan", "apply-native:missing-plan", { sessionPath: sessionFile.path, planPath });
       return;
     }
-    const exercises = this.extractWorkoutExerciseListFromPlan(await this.app.vault.read(planFile));
-    if (!exercises.length) {
-      logger.flowWarn("WorkoutPlan", "apply-native:no-exercises", { sessionPath: sessionFile.path, planPath });
-      return;
-    }
+    const exercises = this.extractWorkoutExerciseListFromPlan(await this.app.vault.read(planFile), true);
+    const supersetMembers = new Map<string, string[]>();
     let added = 0;
-    for (const exerciseName of exercises) {
-      const exercise = await this.findOrCreateExercise({ name: wikilinkLabel(exerciseName) }, { skipCatalogBuild: true });
-      await this.nativeRecordService.ensureWorkoutExercise(sessionFile, exercise.name, exercise.sourcePath);
+    for (const entry of exercises) {
+      const parsed = parseWorkoutTaskSetLine(`- [ ] ${entry}`);
+      const hasSet = parsed.reps != null || parsed.weight != null;
+      const name = hasSet ? parsed.exercise || "" : wikilinkLabel(entry);
+      if (!name || /^-?\s*id:/.test(name)) throw new Error("This layout contains invalid exercise entries. Save it again from the original workout.");
+      const exercise = await this.findOrCreateExercise({ name }, { skipCatalogBuild: true });
+      const handle = await this.nativeRecordService.ensureWorkoutExercise(sessionFile, exercise.name, exercise.sourcePath);
+      if (hasSet) {
+        await this.nativeRecordService.appendWorkoutSet(sessionFile, {
+          ...parsed, id: id("set"), exercise: exercise.name, exercisePath: exercise.sourcePath,
+          endedAt: "", restSeconds: readNumber(entry, "rest"), rpe: readNumber(entry, "rpe"),
+          setType: normalizeWorkoutSetType(readStringField(entry, "setType") || parsed.setType),
+          perArm: /(?:^| - )per arm(?: - |$)/i.test(stripDataviewFields(entry)),
+        });
+      }
+      if (parsed.supersetGroupId) {
+        const members = supersetMembers.get(parsed.supersetGroupId) || [];
+        if (!members.includes(handle.id)) members.push(handle.id);
+        supersetMembers.set(parsed.supersetGroupId, members);
+      }
       added++;
+    }
+    for (const members of supersetMembers.values()) {
+      if (members.length > 1) await this.nativeRecordService.setWorkoutSupersetLinks(sessionFile, members[0], members.slice(1));
     }
     logger.flow("WorkoutPlan", "apply-native:done", {
       sessionPath: sessionFile.path,
@@ -10364,6 +10400,7 @@ class FoodSearchModal extends Modal {
   private searchTimer: number | null = null;
   private draftPersistTimer: number | null = null;
   private onlineSearchActive = false;
+  private completedOnlineToken = -1;
   private barcodeScannerModal: BarcodeScannerModal | null = null;
   private restoredPendingDraft = false;
   private describeRequestActive = false;
@@ -10391,7 +10428,7 @@ class FoodSearchModal extends Modal {
       this.restoredPendingDraft = true;
     }
     // The general logger always starts where the next action happens: search.
-    // Explicit Scan and Quick add commands may still request their dedicated tab.
+    // Explicit Scan and Quick add commands remain compatible entry points.
     this.activeFoodLogTab = initialTab || "search";
     this.consumedDateInput = restoredFoodLogDraftConsumedDateInput(dateContext, pendingDraft);
     if (pendingDraft?.consumedDateInput) {
@@ -10428,37 +10465,44 @@ class FoodSearchModal extends Modal {
       quick: panelsEl.createDiv({ cls: "tps-health-food-tab-panel" }),
     };
     const tabButtons = new Map<FoodLogTab, HTMLButtonElement>();
-    const tabOrder: FoodLogTab[] = ["search", "barcode", "mine", "describe", "quick"];
+    const tabOrder: FoodLogTab[] = ["search", "describe"];
     const setActiveTab = (mode: FoodLogTab) => {
+      const scan = mode === "barcode";
+      if (mode === "mine" || scan) mode = "search";
       const token = ++this.searchToken;
+      this.onlineSearchActive = false;
+      if (this.searchButtonEl) this.searchButtonEl.disabled = false;
+      this.statusEl.setAttr("aria-busy", "false");
       this.activeFoodLogTab = mode;
       logger.flow("FoodModal", "tab:set", { mode, selected: this.selectionItems.length });
       this.persistDraft();
       for (const [candidate, button] of tabButtons) {
-        const active = candidate === mode;
+        const active = candidate === mode || (mode === "quick" && candidate === "search");
         button.toggleClass("is-active", active);
         button.setAttr("aria-selected", active ? "true" : "false");
         button.setAttr("tabindex", active ? "0" : "-1");
-        panelByMode[candidate].toggleClass("is-active", active);
+        button.setAttr("aria-controls", mode === "quick" && candidate === "search" ? "tps-health-food-panel-quick" : `tps-health-food-panel-${candidate}`);
+
       }
+      for (const candidate of Object.keys(panelByMode) as FoodLogTab[]) {
+        panelByMode[candidate].toggleClass("is-active", candidate === mode);
+      }
+      if (scan) this.openBarcodeScanner();
       if (!this.resultsEl || !this.actionsEl) return;
       this.resultsEl.empty();
       this.actionsEl.empty();
-      if (mode === "mine") {
-        void this.renderQuickPicks(token);
-      } else if (mode === "search") {
+      if (mode === "search") {
         if (this.searchInput.trim().length >= 2) this.queueSearch(this.searchInput);
-        else this.statusEl.setText("Type at least 2 characters.");
-      } else if (mode === "barcode") {
-        this.statusEl.setText("Point the camera at a UPC/EAN barcode. Keep glare outside the guide when possible.");
-        this.openBarcodeScanner();
+        else void this.renderQuickPicks(token);
+
       } else if (mode === "quick") {
         this.statusEl.setText("Estimate one item without creating a reusable food note.");
       } else {
-        this.statusEl.setText("Describe the meal naturally. TPS Health separates every item, reviews the estimates, and retries anything missing or uncertain before opening the tray.");
+        this.statusEl.setText("Describe foods and portions, then review the estimate.");
+        window.setTimeout(() => tabButtons.get("describe")?.scrollIntoView({ block: "nearest", inline: "nearest" }), 0);
       }
     };
-    for (const [mode, label] of [["search", "Search"], ["barcode", "Scan"], ["mine", "Saved"], ["describe", "Describe"], ["quick", "Quick add"]] as const) {
+    for (const [mode, label] of [["search", "Search"], ["describe", "Describe"]] as const) {
       const button = tabsEl.createEl("button", { text: label, cls: "tps-health-food-tab" });
       button.setAttr("type", "button");
       button.setAttr("role", "tab");
@@ -10485,7 +10529,15 @@ class FoodSearchModal extends Modal {
       tabButtons.set(mode, button);
     }
 
-    panelByMode.mine.createDiv({ cls: "tps-health-selection-empty", text: "Choose from recent foods, saved foods, and recipes." });
+    const searchBar = panelByMode.search.createDiv({ cls: "tps-health-food-search-bar" });
+    const shortcuts = panelByMode.search.createDiv({ cls: "tps-health-food-shortcuts" });
+    const quickButton = shortcuts.createEl("button", { text: "Quick add", attr: { type: "button" } });
+    quickButton.addEventListener("click", () => { setActiveTab("quick"); quickNameInput?.focus(); });
+    const backButton = panelByMode.quick.createEl("button", { text: "Back to search", attr: { type: "button" } });
+    backButton.addEventListener("click", () => { setActiveTab("search"); this.searchInputEl?.focus(); });
+    panelByMode.quick.id = "tps-health-food-panel-quick";
+    panelByMode.quick.setAttr("role", "tabpanel");
+    panelByMode.quick.setAttr("aria-labelledby", "tps-health-food-tab-search");
     const quickForm = panelByMode.quick.createDiv({ cls: "tps-health-quick-add" });
     quickForm.createDiv({
       cls: "tps-health-selection-empty",
@@ -10596,11 +10648,14 @@ class FoodSearchModal extends Modal {
       event.preventDefault();
       void submitDescription();
     });
-    new Setting(panelByMode.search)
+    new Setting(searchBar)
+      .setClass("tps-health-food-search-setting")
       .setName("Search food")
       .addText((text) => {
         this.searchInputEl = text.inputEl;
-        text.setPlaceholder("Great Value steak cut, Greek yogurt, rice...");
+        text.setPlaceholder("Search foods, recipes, or a barcode");
+        text.inputEl.setAttr("aria-label", "Search saved foods and food databases");
+        text.inputEl.setAttr("enterkeyhint", "search");
         if (this.initialDraft?.query) {
           text.setValue(this.initialDraft.query);
           this.searchInput = this.initialDraft.query;
@@ -10626,32 +10681,15 @@ class FoodSearchModal extends Modal {
       .addButton((button) => {
         this.searchButtonEl = button.buttonEl;
         return button
-          .setButtonText("Search online")
+          .setButtonText("Search")
           .setCta()
           .onClick(() => this.submitOnlineSearch(this.searchInput));
       });
-    new Setting(panelByMode.search)
-      .setClass("tps-health-search-barcode")
-      .setName("UPC / EAN")
-      .setDesc("Enter a barcode number when you already have it.")
-      .addText((text) => {
-        text.setPlaceholder("UPC or EAN");
-        text.inputEl.setAttr("inputmode", "numeric");
-        text.inputEl.setAttr("enterkeyhint", "search");
-        text.inputEl.setAttr("autocomplete", "off");
-        text.inputEl.addEventListener("input", () => {
-          this.barcodeInput = text.inputEl.value;
-        });
-        text.inputEl.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter" || event.isComposing) return;
-          event.preventDefault();
-          void this.handleBarcodeAdd(text.inputEl.value);
-        });
-      })
-      .addButton((button) => button
-        .setButtonText("Lookup")
-        .setCta()
-        .onClick(() => this.handleBarcodeAdd(this.barcodeInput)));
+    const scanButton = searchBar.createEl("button", { cls: "tps-health-food-scan-button", attr: {
+      type: "button", "aria-label": "Scan food barcode", title: "Scan food barcode",
+    } });
+    setIcon(scanButton, "scan-barcode");
+    scanButton.addEventListener("click", () => this.openBarcodeScanner());
     this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" });
     this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" });
     this.actionsEl = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
@@ -10722,13 +10760,13 @@ class FoodSearchModal extends Modal {
     this.resultsEl.empty();
     this.actionsEl.empty();
     if (trimmed.length < 2) {
-      this.statusEl.setText("Type at least 2 characters.");
+      await this.renderQuickPicks(token);
       return;
     }
     this.statusEl.setText("Searching saved foods...");
     const start = performance.now();
     const items = await this.plugin.searchLocalFoods(trimmed);
-    if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
+    if (token !== this.searchToken || this.activeFoodLogTab !== "search" || this.completedOnlineToken === token) return;
     logger.flow("FoodModal", "search:local-done", {
       query: trimmed,
       results: items.length,
@@ -10750,6 +10788,10 @@ class FoodSearchModal extends Modal {
 
   private submitOnlineSearch(query: string): void {
     const trimmed = query.trim();
+    if (/^\d{8,14}$/.test(trimmed) && barcodeFromInput(trimmed)) {
+      void this.handleBarcodeAdd(trimmed);
+      return;
+    }
     if (trimmed.length < 2 || this.onlineSearchActive) {
       if (trimmed.length < 2) this.statusEl.setText("Type at least 2 characters.");
       return;
@@ -10779,6 +10821,7 @@ class FoodSearchModal extends Modal {
         results: items.length,
         durationMs: Math.round(performance.now() - start),
       });
+      this.completedOnlineToken = token;
       this.renderSearchResults(
         trimmed,
         items,
@@ -10858,7 +10901,7 @@ class FoodSearchModal extends Modal {
     this.statusEl.setText("Pick recent foods or search.");
     const loggedStats = await this.plugin.getLoggedFoodStats("");
     const localFoods = await this.plugin.getSavedFoods(loggedStats);
-    if (token !== this.searchToken || this.activeFoodLogTab !== "mine") {
+    if (token !== this.searchToken || (this.activeFoodLogTab !== "mine" && this.activeFoodLogTab !== "search")) {
       logger.flow("FoodModal", "quick-picks:stale", { token, activeTab: this.activeFoodLogTab });
       return;
     }
@@ -13933,7 +13976,7 @@ class NativeWorkoutSurfaceWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -14041,6 +14084,9 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
 function nativeWorkoutReadingMountTarget(previewSizer: HTMLElement, renderedRoot?: HTMLElement): HTMLElement | null {
   const owningSection = renderedRoot?.closest<HTMLElement>(".markdown-preview-section");
   if (owningSection?.isConnected && previewSizer.contains(owningSection)) return owningSection;
+  // Frontmatter-only notes may not run a body postprocessor. In current
+  // Obsidian the preview sizer can itself be the managed preview section.
+  if (previewSizer.matches(".markdown-preview-section")) return previewSizer;
   const managedSections = Array.from(previewSizer.children)
     .filter((child): child is HTMLElement => child instanceof HTMLElement && child.matches(".markdown-preview-section"));
   return managedSections.at(-1) || null;
@@ -17141,8 +17187,11 @@ class WorkoutLayoutModal extends Modal {
       this.contentEl.createEl("p", { text: "Start a workout before saving a layout.", cls: "tps-health-status tps-health-status--warning" });
       return;
     }
+    const nativeSnapshot = this.plugin.nativeRecordService?.isEnabled()
+      ? this.plugin.nativeRecordService.getWorkoutSnapshot(active.id) : null;
+    const setCount = nativeSnapshot?.id === active.id ? nativeSnapshot.setCount : active.setCount || 0;
     this.contentEl.createEl("p", {
-      text: `${active.title || "Active workout"} • ${active.setCount || 0} sets logged`,
+      text: `${active.title || "Active workout"} • ${setCount} sets logged`,
       cls: "tps-health-status",
     });
     let title = defaultWorkoutLayoutName(active.title);
@@ -18359,6 +18408,7 @@ function parseWorkoutTaskSetLine(line: string): Partial<WorkoutSet> {
   for (const marker of parts) {
     const normalized = marker.toLowerCase();
     if (normalized === "warmup" || normalized === "warm-up") parsed.setType = "warmup";
+    else if (normalized === "failure") parsed.setType = "failure";
     else if (normalized === "drop") parsed.setType = "drop";
     else if (normalized.startsWith("drop ")) {
       parsed.setType = "drop";
@@ -18470,7 +18520,7 @@ function workoutLayoutEntryFromSet(set: Partial<WorkoutSet>): string | null {
   const markers = [
     set.setType && set.setType !== "normal" ? set.setType : "",
     set.supersetGroupId ? `superset ${set.supersetGroupId}` : "",
-    set.dropSetGroupId && set.setType !== "drop" ? `drop ${set.dropSetGroupId}` : "",
+    set.dropSetGroupId ? `drop ${set.dropSetGroupId}` : "",
     set.perArm ? "per arm" : "",
   ].filter(Boolean);
   const details = workoutSetDetailsLabel({
@@ -18481,7 +18531,9 @@ function workoutLayoutEntryFromSet(set: Partial<WorkoutSet>): string | null {
     distance: set.distance,
     distanceUnit: set.distanceUnit,
   });
-  const fields = set.restSeconds == null ? "" : ` [rest:: ${Math.max(0, Math.round(set.restSeconds))}]`;
+  const fields = (set.restSeconds == null ? "" : ` [rest:: ${Math.max(0, Math.round(set.restSeconds))}]`)
+    + (set.rpe == null ? "" : ` [rpe:: ${set.rpe}]`)
+    + (set.dropSetGroupId && set.setType === "normal" ? " [setType:: normal]" : "");
   return [exerciseLabel, ...markers, details || "Set"].filter(Boolean).join(" - ") + fields;
 }
 
@@ -20555,13 +20607,8 @@ function foodFactsNutrition(product: any, serving: FoodFactsServing, basis: NonN
     sodiumMg: foodFactsSodiumMg(n, multiplier, useLabeledServingValues, hasMetricServing),
   };
   if (nutrition.sugarAlcoholG != null) nutrition.sugarAlcoholCaloriesPerG = foodFactsSugarAlcoholCaloriesPerGram(product);
-  const macroCalories = caloriesFromMacros(nutrition);
-  if (hasMetricServing && nutrition.calories != null && macroCalories > 0 && !foodFactsValuesAgree(nutrition.calories, macroCalories, 0.45, 25)) {
-    const scaledCalories = foodFactsScaledValue(n, "energy-kcal", multiplier);
-    nutrition.calories = scaledCalories != null && foodFactsValuesAgree(scaledCalories, macroCalories, 0.45, 25)
-      ? scaledCalories
-      : round(macroCalories);
-  }
+  // Reported energy is independent of the subset of macros in a crowdsourced
+  // record (notably alcohol). Never replace it with an incomplete calculation.
   return nutrition;
 }
 

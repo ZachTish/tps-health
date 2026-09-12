@@ -85,7 +85,17 @@ async function importPluginWithObsidianStub() {
     }
     export class Notice { constructor(message) { globalThis.__TPSHealthTestNotices?.push(String(message)); } }
     export class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = {}; } display() {} }
-    export class Setting { constructor() {} setName() { return this; } setDesc() { return this; } addText() { return this; } addButton() { return this; } }
+    export class Setting {
+      constructor() { this.name = ''; this.settingEl = { addClass() {} }; }
+      setName(name) { this.name = name; return this; }
+      setClass() { return this; }
+      setDesc(description) { globalThis.__TPSHealthTestSettingDescription?.(this.name, description); return this; }
+      addText(callback) { globalThis.__TPSHealthTestSettingControl?.('text', this.name, callback); return this; }
+      addTextArea(callback) { globalThis.__TPSHealthTestSettingControl?.('textarea', this.name, callback); return this; }
+      addDropdown(callback) { globalThis.__TPSHealthTestSettingControl?.('dropdown', this.name, callback); return this; }
+      addButton(callback) { globalThis.__TPSHealthTestSettingControl?.('button', this.name, callback); return this; }
+      addToggle(callback) { globalThis.__TPSHealthTestSettingControl?.('toggle', this.name, callback); return this; }
+    }
     export class TextComponent { setValue() { return this; } getValue() { return ""; } }
     export class SecretComponent { constructor() {} setValue() { return this; } onChange() { return this; } }
     export class MarkdownView {}
@@ -150,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -425,13 +435,13 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /Added \$\{addedName\}\. Add another food or log your tray above\./);
   assert.match(mainSource, /this\.activeFoodLogTab = initialTab \|\| "search";/);
   assert.doesNotMatch(foodSearchOpen, /pendingDraft\?\.activeTab \|\| "mine"/);
-  assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "barcode", "mine", "describe", "quick"\]/);
+  assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "describe"\]/);
   assert.match(mainSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
   assert.match(stylesSource, /\.tps-health-selection\.is-empty/);
-  assert.match(stylesSource, /\.tps-health-food-tabs[\s\S]+grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
+  assert.match(stylesSource, /\.tps-health-food-tabs[\s\S]+grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(mainSource, /tabsEl\.setAttr\("role", "tablist"\)/);
   assert.match(mainSource, /button\.setAttr\("role", "tab"\)/);
   assert.match(mainSource, /panel\.setAttr\("role", "tabpanel"\)/);
@@ -894,7 +904,7 @@ test("food and recipe edits require an explicit linked-instance versioning choic
   assert.match(mainSource, /merge: !createNewVersion/);
   assert.match(mainSource, /private getLocalFoodIndex\(\): LocalFoodIndex/);
   assert.match(mainSource, /const markdownFiles = this\.app\.vault\.getMarkdownFiles\(\);/);
-  assert.match(mainSource, /\.filter\(\(\{ file, cache \}\) => isFoodLikeMarkdownFile\(this, file, cache\)\)/);
+  assert.match(mainSource, /\.filter\(\(\{ file, cache \}\) => isFoodLikeMarkdownFile\(this, file, cache\)\s+&& !isArchivedFoodDefinition\(file.path, cache\?\.frontmatter\)\)/);
   assert.match(mainSource, /\.sort\(\(a, b\) => \(b\.file\.stat\?\.ctime \|\| b\.file\.stat\?\.mtime \|\| 0\) - \(a\.file\.stat\?\.ctime \|\| a\.file\.stat\?\.mtime \|\| 0\)\)/);
   assert.match(mainSource, /scannedFiles: markdownFiles\.length/);
 });
@@ -1146,7 +1156,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /this\.plugin\.searchLocalFoods\(trimmed\)/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
   assert.match(mainSource, /FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100/);
-  assert.match(mainSource, /setButtonText\("Search online"\)/);
+  assert.match(mainSource, /setButtonText\("Search"\)/);
   assert.match(mainSource, /if \(this\.searchTimer !== null\) window\.clearTimeout\(this\.searchTimer\)/);
   assert.match(mainSource, /const savedFood = await this\.plugin\.findOrCreateFoodNote\(this\.selectedFood\)/);
   assert.match(mainSource, /await this\.plugin\.addRecipeIngredientLine\(this\.sourcePath, \{/);
@@ -4030,7 +4040,7 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(stylesSource, /\.tps-health-selection-step/);
   assert.match(stylesSource, /\.tps-health-selection-quantity/);
   assert.match(stylesSource, /body\.is-mobile \.tps-health-selection-row/);
-  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-row\s*\{[\s\S]+grid-template-areas:\s*"name controls"\s*"copy controls"/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-row\s*\{[\s\S]+grid-template-areas:\s*"name"\s*"copy"\s*"controls"/);
   assert.match(stylesSource, /> \.tps-health-selection-name/);
   assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-step/);
   assert.match(stylesSource, /grid-template-areas:\s*"title title"\s*"meta meta"\s*"macros actions"/);
@@ -4071,7 +4081,7 @@ test("food tray quantity changes update in place without rebuilding the modal", 
   );
   assert.doesNotMatch(adjustQuantity, /this\.renderSelection\(\)/);
   assert.match(stylesSource, /scrollbar-gutter: stable/);
-  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-line-macros,[\s\S]+flex-wrap: nowrap;[\s\S]+overflow-x: auto;/);
+  assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-selection-line-macros,[\s\S]+flex-wrap: wrap;[\s\S]+min-width: 0;/);
   assert.match(stylesSource, /\.tps-health-food-search-frame \.tps-health-food-tab \{[\s\S]+flex: 0 0 auto;[\s\S]+width: auto;/);
 });
 
@@ -4541,7 +4551,7 @@ test("Open Food Facts serving nutrition validates provider serving fields agains
   assert.match(mainSource, /if \(!useLabeledServingValue\) return scaled;/);
   assert.match(mainSource, /if \(serving == null\) return canScalePer100 \? scaled : undefined;/);
   assert.match(mainSource, /return serving;/);
-  assert.match(mainSource, /foodFactsScaledValue\(n, "energy-kcal", multiplier\)/);
+  assert.doesNotMatch(mainSource, /nutrition\.calories = scaledCalories/);
   assert.match(mainSource, /caloriesFromMacros\(nutrition\)/);
   assert.match(mainSource, /function foodFactsNutritionBasis\(product: any, serving: FoodFactsServing\)/);
   assert.match(mainSource, /return "per-100g";/);
@@ -6162,7 +6172,7 @@ test("quick add logs an estimate to the selected day without creating a food not
   assert.doesNotMatch(line, /\[foodPath::/);
   assert.equal(Array.from(fake.files.keys()).some((path) => path.startsWith("Health/Foods/")), false);
   assert.match(mainSource, /id: "quick-add-food"/);
-  assert.match(mainSource, /\["quick", "Quick add"\]/);
+  assert.match(mainSource, /text: "Quick add"/);
   assert.match(mainSource, /persistFoodNote: false/);
   assert.match(mainSource, /if \(this\.item\.sourcePath\) actions\.addButton/);
   assert.match(mainSource, /nutritionSnapshot", "cal", "protein", "carbs", "fat"/);
@@ -6335,23 +6345,23 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "barcode-scanner:suppressed-active"/);
   assert.match(mainSource, /autoStart: true/);
   assert.match(mainSource, /onClose: \(\) => \{\s+if \(this\.barcodeScannerModal === scanner\) this\.barcodeScannerModal = null;/);
-  assert.match(mainSource, /this\.statusEl\.setText\("Point the camera at a UPC\/EAN barcode\. Keep glare outside the guide when possible\."\);\s+this\.openBarcodeScanner\(\);/);
+  assert.match(mainSource, /if \(scan\) this\.openBarcodeScanner\(\);/);
   assert.match(mainSource, /private getActiveInlineFoodDraft\(\): InlineFoodDraft \| null/);
   assert.doesNotMatch(mainSource, /\.setName\("Natural add"\)/);
   assert.doesNotMatch(mainSource, /\["natural", "Text"\]/);
-  assert.match(mainSource, /\["search", "Search"\], \["barcode", "Scan"\], \["mine", "Saved"\], \["describe", "Describe"\]/);
+  assert.match(mainSource, /\["search", "Search"\], \["describe", "Describe"\]/);
   assert.match(mainSource, /\.setName\("Search food"\)/);
-  assert.match(mainSource, /new Setting\(panelByMode\.search\)\s+\.setClass\("tps-health-search-barcode"\)\s+\.setName\("UPC \/ EAN"\)/);
+  assert.match(mainSource, /"aria-label": "Scan food barcode"/);
   assert.doesNotMatch(mainSource.slice(mainSource.indexOf("class BarcodeScannerModal"), mainSource.indexOf("class NutritionLabelScanModal")), /\.setName\("Enter barcode"\)|manualBarcode/);
-  assert.match(mainSource, /const token = \+\+this\.searchToken;\s+this\.activeFoodLogTab = mode;/);
-  assert.match(mainSource, /this\.resultsEl\.empty\(\);\s+this\.actionsEl\.empty\(\);\s+if \(mode === "mine"\) \{\s+void this\.renderQuickPicks\(token\);/);
-  assert.match(mainSource, /else if \(mode === "search"\) \{\s+if \(this\.searchInput\.trim\(\)\.length >= 2\) this\.queueSearch\(this\.searchInput\);/);
+  assert.match(mainSource, /const token = \+\+this\.searchToken;[\s\S]*?this\.activeFoodLogTab = mode;/);
+  assert.match(mainSource, /this\.resultsEl\.empty\(\);\s+this\.actionsEl\.empty\(\);\s+if \(mode === "search"\)/);
+  assert.match(mainSource, /if \(mode === "search"\) \{\s+if \(this\.searchInput\.trim\(\)\.length >= 2\) this\.queueSearch\(this\.searchInput\);/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "search:stale"/);
   assert.match(mainSource, /private async renderQuickPicks\(token = this\.searchToken\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "quick-picks:stale"/);
   assert.match(mainSource, /onClose\(\): void \{[\s\S]+this\.searchToken \+= 1;/);
   assert.match(mainSource, /createDiv\(\{ cls: "tps-health-food-tabs" \}\)/);
-  assert.match(mainSource, /panelByMode\[candidate\]\.toggleClass\("is-active", active\)/);
+  assert.match(mainSource, /panelByMode\[candidate\]\.toggleClass\("is-active", candidate === mode\)/);
   assert.match(mainSource, /this\.selectionEl\.addClass\("tps-health-inline-selection"\)/);
   assert.match(mainSource, /private consumedDateInput: string;/);
   assert.doesNotMatch(mainSource, /private recipeNameInput/);

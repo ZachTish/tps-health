@@ -420,7 +420,7 @@ button.tps-health-settings-route-button[aria-pressed="true"] {
   border-radius: 6px;
   display: grid;
   gap: 2px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 8px 0 10px;
   padding: 2px;
 }
@@ -774,7 +774,7 @@ body.is-phone .tps-health-selection-controls {
   gap: 4px 10px;
   grid-template-areas:
     "title actions"
-    "macros actions";
+    "macros macros";
   grid-template-columns: minmax(0, 1fr) auto;
   padding: 8px 9px;
 }
@@ -789,7 +789,9 @@ body.is-phone .tps-health-selection-controls {
 }
 
 .tps-health-food-search-frame .tps-health-selection-header-actions {
+  flex-wrap: wrap;
   grid-area: actions;
+  min-width: 0;
 }
 
 .tps-health-food-search-frame .tps-health-selection-log {
@@ -804,15 +806,22 @@ body.is-phone .tps-health-selection-controls {
   border-radius: 0;
   gap: 3px 8px;
   grid-template-areas:
-    "name controls"
-    "copy controls";
-  grid-template-columns: minmax(0, 1fr) auto;
+    "name"
+    "copy"
+    "controls";
+  grid-template-columns: minmax(0, 1fr);
   margin-top: 0;
   padding: 8px 2px;
 }
 
 .tps-health-food-search-frame .tps-health-selection-copy {
   gap: 2px;
+}
+
+.tps-health-food-search-frame .tps-health-selection-meta {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .tps-health-food-search-frame .tps-health-selection-controls {
@@ -846,6 +855,12 @@ body.is-phone .tps-health-selection-controls {
   grid-area: remove;
 }
 
+.tps-health-food-search-frame .tps-health-selection-review {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+}
+
 .tps-health-food-search-frame .tps-health-selection-step {
   height: 28px;
   min-height: 28px;
@@ -867,21 +882,19 @@ body.is-phone .tps-health-selection-controls {
 .tps-health-food-search-frame .tps-health-selection-header-actions button,
 .tps-health-food-search-frame .tps-health-selection-actions button {
   font-size: var(--font-ui-smaller);
+  height: auto;
   min-height: 28px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 3px 8px;
+  white-space: normal;
 }
 
 .tps-health-food-search-frame .tps-health-selection-line-macros,
 .tps-health-food-search-frame .tps-health-selection-header > .tps-health-selection-macros {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-height: 20px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.tps-health-food-search-frame .tps-health-selection-line-macros::-webkit-scrollbar,
-.tps-health-food-search-frame .tps-health-selection-header > .tps-health-selection-macros::-webkit-scrollbar {
-  display: none;
+  min-width: 0;
 }
 
 .tps-health-food-search-frame .tps-health-selection-time {
@@ -928,6 +941,41 @@ body.is-phone .tps-health-selection-controls {
 }
 
 @container tps-health-food-search (max-width: 520px) {
+  .tps-health-food-search-frame .tps-health-selection-header {
+    grid-template-areas:
+      "title"
+      "macros"
+      "actions";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls {
+    grid-template-areas:
+      "decrement quantity increment unit"
+      "edit edit remove remove";
+    grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr);
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls input,
+  .tps-health-food-search-frame .tps-health-selection-controls select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tps-health-food-search-frame .tps-health-selection-controls button,
+  .tps-health-food-search-frame .tps-health-selection-controls button:not(.tps-health-selection-step),
+  .tps-health-food-search-frame .tps-health-selection-header-actions button {
+    min-height: 44px;
+  }
+
   .tps-health-result {
     grid-template-areas:
       "title"
@@ -2297,7 +2345,7 @@ body.is-phone .tps-health-selection-controls {
   padding: 3px 7px;
 }
 
-@container tps-health-native-workout (max-width: 470px) {
+@container tps-health-native-workout (max-width: 620px) {
   .tps-health-native-workout-header,
   .tps-health-native-workout-empty {
     align-items: stretch;
@@ -2395,7 +2443,7 @@ body.is-phone .tps-health-selection-controls {
 }
 
 @media (hover: none) and (pointer: coarse) {
-  @container tps-health-native-workout (max-width: 470px) {
+  @container tps-health-native-workout (max-width: 620px) {
     .tps-health-native-workout-button.is-complete-toggle,
     .tps-health-native-workout-row-actions .tps-health-native-workout-button.is-menu {
       min-height: 38px;
@@ -4651,4 +4699,42 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   .tps-health-native-daily-food-title {
     min-height: 44px;
   }
+}
+
+/* Food logging: one search surface, with camera in the search bar. */
+.tps-health-food-search-frame .tps-health-food-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tps-health-food-search-frame .tps-health-food-search-setting {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+.tps-health-food-search-frame .tps-health-food-search-setting .setting-item-info { display: none; }
+.tps-health-food-search-frame .tps-health-food-search-setting .setting-item-control {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  gap: 8px;
+}
+.tps-health-food-search-frame .tps-health-food-search-setting input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.tps-health-food-search-frame .tps-health-food-search-bar button {
+  min-height: 44px;
+  height: auto;
+  width: auto;
+  flex: 0 0 auto;
+}
+.tps-health-food-search-frame .tps-health-food-scan-button { min-width: 44px; }
+.tps-health-food-search-frame .tps-health-food-shortcuts { margin: 8px 0; }
+.tps-health-food-search-frame .tps-health-food-shortcuts button { height: auto; min-height: 44px; }
+.tps-health-food-search-frame .tps-health-food-search-bar :focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }

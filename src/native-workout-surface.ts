@@ -122,12 +122,52 @@ const parsedNumber = (input: HTMLInputElement): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+// Invalid/unfinished numeric text must reach the validator, never become zero
+// or an intentional clear. Empty optional inputs alone mean "clear".
+export const nativeWorkoutEditedNumber = (input: Pick<HTMLInputElement, 'value' | 'validity'>, optional = false): number | null => {
+  if (input.validity.badInput) return NaN;
+  const value = input.value.trim();
+  return value ? Number(value) : optional ? null : NaN;
+};
+
 const setTypeOptions: Array<[string, string]> = [
   ['normal', 'Normal'],
   ['warmup', 'Warmup'],
   ['drop', 'Drop'],
   ['failure', 'Failure'],
 ];
+
+type WorkoutEditControl = HTMLInputElement | HTMLSelectElement;
+const pendingWorkoutRenders = new WeakMap<HTMLElement, { snapshot: NativeWorkoutSnapshot; options: NativeWorkoutSurfaceOptions }>();
+const editValue = (control: WorkoutEditControl): string => control.type === 'checkbox'
+  ? String((control as HTMLInputElement).checked) : control.value;
+const flushPendingWorkoutRender = (root: HTMLElement): void => {
+  const pending = pendingWorkoutRenders.get(root);
+  if (pending && root.isConnected) renderNativeWorkoutSurface(root, pending.snapshot, pending.options);
+};
+const registerWorkoutEdit = (root: HTMLElement, control: WorkoutEditControl, setId: string, field: string): void => {
+  control.classList.add('tps-health-native-workout-edit-control');
+  control.dataset.setId = setId;
+  control.dataset.field = field;
+  control.dataset.savedValue = editValue(control);
+  // Reverting an edit can reveal the latest deferred snapshot. Focus/blur alone
+  // must never replace unfinished browser numeric text (badInput has no raw value).
+  control.addEventListener('input', () => flushPendingWorkoutRender(root));
+};
+const hasUncommittedWorkoutEdit = (root: HTMLElement, snapshot: NativeWorkoutSnapshot): boolean => {
+  const sets = new Map(snapshot.exercises.flatMap(exercise => exercise.sets.map(set => [set.id, set] as const)));
+  return Array.from(root.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control')).some(control => {
+    if ((control as HTMLInputElement).validity?.badInput) return true;
+    const value = editValue(control);
+    if (value === control.dataset.savedValue) return false;
+    if (document.activeElement === control && !control.disabled) return true;
+    const set = sets.get(control.dataset.setId || '');
+    if (!set) return true;
+    const stored = set[control.dataset.field as keyof NativeWorkoutSetSnapshot];
+    const incoming = stored == null ? '' : typeof stored === 'number' ? formatNumber(stored) : String(stored);
+    return value !== incoming;
+  });
+};
 
 export function renderNativeWorkoutSurface(
   root: HTMLElement,
@@ -137,19 +177,58 @@ export function renderNativeWorkoutSurface(
   const signature = JSON.stringify({
     instance: options.instanceKey,
     active: options.active,
-    elapsed: options.elapsedLabel,
     id: snapshot.id,
+    path: snapshot.path,
     status: snapshot.status,
     showSessionActions: options.showSessionActions,
     exercises: snapshot.exercises.map((exercise) => [
       exercise.id,
+      exercise.path,
+      exercise.name,
+      exercise.totalReps,
+      exercise.totalVolume,
       exercise.supersetGroupId,
-      exercise.sets.map((set) => [set.id, set.reps, set.weight, set.weightUnit, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId, set.completedDate, set.restStartedAt]),
+      exercise.sets.map((set) => [set.id, set.ordinal, set.reps, set.weight, set.weightUnit, set.perArm, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId, set.completedDate, set.restStartedAt]),
     ]),
     defaultRestSeconds: options.defaultRestSeconds,
   });
-  if (root.dataset.renderKey === signature) return;
+  const summary = `${snapshot.status === 'complete' ? 'Complete' : options.elapsedLabel} · ${snapshot.setCount} ${snapshot.setCount === 1 ? 'set' : 'sets'} · ${snapshot.exerciseCount} ${snapshot.exerciseCount === 1 ? 'exercise' : 'exercises'}`;
+  if (root.dataset.renderKey === signature) {
+    // This is the latest authoritative snapshot too, even when only its clock
+    // changed. A deferred different snapshot must not reappear after an edit.
+    pendingWorkoutRenders.delete(root);
+    root.querySelector<HTMLElement>('.tps-health-native-workout-pending-refresh')?.remove();
+    // A clock-only refresh must not replace a focused input or its draft text.
+    const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
+    if (summaryElement) summaryElement.textContent = summary;
+    return;
+  }
+  if (options.active && snapshot.status === 'active' && root.dataset.workoutId === snapshot.id
+    && root.dataset.workoutPath === snapshot.path && root.dataset.instanceKey === options.instanceKey
+    && hasUncommittedWorkoutEdit(root, snapshot)) {
+    pendingWorkoutRenders.set(root, { snapshot, options });
+    const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
+    if (summaryElement) summaryElement.textContent = summary;
+    let waiting = root.querySelector<HTMLElement>('.tps-health-native-workout-pending-refresh');
+    if (!waiting) {
+      waiting = text('p', '', 'tps-health-native-workout-pending-refresh');
+      waiting.setAttribute('role', 'status');
+      root.append(waiting);
+    }
+    waiting.textContent = 'New workout values are waiting. Save or revert your edit to show them.';
+    return;
+  }
+  // A persisted change may arrive after Tab has moved to the next field.
+  // Preserve that current field, rather than pulling focus back to the saver.
+  const activeElement = (root.ownerDocument || document).activeElement as HTMLElement | null;
+  const focusedControl = activeElement && root.contains(activeElement)
+    && activeElement.classList.contains('tps-health-native-workout-edit-control')
+    && root.dataset.workoutId === snapshot.id && root.dataset.workoutPath === snapshot.path
+    && root.dataset.instanceKey === options.instanceKey
+    ? { setId: activeElement.dataset.setId, field: activeElement.dataset.field } : null;
+  pendingWorkoutRenders.delete(root);
   root.dataset.renderKey = signature;
+  root.dataset.instanceKey = options.instanceKey;
   root.dataset.workoutId = snapshot.id;
   root.dataset.workoutPath = snapshot.path;
   root.className = 'tps-health-native-workout-surface';
@@ -163,7 +242,7 @@ export function renderNativeWorkoutSurface(
     text('h3', 'Workout', 'tps-health-native-workout-heading'),
     text(
       'p',
-      `${snapshot.status === 'complete' ? 'Complete' : options.elapsedLabel} · ${snapshot.setCount} ${snapshot.setCount === 1 ? 'set' : 'sets'} · ${snapshot.exerciseCount} ${snapshot.exerciseCount === 1 ? 'exercise' : 'exercises'}`,
+      summary,
       'tps-health-native-workout-summary',
     ),
   );
@@ -269,19 +348,26 @@ export function renderNativeWorkoutSurface(
       const status = text('span', '', 'tps-health-native-workout-save-state');
       status.setAttribute('role', 'status');
       const commit = async (control: HTMLInputElement | HTMLSelectElement, patch: NativeWorkoutSetPatch): Promise<void> => {
-        control.disabled = true;
+        const submittedValue = editValue(control);
+        // A snapshot captured before this save cannot be replayed after it.
+        pendingWorkoutRenders.delete(root);
+        // Disabling a field during its change/blur event cancels native Tab focus.
+        control.setAttribute('aria-busy', 'true');
         status.textContent = 'Saving…';
         try {
           await options.actions.updateSet(exercise, set, patch);
+          control.dataset.savedValue = submittedValue;
           status.textContent = 'Saved';
         } catch {
           status.textContent = 'Retry';
         } finally {
-          control.disabled = false;
+          control.setAttribute('aria-busy', 'false');
+          flushPendingWorkoutRender(root);
         }
       };
       const reps = numberInput(set.reps, `${exercise.name} set ${set.ordinal} reps`, { min: 0, step: '1', integer: true });
-      reps.addEventListener('change', () => void commit(reps, { reps: Math.max(0, parsedNumber(reps) || 0) }));
+      registerWorkoutEdit(root, reps, set.id, 'reps');
+      reps.addEventListener('change', () => void commit(reps, { reps: nativeWorkoutEditedNumber(reps) as number }));
       row.append(reps);
 
       const weightCell = document.createElement('div');
@@ -297,23 +383,28 @@ export function renderNativeWorkoutSurface(
       const perArmToggle = document.createElement('input');
       perArmToggle.type = 'checkbox';
       perArmToggle.checked = set.perArm;
+      registerWorkoutEdit(root, weight, set.id, 'weight');
+      registerWorkoutEdit(root, unit, set.id, 'weightUnit');
+      registerWorkoutEdit(root, perArmToggle, set.id, 'perArm');
       perArmToggle.setAttribute('aria-label', `${exercise.name} set ${set.ordinal} weight is per arm`);
       perArm.append(perArmToggle, text('span', '×2'));
       stopInteraction(perArm);
-      weight.addEventListener('change', () => void commit(weight, { weight: Math.max(0, parsedNumber(weight) || 0) }));
+      weight.addEventListener('change', () => void commit(weight, { weight: nativeWorkoutEditedNumber(weight) as number }));
       unit.addEventListener('change', () => void commit(unit, { weightUnit: unit.value }));
       perArmToggle.addEventListener('change', () => void commit(perArmToggle, { perArm: perArmToggle.checked }));
       weightCell.append(weight, unit, perArm);
       row.append(weightCell);
 
       const rpe = numberInput(set.rpe, `${exercise.name} set ${set.ordinal} RPE`, { min: 0, max: 10, step: '0.5' });
-      rpe.addEventListener('change', () => void commit(rpe, { rpe: parsedNumber(rpe) ?? null }));
+      registerWorkoutEdit(root, rpe, set.id, 'rpe');
+      rpe.addEventListener('change', () => void commit(rpe, { rpe: nativeWorkoutEditedNumber(rpe, true) }));
       row.append(rpe);
       const restCell = document.createElement('div');
       restCell.className = 'tps-health-native-workout-rest-cell';
       restCell.setAttribute('role', 'cell');
       const rest = numberInput(set.restSeconds, `${exercise.name} set ${set.ordinal} rest seconds`, { min: 0, step: '1', integer: true });
-      rest.addEventListener('change', () => void commit(rest, { restSeconds: parsedNumber(rest) ?? null }));
+      registerWorkoutEdit(root, rest, set.id, 'restSeconds');
+      rest.addEventListener('change', () => void commit(rest, { restSeconds: nativeWorkoutEditedNumber(rest, true) }));
       const restCountdown = text('span', '', 'tps-health-native-workout-rest-countdown');
       const updateRestCountdown = (): void => {
         const targetSeconds = Math.max(0, Math.round(parsedNumber(rest) ?? options.defaultRestSeconds));
@@ -333,6 +424,7 @@ export function renderNativeWorkoutSurface(
       restCell.append(rest, restCountdown);
       row.append(restCell);
       const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);
+      registerWorkoutEdit(root, setType, set.id, 'setType');
       setType.addEventListener('change', () => void commit(setType, { setType: setType.value }));
       const rowActions = document.createElement('div');
       rowActions.className = 'tps-health-native-workout-row-actions';
@@ -370,4 +462,9 @@ export function renderNativeWorkoutSurface(
     exerciseList.append(group);
   }
   root.append(exerciseList);
+  if (focusedControl && options.active) {
+    const replacement = Array.from(root.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control'))
+      .find(control => control.dataset.setId === focusedControl.setId && control.dataset.field === focusedControl.field);
+    replacement?.focus({ preventScroll: true });
+  }
 }

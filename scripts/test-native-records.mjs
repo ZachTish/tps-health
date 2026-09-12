@@ -1673,8 +1673,8 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');
   assert.match(stylesSource, /\.tps-health-native-workout-exercise\.is-superset/u);
   assert.match(stylesSource, /\.tps-health-native-workout-row\.is-drop-set/u);
-  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 470px\)[\s\S]*?\.tps-health-native-workout-row \{[\s\S]*?min-width: 0;/u, 'narrow workout rows keep completion and the set menu on screen');
-  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 470px\)[\s\S]*?grid-template-columns: 20px minmax\(36px, \.55fr\) minmax\(82px, 1\.25fr\) minmax\(42px, \.72fr\) minmax\(72px, \.9fr\)/u, 'phone rows fit their five visible columns without horizontal clipping');
+  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 620px\)[\s\S]*?\.tps-health-native-workout-row \{[\s\S]*?min-width: 0;/u, 'narrow workout rows keep completion and the set menu on screen');
+  assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 620px\)[\s\S]*?grid-template-columns: 20px minmax\(36px, \.55fr\) minmax\(82px, 1\.25fr\) minmax\(42px, \.72fr\) minmax\(72px, \.9fr\)/u, 'phone rows fit their five visible columns without horizontal clipping');
   assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle::before \{[\s\S]*?content: "○"/u, 'phone completion remains a clear compact toggle');
   assert.match(stylesSource, /\.tps-health-native-workout-button\.is-complete-toggle\[aria-pressed="true"\]::before \{[\s\S]*?content: "✓"/u);
   assert.match(stylesSource, /\.tps-health-native-workout-per-arm > span \{[\s\S]*?display: none/u, 'the redundant per-arm text does not force the weight cell wider than the phone');
@@ -1753,4 +1753,15 @@ test('legacy inline parser does not interpret surrounding note text as propertie
     type: 'foodLog',
     food: 'A:B',
   });
+});
+
+test('workout finish waits for transient indexing but remains bounded and fails closed during startup', async()=>{
+ const cold=createHarness({layoutReady:true,metadataInitialized:false});
+ assert.equal(await cold.service.waitForWorkoutIndexSettled(0),false);
+ cold.emitMetadata('resolved');
+ cold.service.refreshGenerations.set('Synthetic/layout.md',1);
+ assert.equal(await cold.service.waitForWorkoutIndexSettled(0),false);
+ const timer=setTimeout(()=>cold.service.refreshGenerations.delete('Synthetic/layout.md'),5);
+ try { assert.equal(await cold.service.waitForWorkoutIndexSettled(250),true); }
+ finally {clearTimeout(timer);}
 });

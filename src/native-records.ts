@@ -1001,6 +1001,17 @@ export class HealthNativeRecordService {
     return this.plugin.settings.storageMode === 'native-records';
   }
 
+  async waitForWorkoutIndexSettled(timeoutMs = 3000): Promise<boolean> {
+    // A layout save itself emits file events. Let that bounded in-flight work
+    // finish before checking identity; never bypass startup or ambiguity guards.
+    if (!this.workoutIndexReady) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (!this.isWorkoutIndexSettled() && Date.now() < deadline) {
+      await new Promise<void>(resolve => globalThis.setTimeout(resolve, 50));
+    }
+    return this.isWorkoutIndexSettled();
+  }
+
   isWorkoutIndexSettled(): boolean {
     return this.workoutIndexReady && this.refreshGenerations.size === 0;
   }
