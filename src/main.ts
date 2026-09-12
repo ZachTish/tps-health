@@ -1018,6 +1018,21 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerMarkdownPostProcessor((root, ctx) => {
       ctx.addChild(new TPSHealthRenderedControlsChild(root, this, ctx));
     });
+    if (typeof MutationObserver !== "undefined" && this.app.workspace.containerEl) {
+      const workoutReadingObserver = new MutationObserver((records) => {
+        const structural = records.some((record) => {
+          const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+          return nodes.some((node) => node instanceof HTMLElement && (
+            node.matches(".markdown-preview-view, .markdown-preview-sizer, .mod-footer")
+            || node.querySelector(".markdown-preview-sizer")
+            || (Array.from(record.removedNodes).includes(node) && node.matches(".tps-health-native-workout-surface"))
+          ));
+        });
+        if (structural) this.scheduleWorkoutActionBars();
+      });
+      workoutReadingObserver.observe(this.app.workspace.containerEl, { childList: true, subtree: true });
+      this.register(() => workoutReadingObserver.disconnect());
+    }
     this.registerWorkoutTaskCompletionTracking();
     this.refreshGcmFoodLogButtonRegistration();
     this.registerGcmFoodLogButtonTapFallback();
@@ -7883,6 +7898,10 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("WorkoutActionBar", "render:no-host", { path: file.path, source });
       return null;
     }
+    const activeOwner = this.getActiveWorkoutState();
+    if (!activeOwner || ![activeOwner.path, activeOwner.dailyNotePath].includes(file.path)) return null;
+    if (view?.getMode() === "source" && (view.getState().source === true
+      || !view.contentEl.querySelector(".markdown-source-view.is-live-preview"))) return null;
     const nativeSnapshot = this.nativeRecordService?.isEnabled()
       ? this.nativeRecordService.getWorkoutSnapshot(file.path)
       : null;
@@ -8010,6 +8029,12 @@ export default class TPSHealthPlugin extends Plugin {
 
   private resolveMobileWorkoutActionBarTarget(): { view: MarkdownView; file: TFile; source: "active-view" } | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const active = this.getActiveWorkoutState();
+    if (!active || !view?.file || ![active.path, active.dailyNotePath].includes(view.file.path)) return null;
+    if (view.getMode() === "source" && (view.getState().source === true
+      || !view.contentEl.querySelector(".markdown-source-view.is-live-preview"))) return null;
+    const snapshot = this.nativeRecordService?.isEnabled() ? this.nativeRecordService.getWorkoutSnapshot(view.file.path) : null;
+    if (snapshot && snapshot.status !== "active") return null;
     if (view?.file instanceof TFile && isWorkoutLikeMarkdownFile(this, view.file, this.app.metadataCache.getFileCache(view.file))) {
       // Native workout notes already render their complete action surface in
       // both Reading mode and Live Preview. A second body-level action bar
@@ -8072,12 +8097,16 @@ export default class TPSHealthPlugin extends Plugin {
       const view = leaf.view;
       if (!(view instanceof MarkdownView) || !(view.file instanceof TFile) || view.getMode() !== "preview") return;
       const snapshot = this.nativeRecordService?.getWorkoutSnapshot(view.file.path);
-      if (!snapshot) return;
       const container = (leaf as any).containerEl as HTMLElement | undefined;
       const target = container?.querySelector<HTMLElement>(".markdown-preview-view .markdown-preview-sizer");
       if (!target?.isConnected) return;
       const mountTarget = nativeWorkoutReadingMountTarget(target);
       if (!mountTarget) return;
+      for (const child of Array.from(mountTarget.children)) {
+        if (child instanceof HTMLElement && child.matches(".tps-health-native-workout-surface")
+          && child.dataset.workoutPath !== snapshot?.path) child.remove();
+      }
+      if (!snapshot) return;
       const matches = Array.from(target.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface"))
         .filter((surface) => surface.dataset.workoutPath === snapshot.path);
       const surface = matches.shift() || document.createElement("section");
@@ -14099,7 +14128,8 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
       return buildWorkoutSetChipDecorations(plugin, state);
     },
     update(decorations, transaction) {
-      if (transaction.docChanged || transaction.selection) {
+      if (transaction.docChanged || transaction.selection
+        || transaction.startState.field(editorLivePreviewField, false) !== transaction.state.field(editorLivePreviewField, false)) {
         return buildWorkoutSetChipDecorations(plugin, transaction.state);
       }
       return decorations;
@@ -14173,6 +14203,8 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
   const snapshot = plugin.nativeRecordService.getWorkoutSnapshot(sourcePath);
   if (!snapshot) return;
   const mount = (): boolean => {
+    const ownerPath = markdownFilePathForRenderedElement(plugin, root);
+    if (ownerPath && ownerPath !== sourcePath) return false;
     const target = root.closest<HTMLElement>(".markdown-preview-sizer");
     if (!target?.isConnected) return false;
     const mountTarget = nativeWorkoutReadingMountTarget(target, root);
@@ -14195,6 +14227,11 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
 }
 
 function nativeWorkoutReadingMountTarget(previewSizer: HTMLElement, renderedRoot?: HTMLElement): HTMLElement | null {
+  // Obsidian virtualizes the sizer's direct children. Its retained footer owns
+  // plugin content even for a frontmatter-only note with no body sections.
+  const footer = Array.from(previewSizer.children)
+    .find((child): child is HTMLElement => child instanceof HTMLElement && child.matches(".mod-footer"));
+  if (footer) return footer;
   const owningSection = renderedRoot?.closest<HTMLElement>(".markdown-preview-section");
   if (owningSection?.isConnected && previewSizer.contains(owningSection)) return owningSection;
   // Frontmatter-only notes may not run a body postprocessor. In current
@@ -14202,7 +14239,7 @@ function nativeWorkoutReadingMountTarget(previewSizer: HTMLElement, renderedRoot
   if (previewSizer.matches(".markdown-preview-section")) return previewSizer;
   const managedSections = Array.from(previewSizer.children)
     .filter((child): child is HTMLElement => child instanceof HTMLElement && child.matches(".markdown-preview-section"));
-  return managedSections.at(-1) || null;
+  return managedSections.at(-1) || previewSizer;
 }
 
 function markdownFilePathForRenderedElement(plugin: TPSHealthPlugin, element: HTMLElement): string {

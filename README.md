@@ -1,3 +1,11 @@
+## 0.40.4 — workout visibility and literal Source mode
+
+Floating workout actions are scoped to the open active session and excluded from literal Source mode. Mobile settings dialogs and expanded navigation drawers hide the overlay immediately. Completed sessions keep their read-only card but no floating controls. The existing Inline/Floating setting and all actions remain available; no default or schema changes.
+
+Reading cards mount in Obsidian’s retained preview footer so frontmatter-only workouts survive preview virtualization. A filtered workspace child-list observer retries when preview containers are inserted or the card is removed; it ignores ordinary card/input content updates and disconnects on unload. Live Preview decorations rebuild on mode changes so Source displays raw Markdown/YAML without workout widgets. Reading and Live Preview both keep the workout card. Minimum Obsidian remains 1.12.0.
+
+Validation covers retained-footer/empty-preview mounting, Source-mode and active-session guards, full declared tests, a separate final build, and reloaded test-vault UI transitions. Release notes record exact results and shipped hashes. Other TPS editor replacements were inspected for mode guards; GCM already explicitly distinguishes literal Source from Live Preview. Physical iPhone/iPad acceptance remains the user’s BRAT handoff.
+
 ## 0.40.3 — recover timer-replaced workout identities
 
 New native workouts retain the ID returned by the record service. Recheck workout can reconnect a legacy workout pointer whose ID was replaced by old GCM timer startup: the original ID must be absent, the replacement must be unique and active at the same path, and its start timestamp must match exactly. Recovery updates only the active pointer using the existing concurrency guard; it does not rewrite the note, timer, exercise data, or timestamps. Duplicate, competing, ended, and unrelated sessions remain protected. Install GCM 2.2.2 as well to prevent the underlying overwrite. No settings, command, layout, or minimum compatibility changes (Obsidian 1.12.0).

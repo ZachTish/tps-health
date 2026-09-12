@@ -106,3 +106,21 @@ test('recheck repairs only the timer replacement with the same path and exact st
   assert.equal(plugin.getActiveWorkoutState().setCount,original.setCount);
  }
 });
+
+
+test('floating workout target rejects other notes, completed sessions, and literal Source mode',()=>{
+ const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Visible Workout.md';
+ fake.files.set(path,'---\nkind: workout-session\nstatus: active\n---\n');
+ const view={file:fake.app.vault.getAbstractFileByPath(path),getMode:()=> 'source',getState:()=>({source:true}),contentEl:{querySelector:()=>null}};
+ fake.app.workspace.getActiveViewOfType=()=>view;
+ plugin.settings={...plugin.settings,activeWorkoutId:'workout-visible',activeWorkoutPath:path,activeWorkoutTarget:'both',workoutControlPlacement:'floating'};
+ assert.equal(plugin.resolveMobileWorkoutActionBarTarget(),null,'literal source');
+ view.getState=()=>({source:false});
+ assert.equal(plugin.resolveMobileWorkoutActionBarTarget(),null,'stale mobile mode flag with source DOM');
+ view.getMode=()=> 'preview';
+ plugin.settings.activeWorkoutPath='Inbox/Other.md';
+ assert.equal(plugin.resolveMobileWorkoutActionBarTarget(),null,'another note is open');
+ plugin.settings.activeWorkoutPath=path;
+ plugin.nativeRecordService={isEnabled:()=>true,getWorkoutSnapshot:()=>({status:'complete'})};
+ assert.equal(plugin.resolveMobileWorkoutActionBarTarget(),null,'ended record with stale active pointer');
+});

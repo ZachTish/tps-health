@@ -50,8 +50,8 @@ const connected=classes=>{const node=el(classes);node.rootConnected=true;return 
 test("frontmatter-only Reading preview mounts on the sizer that is itself the managed section",()=>{
  const sizer=connected("markdown-preview-sizer markdown-preview-section");
  sizer.append(el("markdown-preview-pusher"),el("mod-header"),el("metadata-container"),el("mod-footer"));
- assert.equal(nativeWorkoutReadingMountTarget(sizer),sizer);
- assert.equal(nativeWorkoutReadingMountTarget(sizer,sizer.children[2]),sizer);
+ assert.equal(nativeWorkoutReadingMountTarget(sizer),sizer.lastElementChild);
+ assert.equal(nativeWorkoutReadingMountTarget(sizer,sizer.children[2]),sizer.lastElementChild);
 });
 test("Reading mounting retains the nearest owned section and the last direct managed-section fallback",()=>{
  const sizer=connected("markdown-preview-sizer"),first=el("markdown-preview-section"),last=el("markdown-preview-section"),body=el("el-p");
@@ -61,9 +61,9 @@ test("Reading mounting retains the nearest owned section and the last direct man
  const foreign=connected("markdown-preview-section"),foreignBody=el("el-p");foreign.append(foreignBody);
  assert.equal(nativeWorkoutReadingMountTarget(sizer,foreignBody),last,"foreign rendering root cannot redirect the mount");
 });
-test("Reading mounting waits rather than appending beneath a sizer with no managed section",()=>{
+test("Reading mounting supports a sizer with no managed section",()=>{
  const sizer=connected("markdown-preview-sizer");sizer.append(el("mod-header"),el("el-p"));
- assert.equal(nativeWorkoutReadingMountTarget(sizer),null);
+ assert.equal(nativeWorkoutReadingMountTarget(sizer),sizer);
 });
 const snapshot=()=>({id:"workout-qa",path:"QA/workout.md",title:"QA workout",status:"active",startedAt:"2026-09-09T12:00:00Z",endedAt:"",setCount:1,exerciseCount:1,
  exercises:[{id:"exercise-qa",path:"QA/workout.md#exercise-qa",name:"QA press",totalReps:8,totalVolume:160,sets:[
