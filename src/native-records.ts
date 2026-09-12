@@ -943,15 +943,17 @@ export class HealthNativeRecordService {
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
+  private disposed = false;
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
 
   setup(): void {
-    this.rebuild();
+    this.disposed = false;
     const metadataCache = this.plugin.app.metadataCache;
     const vault = this.plugin.app.vault;
     const metadataInitialized = (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
     this.workoutIndexReady = this.plugin.app.workspace?.layoutReady === true && metadataInitialized;
+    this.rebuild();
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, _data, cache) => this.indexFile(file, cache?.frontmatter)));
@@ -1006,19 +1008,21 @@ export class HealthNativeRecordService {
   async waitForWorkoutIndexSettled(timeoutMs = 3000): Promise<boolean> {
     // A layout save itself emits file events. Let that bounded in-flight work
     // finish before checking identity; never bypass startup or ambiguity guards.
-    if (!this.workoutIndexReady) return false;
+    if (this.disposed || !this.workoutIndexReady) return false;
     const deadline = Date.now() + timeoutMs;
-    while (!this.isWorkoutIndexSettled() && Date.now() < deadline) {
+    while (!this.disposed && !this.isWorkoutIndexSettled() && Date.now() < deadline) {
       await new Promise<void>(resolve => globalThis.setTimeout(resolve, 50));
     }
     return this.isWorkoutIndexSettled();
   }
 
   isWorkoutIndexSettled(): boolean {
-    return this.workoutIndexReady && this.refreshGenerations.size === 0;
+    return !this.disposed && this.workoutIndexReady && this.refreshGenerations.size === 0;
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.refreshGenerations.clear();
     for (const timer of this.foodProjectionTimers.values()) globalThis.clearTimeout(timer);
     this.foodProjectionTimers.clear();
     this.foodProjectionGenerations.clear();
@@ -2598,6 +2602,7 @@ export class HealthNativeRecordService {
   }
 
   private rebuild(): void {
+    if (this.disposed) return;
     this.recordsByPath.clear();
     this.pathsByKind.clear();
     this.entryPathsByFoodPath.clear();
@@ -2605,12 +2610,20 @@ export class HealthNativeRecordService {
     this.workoutDataByPath.clear();
     const vault = this.plugin.app.vault;
     if (typeof vault?.getMarkdownFiles !== 'function') return;
-    for (const file of vault.getMarkdownFiles()) {
-      this.indexFile(file);
+    const files = vault.getMarkdownFiles();
+    let metadataComplete = files.length > 0;
+    for (const file of files) {
+      const cache = this.plugin.app.metadataCache.getFileCache(file);
+      metadataComplete &&= cache != null;
+      this.indexFile(file, cache?.frontmatter);
       if (this.plugin.app.workspace?.layoutReady && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
         void this.refreshFile(file);
       }
     }
+    // On a warm mobile plugin load, `resolved` may already have fired and the
+    // private initialized flag may not exist. Use the public cache coverage of
+    // the fully restored vault; a missing cache keeps reconciliation closed.
+    if (this.plugin.app.workspace?.layoutReady && metadataComplete) this.workoutIndexReady = true;
   }
 
   private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null): void {
@@ -2687,7 +2700,7 @@ export class HealthNativeRecordService {
   }
 
   private async refreshFile(file: TFile): Promise<void> {
-    if (file.extension !== 'md') return;
+    if (this.disposed || file.extension !== 'md') return;
     const generation = (this.refreshGenerations.get(file.path) || 0) + 1;
     this.refreshGenerations.set(file.path, generation);
     try {

@@ -1807,3 +1807,30 @@ test('metadata-only workout changes schedule controls without a page navigation'
   assert.ok(refreshes > 0);
   assert.equal(h.service.resolveWorkoutSession({ id: record.id }).state, 'terminal');
 });
+
+test('warm mobile load uses public cache coverage when initialized is absent and resolved already fired', async () => {
+ const h=createHarness({metadataInitialized:false});
+ delete h.plugin.app.metadataCache.initialized;
+ const record=await h.service.createWorkoutSession({title:'Warm mobile'},'warm');
+ h.service.refreshConfiguration();
+ assert.equal(await h.service.waitForWorkoutIndexSettled(250),true);
+ assert.equal(h.service.resolveWorkoutSession({id:record.id}).state,'active');
+ const original=h.plugin.app.metadataCache.getFileCache;
+ h.plugin.app.metadataCache.getFileCache=()=>null;
+ h.service.workoutIndexReady=false;
+ h.service.refreshConfiguration();
+ await Promise.resolve();
+ assert.equal(h.service.isWorkoutIndexSettled(),false,'partial cache coverage cannot authorize recovery');
+ h.plugin.app.metadataCache.getFileCache=original;
+ h.service.refreshConfiguration();
+ assert.equal(await h.service.waitForWorkoutIndexSettled(250),true);
+});
+
+test('an unloaded service cannot refresh controls when an old mobile read finishes', async()=>{
+ const h=createHarness(),record=await h.service.createWorkoutSession({title:'Unload'},'unload');
+ let release;h.plugin.app.vault.read=()=>new Promise(resolve=>release=()=>resolve(h.contents.get(record.path)));
+ let refreshes=0;h.plugin.scheduleWorkoutActionBars=()=>refreshes++;
+ const read=h.service.refreshFile(record.file);h.service.dispose();release();await read;
+ assert.equal(refreshes,0);
+ assert.equal(await h.service.waitForWorkoutIndexSettled(),false);
+});

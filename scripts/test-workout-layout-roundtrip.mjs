@@ -5,7 +5,7 @@ import * as esbuild from 'esbuild';
 const url=new URL('./test-health-providers.mjs',import.meta.url);
 globalThis.__TPSWorkoutRoundtripEsbuild=esbuild;
 const source=readFileSync(url,'utf8').replace('import test from "node:test";','const test=()=>{};').replace('import * as esbuild from "esbuild";','const esbuild=globalThis.__TPSWorkoutRoundtripEsbuild;').replaceAll('import.meta.url',JSON.stringify(url.href));
-const harness=await import('data:text/javascript;base64,'+Buffer.from(source+'\nexport {importPluginWithObsidianStub,createFakeHealthApp,installDeterministicBrowserGlobals};').toString('base64'));
+const harness=await import('data:text/javascript;base64,'+Buffer.from(source+'\nexport {importPluginWithObsidianStub,createFakeHealthApp,installDeterministicBrowserGlobals,primeHealthSettingsPersistence};').toString('base64'));
 harness.installDeterministicBrowserGlobals();
 const {default:Plugin}=await harness.importPluginWithObsidianStub();
 delete globalThis.__TPSWorkoutRoundtripEsbuild;
@@ -55,4 +55,34 @@ test('add-exercise waits for transient indexing and rejects an owner changed dur
  assert.equal(target.file.path,path);
  plugin.nativeRecordService.waitForWorkoutIndexSettled=async()=>{plugin.settings.activeWorkoutId='another';};
  await assert.rejects(plugin.resolveActiveNativeWorkoutMutationTarget('add-exercise'),/changed/);
+});
+
+
+test('explicit resume restores a missing active pointer without changing workout bytes or timestamps', async()=>{
+ const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Resume.md';
+ const content='---\nstatus: active\n---\n';fake.files.set(path,content);
+ plugin.settings={...plugin.settings,storageMode:'native-records'};
+ harness.primeHealthSettingsPersistence(plugin);
+ const snapshot={id:'resume',path,title:'Resume QA',status:'active',startedAt:'2026-09-12T10:00:00Z',setCount:3};
+ const resolution={state:'active',id:snapshot.id,path};
+ plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,refreshConfiguration(){},waitForWorkoutIndexSettled:async()=>true,getWorkoutSnapshot:()=>snapshot,resolveWorkoutSession:()=>resolution};
+ assert.equal(plugin.nativeWorkoutRecoveryState(snapshot).canResume,true);
+ await plugin.resumeNativeWorkout(path,'resume');
+ assert.equal(plugin.getActiveWorkoutState().startedAt,snapshot.startedAt);
+ assert.equal(plugin.getActiveWorkoutState().setCount,3);
+ assert.equal(plugin.nativeWorkoutRecoveryState(snapshot),null);
+ assert.equal(fake.files.get(path),content);
+ await assert.rejects(plugin.resumeNativeWorkout(path,'resume'),/already active/);
+});
+
+test('resume rejects ended sessions and a concurrent persisted active workout', async()=>{
+ for(const race of [false,true]){
+  const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Resume.md';
+  plugin.settings={...plugin.settings,storageMode:'native-records'};harness.primeHealthSettingsPersistence(plugin);
+  const snapshot={id:'resume',path,title:'Resume',status:race?'active':'complete',startedAt:'2026-09-12T10:00:00Z',setCount:0};
+  plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,refreshConfiguration(){},waitForWorkoutIndexSettled:async()=>true,getWorkoutSnapshot:()=>snapshot,resolveWorkoutSession:()=>({state:race?'active':'terminal',id:'resume',path})};
+  if(race){const load=plugin.loadData.bind(plugin);plugin.loadData=async()=>({...await load(),activeWorkoutId:'other',activeWorkoutPath:'Inbox/Other.md',activeWorkoutTarget:'both'});}
+  await assert.rejects(plugin.resumeNativeWorkout(path,'resume'),race?/changed before/:/not resumed/);
+  assert.equal(plugin.getActiveWorkoutState()?.id||'',race?'other':'');
+ }
 });

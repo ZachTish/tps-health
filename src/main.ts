@@ -627,7 +627,7 @@ export default class TPSHealthPlugin extends Plugin {
     next: ActiveWorkoutFilenameState;
   } | null = null;
   private pendingActiveWorkoutStateMutation: {
-    expected: ActiveWorkoutState;
+    expected: ActiveWorkoutState | null;
     next: ActiveWorkoutState | null;
     reason: string;
   } | null = null;
@@ -1101,13 +1101,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async persistActiveWorkoutStateMutation(
-    expected: ActiveWorkoutState,
+    expected: ActiveWorkoutState | null,
     next: ActiveWorkoutState | null,
     reason: string,
   ): Promise<boolean> {
     const before = this.getActiveWorkoutState();
     this.pendingActiveWorkoutStateMutation = {
-      expected: { ...expected },
+      expected: expected ? { ...expected } : null,
       next: next ? { ...next } : null,
       reason,
     };
@@ -7926,7 +7926,8 @@ export default class TPSHealthPlugin extends Plugin {
     const nativeProgress = nativeSnapshot
       ? { exerciseCount: nativeSnapshot.exerciseCount, setCount: nativeSnapshot.setCount }
       : null;
-    const renderKey = `${file.path}|${mobileFloating ? "mobile" : "inline"}|${activeForFile ? "active" : "inactive"}|${source}|${this.settings.activeWorkoutSetCount || 0}|${nativeProgress?.exerciseCount || 0}|${nativeProgress?.setCount || 0}`;
+    const recoveryKey = JSON.stringify(this.nativeWorkoutRecoveryState(nativeSnapshot));
+    const renderKey = `${recoveryKey}|${file.path}|${mobileFloating ? "mobile" : "inline"}|${activeForFile ? "active" : "inactive"}|${source}|${this.settings.activeWorkoutSetCount || 0}|${nativeProgress?.exerciseCount || 0}|${nativeProgress?.setCount || 0}`;
     if (bar.dataset.renderKey === renderKey) return bar;
     bar.dataset.path = file.path;
     bar.dataset.renderKey = renderKey;
@@ -8002,6 +8003,7 @@ export default class TPSHealthPlugin extends Plugin {
       }));
       menu.showAtMouseEvent(event);
     });
+    this.appendNativeWorkoutRecoveryControls(bar, nativeSnapshot);
     logger.flow("WorkoutActionBar", "render:done", { path: file.path, created, activeForFile, mobileFloating, source });
     return bar;
   }
@@ -8119,6 +8121,86 @@ export default class TPSHealthPlugin extends Plugin {
         },
       },
     });
+    if (!this.workoutActionBarOwnsNativeSession(snapshot)) this.appendNativeWorkoutRecoveryControls(root, snapshot);
+  }
+
+  private nativeWorkoutRecoveryState(snapshot: NativeWorkoutSnapshot | null): { message: string; canResume: boolean } | null {
+    const service = this.nativeRecordService;
+    if (!service?.isEnabled()) return null;
+    if (!service.isWorkoutIndexSettled()) return { message: "Workout records are still loading.", canResume: false };
+    if (!snapshot) return { message: "This workout's record has not loaded.", canResume: false };
+    if (snapshot.status !== "active") {
+      if (["complete", "discarded"].includes(snapshot.status)) return null;
+      return { message: `The saved workout status is “${snapshot.status || "empty"}”, not active.`, canResume: false };
+    }
+    const active = this.getActiveWorkoutState();
+    if (!active) return { message: "This workout has not been resumed on this device.", canResume: true };
+    const resolution = service.resolveWorkoutSession({ id: active.id, path: active.path });
+    if (resolution.state === "active" && resolution.id === snapshot.id && resolution.path === snapshot.path) return null;
+    return { message: resolution.state === "active"
+      ? "Another workout is active on this device. Finish it before resuming this one."
+      : `The active workout could not be matched to this note (${resolution.state}).`, canResume: false };
+  }
+
+  private appendNativeWorkoutRecoveryControls(root: HTMLElement, snapshot: NativeWorkoutSnapshot | null): void {
+    const state = this.nativeWorkoutRecoveryState(snapshot);
+    const previous = root.querySelector<HTMLElement>(":scope > .tps-health-workout-recovery");
+    if (!state) { previous?.remove(); return; }
+    const key = JSON.stringify([state, snapshot?.id, snapshot?.path]);
+    if (previous?.dataset.recoveryKey === key) return;
+    previous?.remove();
+    const panel = root.createDiv({ cls: "tps-health-workout-recovery" });
+    panel.dataset.recoveryKey = key;
+    panel.createEl("span", { text: `${state.message} (Health ${this.manifest.version})`, attr: { role: "status" } });
+    const action = panel.createEl("button", {
+      text: state.canResume ? "Resume workout here" : "Recheck workout",
+      attr: { type: "button" },
+    });
+    action.addEventListener("click", () => {
+      action.disabled = true;
+      void (async () => {
+        try {
+          if (state.canResume && snapshot) await this.resumeNativeWorkout(snapshot.path, snapshot.id);
+          else {
+            this.nativeRecordService.refreshConfiguration();
+            await this.nativeRecordService.waitForWorkoutIndexSettled();
+          }
+        } catch (error) {
+          new Notice(logger.errorSummary(error));
+          logger.flowError("Workout", "recovery:failed", error);
+        } finally { action.disabled = false; this.scheduleWorkoutActionBars(); }
+      })();
+    });
+  }
+
+  async resumeNativeWorkout(path: string, expectedId: string): Promise<void> {
+    const service = this.nativeRecordService;
+    if (!service?.isEnabled()) throw new Error("Native workout storage is not enabled.");
+    if (this.getActiveWorkoutState()) throw new Error("Another workout is already active. Finish it first.");
+    service.refreshConfiguration();
+    if (!await service.waitForWorkoutIndexSettled()) throw new Error("Workout records are still loading. Recheck in a moment.");
+    const snapshot = service.getWorkoutSnapshot(path);
+    const resolution = service.resolveWorkoutSession({ id: expectedId, path });
+    if (!snapshot || snapshot.id !== expectedId || snapshot.status !== "active" || resolution.state !== "active"
+      || resolution.id !== expectedId || resolution.path !== path) {
+      throw new Error("This workout changed, ended, or has conflicting records. It was not resumed.");
+    }
+    const next: ActiveWorkoutState = {
+      id: snapshot.id, path: snapshot.path, target: "both", dailyNotePath: "", planPath: "",
+      title: snapshot.title, startedAt: snapshot.startedAt, cooldownDays: this.settings.defaultWorkoutCooldownDays,
+      lastSetEndedAt: "", setCount: snapshot.setCount,
+    };
+    if (!await this.persistActiveWorkoutStateMutation(null, next, "resume-native-workout")) {
+      throw new Error("The active workout changed before this one could be resumed.");
+    }
+    // Resuming changes only the active pointer, never a session's status/data.
+    const latest = service.resolveWorkoutSession({ id: expectedId, path });
+    if (latest.state !== "active") {
+      await this.clearActiveWorkoutStateIfCurrent(next, "resume-session-ended");
+      throw new Error("The workout ended while it was being resumed.");
+    }
+    logger.flow("Workout", "resume:done", { workoutId: expectedId, path });
+    new Notice("Resumed workout on this device");
   }
 
   private workoutActionBarOwnsNativeSession(snapshot: NativeWorkoutSnapshot): boolean {
