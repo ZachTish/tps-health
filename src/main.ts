@@ -1916,15 +1916,6 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flow("FoodDraft", "restore:none", summarizeDateContext(dateContext));
       return null;
     }
-    if (!foodLogDraftMatchesDateContext(draft, dateContext)) {
-      logger.flow("FoodDraft", "restore:context-mismatch", {
-        selected: draft.selectionItems.length,
-        draftDateIso: draft.dateContext?.dateIso || "",
-        draftTarget: draft.dateContext?.foodLogTarget || "",
-        ...summarizeDateContext(dateContext),
-      });
-      return null;
-    }
     logger.flow("FoodDraft", "restore:found", {
       selected: draft.selectionItems.length,
       activeTab: draft.activeTab || "",
@@ -10562,7 +10553,7 @@ class FoodSearchModal extends Modal {
   ) {
     super(app);
     this.plugin = plugin;
-    const pendingDraft = initialDraft ? null : plugin.getPendingFoodLogDraft(dateContext);
+    const pendingDraft = plugin.getPendingFoodLogDraft(dateContext);
     this.draftId = id("pending-food-log");
     this.draftExpectedId = pendingDraft?.id || null;
     if (pendingDraft) {
@@ -11682,10 +11673,11 @@ class FoodSearchModal extends Modal {
 
   private async persistDraftIfOwned(): Promise<boolean> {
     if (!this.selectionItems.length) {
-      if (this.draftExpectedId !== this.draftId) return true;
+      const expectedId = this.draftExpectedId;
+      if (!expectedId) return true;
       const currentId = this.plugin.settings.pendingFoodLogDraft?.id || null;
-      const clearOperation = this.plugin.replacePendingFoodLogDraftIfCurrent(this.draftId, null);
-      if (currentId === this.draftId && !this.plugin.settings.pendingFoodLogDraft) this.draftExpectedId = null;
+      const clearOperation = this.plugin.replacePendingFoodLogDraftIfCurrent(expectedId, null);
+      if (currentId === expectedId && !this.plugin.settings.pendingFoodLogDraft) this.draftExpectedId = null;
       const cleared = await clearOperation;
       return cleared;
     }
@@ -22596,17 +22588,6 @@ function foodResultMeta(item: FoodItem): string {
     manual: "Manual",
   }[item.source] || item.source;
   return [item.brand, source, serving].filter(Boolean).join(" • ");
-}
-
-function foodLogDraftMatchesDateContext(draft: PendingFoodLogDraft, dateContext: FoodLogDateContext | null): boolean {
-  const draftContext = draft.dateContext;
-  const draftDateIso = draftContext?.dateIso || "";
-  const dateIso = dateContext?.dateIso || "";
-  if (!draftDateIso || !dateIso) return !draftDateIso && !dateIso;
-  if (draftDateIso !== dateIso) return false;
-  const draftTarget = draftContext?.foodLogTarget || "";
-  const target = dateContext?.foodLogTarget || "";
-  return !draftTarget || !target || draftTarget === target;
 }
 
 function normalizeCoreDailyNoteFolder(value: string): string {

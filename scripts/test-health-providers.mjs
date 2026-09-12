@@ -417,9 +417,9 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null\): Promise<void>/);
   assert.match(mainSource, /clearPendingFoodLogDraft\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:none"/);
-  assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:context-mismatch"/);
+  assert.doesNotMatch(mainSource, /restore:context-mismatch/);
   assert.match(mainSource, /logger\.flow\("FoodDraft", "restore:found"/);
-  assert.match(mainSource, /const pendingDraft = initialDraft \? null : plugin\.getPendingFoodLogDraft\(dateContext\)/);
+  assert.match(mainSource, /const pendingDraft = plugin\.getPendingFoodLogDraft\(dateContext\)/);
   assert.match(mainSource, /Restored \$\{this\.selectionItems\.length\} unlogged food/);
   assert.match(mainSource, /private async persistDraft\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-empty"/);
@@ -777,7 +777,30 @@ test("batch logging is one-shot and cannot clear a different pending draft", asy
   assert.equal(tray.__closed, true);
 });
 
-test("a fresh logger cannot replace a pending draft from a different date context", async () => {
+test("clearing a restored tray persists, while a stale window cannot clear its replacement", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.saveSettings = async () => {};
+  const draft = { id: "restored", updatedAt: new Date().toISOString(), activeTab: "search", searchInput: "", consumedDateInput: "", dateContext: null,
+    selectionItems: [{ item: { id: "fixture", name: "Fixture", source: "manual", nutrition: { calories: 100 } }, quantity: 1, unit: "serving" }] };
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: structuredClone(draft) };
+  const tray = new FoodSearchModal(fake.app, plugin, { query: "new search" });
+  assert.equal(tray.selectionItems.length, 1, "an initial query must not suppress the saved tray");
+  tray.selectionItems = [];
+  await tray.persistDraft();
+  assert.equal(plugin.settings.pendingFoodLogDraft, null);
+  assert.equal(new FoodSearchModal(fake.app, plugin).selectionItems.length, 0);
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: structuredClone(draft) };
+  const stale = new FoodSearchModal(fake.app, plugin);
+  plugin.settings.pendingFoodLogDraft = { ...draft, id: "newer" };
+  stale.selectionItems = [];
+  await stale.persistDraft();
+  assert.equal(plugin.settings.pendingFoodLogDraft.id, "newer");
+});
+
+test("the persistent tray restores across dates and saves new changes", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -817,10 +840,14 @@ test("a fresh logger cannot replace a pending draft from a different date contex
     foodLogTarget: "daily-note",
   });
   tray.renderSelection = () => {};
-  tray.selectionItems = [selection("food-fresh", "Fresh tray food")];
+  assert.deepEqual(JSON.parse(JSON.stringify(tray.selectionItems)), unrelatedDraft.selectionItems);
+  assert.match(tray.consumedDateInput, /^2026-08-14T/);
+  tray.selectionItems.push(selection("food-fresh", "Fresh tray food"));
 
   await tray.persistDraft();
-  assert.deepEqual(plugin.settings.pendingFoodLogDraft, unrelatedDraft, "a context-mismatched draft must not be claimed by the fresh tray");
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems.length, 2);
+  const reopened = new FoodSearchModal(fake.app, plugin);
+  assert.equal(reopened.selectionItems.length, 2, "the general logger must also restore a dated tray");
 
   let logCalls = 0;
   plugin.logFood = async () => {
@@ -829,12 +856,12 @@ test("a fresh logger cannot replace a pending draft from a different date contex
   };
   await tray.logSelected();
 
-  assert.equal(logCalls, 1);
-  assert.deepEqual(plugin.settings.pendingFoodLogDraft, unrelatedDraft, "successful logging must not clear the unrelated draft");
+  assert.equal(logCalls, 2);
+  assert.equal(plugin.settings.pendingFoodLogDraft, null, "successful logging consumes the restored tray");
   assert.equal(tray.__closed, true);
 });
 
-test("date-less and Daily Note food trays remain isolated from each other", async () => {
+test("general and Daily Note entry points restore the same tray without changing saved data", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -869,7 +896,8 @@ test("date-less and Daily Note food trays remain isolated from each other", asyn
     isToday: false,
     foodLogTarget: "daily-note",
   });
-  assert.deepEqual(dailyTray.selectionItems, [], "a general tray must not leak into a different Daily Note");
+  assert.equal(dailyTray.selectionItems[0].item.id, queued.item.id);
+  assert.match(dailyTray.consumedDateInput, /^2099-12-31T/);
   assert.deepEqual(plugin.settings.pendingFoodLogDraft, generalDraft, "the unrelated general tray remains recoverable");
 
   plugin.settings.pendingFoodLogDraft = {
@@ -883,7 +911,7 @@ test("date-less and Daily Note food trays remain isolated from each other", asyn
     },
   };
   const generalTray = new FoodSearchModal(fake.app, plugin);
-  assert.deepEqual(generalTray.selectionItems, [], "a Daily Note tray must not leak into a context-free command");
+  assert.equal(generalTray.selectionItems[0].item.id, queued.item.id);
 });
 
 test("meal reads and writes enforce the single-serving recipe contract", () => {
@@ -3075,7 +3103,7 @@ test("food result metadata uses clean source labels", () => {
   assert.match(mainSource, /"nutrition-label": "Nutrition label"/);
   assert.match(mainSource, /manual: "Manual"/);
   assert.doesNotMatch(
-    mainSource.slice(mainSource.indexOf("function foodResultMeta"), mainSource.indexOf("function foodLogDraftMatchesDateContext")),
+    mainSource.slice(mainSource.indexOf("function foodResultMeta"), mainSource.indexOf("function normalizeCoreDailyNoteFolder")),
     /return \[item\.brand, item\.source/,
   );
 });
