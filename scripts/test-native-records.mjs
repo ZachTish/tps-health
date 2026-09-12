@@ -1765,3 +1765,45 @@ test('workout finish waits for transient indexing but remains bounded and fails 
  try { assert.equal(await cold.service.waitForWorkoutIndexSettled(250),true); }
  finally {clearTimeout(timer);}
 });
+
+test('mobile layout readiness cannot revoke an already resolved metadata generation', async () => {
+  const h = createHarness({ layoutReady: false, metadataInitialized: false });
+  // initialized is an internal desktop implementation detail, not a required mobile API.
+  delete h.plugin.app.metadataCache.initialized;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.finishLayout();
+  await Promise.resolve();
+  assert.equal(h.service.isWorkoutIndexSettled(), true, 'layout must preserve the authoritative resolved event');
+});
+
+test('delayed mobile reads refresh workout controls after the last pending read settles', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Mobile', startedAt: '2026-09-12T12:00:00Z' }, 'mobile');
+  const unrelated = h.addLegacyFile('Inbox/unrelated.md', 'Unrelated');
+  const releases = new Map();
+  h.plugin.app.vault.read = file => new Promise(resolve => releases.set(file.path, () => resolve(h.contents.get(file.path))));
+  const states = [];
+  h.plugin.scheduleWorkoutActionBars = () => states.push(h.service.isWorkoutIndexSettled());
+  const workoutRead = h.service.refreshFile(record.file);
+  const otherRead = h.service.refreshFile(unrelated);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  releases.get(record.path)();
+  await workoutRead;
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  releases.get(unrelated.path)();
+  await otherRead;
+  assert.equal(states.at(-1), true, 'the final read must wake controls even when it belongs to another file');
+  assert.equal(h.service.resolveWorkoutSession({ id: record.id, path: record.path }).state, 'active');
+  assert.equal(h.service.getWorkoutSnapshot(record.path).status, 'active');
+});
+
+test('metadata-only workout changes schedule controls without a page navigation', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Mobile', startedAt: '2026-09-12T12:00:00Z' }, 'mobile');
+  let refreshes = 0;
+  h.plugin.scheduleWorkoutActionBars = () => refreshes++;
+  h.emitMetadata('changed', record.file, '', { frontmatter: { ...record.frontmatter, status: 'complete' } });
+  assert.ok(refreshes > 0);
+  assert.equal(h.service.resolveWorkoutSession({ id: record.id }).state, 'terminal');
+});

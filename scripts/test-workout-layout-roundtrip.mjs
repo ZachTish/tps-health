@@ -41,3 +41,18 @@ test('legacy fallback ignores YAML arrays and native missing snapshots fail clos
  plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,getWorkoutSnapshot:()=>null};
  await assert.rejects(plugin.extractWorkoutLayoutEntriesFromSession(path),/could not be read safely/);
 });
+
+test('add-exercise waits for transient indexing and rejects an owner changed during the wait', async()=>{
+ const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Mobile workout.md';
+ fake.files.set(path,'---\nkind: workout-session\n---\n');
+ plugin.settings={...plugin.settings,activeWorkoutId:'mobile',activeWorkoutPath:path,activeWorkoutTarget:'both'};
+ let settled=false;
+ plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>settled,
+   waitForWorkoutIndexSettled:async()=>{await Promise.resolve();settled=true;},
+   resolveWorkoutSession:()=>({state:'active',id:'mobile',path})};
+ plugin.reconcileResolvedNativeWorkout=async(captured,resolved)=>plugin.getActiveWorkoutState().id===captured.id?resolved:null;
+ const target=await plugin.resolveActiveNativeWorkoutMutationTarget('add-exercise');
+ assert.equal(target.file.path,path);
+ plugin.nativeRecordService.waitForWorkoutIndexSettled=async()=>{plugin.settings.activeWorkoutId='another';};
+ await assert.rejects(plugin.resolveActiveNativeWorkoutMutationTarget('add-exercise'),/changed/);
+});

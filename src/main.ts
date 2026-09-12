@@ -734,6 +734,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
+    this.register(this.onActiveWorkoutStateChanged(() => this.scheduleWorkoutActionBars()));
     this.api = this.createApi();
     this.api.homeActions = createTPSHealthHomeActionProvider(this);
     (this.app as any).tpsHealth = this.api;
@@ -2882,6 +2883,7 @@ export default class TPSHealthPlugin extends Plugin {
     const service = this.nativeRecordService;
     const captured = this.getActiveWorkoutState();
     if (!service?.isEnabled() || !captured) throw new Error("No active native workout is available.");
+    await service.waitForWorkoutIndexSettled?.();
     if (!service.isWorkoutIndexSettled()) {
       throw new Error("Workout records are still being indexed. Try again in a moment.");
     }

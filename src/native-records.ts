@@ -962,7 +962,9 @@ export class HealthNativeRecordService {
     }));
     this.plugin.app.workspace?.onLayoutReady?.(() => {
       this.rebuild();
-      this.workoutIndexReady = (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
+      // A resolved event may precede layout readiness on mobile. Never revoke
+      // that authoritative event using the optional, internal initialized flag.
+      this.workoutIndexReady ||= (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
       this.plugin.scheduleWorkoutActionBars();
     });
     this.plugin.registerEvent(vault.on('create', (file) => {
@@ -2713,7 +2715,12 @@ export class HealthNativeRecordService {
     } catch {
       // MetadataCache remains the safe eventual fallback for transient reads.
     } finally {
-      if (this.refreshGenerations.get(file.path) === generation) this.refreshGenerations.delete(file.path);
+      if (this.refreshGenerations.get(file.path) === generation) {
+        this.refreshGenerations.delete(file.path);
+        // The last read can belong to an unrelated note. Controls disabled by
+        // the shared indexing guard still need a settled-state render.
+        if (this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
+      }
     }
   }
 
@@ -2849,6 +2856,9 @@ export class HealthNativeRecordService {
       current && recordDate(current),
     ].filter((date): date is string => !!date))];
     if (!kinds.length) return;
+    if (kinds.includes('workout-session') || kinds.includes('workout-exercise')) {
+      this.plugin.scheduleWorkoutActionBars();
+    }
     const change = { path, kinds, dates };
     for (const listener of this.changeListeners) listener(change);
   }
