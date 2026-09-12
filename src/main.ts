@@ -2482,7 +2482,7 @@ export default class TPSHealthPlugin extends Plugin {
       allDay: false,
     }, workoutId);
     this.settings.activeWorkoutPath = record.path;
-    this.settings.activeWorkoutId = workoutId;
+    this.settings.activeWorkoutId = record.id;
     this.settings.activeWorkoutTarget = "both";
     this.settings.activeWorkoutDailyNotePath = "";
     this.settings.activeWorkoutPlanPath = context.plan?.sourcePath || "";
@@ -8164,6 +8164,7 @@ export default class TPSHealthPlugin extends Plugin {
           else {
             this.nativeRecordService.refreshConfiguration();
             await this.nativeRecordService.waitForWorkoutIndexSettled();
+            await this.repairTimerReplacedWorkoutIdentity();
           }
         } catch (error) {
           new Notice(logger.errorSummary(error));
@@ -8171,6 +8172,34 @@ export default class TPSHealthPlugin extends Plugin {
         } finally { action.disabled = false; this.scheduleWorkoutActionBars(); }
       })();
     });
+  }
+
+  private async repairTimerReplacedWorkoutIdentity(): Promise<boolean> {
+    const service = this.nativeRecordService;
+    const captured = this.getActiveWorkoutState();
+    if (!service?.isEnabled() || !service.isWorkoutIndexSettled() || !captured
+      || !captured.id.startsWith("workout-") || !captured.path) return false;
+    // Older timer startup could replace a just-created ID while its cache lagged.
+    // Require the original ID to be absent, a unique replacement, and the exact
+    // original start time. Never choose between duplicate or competing records.
+    if (service.resolveWorkoutSession({ id: captured.id }).state !== "missing") return false;
+    const candidate = service.resolveWorkoutSession({ path: captured.path });
+    if (candidate.state !== "active" || !candidate.id.startsWith("item_")
+      || !captured.startedAt || !candidate.startedAt
+      || !Number.isFinite(Date.parse(captured.startedAt))
+      || Date.parse(candidate.startedAt) !== Date.parse(captured.startedAt)) return false;
+    const verified = service.resolveWorkoutSession({ id: candidate.id, path: captured.path });
+    if (verified.state !== "active" || verified.path !== captured.path) return false;
+    const next = { ...captured, id: candidate.id };
+    if (!await this.persistActiveWorkoutStateMutation(captured, next, "repair-timer-replaced-identity")) return false;
+    const latest = service.resolveWorkoutSession({ id: candidate.id, path: captured.path });
+    if (latest.state !== "active") {
+      await this.clearActiveWorkoutStateIfCurrent(next, "repaired-session-changed");
+      return false;
+    }
+    logger.flow("Workout", "identity:timer-replacement-repaired", { path: captured.path });
+    new Notice("Reconnected the active workout. You can add exercises now.");
+    return true;
   }
 
   async resumeNativeWorkout(path: string, expectedId: string): Promise<void> {

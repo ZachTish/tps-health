@@ -1,3 +1,9 @@
+## 0.40.3 — recover timer-replaced workout identities
+
+New native workouts retain the ID returned by the record service. Recheck workout can reconnect a legacy workout pointer whose ID was replaced by old GCM timer startup: the original ID must be absent, the replacement must be unique and active at the same path, and its start timestamp must match exactly. Recovery updates only the active pointer using the existing concurrency guard; it does not rewrite the note, timer, exercise data, or timestamps. Duplicate, competing, ended, and unrelated sessions remain protected. Install GCM 2.2.2 as well to prevent the underlying overwrite. No settings, command, layout, or minimum compatibility changes (Obsidian 1.12.0).
+
+Validation uses synthetic identity fixtures, focused recovery/concurrency tests, the full declared suite, and a mandatory separate final build and test-vault reload. The reloaded UI is checked for Recheck → Add Exercise → Finish. Physical iPhone acceptance remains the user’s BRAT handoff; this patch addresses the confirmed identity mismatch. Final results and SHA-256 artifact hashes are in the public release notes.
+
 ## 0.40.2 — warm mobile startup and explicit workout recovery
 
 Warm plugin loads can establish workout readiness from public MetadataCache coverage after workspace restoration, even when the internal initialized flag is absent and the resolved event happened before plugin registration. Partial caches retain the indexing guard. This uses the existing metadata-only rebuild and adds no whole-vault body scan. Unloading invalidates pending reads so an old plugin instance cannot later refresh the new instance’s controls.

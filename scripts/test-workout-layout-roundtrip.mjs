@@ -86,3 +86,23 @@ test('resume rejects ended sessions and a concurrent persisted active workout', 
   assert.equal(plugin.getActiveWorkoutState()?.id||'',race?'other':'');
  }
 });
+
+
+test('recheck repairs only the timer replacement with the same path and exact start time', async()=>{
+ for(const failure of ['', 'old-exists', 'duplicate', 'ended', 'time', 'race']) {
+  const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Identity QA.md';
+  const startedAt='2026-09-01T10:00:00.123Z';
+  plugin.settings={...plugin.settings,storageMode:'native-records',activeWorkoutId:'workout-original',activeWorkoutPath:path,activeWorkoutTarget:'both',activeWorkoutStartedAt:startedAt,activeWorkoutSetCount:2};
+  harness.primeHealthSettingsPersistence(plugin);
+  const original=plugin.getActiveWorkoutState();
+  const candidate={state:failure==='ended'?'terminal':'active',id:'item_replacement',path,startedAt:failure==='time'?'2026-09-01T10:01:00Z':startedAt};
+  plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,resolveWorkoutSession:ref=>
+   ref.id==='workout-original'?{state:failure==='old-exists'?'active':'missing'}:
+   ref.id && failure==='duplicate'?{state:'ambiguous'}:candidate};
+  if(failure==='race') {const load=plugin.loadData.bind(plugin);plugin.loadData=async()=>({...await load(),activeWorkoutId:'another-workout'});}
+  assert.equal(await plugin.repairTimerReplacedWorkoutIdentity(),!failure);
+  assert.equal(plugin.getActiveWorkoutState().id,!failure?'item_replacement':failure==='race'?'another-workout':'workout-original');
+  assert.equal(plugin.getActiveWorkoutState().startedAt,original.startedAt);
+  assert.equal(plugin.getActiveWorkoutState().setCount,original.setCount);
+ }
+});
