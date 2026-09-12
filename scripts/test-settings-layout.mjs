@@ -30,11 +30,7 @@ test("Health settings expose five shallow routed destinations", () => {
   assert.doesNotMatch(settingsSource, /"aria-controls":/);
   assert.match(settingsSource, /tabindex: "-1"/);
   assert.match(settingsSource, /pageTitle\?\.focus\(\{ preventScroll: true \}\)/);
-  const summarySource = settingsSource.slice(
-    settingsSource.indexOf("private settingsPageSummary"),
-    settingsSource.indexOf("private renderActiveSettingsPage"),
-  );
-  assert.doesNotMatch(summarySource, /this\.plugin\.settings/);
+  assert.doesNotMatch(settingsSource, /tps-health-settings-(?:intro|route-summary|route-description|page-description)/);
 });
 
 test("Health settings keep only the four intentional optional disclosures", () => {
@@ -250,4 +246,10 @@ test("README documents the routed settings contract", () => {
   assert.match(readmeSource, /Custom goal JSON/);
   assert.match(readmeSource, /Provider credentials/);
   assert.match(readmeSource, /route and scroll position/);
+});
+
+
+test("recipe expansion omits the generic explanation", () => {
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /Current recipe, scaled to the logged portion/);
 });

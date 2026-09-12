@@ -1,3 +1,9 @@
+## 0.41.2 — less interface copy
+
+Removed the paragraph above recipe ingredients and redundant Health settings introductions, route subtitles, section summaries, and self-evident field descriptions. The five destinations and Daily logging default remain unchanged, as do four intentional disclosures, all setting keys/defaults, controls, actions, focus restoration, and narrow-screen navigation. Retained actionable copy about storage changes, blank values, templates, credentials, ownership, and migration consequences. Recipe inspection still uses current definitions; this limitation is documented here rather than repeated in every expanded recipe.
+
+Validation inventories setting names, actions, and options before/after, runs the settings regression suite and full tests, then a separate build and test-vault deployment/reload. Release notes record route UI verification and artifact hashes. This is a presentation patch, minimum Obsidian 1.12.0; production remains the user's BRAT update.
+
 ## 0.41.1 — compact food disclosures
 
 Recipes and meals now have an arrow beside the food name instead of a separate Components label/row. The arrow rotates when expanded and retains a descriptive accessible name, native summary keyboard behavior, visible focus, and a dedicated hit target. Plain foods have no arrow; food-name links use quiet text styling and still open the entry. The same compact disclosure applies to table, ring, logged-food, and nested ingredient lists. Portion calculations, persisted settings, commands, and data are unchanged. This is a presentation patch, minimum Obsidian 1.12.0. Validation uses the existing fraction/contributor tests, full suite, separate final build and test-vault reload; release notes record visual QA and artifact hashes. Production update remains the user's BRAT pull.

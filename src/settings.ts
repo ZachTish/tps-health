@@ -18,34 +18,28 @@ type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exerci
 interface HealthSettingsDestination {
   id: HealthSettingsPage;
   label: string;
-  description: string;
 }
 
 const HEALTH_SETTINGS_DESTINATIONS: HealthSettingsDestination[] = [
   {
     id: "daily",
     label: "Daily logging",
-    description: "Daily notes and food-log storage",
   },
   {
     id: "food-goals",
     label: "Food & goals",
-    description: "Nutrition search and daily targets",
   },
   {
     id: "workouts",
     label: "Workouts",
-    description: "Workout storage and session defaults",
   },
   {
     id: "library",
     label: "Note library",
-    description: "Folders, identification, tags, and templates",
   },
   {
     id: "integrations",
     label: "Integrations & advanced",
-    description: "GCM, providers, credentials, and diagnostics",
   },
 ];
 
@@ -100,10 +94,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Health" });
-    containerEl.createEl("p", {
-      cls: "tps-health-settings-intro",
-      text: "Choose one area below. Only that settings page is shown, while reusable foods, exercises, and workout plans remain ordinary notes.",
-    });
 
     this.renderSettingsHub(containerEl);
     this.renderActiveSettingsPage(containerEl);
@@ -133,33 +123,10 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         cls: "tps-health-settings-route-title",
         text: destination.label,
       });
-      button.createSpan({
-        cls: "tps-health-settings-route-summary",
-        text: this.settingsPageSummary(destination.id),
-      });
-      button.createSpan({
-        cls: "tps-health-settings-route-description",
-        text: destination.description,
-      });
       button.addEventListener("click", () => {
         if (this.activeSettingsPage === destination.id) return;
         this.navigateToSettingsPage(destination.id);
       });
-    }
-  }
-
-  private settingsPageSummary(page: HealthSettingsPage): string {
-    switch (page) {
-      case "daily":
-        return "Daily note · food log";
-      case "food-goals":
-        return "Search · nutrition targets";
-      case "workouts":
-        return "Sessions · rest · sets";
-      case "library":
-        return "Folders · identification · templates";
-      case "integrations":
-        return "GCM · AI · providers";
     }
   }
 
@@ -181,10 +148,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         id: `tps-health-settings-page-${destination.id}-title`,
         tabindex: "-1",
       },
-    });
-    page.createEl("p", {
-      cls: "tps-health-settings-page-description",
-      text: destination.description,
     });
 
     switch (destination.id) {
@@ -259,7 +222,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const architecture = createSettingsGroup(
       page,
       "Data architecture",
-      "Choose where completed Health logs are stored. Existing content is never migrated or deleted automatically.",
+      "Existing logs are not moved or deleted when storage changes.",
     );
     new Setting(architecture)
       .setName("Health storage")
@@ -276,7 +239,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const dailyNotes = createSettingsGroup(
       page,
       "Daily notes",
-      "TPS Health follows Obsidian's Core Daily Notes location and filename format.",
     );
     new Setting(dailyNotes)
       .setName("Daily Notes source")
@@ -292,7 +254,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const foodLogging = createSettingsGroup(
       page,
       "Food log storage",
-      "Where consumed-food rows are written and how daily totals are maintained.",
     );
     const foodLogTarget = new Setting(foodLogging)
       .setName("Food log target")
@@ -347,7 +308,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const nutrition = createSettingsGroup(
       page,
       "Nutrition search",
-      "Live database behavior for food search and barcode lookup.",
     );
     new Setting(nutrition)
       .setName("Include branded search results")
@@ -362,11 +322,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const goals = createSettingsGroup(
       page,
       "Daily goals",
-      "Canonical targets used by GCM metric rendering and daily frontmatter rollups.",
     );
     new Setting(goals)
       .setName("Calorie goal")
-      .setDesc("Canonical maximum used by GCM for the built-in consumed-calories metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.calorieGoal))
         .onChange(async (value) => {
@@ -375,7 +333,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(goals)
       .setName("Protein goal g")
-      .setDesc("Canonical minimum used by GCM for the built-in protein metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.proteinGoalG))
         .onChange(async (value) => {
@@ -384,7 +341,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(goals)
       .setName("Activity goal minutes")
-      .setDesc("Canonical minimum used by GCM for the built-in activity metric.")
       .addText((text) => text
         .setValue(String(this.plugin.settings.activityGoalMinutes))
         .onChange(async (value) => {
@@ -443,7 +399,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(storage)
       .setName("Workout position in Daily Note")
-      .setDesc("Choose where a new workout heading and its live controls are inserted.")
       .addDropdown((dropdown) => dropdown
         .addOption("after-frontmatter", "Top, after properties")
         .addOption("before-first-h2", "Above the first level-2 heading")
@@ -529,7 +484,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const sessionDefaults = createSettingsGroup(
       page,
       "Session defaults",
-      "Rest timing, notation, and cooldown defaults used by new sessions and workout plans.",
     );
     new Setting(sessionDefaults)
       .setName("Rest timer mode")
@@ -585,7 +539,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const folders = createSettingsGroup(
       page,
       "Reusable note folders",
-      "Stable health entities live in these destinations and can be linked from daily logs. Enter / to write directly to the vault root.",
+      "Enter / to use the vault root. Existing notes are not moved.",
     );
     this.addLibraryFolderSetting(folders, "workoutsFolder", "Workouts destination", "Canonical workout notes created by Start workout. Existing notes are not moved.");
     this.addLibraryFolderSetting(folders, "workoutPlansFolder", "Workout plans destination", "Reusable workout/routine notes. Session logs stay in the workouts destination. Existing notes are not moved.");
@@ -596,11 +550,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const identification = createSettingsGroup(
       page,
       "Identification & tags",
-      "Choose how reusable notes are recognized and which tags TPS Health writes to new notes.",
     );
     new Setting(identification)
       .setName("Food note identification")
-      .setDesc("Controls both how foods, meals, and recipes are recognized and which identity fields TPS Health writes.")
       .addDropdown((dropdown) => {
         dropdown.selectEl.dataset.tpsHealthFoodIdentification = "true";
         return dropdown
@@ -660,7 +612,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(identification)
       .setName("Workout note identification")
-      .setDesc("Controls which notes are treated as workout session notes.")
       .addDropdown((dropdown) => dropdown
         .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
         .addOption("folder", "Folder only")
@@ -784,7 +735,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     const setting = new Setting(parent)
       .setName(name)
-      .setDesc(`${description} Type a new vault-relative path or choose an existing folder.`)
+      .setDesc(`${description}`)
       .addText((text) => {
         input = text;
         text.inputEl.dataset.tpsHealthLibraryFolder = key;
@@ -809,7 +760,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const gcm = createSettingsGroup(
       page,
       "TPS Global Context Menu",
-      "Optional health controls shown on the shared note-action surface.",
     );
     new Setting(gcm)
       .setName("Show food log button in GCM")
@@ -840,7 +790,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const aiGateway = createSettingsGroup(
       page,
       "TPS AI Gateway",
-      "Central ownership for AI providers, models, fallback order, and AI diagnostics.",
     );
     new Setting(aiGateway)
       .setName("AI-assisted Describe")
@@ -860,7 +809,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const diagnostics = createSettingsGroup(
       page,
       "Diagnostics",
-      "Concise development logs for tracing health flows in the developer console.",
     );
     new Setting(diagnostics)
       .setName("Enable debug logging")

@@ -12746,7 +12746,6 @@ function renderNativeDailyComponents(
       const content = await plugin.app.vault.cachedRead(file);
       const lines = recipeIngredientsFromContent(content, foodFm, plugin.settings.recipeTag, name => plugin.findRecipeIngredientFoodByName(name)).split(/\r?\n/).filter(line => line.trim());
       body.empty();
-      body.createEl("small", { text: "Current recipe, scaled to the logged portion. Ingredient edits may differ from recorded totals." });
       const list = body.createDiv({ cls: "tps-health-native-daily-breakdown-list", attr: { role: "list" } });
       for (const line of lines) {
         const parsed = parseRecipeIngredientLine(line, name => plugin.findRecipeIngredientFoodByName(name));
