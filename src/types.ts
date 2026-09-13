@@ -154,6 +154,7 @@ export interface FoodLogEntry {
   amount?: number;
   amountUnit?: "g" | "ml";
   section?: string;
+  tags?: string[];
   note?: string;
   dailyNotePath?: string;
 }
@@ -195,6 +196,7 @@ export interface PendingFoodLogDraft {
     unit: string;
     describedUnit?: string;
     estimatedUnitGrams?: number;
+    tags?: string[];
   }>;
 }
 

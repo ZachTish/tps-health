@@ -1,3 +1,4 @@
+import { normalizeFoodLogTags } from "./food-log-tags";
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 import { normalizeVaultDestinationFolder } from "./vault-destination";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
@@ -274,6 +275,7 @@ function normalizePendingFoodLogDraft(value: unknown): TPSHealthSettings["pendin
       quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
       unit: unit || "serving",
       describedUnit: describedUnit || undefined,
+      tags: normalizeFoodLogTags(record.tags),
       estimatedUnitGrams: Number.isFinite(estimatedUnitGrams) && estimatedUnitGrams > 0 ? estimatedUnitGrams : undefined,
     };
   }).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));

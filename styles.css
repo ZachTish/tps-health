@@ -4783,3 +4783,8 @@ body:has(.workspace-drawer:not(.is-collapsed)) .tps-health-workout-action-bar--m
   color: var(--text-normal); text-decoration: none;
 }
 .tps-health-native-daily-breakdown-item > button:hover { color: var(--text-accent); text-decoration: underline; }
+
+.tps-health-log-tags.setting-item { border: 0; padding: 4px 0; gap: 8px; }
+.tps-health-log-tags .setting-item-name { font-size: var(--font-ui-small); }
+.tps-health-log-tags .setting-item-control { min-width: 0; flex: 1; }
+.tps-health-log-tags input { min-width: 0; width: 100%; }

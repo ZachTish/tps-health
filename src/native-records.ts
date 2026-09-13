@@ -1,3 +1,4 @@
+import { normalizeFoodLogTags } from "./food-log-tags";
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { id, isoDateKey } from './format';
@@ -1142,6 +1143,7 @@ export class HealthNativeRecordService {
     const authoredUnit = String(entry.servingUnit || entry.unit || 'serving').trim() || 'serving';
     const properties = compactRecordProperties({
       title: entry.item.name,
+      tags: normalizeFoodLogTags(entry.tags),
       completedDate: entry.completedDate || entry.createdDate,
       food: this.recordLink(entry.item.sourcePath),
       quantity: authoredQuantity,

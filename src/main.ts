@@ -1,3 +1,4 @@
+import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
@@ -158,6 +159,7 @@ interface CoreDailyNoteCreationSettings extends CoreDailyNoteSettings {
 }
 
 interface LogFoodOptions {
+  tags?: string[];
   focusAfterLog?: boolean;
   amountGrams?: number;
 }
@@ -3957,6 +3959,7 @@ export default class TPSHealthPlugin extends Plugin {
       amount: resolvedServing.amount,
       amountUnit: resolvedServing.amountUnit,
       section,
+      tags: normalizeFoodLogTags(options.tags),
     };
     const target = targetOverride || this.settings.foodLogTarget;
     if (this.nativeRecordService?.isEnabled()) {
@@ -10300,6 +10303,7 @@ class FoodLogAdjustModal extends Modal {
             amount: resolved.amount,
             amountUnit: resolved.amountUnit,
             note: readStringField(this.entry.line, "note"),
+            tags: normalizeFoodLogTags(readStringField(this.entry.line, "tags")),
             dailyNotePath: readStringField(this.entry.line, "dailyNotePath"),
           };
           try {
@@ -11192,6 +11196,11 @@ class FoodSearchModal extends Modal {
       const copy = row.createDiv({ cls: "tps-health-selection-copy" });
       copy.createDiv({ cls: "tps-health-selection-meta", text: foodResultMeta(entry.item) });
       renderMacroPills(copy.createDiv({ cls: "tps-health-selection-line-macros" }), multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+      const tagSetting = new Setting(copy).setName("Tags").addText(text => text
+        .setPlaceholder("#food/healthy, #meal/breakfast")
+        .setValue((entry.tags || []).map(tag => `#${tag}`).join(", "))
+        .onChange(value => { entry.tags = normalizeFoodLogTags(value); void this.persistDraft(); }));
+      tagSetting.settingEl.addClass("tps-health-log-tags");
       const controls = row.createDiv({ cls: "tps-health-selection-controls" });
       const initialStep = foodLogQuantityStep(entry.unit);
       const adjustQuantity = (delta: number) => {
@@ -11407,6 +11416,7 @@ class FoodSearchModal extends Modal {
         await this.plugin.logFood(captured.selection.item, captured.selection.quantity, captured.selection.unit, undefined, completedDate, captured.selection.item.source !== "custom-inline", this.dateContext?.foodLogTarget, {
           focusAfterLog: this.dateContext?.focusAfterLog,
           amountGrams: describedSelectionAmountGrams(captured.selection),
+          tags: captured.selection.tags,
         });
       } catch (error) {
         logger.flowError("FoodModal", "selection:log-failed", error, {
@@ -11781,6 +11791,7 @@ class FoodSearchModal extends Modal {
 }
 
 interface BatchFoodSelection {
+  tags?: string[];
   item: FoodItem;
   quantity: number;
   unit: string;
@@ -11805,12 +11816,14 @@ function cloneBatchFoodSelection(entry: BatchFoodSelection): BatchFoodSelection 
     unit: entry.unit,
     describedUnit: entry.describedUnit,
     estimatedUnitGrams: entry.estimatedUnitGrams,
+    ...(entry.tags?.length ? { tags: normalizeFoodLogTags(entry.tags) } : {}),
   };
 }
 
 function batchFoodSelectionSignature(entry: BatchFoodSelection): string {
   return JSON.stringify([
     foodQueueItemSignature(entry.item),
+    normalizeFoodLogTags(entry.tags),
     entry.item.source,
     entry.item.aliases || [],
     entry.item.imageUrl || "",
@@ -16290,7 +16303,7 @@ class FoodLogModal extends Modal {
     this.contentEl.createEl("h2", { text: this.item.name });
     let quantity = this.initialDraft?.quantity ?? defaultFoodLogQuantity(this.item);
     let unit = this.initialDraft?.unit || preferredFoodLogUnit(this.item);
-    let section = this.plugin.settings.defaultFoodLogSection;
+    let tags: string[] = [];
     let consumedDateInput = initialFoodLogConsumedDateInput(this.dateContext);
     if (this.dateContext && !this.dateContext.isToday) {
       const dateContext = this.dateContext;
@@ -16352,12 +16365,10 @@ class FoodLogModal extends Modal {
           .onChange((value) => consumedDateInput = value.trim());
       });
     new Setting(this.contentEl)
-      .setName("Daily note section")
-      .setDesc("Optional. Blank logs at the top of the daily note body, right after frontmatter.")
+      .setName("Tags")
       .addText((text) => text
-        .setPlaceholder("Food Log, Breakfast, Workout Fuel...")
-        .setValue(section)
-        .onChange((value) => section = value.trim()));
+        .setPlaceholder("#food/healthy, #meal/breakfast")
+        .onChange((value) => tags = normalizeFoodLogTags(value)));
     new Setting(this.contentEl).addButton((button) => {
       const submitButtonEl = button.buttonEl;
       return button.setButtonText("Log").setCta().onClick(async () => {
@@ -16370,14 +16381,15 @@ class FoodLogModal extends Modal {
           ...summarizeFoodItem(this.item),
           quantity,
           unit,
-          section: section || "",
+          tagCount: tags.length,
           completedDate,
           ...summarizeDateContext(this.dateContext),
         });
         let loggedEntry: FoodLogEntry;
         try {
-          loggedEntry = await this.plugin.logFood(this.item, quantity, unit, section || undefined, completedDate, this.options.persistFoodNote !== false, this.dateContext?.foodLogTarget, {
+          loggedEntry = await this.plugin.logFood(this.item, quantity, unit, undefined, completedDate, this.options.persistFoodNote !== false, this.dateContext?.foodLogTarget, {
             focusAfterLog: this.dateContext?.focusAfterLog,
+            tags,
           });
         } catch (error) {
           this.submitting = false;

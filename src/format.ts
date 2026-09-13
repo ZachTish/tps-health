@@ -1,3 +1,4 @@
+import { normalizeFoodLogTags } from "./food-log-tags";
 import { ActivityLogEntry, FoodItem, FoodLogEntry, Nutrition, WorkoutPlanItem, WorkoutSet } from "./types";
 
 export function id(prefix: string): string {
@@ -46,6 +47,7 @@ export function foodEntryLine(entry: FoodLogEntry): string {
   const nutrition = getLogLineNutrition(entry);
   const fields = [
     dataviewField("type", "foodLog"),
+    entry.tags?.length ? dataviewField("tags", normalizeFoodLogTags(entry.tags).join(", ")) : "",
     dataviewField("nutritionSnapshot", "true"),
     dataviewField("food", itemName),
     dataviewField("qty", entry.servingQuantity ?? entry.quantity),
@@ -70,7 +72,7 @@ export function foodEntryLine(entry: FoodLogEntry): string {
     entry.completedDate ? dataviewField("completedDate", entry.completedDate) : "",
     entry.note ? dataviewField("note", entry.note) : "",
   ].filter(Boolean);
-  return `- ${summary} <!-- ${fields.join(" ")} -->`;
+  return `- ${summary}${normalizeFoodLogTags(entry.tags).map(tag => ` #${tag}`).join("")} <!-- ${fields.join(" ")} -->`;
 }
 
 export function activityEntryLine(entry: ActivityLogEntry): string {

@@ -414,9 +414,11 @@ test('workout session data uses one compact Bases-queryable property while legac
 test('GCM API v6 receives readable filenames while stable record IDs remain authoritative', async () => {
   const { service, createCalls } = createHarness({ apiVersion: 6 });
   const firstFood = await service.createFoodEntry({
+    tags: ['#food/healthy', 'food/healthy', '#meal/breakfast'],
     id: 'food-one', createdDate: '2026-08-25T12:00:00.000Z', completedDate: '2026-08-25T12:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
   });
+  assert.deepEqual(firstFood.frontmatter.tags, ['food/healthy', 'meal/breakfast']);
   const secondFood = await service.createFoodEntry({
     id: 'food-two', createdDate: '2026-08-25T13:00:00.000Z', completedDate: '2026-08-25T13:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',

@@ -777,6 +777,27 @@ test("batch logging is one-shot and cannot clear a different pending draft", asy
   assert.equal(tray.__closed, true);
 });
 
+test("food log tags survive tray restore and reach only the logged entry", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: { id: "tagged-tray", updatedAt: new Date().toISOString(), activeTab: "search", selectionItems: [
+    { item: { id: "apple", name: "Apple", source: "manual", nutrition: { calories: 100 } }, quantity: 1, unit: "serving", tags: ["food/healthy"] }
+  ] } };
+  plugin.saveSettings = async () => {};
+  const tray = new FoodSearchModal(plugin.app, plugin);
+  tray.renderSelection = () => {};
+  await tray.persistDraft();
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft.selectionItems[0].tags, ["food/healthy"]);
+  const restored = new FoodSearchModal(plugin.app, plugin);
+  restored.renderSelection = () => {};
+  let captured;
+  plugin.logFood = async (...args) => { captured = args; return { id: "logged" }; };
+  await restored.logSelected();
+  assert.deepEqual(captured[7].tags, ["food/healthy"]);
+  assert.equal(captured[0].tags, undefined, "the reusable food is not tagged");
+});
+
 test("clearing a restored tray persists, while a stale window cannot clear its replacement", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin, FoodSearchModal } = await importPluginWithObsidianStub();
