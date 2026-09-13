@@ -4181,17 +4181,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
   display: block;
 }
 
-/* Match Core Bases' phone-only full-bleed embed contract. */
-.is-phone .tps-health-native-daily-host {
-  transform: var(--bases-embed-transform, none);
-  width: var(--bases-embed-width, 100%);
-}
-
-.is-phone .tps-health-native-daily {
-  border-radius: var(--bases-embed-border-radius, var(--radius-s));
-  border-width: var(--bases-embed-border-width, 1px);
-}
-
 .tps-health-native-daily-stack {
   display: grid;
   gap: var(--size-4-3);
@@ -4377,9 +4366,8 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 }
 
 .tps-health-native-daily-metric-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .tps-health-native-daily-metric-value,
@@ -4392,6 +4380,12 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
 
 .tps-health-native-daily-metric-value {
   font-weight: var(--font-semibold);
+}
+
+.tps-health-native-daily-target {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .tps-health-native-daily-progress {

@@ -1,3 +1,9 @@
+## 0.41.4 — mobile daily block clipping
+
+Macros and Activity now use their containing embed width on phones. Removed the extra Core Bases full-bleed transform/width from Health's nested host, which could shift and enlarge both cards beyond the clipping ancestor. Metric labels and goals wrap instead of cutting off longer text. Calculations, actions, disclosure state, and note data are unchanged; Reading and Live Preview continue rendering the blocks and Source remains literal.
+
+Validation: 329 tests passed with zero failures and one existing credential-gated USDA skip. In the reloaded Obsidian 1.14.1 test vault, synthetic 280/320/390px embedded cards reproduced the old 32px clipping on both sides; the fixed hosts matched both container edges with no horizontal overflow. Visually inspected the two fixed cards and removed the temporary DOM fixture without changing notes or settings. Separate final build/test-vault deployment follows this documentation update. Physical iPhone/iPad acceptance remains user testing. Minimum Obsidian stays 1.12.0; no migration. Release notes record results and artifact hashes. Production update remains the user's BRAT pull.
+
 ## 0.41.3 — persistent food tray recovery
 
 The food logger restores the same unlogged tray from every note, date, and initial-search entry point. Previously a different entry context hid the saved tray and blocked saving its replacement. The selected logging date/destination still comes from the current entry point and the visible consumed-time control; queued foods remain unlogged until Log is pressed. Clearing or removing the last item of a freshly restored tray now clears durable storage too. Compare-and-swap ownership still prevents an older window from clearing or overwriting a newer tray.

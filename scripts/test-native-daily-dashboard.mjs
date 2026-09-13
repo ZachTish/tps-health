@@ -176,8 +176,6 @@ test('daily dashboard uses a compact Base-like table and accessible toolbar', ()
   assert.match(stylesSource, /\.tps-health-native-daily-action\s*\{[\s\S]*?background:\s*transparent[\s\S]*?width:\s*30px/u);
   assert.match(stylesSource, /\.tps-health-native-daily-host\s*\{[\s\S]*?display:\s*block/u);
   assert.match(stylesSource, /\.tps-health-native-daily-host\s*,[\s\S]*?max-width:\s*none[\s\S]*?width:\s*100%/u);
-  assert.match(stylesSource, /\.is-phone \.tps-health-native-daily-host\s*\{[\s\S]*?transform:\s*var\(--bases-embed-transform, none\)[\s\S]*?width:\s*var\(--bases-embed-width, 100%\)/u);
-  assert.match(stylesSource, /\.is-phone \.tps-health-native-daily\s*\{[\s\S]*?border-radius:\s*var\(--bases-embed-border-radius,[\s\S]*?border-width:\s*var\(--bases-embed-border-width,/u);
   assert.match(stylesSource, /\.tps-health-native-daily-stack\s*\{[\s\S]*?display:\s*grid[\s\S]*?gap:/u);
   assert.doesNotMatch(mainSource, /button\.createSpan\(\{ text: label \}\)/u);
 });
@@ -258,4 +256,10 @@ test('dashboard disclosures avoid editable Markdown bullets and keep open conten
   assert.doesNotMatch(mainSource.slice(start, end), /createEl\("(?:li|ul)"/);
   assert.match(mainSource.slice(start, end), /role: "listitem"/);
   assert.match(stylesSource, /grid-column: 1 \/ -1; grid-row: 1; overflow: visible; white-space: normal/);
+});
+
+test("daily cards stay within their embed instead of applying Core Bases full-bleed twice", () => {
+  assert.doesNotMatch(stylesSource, /--bases-embed-(transform|width)/);
+  assert.match(stylesSource, /\.tps-health-native-daily-metric-label\s*\{[^}]*white-space: normal/);
+  assert.match(stylesSource, /\.tps-health-native-daily-target\s*\{[^}]*overflow-wrap: anywhere;[^}]*white-space: normal/);
 });
