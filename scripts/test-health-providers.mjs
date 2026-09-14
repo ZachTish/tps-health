@@ -402,16 +402,16 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /this\.selectionItems\.unshift\(\{/);
   assert.doesNotMatch(mainSource, /this\.selectionItems\.push\(\{\s*item: selectedItem/);
   const foodSearchOpen = mainSource.slice(
-    mainSource.indexOf("class FoodSearchModal extends Modal"),
-    mainSource.indexOf("  onClose(): void", mainSource.indexOf("class FoodSearchModal extends Modal")),
+    mainSource.indexOf("class FoodSearchModal extends FoodInputModal"),
+    mainSource.indexOf("  onClose(): void", mainSource.indexOf("class FoodSearchModal extends FoodInputModal")),
   );
   assert.ok(
     foodSearchOpen.indexOf('this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" })')
       < foodSearchOpen.indexOf('this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" })'),
     "the tray must render above the potentially long food results list",
   );
-  assert.match(mainSource, /this\.renderSelection\(\);\s+this\.resetSearchForNextFood\(enriched\.name\);\s+this\.revealSelectionAfterAdd\(\);/);
-  assert.match(mainSource, /querySelector\("\.tps-health-selection-header"\)[\s\S]+?scrollIntoView\?\.\(\{ block: "nearest", inline: "nearest" \}\)/);
+  assert.match(mainSource, /this\.renderSelection\(\);\s+this\.resetSearchForNextFood\(enriched\.name\);/);
+  assert.doesNotMatch(foodSearchOpen, /scrollIntoView/);
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /getPendingFoodLogDraft\(dateContext: FoodLogDateContext \| null\): PendingFoodLogDraft \| null/);
   assert.match(mainSource, /savePendingFoodLogDraft\(draft: PendingFoodLogDraft \| null\): Promise<void>/);
@@ -426,17 +426,17 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:log-suppressed-active"/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:create-recipe-empty"/);
   const foodSearchModalSource = mainSource.slice(
-    mainSource.indexOf("class FoodSearchModal extends Modal"),
+    mainSource.indexOf("class FoodSearchModal extends FoodInputModal"),
     mainSource.indexOf("interface BatchFoodSelection"),
   );
   assert.doesNotMatch(foodSearchModalSource, /clearPendingFoodLogDraft\(/);
   assert.match(foodSearchModalSource, /const snapshot = this\.selectionItems\.map/);
   assert.match(foodSearchModalSource, /await this\.persistDraftIfOwned\(\)/);
-  assert.match(mainSource, /Added \$\{addedName\}\. Add another food or log your tray above\./);
+  assert.match(mainSource, /Added \$\{addedName\}/);
   assert.match(mainSource, /this\.activeFoodLogTab = initialTab \|\| "search";/);
   assert.doesNotMatch(foodSearchOpen, /pendingDraft\?\.activeTab \|\| "mine"/);
   assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "describe"\]/);
-  assert.match(mainSource, /this\.searchInput = "";/);
+  assert.doesNotMatch(foodSearchModalSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
@@ -453,7 +453,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
 
 test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
   assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\);/);
-  assert.match(mainSource, /const edit = controls\.createEl\("button", \{ text: "Edit", cls: "mod-muted tps-health-selection-edit", attr: \{ type: "button" \} \}\);/);
+  assert.match(mainSource, /const edit = row\.createEl\("button", \{ cls: "tps-health-selection-name"/);
   assert.match(mainSource, /private async openSelectionFoodEditor\(entry: BatchFoodSelection\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-open"/);
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, type, freshItem\.name, false, freshItem, this\.dateContext, freshItem\.sourcePath, async \(saved\) => \{/);
@@ -595,7 +595,7 @@ test("creating and successfully logging a meal consumes its captured tray ingred
     assert.equal(createdInputs.length, 1, "a repeated create submission must not duplicate the meal note");
 
     const foodLogModalSource = mainSource.slice(
-      mainSource.indexOf("class FoodLogModal extends Modal"),
+      mainSource.indexOf("class FoodLogModal extends FoodInputModal"),
       mainSource.indexOf("class ActivityLogModal extends Modal"),
     );
     assert.ok(
@@ -4121,7 +4121,7 @@ test("food tray quantity changes update in place without rebuilding the modal", 
   assert.match(selectionRenderer, /tps-health-selection-log/);
   assert.match(selectionRenderer, /private refreshSelectionSummary\(\): void/);
   assert.match(selectionRenderer, /private refreshSelectionWithoutScroll\(refresh: \(\) => void\): void/);
-  assert.match(selectionRenderer, /window\.requestAnimationFrame\(\(\) => \{/);
+  assert.match(selectionRenderer, /preserveFoodModalScroll\(this.contentEl, refresh\)/);
   assert.match(selectionRenderer, /private refreshSelectionRow\(/);
   assert.match(selectionRenderer, /adjustQuantity[\s\S]+this\.refreshSelectionRow\(entry, row, quantityInput, unitSelect\);[\s\S]+this\.refreshSelectionSummary\(\);/);
   const adjustQuantity = selectionRenderer.slice(
@@ -6429,8 +6429,8 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
   assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+action\(addLabel, async \(\) => add\(\)\);/);
   assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.close\(\);\s+new FoodLogModal/);
-  assert.match(mainSource, /action\("Choose amount", async \(\) =>/);
-  assert.match(mainSource, /if \(!item\.sourcePath\) \{\s+actions\.addClass\("has-create-action"\);\s+action\("Create from this"/);
+  assert.match(mainSource, /titleButton\.addEventListener\("click", async \(\) =>/);
+  assert.match(mainSource, /menu\.addItem\(option => option\.setTitle\("Create from this"/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
   assert.match(mainSource, /requestCameraStream\?: \(constraints: MediaStreamConstraints\) => Promise<MediaStream>/);
   assert.match(mainSource, /createLiveReader\?: \(\) => any/);

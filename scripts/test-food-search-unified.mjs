@@ -150,3 +150,22 @@ test('recipe component disclosure scales half a serving and keeps missing ingred
   assert.match(text, /Nutrition unavailable/);
   assert.equal(fake.writes.length, 0);
 });
+
+test('adding food retains query, result nodes, scroll and a compact review tray', async () => {
+  const { tray } = await setup();
+  tray.searchInput = 'oats'; tray.searchInputEl.value = 'oats';
+  tray.contentEl.scrollTop = 120;
+  const results = tray.resultsEl.children;
+  await tray.addSelection(food('Oats'), null, { enrich: false });
+  assert.equal(tray.searchInput, 'oats');
+  assert.equal(tray.searchInputEl.value, 'oats');
+  assert.equal(tray.resultsEl.children, results);
+  assert.equal(tray.contentEl.scrollTop, 120);
+  const body = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body');
+  const toggle = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-title');
+  assert.equal(body.hidden, true);
+  toggle.listeners.get('click')();
+  assert.equal(body.hidden, false);
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  assert.equal(tray.contentEl.scrollTop, 120);
+});

@@ -1,3 +1,4 @@
+import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
@@ -10522,7 +10523,7 @@ class BatchFoodRecipeModal extends Modal {
   }
 }
 
-class FoodSearchModal extends Modal {
+class FoodSearchModal extends FoodInputModal {
   private resultsEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private actionsEl!: HTMLElement;
@@ -10547,6 +10548,7 @@ class FoodSearchModal extends Modal {
   private draftExpectedId: string | null;
   private suppressDraftPersistOnClose = false;
   private selectionSubmitting = false;
+  private selectionExpanded = false;
 
   constructor(
     app: App,
@@ -10564,6 +10566,7 @@ class FoodSearchModal extends Modal {
       this.selectionItems = pendingDraft.selectionItems.map(cloneBatchFoodSelection);
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
+      this.selectionExpanded = true;
     }
     // The general logger always starts where the next action happens: search.
     // Explicit Scan and Quick add commands remain compatible entry points.
@@ -10637,7 +10640,7 @@ class FoodSearchModal extends Modal {
         this.statusEl.setText("Estimate one item without creating a reusable food note.");
       } else {
         this.statusEl.setText("Describe foods and portions, then review the estimate.");
-        window.setTimeout(() => tabButtons.get("describe")?.scrollIntoView({ block: "nearest", inline: "nearest" }), 0);
+
       }
     };
     for (const [mode, label] of [["search", "Search"], ["describe", "Describe"]] as const) {
@@ -10805,7 +10808,7 @@ class FoodSearchModal extends Modal {
         }
         text.inputEl.addEventListener("input", () => {
           this.searchInput = text.inputEl.value;
-          this.scrollSearchIntoView();
+
           this.scheduleDraftPersist();
           this.queueSearch(text.inputEl.value);
         });
@@ -10814,7 +10817,7 @@ class FoodSearchModal extends Modal {
           event.preventDefault();
           this.submitOnlineSearch(text.inputEl.value);
         });
-        text.inputEl.addEventListener("focus", () => this.scrollSearchIntoView());
+
       })
       .addButton((button) => {
         this.searchButtonEl = button.buttonEl;
@@ -11078,9 +11081,9 @@ class FoodSearchModal extends Modal {
     const row = this.resultsEl.createDiv({ cls: "tps-health-result" });
     row.setAttr("role", "group");
     row.setAttr("aria-label", item.name);
-    row.createDiv({ cls: "tps-health-result-title", text: item.name });
+    const titleButton = row.createEl("button", { cls: "tps-health-result-title", text: item.name, attr: { type: "button", "aria-label": `Choose amount for ${item.name}` } });
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
-    renderMacroPills(row.createDiv({ cls: "tps-health-result-macros" }), item.nutrition || {});
+    renderCompactFoodMacros(row.createDiv({ cls: "tps-health-result-macros" }), item.nutrition || {});
     let adding = false;
     const add = async () => {
       if (adding) return;
@@ -11103,8 +11106,12 @@ class FoodSearchModal extends Modal {
       });
       return button;
     };
-    action(addLabel, async () => add());
-    action("Choose amount", async () => {
+    const addButton = action(addLabel, async () => add());
+    addButton.setAttr("aria-label", `${addLabel} ${item.name}`);
+    addButton.setAttr("title", `${addLabel} ${item.name}`);
+    addButton.setText("");
+    setIcon(addButton, "plus");
+    titleButton.addEventListener("click", async () => {
       row.setAttr("aria-busy", "true");
       const enriched = await this.plugin.enrichFoodSearchItem(item);
       this.close();
@@ -11112,10 +11119,17 @@ class FoodSearchModal extends Modal {
     });
     if (!item.sourcePath) {
       actions.addClass("has-create-action");
-      action("Create from this", async () => {
-        this.close();
-        new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
+      const more = action("", async () => {
+        const menu = new Menu();
+        menu.addItem(option => option.setTitle("Create from this").onClick(async () => {
+          this.close();
+          new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
+        }));
+        const bounds = more.getBoundingClientRect();
+        menu.showAtPosition({ x: bounds.left, y: bounds.bottom });
       });
+      more.setAttr("aria-label", `More options for ${item.name}`);
+      setIcon(more, "ellipsis");
     }
   }
 
@@ -11142,19 +11156,16 @@ class FoodSearchModal extends Modal {
     });
     this.renderSelection();
     this.resetSearchForNextFood(enriched.name);
-    this.revealSelectionAfterAdd();
-    this.persistDraft();
-    new Notice(`Added ${enriched.name}`);
-  }
 
-  private revealSelectionAfterAdd(): void {
-    window.setTimeout(() => {
-      const header = this.selectionEl?.querySelector(".tps-health-selection-header") as HTMLElement | null;
-      header?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    }, 0);
+    this.persistDraft();
+
   }
 
   private renderSelection(): void {
+    if (this.selectionEl) preserveFoodModalScroll(this.contentEl, () => this.renderSelectionContents());
+  }
+
+  private renderSelectionContents(): void {
     if (!this.selectionEl) return;
     this.selectionEl.empty();
     this.selectionEl.addClass("tps-health-inline-selection");
@@ -11167,8 +11178,8 @@ class FoodSearchModal extends Modal {
     this.selectionEl.removeClass("is-collapsed");
 
     const header = this.selectionEl.createDiv({ cls: "tps-health-selection-header" });
-    header.createDiv({ cls: "tps-health-selection-title", text: this.selectionTrayTitle() });
-    renderMacroPills(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
+    const reviewButton = header.createEl("button", { cls: "tps-health-selection-title", text: this.selectionTrayTitle(), attr: { type: "button", "aria-expanded": String(this.selectionExpanded) } });
+    renderCompactFoodMacros(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
     const logButton = headerActions.createEl("button", {
       text: this.selectionLogButtonText(),
@@ -11190,16 +11201,28 @@ class FoodSearchModal extends Modal {
       this.focusSearchInput();
     });
 
+    const trayBody = this.selectionEl.createDiv({ cls: "tps-health-selection-body" });
+    trayBody.hidden = !this.selectionExpanded;
+    reviewButton.addEventListener("click", () => {
+      this.selectionExpanded = !this.selectionExpanded;
+      preserveFoodModalScroll(this.contentEl, () => { trayBody.hidden = !this.selectionExpanded; });
+      reviewButton.setAttr("aria-expanded", String(this.selectionExpanded));
+    });
+
     for (const entry of this.selectionItems) {
-      const row = this.selectionEl.createDiv({ cls: "tps-health-selection-row" });
-      row.createDiv({ cls: "tps-health-selection-name", text: entry.item.name });
+      const row = trayBody.createDiv({ cls: "tps-health-selection-row" });
+      const edit = row.createEl("button", { cls: "tps-health-selection-name", text: entry.item.name, attr: { type: "button", "aria-label": `Edit ${entry.item.name}` } });
+      edit.disabled = this.selectionSubmitting;
+      edit.addEventListener("click", () => this.openSelectionFoodEditor(entry));
       const copy = row.createDiv({ cls: "tps-health-selection-copy" });
-      copy.createDiv({ cls: "tps-health-selection-meta", text: foodResultMeta(entry.item) });
-      renderMacroPills(copy.createDiv({ cls: "tps-health-selection-line-macros" }), multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
-      const tagSetting = new Setting(copy).setName("Tags").addText(text => text
+
+      renderCompactFoodMacros(copy.createDiv({ cls: "tps-health-selection-line-macros" }), multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+      const tags = row.createEl("details", { cls: "tps-health-selection-tags" });
+      const tagSummary = tags.createEl("summary", { text: (entry.tags || []).map(tag => `#${tag}`).join(", ") || "Tags" });
+      const tagSetting = new Setting(tags).setName("Tags").addText(text => text
         .setPlaceholder("#food/healthy, #meal/breakfast")
         .setValue((entry.tags || []).map(tag => `#${tag}`).join(", "))
-        .onChange(value => { entry.tags = normalizeFoodLogTags(value); void this.persistDraft(); }));
+        .onChange(value => { entry.tags = normalizeFoodLogTags(value); tagSummary.setText(entry.tags.map(tag => `#${tag}`).join(", ") || "Tags"); void this.persistDraft(); }));
       tagSetting.settingEl.addClass("tps-health-log-tags");
       const controls = row.createDiv({ cls: "tps-health-selection-controls" });
       const initialStep = foodLogQuantityStep(entry.unit);
@@ -11258,12 +11281,8 @@ class FoodSearchModal extends Modal {
         });
         void this.persistDraft();
       });
-      const edit = controls.createEl("button", { text: "Edit", cls: "mod-muted tps-health-selection-edit", attr: { type: "button" } });
-      edit.disabled = this.selectionSubmitting;
-      edit.addEventListener("click", () => {
-        this.openSelectionFoodEditor(entry);
-      });
-      const remove = controls.createEl("button", { text: "Remove", cls: "mod-muted tps-health-selection-remove", attr: { type: "button" } });
+      const remove = row.createEl("button", { cls: "mod-muted tps-health-selection-remove", attr: { type: "button", "aria-label": `Remove ${entry.item.name}` } });
+      setIcon(remove, "x");
       remove.disabled = this.selectionSubmitting;
       remove.addEventListener("click", () => {
         this.selectionItems = this.selectionItems.filter((candidate) => candidate !== entry);
@@ -11272,7 +11291,7 @@ class FoodSearchModal extends Modal {
       });
     }
 
-    const consumedTimeSetting = new Setting(this.selectionEl)
+    const consumedTimeSetting = new Setting(trayBody)
       .setName("Consumed time")
       .setDesc("Optional; clear it to use the current time.")
       .addText((text) => {
@@ -11302,7 +11321,7 @@ class FoodSearchModal extends Modal {
     const title = this.selectionEl.querySelector(".tps-health-selection-title") as HTMLElement | null;
     if (title) title.setText(this.selectionTrayTitle());
     const macros = this.selectionEl.querySelector(".tps-health-selection-header > .tps-health-selection-macros") as HTMLElement | null;
-    if (macros) renderMacroPills(macros, this.selectedNutrition());
+    if (macros) renderCompactFoodMacros(macros, this.selectedNutrition());
     const logButton = this.selectionEl.querySelector(".tps-health-selection-log") as HTMLButtonElement | null;
     if (logButton) {
       logButton.setText(this.selectionLogButtonText());
@@ -11312,13 +11331,7 @@ class FoodSearchModal extends Modal {
   }
 
   private refreshSelectionWithoutScroll(refresh: () => void): void {
-    const scrollContainer = this.contentEl;
-    const scrollTop = scrollContainer.scrollTop;
-    refresh();
-    scrollContainer.scrollTop = scrollTop;
-    window.requestAnimationFrame(() => {
-      if (this.contentEl === scrollContainer) scrollContainer.scrollTop = scrollTop;
-    });
+    preserveFoodModalScroll(this.contentEl, refresh);
   }
 
   private refreshSelectionRow(
@@ -11335,32 +11348,16 @@ class FoodSearchModal extends Modal {
     unitSelect.value = entry.unit;
     const macros = row.querySelector(".tps-health-selection-line-macros") as HTMLElement | null;
     if (macros) {
-      renderMacroPills(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+      renderCompactFoodMacros(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
     }
   }
 
   private resetSearchForNextFood(addedName: string): void {
-    this.statusEl.setText(`Added ${addedName}. Add another food or log your tray above.`);
-    if (this.activeFoodLogTab !== "search") return;
-    this.searchInput = "";
-    if (this.searchInputEl) this.searchInputEl.value = "";
-    this.searchToken += 1;
-    this.actionsEl.empty();
-    this.resultsEl.empty();
-    window.setTimeout(() => this.focusSearchInput(), 0);
+    this.statusEl.setText(`Added ${addedName}`);
   }
 
   private focusSearchInput(): void {
-    if (this.activeFoodLogTab === "search") {
-      this.searchInputEl?.focus();
-      this.scrollSearchIntoView();
-    }
-  }
-
-  private scrollSearchIntoView(): void {
-    const searchPanel = this.searchInputEl?.closest(".tps-health-food-tab-panel") as HTMLElement | null;
-    if (!searchPanel || this.activeFoodLogTab !== "search") return;
-    searchPanel.scrollIntoView({ block: "start" });
+    if (this.activeFoodLogTab === "search") this.searchInputEl?.focus({ preventScroll: true });
   }
 
   private selectedNutrition(): Nutrition {
@@ -16281,7 +16278,7 @@ class BarcodeFoodReviewModal extends Modal {
   }
 }
 
-class FoodLogModal extends Modal {
+class FoodLogModal extends FoodInputModal {
   private submitting = false;
 
   constructor(
@@ -22575,6 +22572,13 @@ function compactMacroParts(nutrition: Nutrition): string[] {
     nutrition.alcoholG != null ? `Alc ${round(nutrition.alcoholG)}g` : "",
   ].filter(Boolean);
   return parts;
+}
+
+function renderCompactFoodMacros(container: HTMLElement, nutrition: Nutrition): void {
+  container.empty();
+  for (const part of compactMacroParts(nutrition).slice(0, 4)) {
+    container.createSpan({ cls: "tps-health-macro-pill", text: part });
+  }
 }
 
 function renderMacroPills(container: HTMLElement, nutrition: Nutrition): void {

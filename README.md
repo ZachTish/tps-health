@@ -1,3 +1,13 @@
+## 0.42.1 — compact mobile food logger
+
+Search results use the food name to choose an amount and a 44px plus button to add it. Calories, protein, carbs, and fat remain visible; the amount editor retains full nutrition. The review tray can collapse, selected foods have compact amount controls, and per-food tags expand on demand. Create meal remains beside Log at the top. Existing settings, storage, and nutrition calculations are unchanged.
+
+Adding food retains the query and result list. Tray updates preserve scrolling ancestors, and input focus no longer forces scrolling. Escape first dismisses an active text input; backdrop gestures that dismiss input are consumed so they cannot also close the logger. Explicit close remains available and pending draft persistence is retained.
+
+Design references: [Cronometer mobile food logging](https://support.cronometer.com/hc/en-us/articles/360018955211-Mobile-Add-a-Food) and [MacroFactor's integrated food logger](https://macrofactor.com/new-food-logger/). This refines the existing Search/Describe workflow without adding settings or destinations. Keyboard labels and visible focus outlines accompany compact controls.
+
+Validation includes keyboard/backdrop event sequences, cleanup, nested scroll preservation, retained queries/results, tray disclosure, and existing durable draft tests. Test-vault desktop mobile emulation is used for visual QA; physical iPhone keyboard and safe-area acceptance remains device testing. Minimum Obsidian remains 1.12.0. Final tests, separate build, reload, deployment, and artifact hashes are recorded in the release notes. Production installation remains the user's BRAT pull.
+
 ## 0.42.0 — food log tags
 
 Food logging replaces the per-entry Daily note section field with Tags. Each tray item also has its own Tags field. Enter nested Obsidian tags such as `#food/healthy` or `#meal/breakfast`, separated by spaces or commas; hashes are optional and duplicates are removed. Tags belong to the individual log, not its reusable food/recipe definition. Tray persistence, clones, and batch snapshots retain tags. Native food-entry notes store standard frontmatter `tags`; legacy food-log lines carry visible hashtags and metadata retained by portion edits. Existing section routing defaults/API and old records remain compatible; no automatic recategorization or migration occurs.
