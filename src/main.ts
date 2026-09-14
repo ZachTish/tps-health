@@ -1,3 +1,4 @@
+import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
 import { MacrosBaseView } from "./macros-base-view";
 import { MACROS_BASE_TYPE, defaultMacrosBaseContent, initializeMacrosDateType, sumMacroEntries } from "./macros-base-model";
 import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
@@ -15152,9 +15153,6 @@ class BarcodeScannerModal extends Modal {
   private canvasContext: CanvasRenderingContext2D | null = null;
   private stream: MediaStream | null = null;
   private scanInterval: number | null = null;
-  private nativeFallbackTimer: number | null = null;
-  private nativeFallbackInterval: number | null = null;
-  private nativeFallbackDecodeInProgress = false;
   private zxingVideoControls: any = null;
   private cameraSessionId = 0;
   private stopped = false;
@@ -15176,6 +15174,17 @@ class BarcodeScannerModal extends Modal {
   private visibilityHandler: (() => void) | null = null;
   private resumeCameraWhenVisible = false;
   private cameraAssistTimers: number[] = [];
+  private orientationNoticeShown = false;
+  private orientationLock = new BarcodeOrientationLock(
+    () => barcodeOrientationDrivers(window),
+    (result) => {
+      logger.flow("Barcode", `orientation:${result}`);
+      if (result === "unavailable" && !this.orientationNoticeShown && !this.stopped) {
+        this.orientationNoticeShown = true;
+        new Notice("Automatic portrait lock is unavailable in this app. Use your phone’s Rotation Lock while scanning.");
+      }
+    },
+  );
 
   constructor(
     app: App,
@@ -15196,6 +15205,7 @@ class BarcodeScannerModal extends Modal {
     this.contentEl.empty();
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.addClass("tps-health-modal");
+    this.plugin.register(() => this.close());
     this.contentEl.createEl("h2", { text: "Scan food barcode" });
     this.desiredFacingMode = this.desiredFacingMode || this.defaultFacingMode();
     const status = this.contentEl.createDiv({ cls: "tps-health-status tps-health-scanner-status", text: this.cameraHelpText() });
@@ -15254,6 +15264,11 @@ class BarcodeScannerModal extends Modal {
       if (this.fileInputEl) this.fileInputEl.value = "";
     });
     this.visibilityHandler = () => {
+      if (document.hidden) void this.orientationLock.setActive(false);
+      else if (this.cameraStartInProgress && !this.stopped && !this.lookupInProgress
+        && (this.isIOSLike() || /Android/i.test(this.navigatorInfo().userAgent))) {
+        void this.orientationLock.setActive(true);
+      }
       if (document.hidden && this.stream) {
         this.resumeCameraWhenVisible = true;
         this.stopScanning();
@@ -15409,6 +15424,9 @@ class BarcodeScannerModal extends Modal {
       return;
     }
     this.cameraStartInProgress = true;
+    if (this.isIOSLike() || /Android/i.test(this.navigatorInfo().userAgent)) {
+      void this.orientationLock.setActive(true);
+    }
     const sessionId = ++this.cameraSessionId;
     logger.flow("Barcode", "camera:start", { facingMode: this.desiredFacingMode || this.defaultFacingMode() });
     try {
@@ -15534,6 +15552,10 @@ class BarcodeScannerModal extends Modal {
       logger.flowWarn("Barcode", "zxing-video:no-video");
       return;
     }
+    if (this.getNativeBarcodeDetector()) {
+      await this.startCanvasScanLoop(statusEl, sessionId);
+      return;
+    }
     try {
       const reader = this.createLiveBarcodeReader();
       const controls = await reader.decodeFromVideoElement(this.videoEl, (result: any) => {
@@ -15550,7 +15572,6 @@ class BarcodeScannerModal extends Modal {
         return;
       }
       this.zxingVideoControls = controls;
-      this.scheduleNativeVideoFallback(statusEl, sessionId);
       void this.startCanvasScanLoop(statusEl, sessionId);
     } catch (error) {
       if (!this.isCameraSessionActive(sessionId)) return;
@@ -15558,53 +15579,6 @@ class BarcodeScannerModal extends Modal {
       statusEl.setText("Camera active. Using backup scanner...");
       await this.startCanvasScanLoop(statusEl, sessionId);
     }
-  }
-
-  private scheduleNativeVideoFallback(statusEl: HTMLElement, sessionId: number): void {
-    const detector = this.getNativeBarcodeDetector();
-    if (!detector || !this.videoEl) return;
-    this.clearNativeVideoFallback();
-    this.nativeFallbackTimer = window.setTimeout(() => {
-      this.nativeFallbackTimer = null;
-      if (!this.isCameraSessionActive(sessionId) || !this.videoEl) return;
-      logger.flow("Barcode", "native-video-fallback:start", { sessionId });
-      this.nativeFallbackInterval = window.setInterval(async () => {
-        if (!this.isCameraSessionActive(sessionId)
-          || this.lookupInProgress
-          || this.nativeFallbackDecodeInProgress
-          || !this.videoEl
-          || !this.videoEl.videoWidth) return;
-        this.nativeFallbackDecodeInProgress = true;
-        try {
-          const detections = await detector.detect(this.videoEl);
-          if (!this.isCameraSessionActive(sessionId)) return;
-          const barcode = barcodeFromNativeDetection(detections?.[0]);
-          if (!barcode) return;
-          logger.flow("Barcode", "native-video-fallback:decoded", { barcode: maskBarcode(barcode) });
-          statusEl.setText(`Barcode found: ${barcode}`);
-          await this.lookup(barcode, statusEl);
-        } catch (error) {
-          if (this.isCameraSessionActive(sessionId)) {
-            logger.flowWarn("Barcode", "native-video-fallback:failed", { error: logger.errorSummary(error) });
-            this.clearNativeVideoFallback();
-          }
-        } finally {
-          this.nativeFallbackDecodeInProgress = false;
-        }
-      }, BARCODE_LIVE_SCAN_INTERVAL_MS);
-    }, 0);
-  }
-
-  private clearNativeVideoFallback(): void {
-    if (this.nativeFallbackTimer != null) {
-      window.clearTimeout(this.nativeFallbackTimer);
-      this.nativeFallbackTimer = null;
-    }
-    if (this.nativeFallbackInterval != null) {
-      window.clearInterval(this.nativeFallbackInterval);
-      this.nativeFallbackInterval = null;
-    }
-    this.nativeFallbackDecodeInProgress = false;
   }
 
   private async requestCameraStream(sessionId: number): Promise<MediaStream> {
@@ -15782,7 +15756,7 @@ class BarcodeScannerModal extends Modal {
       } finally {
         decodeInProgress = false;
       }
-    }, BARCODE_LIVE_SCAN_INTERVAL_MS);
+    }, this.zxingVideoControls ? 500 : BARCODE_LIVE_SCAN_INTERVAL_MS);
   }
 
   private async scanImageFile(file: File, statusEl: HTMLElement): Promise<void> {
@@ -15834,6 +15808,7 @@ class BarcodeScannerModal extends Modal {
       if (nativeResult) return nativeResult;
       const result = await this.tryDecodeCanvas(reader, canvas);
       if (result) return result;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     }
     return null;
   }
@@ -15843,7 +15818,7 @@ class BarcodeScannerModal extends Modal {
     if (!detector) return null;
     try {
       const detections = await detector.detect(canvas);
-      const barcode = barcodeFromNativeDetection(detections?.[0]);
+      const barcode = detections?.map(barcodeFromNativeDetection).find(Boolean);
       if (barcode) return barcode;
     } catch (error) {
       logger.flowWarn("Barcode", "native-detector:detect-failed", { error: logger.errorSummary(error) });
@@ -15994,6 +15969,7 @@ class BarcodeScannerModal extends Modal {
   }
 
   private stopScanning(): void {
+    void this.orientationLock.setActive(false);
     this.cameraSessionId++;
     this.cameraStartInProgress = false;
     try {
@@ -16002,7 +15978,6 @@ class BarcodeScannerModal extends Modal {
       logger.flowWarn("Barcode", "zxing-video:stop-failed", { error: logger.errorSummary(error) });
     }
     this.zxingVideoControls = null;
-    this.clearNativeVideoFallback();
     this.clearCameraAssistTimers();
     if (this.scanInterval != null) {
       window.clearInterval(this.scanInterval);
@@ -21412,6 +21387,8 @@ function* barcodeScanCanvases(source: HTMLCanvasElement, heavy: boolean): Iterab
 }
 
 function* barcodeLiveScanCanvases(source: HTMLCanvasElement, attempt: number): IterableIterator<HTMLCanvasElement> {
+  // Let native detectors see the original pixels before resampling or glare filters.
+  if (source.width > 0 && source.height > 0) yield source;
   const rotationDegrees = BARCODE_ASSIST_ROTATION_ANGLES[Math.abs(attempt) % BARCODE_ASSIST_ROTATION_ANGLES.length];
   const fullFrame: BarcodeCanvasRegion = { x: 0, y: 0, width: 1, height: 1, scale: 1 };
   const center: BarcodeCanvasRegion = { x: 0.16, y: 0.24, width: 0.68, height: 0.52, scale: 2.5 };
@@ -21561,6 +21538,8 @@ function cropCanvas(
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return canvas;
   const drawScale = scale * boundedScale;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
   ctx.imageSmoothingEnabled = drawScale !== 1;
   ctx.translate(targetWidth / 2, targetHeight / 2);
   ctx.rotate(radians);

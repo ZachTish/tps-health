@@ -160,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -6507,11 +6507,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const reader = this\.createLiveBarcodeReader\(\);\s+const controls = await reader\.decodeFromVideoElement\(this\.videoEl, \(result: any\) =>/);
   assert.match(mainSource, /if \(!this\.isCameraSessionActive\(sessionId\)\) \{\s+controls\?\.stop\?\.\(\);/);
   assert.match(mainSource, /const barcode = barcodeFromDecodedResult\(result\);\s+if \(!barcode\) return;\s+logger\.flow\("Barcode", "zxing-video:decoded", \{ barcode: maskBarcode\(barcode\) \}\)/);
-  assert.match(mainSource, /this\.scheduleNativeVideoFallback\(statusEl, sessionId\)/);
   assert.match(mainSource, /void this\.startCanvasScanLoop\(statusEl, sessionId\)/);
-  assert.match(mainSource, /private scheduleNativeVideoFallback\(statusEl: HTMLElement, sessionId: number\): void/);
-  assert.match(mainSource, /native-video-fallback:decoded/);
-  assert.match(mainSource, /this\.clearNativeVideoFallback\(\)/);
   assert.doesNotMatch(mainSource, /scheduleCanvasScanFallback/);
   assert.doesNotMatch(mainSource, /fallbackScanTimeout/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "zxing-video:failed"[\s\S]+await this\.startCanvasScanLoop\(statusEl, sessionId\);/);
@@ -6531,7 +6527,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /!this\.isCameraSessionActive\(sessionId\) \|\| this\.lookupInProgress \|\| decodeInProgress/);
   assert.match(mainSource, /BARCODE_ASSIST_ROTATION_ANGLES\[Math\.abs\(attempt\) % BARCODE_ASSIST_ROTATION_ANGLES\.length\]/);
   assert.match(mainSource, /keep the barcode steady, well lit, and centered/);
-  assert.match(mainSource, /\}, BARCODE_LIVE_SCAN_INTERVAL_MS\);/);
+  assert.match(mainSource, /\}, this\.zxingVideoControls \? 500 : BARCODE_LIVE_SCAN_INTERVAL_MS\);/);
   assert.doesNotMatch(mainSource, /move closer so the barcode fills more of the camera frame/);
   assert.match(mainSource, /function\* barcodeScanCanvases\(source: HTMLCanvasElement, heavy: boolean\): IterableIterator<HTMLCanvasElement>/);
   assert.match(mainSource, /function barcodeScanRegions\(width: number, height: number, heavy: boolean\): BarcodeCanvasRegion\[\]/);
@@ -11672,4 +11668,42 @@ test("barcode responses arriving after five seconds still resolve and equivalent
   assert.equal((await first)?.name, "Slow product");
   assert.equal((await second)?.name, "Slow product");
   assert.equal(calls, 1);
+});
+
+test("native barcode scanning uses one loop and checks later valid detections", async () => {
+  installDeterministicBrowserGlobals();
+  const { BarcodeScannerModal } = await importPluginWithObsidianStub();
+  const modal = new BarcodeScannerModal({}, {}, null, undefined, { adapters: {
+    createNativeDetector: () => ({ detect: async () => [{ rawValue: 'not a food', format: 'qr_code' }, { rawValue: '737628064502', format: 'upc_a' }] }),
+    createLiveReader: () => { throw Error('native route must not start another decoder'); },
+  }});
+  modal.videoEl = {};
+  let loops=0; modal.startCanvasScanLoop=async()=>{loops++;};
+  await modal.startZxingVideoScan({},0);
+  assert.equal(loops,1);
+  assert.equal(await modal.tryNativeBarcodeDetector({}), '737628064502');
+});
+
+test("stopping camera requests orientation release and invalidates ongoing image work", async () => {
+  installDeterministicBrowserGlobals();
+  const { BarcodeScannerModal } = await importPluginWithObsidianStub();
+  const modal = new BarcodeScannerModal({}, {});
+  const active=[];modal.orientationLock={setActive:value=>{active.push(value);return Promise.resolve();}};
+  let stopped=0;modal.stream={getTracks:()=>[{stop:()=>stopped++}]};
+  modal.updateCameraControlButtons=()=>{};
+  modal.stopScanning();
+  assert.deepEqual(active,[false]);assert.equal(stopped,1);assert.equal(modal.cameraSessionId,1);
+});
+
+test("rotated barcode crops use opaque white margins before drawing", async () => {
+  const { cropCanvas } = await importPluginWithObsidianStub();
+  const previous=globalThis.document;
+  const calls=[];
+  const context={fillStyle:'',fillRect(...args){calls.push(['fill',this.fillStyle,...args]);},translate(){},rotate(){},drawImage(){calls.push(['draw']);}};
+  globalThis.document={createElement:()=>({width:0,height:0,getContext:()=>context})};
+  try {
+    const canvas=cropCanvas({width:1920,height:1080},{x:0,y:0,width:1,height:1,scale:1},1,{},45);
+    assert.ok(canvas.width<=1600 && canvas.height<=1600);
+    assert.deepEqual(calls,[['fill','#fff',0,0,canvas.width,canvas.height],['draw']]);
+  } finally {globalThis.document=previous;}
 });
