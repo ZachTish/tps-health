@@ -1831,12 +1831,18 @@ export class HealthNativeRecordService {
   }
 
   getDailyFoodEntries(dateIso: string): NativeDailyFoodEntrySnapshot[] {
-    return this.getKindRecords('food-entry')
-      .filter((record) => (
-        record.frontmatter.archived !== true
-        && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
-      ))
+    return this.getFoodEntriesForPaths(this.getKindRecords('food-entry')
+      .filter(record => dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso)
+      .map(record => record.file.path))
+      .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
+  }
+
+  /** Project only the current Bases result, using the same normalized record index as inline blocks. */
+  getFoodEntriesForPaths(paths: string[]): (NativeDailyFoodEntrySnapshot & { dateIso: string })[] {
+    return [...new Set(paths)].map(path => this.recordsByPath.get(path))
+      .filter((record): record is IndexedHealthRecord => !!record && record.kind === 'food-entry' && record.frontmatter.archived !== true)
       .map((record) => ({
+        dateIso: dateKey(record.frontmatter.date || record.frontmatter.completedDate) || "",
         id: record.id,
         path: record.file.path,
         title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
@@ -1854,8 +1860,7 @@ export class HealthNativeRecordService {
         sodiumMg: numberValue(record.frontmatter.sodiumMg),
         note: String(record.frontmatter.note || ''),
         linkedFood: Boolean(foodReference(record.frontmatter)),
-      }))
-      .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
+      }));
   }
 
   getDailyActivityEntries(dateIso: string): NativeDailyActivityEntrySnapshot[] {

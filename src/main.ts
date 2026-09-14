@@ -1,3 +1,5 @@
+import { MacrosBaseView } from "./macros-base-view";
+import { MACROS_BASE_TYPE, defaultMacrosBaseContent, initializeMacrosDateType, sumMacroEntries } from "./macros-base-model";
 import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
@@ -739,6 +741,12 @@ export default class TPSHealthPlugin extends Plugin {
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
+    if (typeof this.registerBasesView === "function") this.registerBasesView(MACROS_BASE_TYPE, {
+      name: "Macros", icon: "chart-pie", factory: (controller, container) => new MacrosBaseView(controller, container, this),
+      options: config => MacrosBaseView.options(config),
+    });
+    this.addCommand({ id: "open-macros-base", name: "Open Macros Base", callback: () => void this.openMacrosBase() });
+
     this.register(this.onActiveWorkoutStateChanged(() => this.scheduleWorkoutActionBars()));
     this.api = this.createApi();
     this.api.homeActions = createTPSHealthHomeActionProvider(this);
@@ -1328,6 +1336,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.app.workspace.trigger("tps-health:unloading");
     logger.flow("Lifecycle", "unload");
     this.nativeRecordService?.dispose();
     this.activeWorkoutStateListeners.clear();
@@ -1420,6 +1429,30 @@ export default class TPSHealthPlugin extends Plugin {
       ...summarizeDateContext(dateContext),
     });
     new FoodSearchModal(this.app, this, initialDraft, dateContext, initialTab).open();
+  }
+
+  async openMacrosBase(): Promise<void> {
+    try {
+      initializeMacrosDateType(this.app, this.settings);
+      const path = "Macros.base";
+      let file = this.app.vault.getAbstractFileByPath(path);
+      if (!file) file = await this.app.vault.create(path, defaultMacrosBaseContent(this.settings));
+      if (!(file instanceof TFile)) throw new Error("Macros.base is not a file.");
+      await this.app.workspace.getLeaf(false).openFile(file);
+    } catch (error) { logger.flowError("MacrosBase", "open:failed", error); new Notice("Could not open Macros.base. Check the destination."); }
+  }
+
+  renderMacrosBaseDay(container: HTMLElement, day: string, entries: NativeDailyFoodEntrySnapshot[], goals: HealthMetricRenderConfig[], display: NativeDailyDisplayOptions, disclosures: Map<string, boolean>): void {
+    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals), entries, display, {
+      disclosures,
+      components: (target, entry) => renderNativeDailyComponents(target, this, entry, disclosures),
+      addFood: () => this.openFoodLogger({ dateIso: day, label: day, isToday: day === window.moment().format("YYYY-MM-DD"), focusAfterLog: false }),
+      openFoodEntry: path => void this.openNativeDailyRecord(path),
+      editFoodEntry: entry => this.openNativeFoodEntryEditor(entry),
+      removeFoodEntry: entry => void this.removeNativeDailyEntry(entry),
+      logActivity: () => {}, startWorkout: () => {}, activeWorkout: null, resumeWorkout: () => {}, finishWorkout: () => {},
+      openActivityEntry: () => {}, editActivityEntry: () => {}, removeActivityEntry: () => {},
+    });
   }
 
   async openFoodLogBase(): Promise<void> {
@@ -12644,7 +12677,7 @@ function renderNativeDailyMacrosBlock(
     cls: "tps-health-native-daily-summary",
     text: model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
   });
-  header.createSpan({
+  if (display.showCalories !== false) header.createSpan({
     cls: "tps-health-native-daily-calories",
     text: `${formatNativeDailyMetricValue(model.calories)} kcal`,
   });
@@ -12807,7 +12840,9 @@ function renderNativeDailyComponents(
 }
 
 function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions): void {
+  if (!metricModels.length) return;
   const rings = root.createDiv({ cls: "tps-health-native-daily-rings", attr: { role: "list", "aria-label": "Daily macro rings" } });
+  rings.style.setProperty("--tps-health-macro-columns", String(metricModels.length));
   const sources = root.createDiv({ cls: "tps-health-native-ring-sources" });
   const buttons = new Map<string, HTMLButtonElement>();
   const showSources = (metric: NativeDailyDashboardModel["metrics"][number] | null) => {

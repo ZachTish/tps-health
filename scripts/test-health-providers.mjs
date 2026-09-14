@@ -5379,6 +5379,7 @@ test("GCM food action retries reuse one Health lifecycle listener", async () => 
   const fake = createFakeHealthApp();
   configureFakeCoreDailyNotes(fake.app, "Daily");
   const layoutListeners = [];
+  fake.app.workspace.trigger = () => {};
   fake.app.workspace.on = (event, callback) => {
     if (event === "layout-change") layoutListeners.push(callback);
     return { event, callback };

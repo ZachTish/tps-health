@@ -220,6 +220,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
   private renderDailyLoggingPage(page: HTMLElement): void {
     const appearance = createSettingsGroup(page, "Appearance");
+    new Setting(appearance).setName("Macros Base").addButton(button => button.setButtonText("Open").onClick(() => void this.plugin.openMacrosBase()));
     new Setting(appearance).setName("Macros block").addDropdown(dropdown => dropdown
       .addOption("rings", "Rings").addOption("table", "Rows")
       .setValue(this.plugin.settings.macroBlockStyle)

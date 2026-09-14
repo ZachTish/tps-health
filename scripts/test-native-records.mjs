@@ -1836,3 +1836,16 @@ test('an unloaded service cannot refresh controls when an old mobile read finish
  assert.equal(refreshes,0);
  assert.equal(await h.service.waitForWorkoutIndexSettled(),false);
 });
+
+test('Macros Base projects only selected atomic food records in query order', async () => {
+  const { service } = createHarness({ apiVersion: 6 });
+  const food = (id, amount) => ({id,createdDate:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:00:00.000Z',item:{id,name:id,source:'manual',nutrition:{calories:amount}},quantity:1,unit:'serving'});
+  const a=await service.createFoodEntry(food('base-a',100));
+  const b=await service.createFoodEntry(food('base-b',200));
+  const activity=await service.createActivityEntry({id:'base-walk',activity:'Walk',activityType:'walking',startedAt:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:30:00.000Z',durationMinutes:30,source:'manual'});
+  const entries=service.getFoodEntriesForPaths([b.path,a.path,b.path,activity.path,'missing.md']);
+  assert.deepEqual(entries.map(e=>e.id),['base-b','base-a']);
+  assert.deepEqual(entries.map(e=>e.calories),[200,100]);
+  assert.deepEqual(entries.map(e=>e.dateIso),['2026-09-14','2026-09-14']);
+  assert.deepEqual(service.getFoodEntriesForPaths([]),[]);
+});

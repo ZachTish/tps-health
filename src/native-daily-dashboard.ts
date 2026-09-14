@@ -6,6 +6,7 @@ export type NativeDailyFoodListMode = "hidden" | "collapsed" | "expanded";
 
 export interface NativeDailyDisplayOptions {
   macroStyle: NativeDailyMacroStyle;
+  showCalories?: boolean;
   foodList: NativeDailyFoodListMode;
   nutrientRows?: NativeDailyFoodListMode;
 }
