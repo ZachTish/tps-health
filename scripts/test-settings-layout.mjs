@@ -224,7 +224,7 @@ test("Workout set controls stay in one compact table row in Reading and Live Pre
   assert.match(stylesSource, /\.tps-health-workout-set-row\s*\{[\s\S]+overflow: visible;/);
   const finalLayoutStart = stylesSource.lastIndexOf("/* Authoritative compact workout table.");
   assert.ok(finalLayoutStart > stylesSource.indexOf("/* Workout rows are compact"), "authoritative layout must follow compact defaults");
-  const finalLayout = stylesSource.slice(finalLayoutStart);
+  const finalLayout = stylesSource.slice(finalLayoutStart, stylesSource.indexOf("/* Health surfaces:"));
   assert.match(finalLayout, /grid-template-columns: minmax\(30px, \.42fr\) minmax\(66px, 1\.15fr\) minmax\(46px, \.78fr\) minmax\(54px, \.9fr\) minmax\(34px, \.5fr\)/);
   assert.match(finalLayout, /\.tps-health-workout-set-grid-header,[\s\S]+\.tps-health-workout-set-metrics[\s\S]+display: grid/);
   assert.match(finalLayout, /\.tps-health-workout-set-previous,[\s\S]+\.tps-health-workout-set-field-label,[\s\S]+display: none/);

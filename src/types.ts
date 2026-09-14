@@ -81,6 +81,8 @@ export interface TPSHealthSettings {
   showFoodLogButtonInGcm: boolean;
   automaticDailyRollups: boolean;
   includeBrandedFoodSearch: boolean;
+  macroBlockStyle: "rings" | "table";
+  macroNutrientRows: "collapsed" | "expanded" | "hidden";
   healthGoals: HealthGoal[];
   calorieGoal: number;
   proteinGoalG: number;
@@ -359,6 +361,8 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   showFoodLogButtonInGcm: false,
   automaticDailyRollups: true,
   includeBrandedFoodSearch: true,
+  macroBlockStyle: "rings",
+  macroNutrientRows: "collapsed",
   healthGoals: [
     { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400, color: "var(--interactive-accent)" },
     { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 180, color: "var(--color-green)" },

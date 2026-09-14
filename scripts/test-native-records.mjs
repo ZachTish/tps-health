@@ -1691,7 +1691,7 @@ test('native workout sessions render one persistent table without rewriting the 
 test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {
   assert.match(typesSource, /storageMode: HealthStorageMode/u);
   assert.match(typesSource, /storageMode: "legacy"/u);
-  assert.match(settingsSource, /Native TPS records/u);
+  assert.match(settingsSource, /Atomic notes/u);
   assert.match(mainSource, /this\.nativeRecordService\.createFoodEntry\(entry\)/u);
   assert.match(mainSource, /this\.nativeRecordService\.createActivityEntry\(entry\)/u);
   assert.match(mainSource, /this\.plugin\.nativeRecordService\?\.isEnabled\(\)/u);

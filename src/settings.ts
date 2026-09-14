@@ -219,6 +219,23 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderDailyLoggingPage(page: HTMLElement): void {
+    const appearance = createSettingsGroup(page, "Appearance");
+    new Setting(appearance).setName("Macros block").addDropdown(dropdown => dropdown
+      .addOption("rings", "Rings").addOption("table", "Rows")
+      .setValue(this.plugin.settings.macroBlockStyle)
+      .onChange(async value => {
+        this.plugin.settings.macroBlockStyle = value === "table" ? "table" : "rings";
+        await this.plugin.saveSettings();
+        this.plugin.app.workspace.trigger("tps-health:appearance-changed");
+      }));
+    new Setting(appearance).setName("Nutrient rows").addDropdown(dropdown => dropdown
+      .addOption("collapsed", "Collapsed").addOption("expanded", "Expanded").addOption("hidden", "Hidden")
+      .setValue(this.plugin.settings.macroNutrientRows)
+      .onChange(async value => {
+        this.plugin.settings.macroNutrientRows = value as "collapsed" | "expanded" | "hidden";
+        await this.plugin.saveSettings();
+        this.plugin.app.workspace.trigger("tps-health:appearance-changed");
+      }));
     const architecture = createSettingsGroup(
       page,
       "Data architecture",
@@ -228,8 +245,8 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       .setName("Health storage")
       .setDesc("Native records writes one atomic Markdown note per food, activity, or workout. TPS Global Context Menu nativeRecords API v6 owns the note's single tpsId and readable filename. Reload after changing this setting.")
       .addDropdown((dropdown) => dropdown
-        .addOption("legacy", "Legacy Daily Note/body logs")
-        .addOption("native-records", "Native TPS records")
+        .addOption("legacy", "Atomic lines")
+        .addOption("native-records", "Atomic notes")
         .setValue(this.plugin.settings.storageMode)
         .onChange(async (value) => {
           this.plugin.settings.storageMode = value === "native-records" ? "native-records" : "legacy";

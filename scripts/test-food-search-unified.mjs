@@ -179,3 +179,30 @@ test('review scroll survives rebuilding selected rows', async () => {
   tray.renderSelection();
   assert.equal(tray.selectionEl.querySelector('.tps-health-selection-body').scrollTop,120);
 });
+
+
+test('macro rings expand one full-width contribution list and keep nutrients compact', async () => {
+  const { renderNativeDailyMacrosBlock } = await importPluginWithObsidianStub();
+  const root = nativeTrayTestElement();
+  const metrics = ['consumedCalories','protein','carbs','fat','fiber','sodium'].map((propertyKey, i) => ({ propertyKey, label: propertyKey, value: 10, unit: i === 0 ? 'kcal' : 'g', targetLabel: 'up to 100 g', progress: 0.1, state: 'within' }));
+  const actions = { disclosures: new Map(), components() {}, addFood() {}, openFoodEntry() {} };
+  renderNativeDailyMacrosBlock(root, { metrics, calories: 10, entryCount: 0 }, [], { macroStyle: 'rings', foodList: 'hidden', nutrientRows: 'collapsed' }, actions);
+  const rings = walk(root).filter(n => n.className === 'tps-health-native-ring-button');
+  assert.equal(rings.length, 4);
+  const nutrients = walk(root).find(n => n.className === 'tps-health-native-daily-nutrients');
+  assert.equal(nutrients.open, false);
+  rings[0].listeners.get('click')();
+  assert.equal(rings[0].attributes['aria-expanded'], 'true');
+  const sources = walk(root).find(n => n.className === 'tps-health-native-ring-sources');
+  assert.equal(sources.children.length, 1);
+  assert.equal(sources.parentElement, rings[0].parentElement.parentElement.parentElement);
+  rings[1].listeners.get('click')();
+  assert.equal(rings[0].attributes['aria-expanded'], 'false');
+  assert.equal(rings[1].attributes['aria-expanded'], 'true');
+  rings[1].listeners.get('click')();
+  assert.equal(sources.children.length, 0);
+  const hidden = nativeTrayTestElement();
+  renderNativeDailyMacrosBlock(hidden, { metrics, calories: 0, entryCount: 0 }, [], { macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden' }, actions);
+  assert.equal(walk(hidden).some(n => n.className === 'tps-health-native-daily-nutrients'), false);
+  assert.equal(walk(hidden).some(n => n.className === 'tps-health-native-ring-button'), false);
+});

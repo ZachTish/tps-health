@@ -29,7 +29,7 @@ async function loadDateFilterModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
+const { splitNativeDailyMetrics, nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
 const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -153,9 +153,9 @@ test('Health registers independently embeddable macro and activity renderers plu
   assert.match(mainSource, /registerNativeDailySection\("tps-health-macros", "macros"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-activity", "activity"\)/u);
   assert.match(mainSource, /registerNativeDailySection\("tps-health-daily", "combined"\)/u);
-  assert.match(mainSource, /parseNativeDailyDisplayOptions\(source\)/u);
+  assert.match(mainSource, /parseNativeDailyDisplayOptions\(source,/u);
   assert.match(mainSource, /resolveNativeDailyDateFilter\(display\.filterSource/u);
-  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options\)/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options, source\)/u);
   assert.match(mainSource, /getDailyFoodMacroTotals\(this\.dateContext\.dateIso\)/u);
   assert.match(mainSource, /if \(this\.section === "activity"\) \{[\s\S]*?renderNativeDailyActivity\([\s\S]*?return;[\s\S]*?getDailyFoodMacroTotals/u);
   assert.match(mainSource, /this\.section === "macros"[\s\S]*?\["food-entry"\][\s\S]*?this\.section === "activity"[\s\S]*?\["activity-entry", "workout-session"\]/u);
@@ -213,7 +213,7 @@ test('macro and activity dashboards expose compact edit and remove lists in both
 });
 
 test('Daily Note actions use the exact resolved date context for every Health workflow', () => {
-  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options\)/u);
+  assert.match(mainSource, /new TPSHealthNativeDailyDashboardChild\(el, this, dateContext, section, display\.options, source\)/u);
   assert.match(mainSource, /addFood:\s*\(\) => this\.plugin\.openFoodLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /logActivity:\s*\(\) => this\.plugin\.openActivityLogger\(\{ \.\.\.this\.dateContext \}\)/u);
   assert.match(mainSource, /startWorkout:\s*\(\) => this\.plugin\.openWorkoutStarter\(\{ \.\.\.this\.dateContext \}\)/u);
@@ -262,4 +262,22 @@ test("daily cards stay within their embed instead of applying Core Bases full-bl
   assert.doesNotMatch(stylesSource, /--bases-embed-(transform|width)/);
   assert.match(stylesSource, /\.tps-health-native-daily-metric-label\s*\{[^}]*white-space: normal/);
   assert.match(stylesSource, /\.tps-health-native-daily-target\s*\{[^}]*overflow-wrap: anywhere;[^}]*white-space: normal/);
+});
+
+
+test('appearance defaults inherit without overriding explicit block choices', () => {
+  const defaults = { macroStyle: 'rings', nutrientRows: 'collapsed' };
+  assert.deepEqual(parseNativeDailyDisplayOptions('', defaults).options, { ...defaults, foodList: 'hidden' });
+  const result = parseNativeDailyDisplayOptions('style: table\nnutrients: expanded\nfoods: collapsed\ndate == today()', defaults);
+  assert.deepEqual(result.options, { macroStyle: 'table', nutrientRows: 'expanded', foodList: 'collapsed' });
+  assert.equal(result.filterSource, 'date == today()');
+  assert.equal(parseNativeDailyDisplayOptions('nutrients: unknown', defaults).kind, 'invalid');
+  assert.equal(parseNativeDailyDisplayOptions('nutrients: hidden\nnutrients: expanded', defaults).kind, 'invalid');
+});
+
+test('only energy and main macros become rings; tracked nutrients stay in rows', () => {
+  const metrics = ['consumedCalories', 'protein', 'carbs', 'fat', 'fiber', 'sodium'].map(propertyKey => ({ propertyKey }));
+  const groups = splitNativeDailyMetrics(metrics);
+  assert.deepEqual(groups.primary.map(m => m.propertyKey), ['consumedCalories','protein','carbs','fat']);
+  assert.deepEqual(groups.other.map(m => m.propertyKey), ['fiber','sodium']);
 });

@@ -1,3 +1,15 @@
+## 0.43.0 — nutrition appearance and compact Health surfaces
+
+Health's macro block defaults to four primary progress rings (configured calories, protein, carbs, and fat), with other tracked nutrients in small rows under **Nutrients**. **Daily logging → Appearance** offers **Macros block: Rings / Rows** and **Nutrient rows: Collapsed / Expanded / Hidden**. Existing explicit block options take priority. Labels, colors, targets and totals still come from configured goals and recorded nutrition. Tap a ring to show one full-width list of contributing foods; recipe expansion stays an arrow beside the food. Empty days retain goal rings at zero.
+
+The shared macro/activity cards, entry rows, Health forms and workout surface use compact spacing and consistent rounded controls. Mobile ring buttons explicitly override Obsidian's wide button padding; four rings become two columns below 320 px. Reading and Live Preview render blocks; Source remains literal Markdown. This is a visual feature release, with no record migrations or provider changes. Minimum Obsidian remains 1.12.0.
+
+Settings inventory: the same five destinations and existing controls/actions remain, with two additive persisted appearance keys (`macroBlockStyle`, `macroNutrientRows`). Defaults are `rings` and `collapsed`; invalid/old values normalize safely. Open block disclosures remain transient, refreshes preserve selections, and changing the nutrient default resets only that disclosure. No new settings disclosure level was added. Storage choices now read **Atomic notes** and **Atomic lines**, retaining their existing persisted values.
+
+Validation uses synthetic meals in the isolated test vault, executable parser/default/grouping/renderer tests, the full declared suite, a separate final build, and test-vault reload. Computer-use checks cover Reading, Live Preview, ring contributors, nutrient expansion, and both new settings updating an existing block. Narrow panes and Obsidian mobile emulation were inspected, including the padding collision fix. This is desktop mobile emulation, not a physical iPhone test. Test preferences/layout are restored; no real food entries or credentials are changed. Public artifacts are for the user's BRAT pull, not a production installation.
+
+Only currently supported, configured nutrients are shown. Health does not yet store Cronometer's full vitamin/mineral panel; missing nutrients are not invented as zero. Appearance is inspired by [Cronometer's energy summary](https://support.cronometer.com/hc/en-us/articles/360060616191-Energy-Summary), adapted to Health's own data and interactions.
+
 ## 0.42.2 — food list and explicit dismissal
 
 The food logger now follows the layout in [Cronometer's mobile search and review screenshots](https://support.cronometer.com/hc/en-us/articles/360018955211-Mobile-Add-a-Food): search and scan at the top, compact two-line food rows, and a docked Review/Log bar. Review opens an independently scrolling panel; its top actions retain Create meal and Clear tray. Search/Describe and Quick add remain available. The logger opens to the list even when restoring a saved tray. Full nutrition and editing remain available through each food. No new settings or storage migration.
@@ -889,6 +901,7 @@ Macro and combined blocks also accept presentation options before the date filte
 ````markdown
 ```tps-health-macros
 style: rings
+nutrients: collapsed
 foods: collapsed
 filters:
   and:
@@ -896,7 +909,7 @@ filters:
 ```
 ````
 
-`style` is `table` (the default) or `rings`. `foods` is `hidden` (the default), `collapsed`, or `expanded`; `true` and `false` are accepted as shorthand for `collapsed` and `hidden`. The disclosure lists the exact native `food-entry` records included in that selected day's aggregate, preserves their saved nutrition snapshot, and opens an entry note when its title is selected. These options also work in `tps-health-daily`; `tps-health-activity` remains visually unchanged. Options and the date selector are render-only and never add properties to a note or alter a record. Rings collapse to two columns in narrow embeds, while contribution metadata wraps without requiring horizontal scrolling.
+`style` is `table` or `rings`; when omitted it follows **Daily logging → Appearance** (default: rings). `nutrients` is `collapsed`, `expanded`, or `hidden` and follows the corresponding setting when omitted (default: collapsed). Calories, protein, carbs, and fat use the selected primary style; other configured nutrients appear below in compact rows. `foods` is `hidden` (the default), `collapsed`, or `expanded`; `true` and `false` are accepted as shorthand for `collapsed` and `hidden`. The disclosure lists the exact native `food-entry` records included in that selected day's aggregate, preserves their saved nutrition snapshot, and opens an entry note when its title is selected. These options also work in `tps-health-daily`; `tps-health-activity` remains visually unchanged. Options and the date selector are render-only and never add properties to a note or alter a record. Rings collapse to two columns in narrow embeds, while contribution metadata wraps without requiring horizontal scrolling.
 
 The record-date operand may be `date`, `note.date`, or either wrapped in `date(...)`. The selected-date side supports `today()`, `now()` / `now().date()`, `date(...)`, a quoted or bare ISO date, `this.file.name`, `this.file.path`, `this.<property>`, and `this.file.properties.<property>`. As in Bases, date expressions may add or subtract duration strings using years, months, weeks, days, hours, minutes, or seconds. `this` refers to the embedding Markdown note; when that note is a recognized Daily Note, `this.file.name` and `this.file.path` resolve to its already-validated Core Daily Note date. Only one date equality selector is allowed because a Health section displays one day. Other Base filter clauses do not change Health data; missing, malformed, unsupported, or ambiguous date selectors render an explanatory error instead of falling back to the wrong day. **Add food**, **Log activity**, and **Start workout** all inherit the resolved displayed date.
 

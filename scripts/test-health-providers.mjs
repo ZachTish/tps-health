@@ -160,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { renderNativeDailyComponents, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -7798,7 +7798,7 @@ test("Daily Note workout identifiers are atomic and the controls collapse cleanl
   assert.match(mainSource, /new DiscardWorkoutPromptModal\(this\.app/);
   assert.match(mainSource, /heading\.insertAdjacentElement\("afterend", workoutDailyHeaderElement/);
   assert.match(stylesSource, /\.tps-health-daily-workout-header \{[\s\S]*container-type: inline-size;[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
-  const compactWorkoutTable = stylesSource.slice(stylesSource.lastIndexOf("/* Authoritative compact workout table."));
+  const compactWorkoutTable = stylesSource.slice(stylesSource.lastIndexOf("/* Authoritative compact workout table."), stylesSource.indexOf("/* Health surfaces:"));
   assert.match(compactWorkoutTable, /grid-template-columns: minmax\(30px, \.42fr\) minmax\(66px, 1\.15fr\) minmax\(46px, \.78fr\) minmax\(54px, \.9fr\) minmax\(34px, \.5fr\)/);
   assert.match(compactWorkoutTable, /\.tps-health-workout-set-grid-header[\s\S]*line-height: 24px/);
   assert.match(stylesSource, /\.tps-health-workout-set-stepper \.tps-health-workout-set-step \{\s*display: none;/);
@@ -11611,4 +11611,17 @@ test("food search exposes wider Gemini research and barcode misses use it automa
   assert.match(mainSource, /this\.plugin\.extractFoodFromLabelImage\(image, this\.barcode, this\.seedIdentity\)/);
   assert.match(mainSource, /renderFoodResearchSources\(this\.contentEl, this\.sources\)/);
   assert.match(stylesSource, /\.tps-health-food-research-sources/);
+});
+
+
+test('appearance settings normalize old and invalid values while retaining explicit choices', async () => {
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  for (const input of [{}, {macroBlockStyle:'bad',macroNutrientRows:null}]) {
+    const settings=normalizeTPSHealthSettings(input);
+    assert.equal(settings.macroBlockStyle,'rings');
+    assert.equal(settings.macroNutrientRows,'collapsed');
+  }
+  const settings=normalizeTPSHealthSettings({macroBlockStyle:'table',macroNutrientRows:'hidden'});
+  assert.equal(settings.macroBlockStyle,'table');
+  assert.equal(settings.macroNutrientRows,'hidden');
 });

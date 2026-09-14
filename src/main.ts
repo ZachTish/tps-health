@@ -20,6 +20,7 @@ import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActi
 import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   nativeDailyNutrientContributors,
+  splitNativeDailyMetrics,
   buildNativeDailyActivityModel,
   buildNativeDailyDashboardModel,
   formatNativeDailyMetricValue,
@@ -968,7 +969,7 @@ export default class TPSHealthPlugin extends Plugin {
     if (typeof (this as any).registerMarkdownCodeBlockProcessor === "function") {
       const registerNativeDailySection = (language: string, section: NativeDailyDashboardSection) => {
         this.registerMarkdownCodeBlockProcessor(language, async (source, el, ctx) => {
-          const display = parseNativeDailyDisplayOptions(source);
+          const display = parseNativeDailyDisplayOptions(source, { macroStyle: this.settings.macroBlockStyle, nutrientRows: this.settings.macroNutrientRows });
           if (display.kind === "invalid") {
             renderNativeDailyDashboardMessage(el, display.message);
             return;
@@ -1012,7 +1013,7 @@ export default class TPSHealthPlugin extends Plugin {
             renderNativeDailyDashboardMessage(el, "Enable Native Markdown records in TPS Health to use this section.");
             return;
           }
-          ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext, section, display.options));
+          ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext, section, display.options, source));
         });
       };
       registerNativeDailySection("tps-health-macros", "macros");
@@ -12440,6 +12441,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     private dateContext: FoodLogDateContext,
     private section: NativeDailyDashboardSection,
     private display: NativeDailyDisplayOptions,
+    private displaySource: string = "",
   ) {
     super(containerEl);
   }
@@ -12452,6 +12454,10 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         void this.render();
       }, 0);
     };
+    this.registerEvent(this.plugin.app.workspace.on("tps-health:appearance-changed" as any, () => {
+      this.disclosures.delete("nutrients");
+      scheduleRefresh();
+    }));
     const unsubscribe = this.plugin.nativeRecordService?.onRecordsChanged((change) => {
       if (!change.dates.includes(this.dateContext.dateIso)) return;
       const relevantKinds = this.section === "macros"
@@ -12477,6 +12483,11 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 
   private async render(): Promise<void> {
     const generation = ++this.renderGeneration;
+    const parsed = parseNativeDailyDisplayOptions(this.displaySource, {
+      macroStyle: this.plugin.settings.macroBlockStyle,
+      nutrientRows: this.plugin.settings.macroNutrientRows,
+    });
+    if (parsed.kind === "valid") this.display = parsed.options;
     try {
       const activeWorkout = this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
@@ -12659,13 +12670,19 @@ function renderNativeDailyMacrosBlock(
     });
   }
 
-  if (!model.entryCount) {
-    root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged for this day yet." });
-  } else if (display.macroStyle === "rings") {
-    renderNativeDailyMetricRings(root, model.metrics, foodEntries, actions);
+  const groups = splitNativeDailyMetrics(model.metrics);
+  if (display.macroStyle === "rings") {
+    renderNativeDailyMetricRings(root, groups.primary, foodEntries, actions);
   } else {
-    renderNativeDailyMetrics(root, model.metrics, "Daily macro totals", foodEntries, actions);
+    renderNativeDailyMetrics(root, groups.primary, "Daily macro totals", foodEntries, actions);
   }
+  if (groups.other.length && display.nutrientRows !== "hidden") {
+    const nutrients = root.createEl("details", { cls: "tps-health-native-daily-nutrients" });
+    rememberDailyDisclosure(nutrients, "nutrients", actions.disclosures, display.nutrientRows === "expanded");
+    nutrients.createEl("summary", { text: "Nutrients" });
+    renderNativeDailyMetrics(nutrients, groups.other, "Other tracked nutrients", foodEntries, actions);
+  }
+  if (!model.entryCount) root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged yet." });
   if (model.entryCount) {
     renderNativeDailyFoodEntries(root, foodEntries, display.foodList === "expanded", actions, reviewFoodButton);
   }
@@ -12707,7 +12724,7 @@ function rememberDailyDisclosure(details: HTMLDetailsElement, key: string, state
 function renderNativeDailyContributors(
   container: HTMLElement, metric: NativeDailyDashboardModel["metrics"][number],
   entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions, label = "Contributing foods",
-): void {
+): HTMLDetailsElement {
   const details = container.createEl("details", { cls: "tps-health-native-daily-breakdown" });
   details.createEl("summary", { text: label, attr: { "aria-label": `${metric.label}: contributing foods` } });
   details.setAttr("data-contribution-key", metric.propertyKey);
@@ -12722,6 +12739,7 @@ function renderNativeDailyContributors(
   }
   if (!contributors.length) list.createDiv({ attr: { role: "listitem" }, text: "No recorded contributions." });
   rememberDailyDisclosure(details, `nutrient:${metric.propertyKey}`, actions.disclosures);
+  return details;
 }
 
 function renderNativeDailyComponents(
@@ -12790,24 +12808,41 @@ function renderNativeDailyComponents(
 
 function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions): void {
   const rings = root.createDiv({ cls: "tps-health-native-daily-rings", attr: { role: "list", "aria-label": "Daily macro rings" } });
-  for (const metric of metricModels) {
-    const item = rings.createDiv({
-      cls: `tps-health-native-daily-ring-item is-${metric.state}`,
-      attr: {
-        role: "listitem",
-        "aria-label": `${metric.label}: ${formatNativeDailyMetricValue(metric.value)} ${metric.unit}; ${metric.targetLabel}`,
-      },
+  const sources = root.createDiv({ cls: "tps-health-native-ring-sources" });
+  const buttons = new Map<string, HTMLButtonElement>();
+  const showSources = (metric: NativeDailyDashboardModel["metrics"][number] | null) => {
+    sources.empty();
+    for (const [key, button] of buttons) {
+      const active = key === metric?.propertyKey;
+      button.setAttr("aria-expanded", String(active));
+      actions.disclosures.set(`ring:${key}`, active);
+    }
+    if (!metric) return;
+    const detail = renderNativeDailyContributors(sources, metric, entries, actions, metric.label);
+    detail.open = true;
+    detail.addEventListener("toggle", () => {
+      if (detail.isConnected && !detail.open) showSources(null);
     });
+  };
+  for (const metric of metricModels) {
+    const item = rings.createDiv({ cls: `tps-health-native-daily-ring-item is-${metric.state}`, attr: { role: "listitem" } });
     if (metric.color) item.style.setProperty("--tps-health-native-ring-color", metric.color);
     item.style.setProperty("--tps-health-native-ring-progress", `${Math.round(metric.progress * 100)}%`);
-    const ring = item.createDiv({ cls: "tps-health-native-daily-ring", attr: { "aria-hidden": "true" } });
+    const button = item.createEl("button", { cls: "tps-health-native-ring-button", attr: {
+      type: "button", "aria-expanded": "false",
+      "aria-label": `${metric.label}: ${formatNativeDailyMetricValue(metric.value)} ${metric.unit}; ${metric.targetLabel}. Show contributing foods`,
+    } });
+    buttons.set(metric.propertyKey, button);
+    const ring = button.createDiv({ cls: "tps-health-native-daily-ring", attr: { "aria-hidden": "true" } });
     const value = ring.createDiv({ cls: "tps-health-native-daily-ring-value" });
     value.createSpan({ text: formatNativeDailyMetricValue(metric.value) });
     value.createEl("small", { text: metric.unit });
-    item.createDiv({ cls: "tps-health-native-daily-ring-label", text: metric.label });
-    item.createDiv({ cls: "tps-health-native-daily-ring-target", text: metric.targetLabel });
-    renderNativeDailyContributors(item, metric, entries, actions);
+    button.createDiv({ cls: "tps-health-native-daily-ring-label", text: metric.label });
+    button.createDiv({ cls: "tps-health-native-daily-ring-target", text: metric.targetLabel.replace("at least ", "≥ ").replace("up to ", "≤ ") });
+    button.addEventListener("click", () => showSources(actions.disclosures.get(`ring:${metric.propertyKey}`) ? null : metric));
   }
+  const selected = metricModels.find(metric => actions.disclosures.get(`ring:${metric.propertyKey}`));
+  if (selected) showSources(selected);
 }
 
 function renderNativeDailyFoodEntries(

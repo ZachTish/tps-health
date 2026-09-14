@@ -36,6 +36,8 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
     return normalized;
   }, {} as SettingsRecord) as unknown as TPSHealthSettings;
 
+  if (!["rings", "table"].includes(settings.macroBlockStyle)) settings.macroBlockStyle = DEFAULT_SETTINGS.macroBlockStyle;
+  if (!["collapsed", "expanded", "hidden"].includes(settings.macroNutrientRows)) settings.macroNutrientRows = DEFAULT_SETTINGS.macroNutrientRows;
   settings.workoutsFolder = folderSetting(settings.workoutsFolder, DEFAULT_SETTINGS.workoutsFolder);
   settings.workoutPlansFolder = folderSetting(settings.workoutPlansFolder, DEFAULT_SETTINGS.workoutPlansFolder);
   settings.exercisesFolder = folderSetting(settings.exercisesFolder, DEFAULT_SETTINGS.exercisesFolder);

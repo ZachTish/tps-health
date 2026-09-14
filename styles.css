@@ -5039,3 +5039,90 @@ body.is-mobile .modal.tps-health-food-search-frame {
   right: auto !important;
   transform: translateX(-50%) !important;
 }
+
+/* Health surfaces: compact nutrition cards and consistent controls. */
+.tps-health-native-daily {
+  border-radius: 16px;
+  background: var(--background-primary);
+  overflow: hidden;
+}
+.tps-health-native-daily .tps-health-native-daily-header {
+  padding: 10px 12px; gap: 6px; border-bottom: 0;
+}
+.tps-health-native-daily-heading-icon { display: none; }
+.tps-health-native-daily-title { font-size: var(--font-ui-medium); font-weight: 650; }
+.tps-health-native-daily-summary { font-size: var(--font-ui-smaller); }
+.tps-health-native-daily .tps-health-native-daily-action {
+  min-height: 36px; min-width: 36px; border-radius: 50%;
+}
+.tps-health-native-daily .tps-health-native-daily-rings {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 12px 8px 16px; gap: 8px; border: 0;
+}
+.tps-health-native-daily .tps-health-native-daily-rings button.tps-health-native-ring-button {
+  display: flex; flex-direction: column; align-items: center;
+  width: 100%; min-width: 0; height: auto; padding: 2px;
+  border: 0; border-radius: 12px; background: transparent; box-shadow: none;
+  color: var(--text-normal); white-space: normal;
+}
+.tps-health-native-ring-button:hover { background: var(--background-modifier-hover); }
+.tps-health-native-ring-button[aria-expanded=true] { background: var(--background-secondary); }
+.tps-health-native-ring-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.tps-health-native-daily-ring-value { flex-direction: column; align-items: center; line-height: 1.1; z-index: 1; }
+.tps-health-native-daily-ring-value > span { font-size: 17px; font-weight: 650; }
+.tps-health-native-daily-ring-value small { font-size: 10px; margin-top: 2px; }
+.tps-health-native-daily-ring-label { white-space: normal; overflow: visible; line-height: 1.2; font-size: 12px; }
+.tps-health-native-daily-ring-target { font-size: 10px; line-height: 1.3; margin-top: 4px; }
+.tps-health-native-daily-ring-item.is-above .tps-health-native-daily-ring-target { color: var(--text-error); }
+.tps-health-native-ring-sources:empty { display: none; }
+.tps-health-native-ring-sources { padding: 0 12px 12px; }
+.tps-health-native-daily-nutrients { border-top: 1px solid var(--background-modifier-border); }
+.tps-health-native-daily-nutrients > summary {
+  padding: 10px 12px; min-height: 40px; font-size: var(--font-ui-small);
+  font-weight: 600; cursor: pointer;
+}
+.tps-health-native-daily-nutrients .tps-health-native-daily-metric-header { display: none; }
+.tps-health-native-daily .tps-health-native-daily-metric {
+  padding: 7px 12px; row-gap: 5px; column-gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(64px, auto);
+  font-size: var(--font-ui-small);
+}
+.tps-health-native-daily .tps-health-native-daily-progress { height: 3px; border-radius: 3px; }
+.tps-health-native-daily .tps-health-native-daily-target { font-size: 11px; line-height: 1.2; }
+.tps-health-native-daily .tps-health-native-daily-metric-value { font-size: 13px; font-variant-numeric: tabular-nums; }
+.tps-health-native-daily .tps-health-native-daily-food-row,
+.tps-health-native-daily .tps-health-native-daily-activity-row { padding: 8px 12px; }
+.tps-health-native-daily .tps-health-native-daily-food-title,
+.tps-health-native-daily .tps-health-native-daily-activity-title {
+  background: transparent; box-shadow: none; border: 0; padding: 0;
+  justify-content: flex-start; font-weight: 600;
+}
+.tps-health-native-daily .tps-health-native-daily-breakdown-item > button {
+  background: transparent; box-shadow: none; padding: 2px 0; border: 0;
+  text-align: left; justify-content: flex-start;
+}
+.tps-health-native-daily-empty { padding: 10px 12px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.tps-health-native-daily-active-workout { border-radius: 12px; margin: 8px 12px; }
+.modal.tps-health-modal-frame:not(.tps-health-food-search-frame) { border-radius: 16px; }
+.tps-health-modal .setting-item { padding-top: 9px; padding-bottom: 9px; }
+.tps-health-modal :is(input:not([type=checkbox]), select, textarea) { border-radius: 10px; }
+.tps-health-modal button { border-radius: 10px; }
+.tps-health-modal h2 { font-size: 20px; letter-spacing: -0.02em; }
+.tps-health-settings .tps-health-settings-group { border-radius: 14px; }
+@container (max-width: 320px) {
+  .tps-health-native-daily .tps-health-native-daily-rings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tps-health-native-daily .tps-health-native-daily-metric { grid-template-columns: minmax(0, 1fr) auto; }
+  .tps-health-native-daily .tps-health-native-daily-target { grid-column: 2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tps-health-native-daily *, .tps-health-modal * { scroll-behavior: auto; transition: none; }
+}
+
+.tps-health-native-workout-surface { border-radius: 16px; }
+.tps-health-native-workout-surface-header { gap: 8px; }
+.tps-health-native-workout-surface-exercise { border-radius: 12px; }
+.tps-health-native-workout-surface-exercise-name { font-size: var(--font-ui-medium); }
+.tps-health-native-workout-surface :is(button, input, select) { border-radius: 8px; }
+
+.tps-health-native-daily .tps-health-native-daily-ring-label { overflow-wrap: normal; word-break: normal; }
+.tps-health-native-daily .tps-health-native-daily-ring { width: min(72px, 100%); height: auto; aspect-ratio: 1; }
