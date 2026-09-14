@@ -386,7 +386,7 @@ const DAILY_NOTE_TEMPLATER_POLL_MS = 25;
 const DAILY_NOTE_TEMPLATER_TIMEOUT_MS = 5_000;
 const DAILY_NOTE_TEMPLATER_COMMAND_PATTERN = /<%[\s\S]*?%>/u;
 const DAILY_NOTE_TEMPLATE_INCOMPLETE_MARKER = "<!-- tps-daily-note-template-incomplete:v1 -->";
-const BARCODE_LOOKUP_TIMEOUT_MS = 5000;
+const BARCODE_LOOKUP_TIMEOUT_MS = 20000;
 const BARCODE_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const BARCODE_MISS_CACHE_TTL_MS = 5 * 60 * 1000;
 const BARCODE_RESULT_CACHE_MAX_ENTRIES = 200;
@@ -565,7 +565,7 @@ function boundedRetryAfterMs(headers: Record<string, string> | undefined, fallba
 
 class OpenFoodFactsRateLimitError extends Error {
   constructor(readonly delayMs: number) {
-    super("Open Food Facts search rate limited");
+    super(`Open Food Facts is busy. Try again in ${Math.ceil(delayMs / 1000)} seconds.`);
   }
 }
 
@@ -6072,12 +6072,12 @@ export default class TPSHealthPlugin extends Plugin {
     const rateLimitRemainingMs = Math.max(0, this.openFoodFactsRateLimitedUntil - Date.now());
     if (rateLimitRemainingMs) {
       logger.flowWarn("Barcode", "lookup:rate-limit-skip", { barcode: maskBarcode(digits), retryAfterMs: rateLimitRemainingMs });
-      return null;
+      throw new OpenFoodFactsRateLimitError(rateLimitRemainingMs);
     }
     const candidates = digits.length === 8 ? barcodeCandidates(digits) : [digits];
     const request = (async () => {
       logger.flow("Barcode", "lookup:start", { barcode: maskBarcode(digits), candidates: candidates.length });
-      let failures = 0;
+      let failure: Error | null = null;
       for (const code of candidates) {
         let timedOut = false;
         try {
@@ -6089,7 +6089,7 @@ export default class TPSHealthPlugin extends Plugin {
             () => { timedOut = true; },
           );
           if (timedOut) {
-            failures++;
+            failure = new Error("Food database lookup timed out. Try again when your connection is stable.");
             continue;
           }
           if (item) {
@@ -6099,11 +6099,11 @@ export default class TPSHealthPlugin extends Plugin {
           }
         } catch (error) {
           if (error instanceof OpenFoodFactsRateLimitError) throw error;
-          failures++;
+          failure = error instanceof Error ? error : new Error(String(error));
           logger.flowWarn("Barcode", "lookup-candidate:request-failed", { barcode: maskBarcode(code), error: logger.errorSummary(error) });
         }
       }
-      if (failures) throw new Error("Open Food Facts barcode lookup timed out or failed.");
+      if (failure) throw failure;
       this.writeBarcodeResultCache(cacheKey, null, BARCODE_MISS_CACHE_TTL_MS);
       logger.flow("Barcode", "lookup:miss", { barcode: maskBarcode(digits), candidates: candidates.length });
       return null;
@@ -6195,10 +6195,16 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flowWarn("Barcode", "lookup-candidate:rate-limited", { barcode: maskBarcode(code), retryAfterMs: delayMs });
         throw new OpenFoodFactsRateLimitError(delayMs);
       }
+      // OFF v2 returns HTTP 404 with status: 0 for an absent product.
+      // An HTML/proxy 404 is still a service failure, never a cached miss.
+      if (response.status === 404 && response.json?.status === 0) return null;
       if (response.status < 200 || response.status >= 300) throw new Error(`Open Food Facts product lookup returned HTTP ${response.status}`);
-      if (response.json?.status !== 1 || !response.json?.product) {
+      if (response.json?.status === 0) {
         logger.flow("Barcode", "lookup-candidate:v2-miss", { barcode: maskBarcode(code), status: response.json?.status ?? "" });
         return null;
+      }
+      if (response.json?.status !== 1 || !response.json?.product) {
+        throw new Error("Food database returned an invalid response. Please try again.");
       }
       const item = this.foodFactsProductToItem(response.json.product, code);
       if (!hasSearchableMacroData(item.nutrition)) {
@@ -11043,8 +11049,11 @@ class FoodSearchModal extends FoodInputModal {
       item = await this.plugin.lookupFoodByBarcode(barcode);
     } catch (error) {
       logger.flowWarn("FoodModal", "barcode:add-failed", { barcode: maskBarcode(barcode), error: logger.errorSummary(error) });
-      this.statusEl.setText("Could not reach the food database. Check your connection and try again.");
-      new Notice("Barcode lookup could not reach the food database.");
+      const message = error instanceof OpenFoodFactsRateLimitError
+        ? error.message
+        : "Could not reach the food database. Check your connection and try again.";
+      this.statusEl.setText(message);
+      new Notice(message);
       return;
     }
     if (!item) {

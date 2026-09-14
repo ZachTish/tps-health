@@ -2749,7 +2749,7 @@ test("Open Food Facts exact-product 429 opens the shared circuit while cached su
     assert.equal(cached?.name, "Cached Product");
     await assert.rejects(plugin.lookupOpenFoodFactsBarcode("000000000002"));
     assert.equal(requests.length, 2);
-    assert.equal(await plugin.lookupOpenFoodFactsBarcode("000000000003"), null);
+    await assert.rejects(plugin.lookupOpenFoodFactsBarcode("000000000003"), /Try again in/);
     assert.deepEqual(await plugin.searchOpenFoodFacts("circuit probe"), []);
     assert.equal(requests.length, 2, "the shared circuit must suppress new product and search requests");
     assert.equal((await plugin.lookupOpenFoodFactsBarcode("000000000001"))?.name, "Cached Product");
@@ -6568,7 +6568,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(stylesSource, /\.tps-health-scanner-controls button:focus-visible/);
   assert.match(stylesSource, /\.tps-health-search-barcode input:focus-visible/);
   assert.match(stylesSource, /min-height: 44px/);
-  assert.match(mainSource, /const BARCODE_LOOKUP_TIMEOUT_MS = 5000;/);
+  assert.match(mainSource, /const BARCODE_LOOKUP_TIMEOUT_MS = 20000;/);
   assert.match(mainSource, /this\.withTimeout\(\s*this\.lookupOpenFoodFactsBarcodeCandidate\(code\),\s*BARCODE_LOOKUP_TIMEOUT_MS,\s*null,/);
   assert.match(mainSource, /await this\.addSelection\(item, null, \{ enrich: false \}\);\s+logger\.flow\("FoodModal", "barcode:add-hit"/);
   assert.match(mainSource, /const loggedStats = await this\.plugin\.getLoggedFoodStats\(""\);\s+const localFoods = await this\.plugin\.getSavedFoods\(loggedStats\);/);
@@ -11625,4 +11625,51 @@ test('appearance settings normalize old and invalid values while retaining expli
   const settings=normalizeTPSHealthSettings({macroBlockStyle:'table',macroNutrientRows:'hidden'});
   assert.equal(settings.macroBlockStyle,'table');
   assert.equal(settings.macroNutrientRows,'hidden');
+});
+
+test("barcode HTTP 404 product misses are cached, while malformed responses and HTTP failures remain retryable", async () => {
+  installDeterministicBrowserGlobals();
+  window.setTimeout = globalThis.setTimeout;
+  window.clearTimeout = globalThis.clearTimeout;
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
+  let calls = 0;
+  let response = { status: 404, json: { status: 0, status_verbose: "product not found" } };
+  globalThis.__TPSHealthTestRequestUrl = async () => { calls++; return response; };
+  try {
+    assert.equal(await plugin.lookupOpenFoodFactsBarcode("0284919374829"), null);
+    assert.equal(await plugin.lookupOpenFoodFactsBarcode("0284919374829"), null);
+    assert.equal(calls, 1);
+    response = { status: 503, json: {} };
+    await assert.rejects(plugin.lookupOpenFoodFactsBarcode("737628064502"), /HTTP 503/);
+    response = { status: 404, json: {} };
+    await assert.rejects(plugin.lookupOpenFoodFactsBarcode("737628064502"), /HTTP 404/);
+    response = { status: 200, json: {} };
+    await assert.rejects(plugin.lookupOpenFoodFactsBarcode("737628064502"), /invalid response/);
+    response = { status: 200, json: { status: 1, product: { code: "0737628064502", product_name: "Recovered product", nutriments: { proteins_100g: 10, carbohydrates_100g: 30, fat_100g: 5 } } } };
+    assert.equal((await plugin.lookupOpenFoodFactsBarcode("737628064502"))?.name, "Recovered product");
+    assert.equal(calls, 5, "service failures must not poison the barcode cache");
+  } finally {
+    delete globalThis.__TPSHealthTestRequestUrl;
+  }
+});
+
+test("barcode responses arriving after five seconds still resolve and equivalent requests stay coalesced", async () => {
+  installDeterministicBrowserGlobals();
+  window.setTimeout = globalThis.setTimeout;
+  window.clearTimeout = globalThis.clearTimeout;
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  let calls = 0;
+  plugin.lookupOpenFoodFactsBarcodeCandidate = async () => {
+    calls++;
+    await new Promise(resolve => setTimeout(resolve, 5100));
+    return { name: "Slow product" };
+  };
+  const first = plugin.lookupOpenFoodFactsBarcode("737628064502");
+  const second = plugin.lookupOpenFoodFactsBarcode("0737628064502");
+  assert.equal((await first)?.name, "Slow product");
+  assert.equal((await second)?.name, "Slow product");
+  assert.equal(calls, 1);
 });
