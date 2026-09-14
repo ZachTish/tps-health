@@ -43,7 +43,7 @@ async function setup() {
   globalThis.__TPSHealthTestSettingControl = (_type, _name, callback) => {
     const control = { inputEl: nativeTrayTestElement("input"), buttonEl: nativeTrayTestElement("button"),
       setValue(value) { this.inputEl.value = value; return this; }, setPlaceholder() { return this; },
-      setButtonText() { return this; }, setCta() { return this; }, onChange() { return this; },
+      setButtonText() { return this; }, setTooltip() { return this; }, setCta() { return this; }, onChange() { return this; },
       onClick() { return this; }, addOption() { return this; }, setDisabled() { return this; } };
     callback(control);
   };
@@ -121,7 +121,7 @@ test("Create meal sits with the tray's top actions and preserves the existing fl
   tray.selectionItems = [{ item: food('Oats'), quantity: 1, unit: 'serving' }];
   tray.renderSelection();
   const button = walk(tray.selectionEl).find(n => n.text === 'Create meal');
-  assert.equal(button.parentElement.className, 'tps-health-selection-header-actions');
+  assert.equal(button.parentElement.className, 'tps-health-review-actions');
   let calls = 0; tray.createRecipeFromSelection = () => calls++;
   button.listeners.get('click')(); assert.equal(calls, 1);
   assert.equal(walk(tray.selectionEl).filter(n => n.text === 'Create recipe').length, 0);
@@ -168,4 +168,14 @@ test('adding food retains query, result nodes, scroll and a compact review tray'
   assert.equal(body.hidden, false);
   assert.equal(toggle.attributes['aria-expanded'], 'true');
   assert.equal(tray.contentEl.scrollTop, 120);
+});
+
+test('review scroll survives rebuilding selected rows', async () => {
+  const {tray} = await setup();
+  tray.selectionItems = [{item:food('Oats'),quantity:1,unit:'serving'}];
+  tray.selectionEl.querySelector = selector => walk(tray.selectionEl).find(n => n.className === selector.slice(1));
+  tray.renderSelection();
+  tray.selectionEl.querySelector('.tps-health-selection-body').scrollTop = 120;
+  tray.renderSelection();
+  assert.equal(tray.selectionEl.querySelector('.tps-health-selection-body').scrollTop,120);
 });

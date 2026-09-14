@@ -494,7 +494,7 @@ test("food search ranks messy out-of-order branded queries and gram servings", (
 });
 
 test("meal creation keeps the name input visible above mobile keyboards", () => {
-  assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
+  assert.match(mainSource, /class BatchFoodRecipeModal extends FoodInputModal/);
   assert.match(mainSource, /this\.contentEl\.createEl\("h2", \{ text: "Create meal" \}\)/);
   assert.match(mainSource, /\.setName\("Meal name"\)/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "meal:create-empty"/);
@@ -1205,7 +1205,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /this\.plugin\.searchLocalFoods\(trimmed\)/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
   assert.match(mainSource, /FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100/);
-  assert.match(mainSource, /setButtonText\("Search"\)/);
+  assert.match(mainSource, /setTooltip\("Search foods"\)/);
   assert.match(mainSource, /if \(this\.searchTimer !== null\) window\.clearTimeout\(this\.searchTimer\)/);
   assert.match(mainSource, /const savedFood = await this\.plugin\.findOrCreateFoodNote\(this\.selectedFood\)/);
   assert.match(mainSource, /await this\.plugin\.addRecipeIngredientLine\(this\.sourcePath, \{/);
@@ -6414,7 +6414,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /this\.selectionEl\.addClass\("tps-health-inline-selection"\)/);
   assert.match(mainSource, /private consumedDateInput: string;/);
   assert.doesNotMatch(mainSource, /private recipeNameInput/);
-  assert.match(mainSource, /class BatchFoodRecipeModal extends Modal/);
+  assert.match(mainSource, /class BatchFoodRecipeModal extends FoodInputModal/);
   assert.match(mainSource, /new BatchFoodRecipeModal\(this\.app, this\.plugin, snapshot, this\.dateContext/);
   assert.match(mainSource, /export function initialFoodLogConsumedDateInput/);
   assert.match(mainSource, /export function restoredFoodLogDraftConsumedDateInput/);
@@ -6428,7 +6428,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
   assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
   assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+action\(addLabel, async \(\) => add\(\)\);/);
-  assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.close\(\);\s+new FoodLogModal/);
+  assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.closeFromAction\(\);\s+new FoodLogModal/);
   assert.match(mainSource, /titleButton\.addEventListener\("click", async \(\) =>/);
   assert.match(mainSource, /menu\.addItem\(option => option\.setTitle\("Create from this"/);
   assert.match(mainSource, /interface BarcodeScannerAdapters \{/);
@@ -7451,7 +7451,7 @@ test("create from food search upserts canonical local foods instead of creating 
 
 test("food detail editors use a compact responsive field grid", () => {
   assert.match(mainSource, /class BarcodeFoodReviewModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
-  assert.match(mainSource, /class CustomFoodModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
+  assert.match(mainSource, /class CustomFoodModal extends FoodInputModal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
   assert.match(mainSource, /let aliases = \(this\.baseFood\?\.aliases \|\| \[\]\)\.join\(", "\)/);
   assert.match(mainSource, /setName\("Search aliases"\)[\s\S]+Comma-separated nicknames[\s\S]+aliases = value/);
   assert.match(mainSource, /aliases: aliasesFromFrontmatter\(aliases\) \|\| \[\]/);

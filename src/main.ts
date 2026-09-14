@@ -10396,7 +10396,7 @@ class FoodLogRecipeModal extends Modal {
   }
 }
 
-class BatchFoodRecipeModal extends Modal {
+class BatchFoodRecipeModal extends FoodInputModal {
   private recipeName: string;
   private entries: BatchFoodSelection[];
   private submitting = false;
@@ -10509,7 +10509,7 @@ class BatchFoodRecipeModal extends Modal {
         new Notice("The meal was created, but TPS Health could not finish saving the updated food tray. The meal can still be logged.", 10000);
       }
     }
-    this.close();
+    this.closeFromAction();
     logger.flow("FoodModal", "meal:log-modal-open", { selected: this.entries.length, name: saved.name, sourcePath: saved.sourcePath || "", ...summarizeDateContext(this.dateContext) });
     new FoodLogModal(this.app, this.plugin, saved, null, this.dateContext, async (entry) => {
       if (!this.onMealLogged) return;
@@ -10566,7 +10566,7 @@ class FoodSearchModal extends FoodInputModal {
       this.selectionItems = pendingDraft.selectionItems.map(cloneBatchFoodSelection);
       this.searchInput = pendingDraft.searchInput || "";
       this.restoredPendingDraft = true;
-      this.selectionExpanded = true;
+      this.selectionExpanded = false;
     }
     // The general logger always starts where the next action happens: search.
     // Explicit Scan and Quick add commands remain compatible entry points.
@@ -10671,7 +10671,7 @@ class FoodSearchModal extends FoodInputModal {
     }
 
     const searchBar = panelByMode.search.createDiv({ cls: "tps-health-food-search-bar" });
-    const shortcuts = panelByMode.search.createDiv({ cls: "tps-health-food-shortcuts" });
+    const shortcuts = tabsEl.createDiv({ cls: "tps-health-food-shortcuts" });
     const quickButton = shortcuts.createEl("button", { text: "Quick add", attr: { type: "button" } });
     quickButton.addEventListener("click", () => { setActiveTab("quick"); quickNameInput?.focus(); });
     const backButton = panelByMode.quick.createEl("button", { text: "Back to search", attr: { type: "button" } });
@@ -10734,7 +10734,7 @@ class FoodSearchModal extends FoodInputModal {
         notes: "One-off estimate; no reusable food note was created.",
       };
       logger.flow("FoodQuickAdd", "review:open", { name, calories: nutrition.calories || 0, ...summarizeDateContext(this.dateContext) });
-      this.close();
+      this.closeFromAction();
       new FoodLogModal(this.app, this.plugin, item, null, this.dateContext, undefined, { persistFoodNote: false }).open();
     });
     const describeInput = panelByMode.describe.createEl("textarea", { cls: "tps-health-describe-input", attr: { placeholder: "Two eggs, toast with a tablespoon of butter, and a medium latte…", rows: "5", enterkeyhint: "done" } });
@@ -10766,7 +10766,7 @@ class FoodSearchModal extends FoodInputModal {
           new Notice(ready, 12000);
           return;
         }
-        this.close();
+        this.closeFromAction();
         new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext).open();
       } catch (error) {
         logger.flowError("FoodDescribe", "job:failed", error, summarizeDateContext(this.dateContext));
@@ -10794,7 +10794,7 @@ class FoodSearchModal extends FoodInputModal {
       .setName("Search food")
       .addText((text) => {
         this.searchInputEl = text.inputEl;
-        text.setPlaceholder("Search foods, recipes, or a barcode");
+        text.setPlaceholder("Search all foods…");
         text.inputEl.setAttr("aria-label", "Search saved foods and food databases");
         text.inputEl.setAttr("enterkeyhint", "search");
         if (this.initialDraft?.query) {
@@ -10821,9 +10821,10 @@ class FoodSearchModal extends FoodInputModal {
       })
       .addButton((button) => {
         this.searchButtonEl = button.buttonEl;
+        button.buttonEl.setAttr("aria-label", "Search foods");
+        setIcon(button.buttonEl, "search");
         return button
-          .setButtonText("Search")
-          .setCta()
+          .setTooltip("Search foods")
           .onClick(() => this.submitOnlineSearch(this.searchInput));
       });
     const scanButton = searchBar.createEl("button", { cls: "tps-health-food-scan-button", attr: {
@@ -11083,7 +11084,7 @@ class FoodSearchModal extends FoodInputModal {
     row.setAttr("aria-label", item.name);
     const titleButton = row.createEl("button", { cls: "tps-health-result-title", text: item.name, attr: { type: "button", "aria-label": `Choose amount for ${item.name}` } });
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
-    renderCompactFoodMacros(row.createDiv({ cls: "tps-health-result-macros" }), item.nutrition || {});
+
     let adding = false;
     const add = async () => {
       if (adding) return;
@@ -11114,7 +11115,7 @@ class FoodSearchModal extends FoodInputModal {
     titleButton.addEventListener("click", async () => {
       row.setAttr("aria-busy", "true");
       const enriched = await this.plugin.enrichFoodSearchItem(item);
-      this.close();
+      this.closeFromAction();
       new FoodLogModal(this.app, this.plugin, enriched, this.initialDraft, this.dateContext).open();
     });
     if (!item.sourcePath) {
@@ -11122,7 +11123,7 @@ class FoodSearchModal extends FoodInputModal {
       const more = action("", async () => {
         const menu = new Menu();
         menu.addItem(option => option.setTitle("Create from this").onClick(async () => {
-          this.close();
+          this.closeFromAction();
           new CustomFoodModal(this.app, this.plugin, "food", item.name, true, await this.plugin.enrichFoodSearchItem(item), this.dateContext).open();
         }));
         const bounds = more.getBoundingClientRect();
@@ -11162,51 +11163,58 @@ class FoodSearchModal extends FoodInputModal {
   }
 
   private renderSelection(): void {
-    if (this.selectionEl) preserveFoodModalScroll(this.contentEl, () => this.renderSelectionContents());
+    if (!this.selectionEl) return;
+    const scrollTop = this.selectionEl.querySelector<HTMLElement>(".tps-health-selection-body")?.scrollTop || 0;
+    preserveFoodModalScroll(this.contentEl, () => this.renderSelectionContents());
+    const review = this.selectionEl.querySelector<HTMLElement>(".tps-health-selection-body");
+    if (review) review.scrollTop = scrollTop;
   }
 
   private renderSelectionContents(): void {
     if (!this.selectionEl) return;
     this.selectionEl.empty();
     this.selectionEl.addClass("tps-health-inline-selection");
-    if (!this.selectionItems.length) {
-      this.selectionEl.addClass("is-empty");
-      this.selectionEl.removeClass("is-collapsed");
-      return;
-    }
-    this.selectionEl.removeClass("is-empty");
+    this.selectionEl.toggleClass("is-empty", !this.selectionItems.length);
+    if (!this.selectionItems.length) this.selectionExpanded = false;
     this.selectionEl.removeClass("is-collapsed");
 
     const header = this.selectionEl.createDiv({ cls: "tps-health-selection-header" });
     const reviewButton = header.createEl("button", { cls: "tps-health-selection-title", text: this.selectionTrayTitle(), attr: { type: "button", "aria-expanded": String(this.selectionExpanded) } });
-    renderCompactFoodMacros(header.createDiv({ cls: "tps-health-selection-macros" }), this.selectedNutrition());
+    reviewButton.disabled = !this.selectionItems.length;
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
     const logButton = headerActions.createEl("button", {
       text: this.selectionLogButtonText(),
       cls: "mod-cta tps-health-selection-log",
       attr: { type: "button" },
     });
-    logButton.disabled = this.selectionSubmitting;
+    logButton.disabled = this.selectionSubmitting || !this.selectionItems.length;
     logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
     logButton.addEventListener("click", () => this.logSelected());
-    const recipeButton = headerActions.createEl("button", { text: "Create meal", attr: { type: "button" } });
+    const trayBody = this.selectionEl.createDiv({ cls: "tps-health-selection-body" });
+    trayBody.hidden = !this.selectionExpanded;
+    const reviewHeading = trayBody.createDiv({ cls: "tps-health-review-heading" });
+    reviewHeading.createEl("h3", { text: "Review foods" });
+    const back = reviewHeading.createEl("button", { attr: { type: "button", "aria-label": "Close food review" } });
+    setIcon(back, "x");
+    const setReview = (expanded: boolean) => {
+      this.selectionExpanded = expanded;
+      trayBody.hidden = !expanded;
+      reviewButton.setAttr("aria-expanded", String(expanded));
+      if (expanded) back.focus({ preventScroll: true });
+      else reviewButton.focus({ preventScroll: true });
+    };
+    reviewButton.addEventListener("click", () => setReview(!this.selectionExpanded));
+    back.addEventListener("click", () => setReview(false));
+    const reviewActions = trayBody.createDiv({ cls: "tps-health-review-actions" });
+    const recipeButton = reviewActions.createEl("button", { text: "Create meal", attr: { type: "button" } });
     recipeButton.disabled = this.selectionSubmitting;
     recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
-    const clearButton = headerActions.createEl("button", { text: "Clear tray", cls: "mod-muted", attr: { type: "button" } });
+    const clearButton = reviewActions.createEl("button", { text: "Clear tray", cls: "mod-muted", attr: { type: "button" } });
     clearButton.disabled = this.selectionSubmitting;
     clearButton.addEventListener("click", () => {
       this.selectionItems = [];
       void this.persistDraft();
       this.renderSelection();
-      this.focusSearchInput();
-    });
-
-    const trayBody = this.selectionEl.createDiv({ cls: "tps-health-selection-body" });
-    trayBody.hidden = !this.selectionExpanded;
-    reviewButton.addEventListener("click", () => {
-      this.selectionExpanded = !this.selectionExpanded;
-      preserveFoodModalScroll(this.contentEl, () => { trayBody.hidden = !this.selectionExpanded; });
-      reviewButton.setAttr("aria-expanded", String(this.selectionExpanded));
     });
 
     for (const entry of this.selectionItems) {
@@ -11307,7 +11315,7 @@ class FoodSearchModal extends FoodInputModal {
 
   private selectionTrayTitle(): string {
     const count = this.selectionItems.length;
-    return `${count} food${count === 1 ? "" : "s"} in tray`;
+    return `Review (${count})`;
   }
 
   private selectionLogButtonText(): string {
@@ -11325,7 +11333,7 @@ class FoodSearchModal extends FoodInputModal {
     const logButton = this.selectionEl.querySelector(".tps-health-selection-log") as HTMLButtonElement | null;
     if (logButton) {
       logButton.setText(this.selectionLogButtonText());
-      logButton.disabled = this.selectionSubmitting;
+      logButton.disabled = this.selectionSubmitting || !this.selectionItems.length;
       logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
     }
   }
@@ -11477,7 +11485,7 @@ class FoodSearchModal extends FoodInputModal {
     this.renderSelection();
     if (!this.selectionItems.length) {
       this.suppressDraftPersistOnClose = true;
-      this.close();
+      this.closeFromAction();
     }
   }
 
@@ -11587,7 +11595,7 @@ class FoodSearchModal extends FoodInputModal {
     }
     if (!this.selectionItems.length) {
       this.suppressDraftPersistOnClose = true;
-      this.close();
+      this.closeFromAction();
     }
   }
 
@@ -11724,7 +11732,7 @@ class FoodSearchModal extends FoodInputModal {
         button.setButtonText("Create food");
         if (cta) button.setCta();
         return button.onClick(() => {
-          this.close();
+          this.closeFromAction();
           new CustomFoodModal(this.app, this.plugin, "food", query, true, undefined, this.dateContext).open();
         });
       });
@@ -16422,7 +16430,7 @@ class FoodLogModal extends FoodInputModal {
             new Notice("Food was logged, but TPS Health could not finish the follow-up cleanup.", 10000);
           }
         }
-        this.close();
+        this.closeFromAction();
       });
     });
   }
@@ -17685,7 +17693,7 @@ function customFoodServingMetadataForSave(
   };
 }
 
-class CustomFoodModal extends Modal {
+class CustomFoodModal extends FoodInputModal {
 
   constructor(
     app: App,
@@ -18060,7 +18068,7 @@ class CustomFoodModal extends Modal {
             notes: "Edited Gemini estimate from Describe; no reusable food note was created.",
           });
           logger.flow("CustomFoodModal", "submit:inline-estimate", { name: saved.name, calories: saved.nutrition?.calories || 0 });
-          this.close();
+          this.closeFromAction();
           if (this.onSaved) await this.onSaved(saved);
           return;
         }
@@ -18129,7 +18137,7 @@ class CustomFoodModal extends Modal {
           logAfterCreate: this.logAfterCreate,
           hasOnSaved: !!this.onSaved,
         });
-        this.close();
+        this.closeFromAction();
         if (this.onSaved) {
           logger.flow("CustomFoodModal", "callback:start", { type: this.type, name: saved.name, sourcePath: saved.sourcePath || "" });
           await this.onSaved(saved);

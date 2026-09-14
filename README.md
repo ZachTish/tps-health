@@ -1,3 +1,11 @@
+## 0.42.2 — food list and explicit dismissal
+
+The food logger now follows the layout in [Cronometer's mobile search and review screenshots](https://support.cronometer.com/hc/en-us/articles/360018955211-Mobile-Add-a-Food): search and scan at the top, compact two-line food rows, and a docked Review/Log bar. Review opens an independently scrolling panel; its top actions retain Create meal and Clear tray. Search/Describe and Quick add remain available. The logger opens to the list even when restoring a saved tray. Full nutrition and editing remain available through each food. No new settings or storage migration.
+
+Outside taps, Escape, and native dismissal requests cannot close food search, amount logging, custom food editing, or batch meal creation. Use the accessible X to dismiss; successful saves/logging and explicit navigation actions still finish normally. This replaces 0.42.1's time-limited keyboard guard. Both the older Obsidian close-button element and the current header X are supported. Review has its own X that returns to the list.
+
+The sheet is capped at 390px with flexible height and mobile safe-area padding. Search results scroll independently of the docked buttons; adding food retains query/results, and review rerenders preserve their scroll position. Verified with computer use in the test vault against a synthetic populated list: measured 390px sheet and 62px rows, repeated outside taps, focused-input dismissal, Escape, review open/close, and explicit X close. A scrolled add retained scrollTop 53 and footer y=746. Synthetic food data was never logged and the original draft was restored. Physical iPhone keyboard/gesture testing remains user-device acceptance. Release notes include final test/build/reload checks and artifact hashes. Minimum Obsidian remains 1.12.0; production installation is the user's BRAT pull.
+
 ## 0.42.1 — compact mobile food logger
 
 Search results use the food name to choose an amount and a 44px plus button to add it. Calories, protein, carbs, and fat remain visible; the amount editor retains full nutrition. The review tray can collapse, selected foods have compact amount controls, and per-food tags expand on demand. Create meal remains beside Log at the top. Existing settings, storage, and nutrition calculations are unchanged.

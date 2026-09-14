@@ -1,16 +1,15 @@
 import { Modal, type App, type Scope } from 'obsidian';
 
-/** A keyboard-dismiss gesture must not also discard the food logger. */
+/** Food entry closes only through its X or an explicit completed/navigation action. */
 export class FoodInputModal extends Modal {
   private releaseKeyboardGuard: (() => void) | null = null;
-  private lastInputBlur = -Infinity;
 
   constructor(app: App) {
     super(app);
     if (this.scope) {
       this.scope = new (this.scope.constructor as typeof Scope)(this.scope);
       this.scope.register([], 'Escape', () => {
-        if (!this.dismissInput()) this.close();
+        this.dismissInput();
         return false;
       });
     }
@@ -27,7 +26,6 @@ export class FoodInputModal extends Modal {
     const input = this.activeInput();
     if (!input) return false;
     input.blur();
-    this.lastInputBlur = Date.now();
     return true;
   }
 
@@ -35,29 +33,43 @@ export class FoodInputModal extends Modal {
     super.open();
     const container = this.containerEl;
     if (!container?.addEventListener) return;
-    const onBlur = (event: FocusEvent) => {
-      if ((event.target as HTMLElement)?.matches?.('input, textarea, [contenteditable=true]')) {
-        this.lastInputBlur = Date.now();
-      }
-    };
+    const closeButton = container.querySelector?.('.modal-close-button, .modal-header-button:has(.lucide-x)') as HTMLElement | null;
+    closeButton?.setAttribute('role', 'button');
+    closeButton?.setAttribute('tabindex', '0');
+    closeButton?.setAttribute('aria-label', 'Close food logger');
     const guard = (event: Event) => {
       const target = event.target as HTMLElement;
-      if (!target?.classList?.contains('modal-bg')) return;
-      if (this.dismissInput() || Date.now() - this.lastInputBlur < 400) {
-        if (event.cancelable) event.preventDefault();
+      if (closeButton && (target === closeButton || closeButton.contains(target))) {
+        if (event.type !== 'click') return;
+        event.preventDefault();
         event.stopImmediatePropagation();
+        this.closeFromAction();
+        return;
       }
+      if (!target?.classList?.contains('modal-bg') && target !== container) return;
+      this.dismissInput();
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const closeKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      this.closeFromAction();
     };
     const events = ['pointerdown', 'mousedown', 'touchstart', 'click'];
-    this.contentEl.addEventListener('focusout', onBlur);
     for (const event of events) container.addEventListener(event, guard, { capture: true, passive: false });
+    closeButton?.addEventListener('keydown', closeKey);
     this.releaseKeyboardGuard = () => {
-      this.contentEl.removeEventListener('focusout', onBlur);
       for (const event of events) container.removeEventListener(event, guard, true);
+      closeButton?.removeEventListener('keydown', closeKey);
     };
   }
 
   close(): void {
+    this.dismissInput();
+  }
+
+  protected closeFromAction(): void {
     this.releaseKeyboardGuard?.();
     this.releaseKeyboardGuard = null;
     super.close();
