@@ -4938,7 +4938,7 @@ body .tps-health-food-search-frame .tps-health-food-search-setting {
   flex: 1; min-width: 0; margin: 0; padding: 0; border: 0;
 }
 body .tps-health-food-search-frame .tps-health-food-search-setting .setting-item-control {
-  display: flex; gap: 0; width: 100%; border-radius: 22px;
+  display: flex; flex-wrap: nowrap; gap: 0; width: 100%; border-radius: 22px;
   background: var(--background-secondary); padding: 0 4px 0 12px;
 }
 body .tps-health-food-search-frame .tps-health-food-search-setting input {
@@ -4947,7 +4947,7 @@ body .tps-health-food-search-frame .tps-health-food-search-setting input {
 }
 body .tps-health-food-search-frame .tps-health-food-search-setting button,
 body .tps-health-food-search-frame .tps-health-food-scan-button {
-  width: 40px; min-width: 40px; height: 44px; padding: 8px;
+  flex: 0 0 44px; width: 44px; min-width: 44px; max-width: 44px; height: 44px; padding: 8px;
   background: transparent; box-shadow: none; border: 0;
 }
 body .tps-health-food-search-frame .tps-health-food-tabs {

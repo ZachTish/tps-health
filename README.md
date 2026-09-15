@@ -1,3 +1,9 @@
+## 0.45.2 — phone food search field
+
+Obsidian phone styles force setting buttons to full width, which consumed the food search input's entire row. Search and scan actions now have a fixed 44px flex basis and the search controls cannot wrap, preserving a usable text field. Search, Describe, Quick add, barcode scanning, review, logging, and explicit-close behavior remain unchanged; no settings or data migration. Minimum Obsidian: 1.12.0.
+
+Validation: reproduced the zero-width field in the test vault using Obsidian phone styles, checked the corrected UI and search control geometry, ran the full test suite and a separate final build/deployment, and reloaded the plugin. Desktop phone-style emulation is not physical iPhone verification.
+
 ## 0.44.0 — Macros Base
 
 ## 0.45.1 — workout set deletion and dropset boundaries
