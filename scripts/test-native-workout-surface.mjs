@@ -199,3 +199,19 @@ test('native workout inputs own their events instead of moving the note editor s
  const {default:surface}=await import('data:text/javascript;base64,'+Buffer.from(compiled.code).toString('base64'));
  assert.equal(surface.ignoreEvent(),true);
 });
+
+test('adjacent drop chains have separate boundaries and readable group labels',()=>{
+ const root=connected(''), data=snapshot();
+ const original=data.exercises[0].sets[0];
+ data.exercises[0].sets=[0,1,2,3].map(i=>({...original,id:`s${i}`,ordinal:i+1,dropSetGroupId:i<2?'first':'second'}));
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ const rows=root.querySelectorAll('.is-drop-set');
+ assert.equal(rows.length,4);
+ assert.equal(rows[0].classList.contains('is-drop-start'),true);
+ assert.equal(rows[1].classList.contains('is-drop-end'),true);
+ assert.equal(rows[2].classList.contains('is-drop-start'),true);
+ assert.equal(rows[3].classList.contains('is-drop-end'),true);
+ assert.equal(rows[2].classList.contains('is-drop-alternate'),true);
+ assert.equal(rows[0].querySelector('.tps-health-native-drop-label').textContent,'D1');
+ assert.equal(rows[2].querySelector('.tps-health-native-drop-label').textContent,'D2');
+});

@@ -1849,3 +1849,28 @@ test('Macros Base projects only selected atomic food records in query order', as
   assert.deepEqual(entries.map(e=>e.dateIso),['2026-09-14','2026-09-14']);
   assert.deepEqual(service.getFoodEntriesForPaths([]),[]);
 });
+
+test('deleting an atomic workout set preserves neighbors and clears a singleton drop chain', async () => {
+  const { service } = createHarness();
+  const session = await service.createWorkoutSession({title:'Delete set QA',startedAt:'2026-09-15T10:00:00.000Z'},'delete-set-qa');
+  await service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+  let snapshot=service.getWorkoutSnapshot(session.path);
+  const exercise=snapshot.exercises[0];
+  await service.addPlannedWorkoutSet(session.path,exercise.id);
+  snapshot=service.getWorkoutSnapshot(session.path);
+  const original=snapshot.exercises[0].sets[0];
+  await service.setWorkoutDropSetLinks(session.path,exercise.id,original.id,[],true);
+  snapshot=service.getWorkoutSnapshot(session.path);
+  const drop=snapshot.exercises[0].sets[1];
+  await service.updateWorkoutSet(session.path,drop.id,{completed:true});
+  await assert.rejects(service.deleteWorkoutSet(session.path,'wrong-exercise',drop.id),/missing or ambiguous/);
+  assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].sets.length,2);
+  await service.deleteWorkoutSet(session.path,exercise.id,drop.id);
+  snapshot=service.getWorkoutSnapshot(session.path);
+  assert.equal(snapshot.exercises[0].sets.length,1);
+  assert.equal(snapshot.exercises[0].sets[0].id,original.id);
+  assert.ok(!snapshot.exercises[0].sets[0].dropSetGroupId);
+  await assert.rejects(service.deleteWorkoutSet(session.path,exercise.id,drop.id),/missing or ambiguous/);
+  await service.deleteWorkoutSet(session.path,exercise.id,original.id);
+  assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].sets.length,0);
+});

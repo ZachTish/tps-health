@@ -1331,6 +1331,24 @@ export class HealthNativeRecordService {
     });
   }
 
+  async deleteWorkoutSet(sessionReference: string | TFile, exerciseId: string, setId: string): Promise<NativeRecordHandle> {
+    if (!exerciseId || !setId) throw new Error('Workout set identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-delete-set', (exercises) => {
+      const matches = exercises.flatMap(exercise => exercise.sets
+        .filter(set => set.id === setId).map(set => ({ exercise, set })));
+      if (matches.length !== 1 || matches[0].exercise.id !== exerciseId) {
+        throw new Error('Workout set was missing or ambiguous.');
+      }
+      const { exercise, set } = matches[0];
+      const completedAt = String(set.completedDate || set.endedAt || '').trim();
+      exercise.sets = exercise.sets.filter(candidate => candidate.id !== setId);
+      clearSingletonDropSets(exercise);
+      if (completedAt) for (const candidate of exercises.flatMap(item => item.sets)) {
+        if (candidate.restStartedAt === completedAt) delete candidate.restStartedAt;
+      }
+    });
+  }
+
   async addPlannedWorkoutSet(sessionReference: string | TFile, exerciseId: string): Promise<NativeRecordHandle> {
     const expectedExerciseId = String(exerciseId || '').trim();
     if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');

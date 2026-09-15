@@ -318,13 +318,25 @@ export function renderNativeWorkoutSurface(
       tableHeader.append(cell);
     }
     table.append(tableHeader);
-    for (const set of exercise.sets) {
+    const dropGroups = Array.from(new Set(exercise.sets.map(set => set.dropSetGroupId).filter(Boolean)));
+    for (const [setIndex, set] of exercise.sets.entries()) {
       const row = document.createElement('div');
       row.className = `tps-health-native-workout-row${set.dropSetGroupId ? ' is-drop-set' : ''}`;
       row.setAttribute('role', 'row');
       row.dataset.setId = set.id;
-      if (set.dropSetGroupId) row.dataset.dropSetGroup = set.dropSetGroupId;
+      if (set.dropSetGroupId) {
+        row.dataset.dropSetGroup = set.dropSetGroupId;
+        const number = dropGroups.indexOf(set.dropSetGroupId) + 1;
+        row.dataset.dropSetNumber = String(number);
+        row.classList.toggle('is-drop-start', exercise.sets[setIndex - 1]?.dropSetGroupId !== set.dropSetGroupId);
+        row.classList.toggle('is-drop-end', exercise.sets[setIndex + 1]?.dropSetGroupId !== set.dropSetGroupId);
+        row.classList.toggle('is-drop-alternate', number % 2 === 0);
+        row.setAttribute('aria-label', `Drop set group ${number}, set ${set.ordinal}`);
+      }
       const ordinal = text('span', String(set.ordinal), 'tps-health-native-workout-ordinal');
+      if (set.dropSetGroupId) {
+        ordinal.append(text('span', `D${dropGroups.indexOf(set.dropSetGroupId) + 1}`, 'tps-health-native-drop-label'));
+      }
       ordinal.setAttribute('role', 'cell');
       row.append(ordinal);
       if (!options.active) {

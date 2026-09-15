@@ -5136,3 +5136,16 @@ body.is-mobile .modal.tps-health-food-search-frame {
 .tps-health-macros-base-day > h3 { margin: 0 0 8px; font-size: var(--font-ui-small); color: var(--text-muted); }
 .tps-health-macros-base-empty { padding: 24px 8px; color: var(--text-muted); text-align: center; }
 .tps-health-macros-base :focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+
+/* Boundaries and labels distinguish adjacent chains without relying on color. */
+.tps-health-native-workout-row.is-drop-start {
+  margin-top: 9px;
+  border-top: 2px solid var(--background-modifier-border);
+  border-start-start-radius: 6px;
+}
+.tps-health-native-workout-row.is-drop-end {
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-end-start-radius: 6px;
+}
+.tps-health-native-workout-row.is-drop-alternate { border-inline-start-color: var(--color-purple); }
+.tps-health-native-drop-label { display: block; font-size: 10px; color: var(--text-muted); }

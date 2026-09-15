@@ -1,5 +1,13 @@
 ## 0.44.0 — Macros Base
 
+## 0.45.1 — workout set deletion and dropset boundaries
+
+Active atomic workouts now offer **Delete set** in each set's menu in Reading and Live Preview. Deletion uses the existing serialized, conflict-checked workout mutation path, rejects missing/ambiguous identities, preserves neighboring sets and exercise definitions, recalculates session summaries, clears singleton drop-chain links, and removes rest timestamps started by the deleted completed set. Source mode remains plain Markdown. This removes a set from the session rather than deleting an exercise note; no new persisted settings or record schema.
+
+Adjacent atomic dropset chains have separate start/end borders, spacing, alternating accents, and compact D1/D2 group labels. Boundaries and accessible group labels distinguish chains without relying on color. Existing inline-workout deletion is unchanged. Minimum Obsidian remains 1.12.0.
+
+Validation covers deletion of completed and final sets, wrong/stale identity rejection, neighboring-set preservation, singleton cleanup, and rendering adjacent groups. Release checks include the full declared suite, a separate final build/test deployment, reload, and computer-use inspection with synthetic workout data. Physical iPhone testing remains device acceptance; production installation is the user's BRAT pull.
+
 ## 0.45.0 — scanning lifecycle and portrait lock
 
 Starting the mobile camera now requests an app-level portrait lock through an available Capacitor ScreenOrientation bridge, then the browser Screen Orientation API. It releases its acquired lock when scanning stops for lookup, camera failure, backgrounding, closing, or plugin unload. Closing while acquisition is pending also releases the late lock. No persistent setting is changed. If both APIs are unavailable/rejected, a one-time scanner notice directs the user to system Rotation Lock. This cannot toggle iOS Control Center's Rotation Lock, install a native bridge, or bypass host/fullscreen restrictions. Phone/iPad support is conditional on the installed host; automatic locking on actual iOS hardware is not verified.

@@ -8388,7 +8388,23 @@ export default class TPSHealthPlugin extends Plugin {
       .setTitle(set.dropSetGroupId ? "Edit drop-set links…" : "Link existing drop sets…")
       .setIcon("link")
       .onClick(() => this.openNativeWorkoutDropSetLinker(snapshot, exercise, set)));
+    menu.addSeparator();
+    menu.addItem((item) => item.setTitle("Delete set").setIcon("trash")
+      .onClick(() => void this.deleteNativeWorkoutSet(snapshot, exercise, set)));
     menu.showAtMouseEvent(event);
+  }
+
+  private async deleteNativeWorkoutSet(snapshot: NativeWorkoutSnapshot, exercise: NativeWorkoutExerciseSnapshot, set: NativeWorkoutSetSnapshot): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) return;
+    try {
+      await this.nativeRecordService.deleteWorkoutSet(snapshot.path, exercise.id, set.id);
+      this.updateNativeWorkoutSurfaces();
+      this.scheduleWorkoutActionBars();
+      logger.flow("WorkoutSet", "native-delete:done", { path: snapshot.path, exerciseId: exercise.id, setId: set.id });
+    } catch (error) {
+      logger.flowError("WorkoutSet", "native-delete:failed", error, { path: snapshot.path, setId: set.id });
+      new Notice("Could not delete this set. Refresh the workout and try again.");
+    }
   }
 
   private async addNativeWorkoutDropSet(
