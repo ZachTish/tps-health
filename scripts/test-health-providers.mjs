@@ -5901,8 +5901,8 @@ test("blank food sections stay unheaded while workout blocks honor Daily Note pl
   const duplicateStart = insertWorkoutBlockIntoContent(cleanWorkout, "## Workout\n<!-- tps-health:workout [workoutId:: workout-test] -->\n<!-- tps-health:workout-end [workoutId:: workout-test] -->", "bottom");
   assert.equal((duplicateStart.match(/## Workout/g) || []).length, 1, "restarting the same workout must not create a second heading");
   assert.match(mainSource, /mergeWorkoutSetLinesIntoDailyBlockContent\(editorContent, dailyWorkoutId, missingDiskSetLines\)/);
-  assert.match(readmeSource, /`Default food log section` is intentionally blank by default\. Blank keeps food entries unheaded and inserts daily-note entries immediately after frontmatter; `Food Log` is only the settings placeholder suggestion, not the persisted default\./);
-  assert.match(readmeSource, /Every workout is anchored by a real level-2 heading in the Daily Note/);
+  assert.match(readmeSource, /Categorize food logs with tags instead of a section selector/);
+  assert.match(readmeSource, /Atomic line workouts retain a real level-2 heading in the Daily Note/);
 });
 
 test("whole-note workouts use configurable calendar properties and plain set logs", async () => {
@@ -6567,13 +6567,9 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const loggedStats = await this\.plugin\.getLoggedFoodStats\(""\);\s+const localFoods = await this\.plugin\.getSavedFoods\(loggedStats\);/);
   assert.match(readmeSource, /Apple's true VisionKit scanner is native app code/);
   assert.match(readmeSource, /probes for known native barcode bridge shapes/);
-  assert.match(readmeSource, /when no bridge exists, is cancelled, or errors/);
-  assert.match(readmeSource, /Apple Shortcut setup:/);
-  assert.match(readmeSource, /TPS Health Scan Barcode/);
-  assert.match(readmeSource, /TPS Health Barcode Scan\.md/);
-  assert.match(readmeSource, /Scan QR or Barcode/);
-  assert.match(readmeSource, /obsidian:\/\/new\?vault=TishOS%20v0\.1&file=TPS%20Health%20Barcode%20Scan\.md&content=<Shortcut Scanned Code>&overwrite=true/);
-  assert.match(readmeSource, /obsidian:\/\/advanced-uri\?vault=TishOS%20v0\.1&filepath=TPS%20Health%20Barcode%20Scan\.md&data=<Shortcut Scanned Code>&mode=overwrite/);
+  assert.match(readmeSource, /When no bridge exists, is cancelled, or errors/);
+  assert.match(readmeSource, /no longer shows an Apple Shortcut button/);
+  assert.match(readmeSource, /Legacy Shortcut inbox compatibility remains/);
   assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \?\? defaultFoodLogQuantity\(this\.item\);/);
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
 });
