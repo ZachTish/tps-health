@@ -6449,8 +6449,6 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "camera:start-failed"[\s\S]+this\.stopScanning\(\);\s+statusEl\.setText\(`Camera\/scanner unavailable:/);
   assert.match(mainSource, /private desiredFacingMode: "environment" \| "user" \| "" = ""/);
   assert.match(mainSource, /private torchEnabled = false/);
-  assert.match(mainSource, /setButtonText\("Flash"\)\s+\.onClick\(\(\) => this\.toggleTorch\(status\)\)/);
-  assert.match(mainSource, /setButtonText\("Flip camera"\)\s+\.onClick\(\(\) => this\.flipCamera\(status\)\)/);
   assert.match(mainSource, /const capabilities = track\?\.getCapabilities\?\.\(\) as any/);
   assert.match(mainSource, /await \(track\.applyConstraints as any\)\(\{ advanced: \[\{ torch: next \}\] \}\)/);
   assert.match(mainSource, /this\.desiredFacingMode = this\.desiredFacingMode === "environment" \? "user" : "environment"/);
@@ -6479,7 +6477,6 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode"/);
   assert.match(mainSource, /private shortcutInboxEventRefs: EventRef\[\] = \[\]/);
   assert.match(mainSource, /private shortcutInboxProcessing = false/);
-  assert.match(mainSource, /if \(this\.shouldShowAppleShortcutButton\(\)\) \{\s+controls\.addButton\(\(button\) => button\s+\.setButtonText\("Apple Shortcut"\)\s+\.onClick\(\(\) => this\.openAppleShortcut\(status\)\)\);/);
   assert.match(mainSource, /statusEl\.setText\(`Opening Apple Shortcut\. TPS Health is watching \$\{SHORTCUT_BARCODE_INBOX_PATH\} for the scanned barcode\.`\);/);
   assert.match(mainSource, /logger\.flow\("Barcode", "shortcut:open", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut:popup-blocked", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
@@ -11706,4 +11703,13 @@ test("rotated barcode crops use opaque white margins before drawing", async () =
     assert.ok(canvas.width<=1600 && canvas.height<=1600);
     assert.deepEqual(calls,[['fill','#fff',0,0,canvas.width,canvas.height],['draw']]);
   } finally {globalThis.document=previous;}
+});
+
+test("scanner uses accessible camera overlay actions without a Shortcut button", () => {
+  const opening = mainSource.slice(mainSource.indexOf('class BarcodeScannerModal'), mainSource.indexOf('private shouldShowAppleShortcutButton'));
+  assert.doesNotMatch(opening, /setButtonText\("Apple Shortcut"/);
+  assert.match(opening, /iconAction\("zap", "Turn flash on"/);
+  assert.match(opening, /iconAction\("switch-camera", "Flip camera"/);
+  assert.match(opening, /iconAction\("image", "Scan image"/);
+  assert.match(mainSource, /setAttribute\("aria-pressed", String\(this.torchEnabled\)\)/);
 });

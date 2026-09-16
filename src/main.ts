@@ -15176,8 +15176,8 @@ class BarcodeScannerModal extends Modal {
   private cameraStartInProgress = false;
   private desiredFacingMode: "environment" | "user" | "" = "";
   private torchEnabled = false;
-  private flashButton: any = null;
-  private flipButton: any = null;
+  private flashButton: HTMLButtonElement | null = null;
+  private flipButton: HTMLButtonElement | null = null;
   private nativeBarcodeDetector: any = null;
   private nativeBarcodeDetectorChecked = false;
   private shortcutInboxEventRefs: EventRef[] = [];
@@ -15247,27 +15247,16 @@ class BarcodeScannerModal extends Modal {
         .setCta()
         .onClick(() => this.startCamera(status)));
     }
-    if (this.shouldShowAppleShortcutButton()) {
-      controls.addButton((button) => button
-        .setButtonText("Apple Shortcut")
-        .onClick(() => this.openAppleShortcut(status)));
-    }
-    controls
-      .addButton((button) => {
-        this.flashButton = button;
-        return button
-          .setButtonText("Flash")
-          .onClick(() => this.toggleTorch(status));
-      })
-      .addButton((button) => {
-        this.flipButton = button;
-        return button
-          .setButtonText("Flip camera")
-          .onClick(() => this.flipCamera(status));
-      })
-      .addButton((button) => button
-        .setButtonText("Scan image")
-        .onClick(() => this.fileInputEl?.click()));
+    const cameraActions = viewport.createDiv({ cls: "tps-health-scanner-overlay-actions" });
+    const iconAction = (icon: string, label: string, action: () => void) => {
+      const button = cameraActions.createEl("button", { attr: { type: "button", "aria-label": label, title: label } });
+      setIcon(button, icon);
+      button.addEventListener("click", action);
+      return button;
+    };
+    this.flashButton = iconAction("zap", "Turn flash on", () => void this.toggleTorch(status));
+    this.flipButton = iconAction("switch-camera", "Flip camera", () => void this.flipCamera(status));
+    iconAction("image", "Scan image", () => this.fileInputEl?.click());
 
     this.fileInputEl = this.contentEl.createEl("input");
     this.fileInputEl.type = "file";
@@ -15725,9 +15714,13 @@ class BarcodeScannerModal extends Modal {
 
   private updateCameraControlButtons(): void {
     const hasCamera = Boolean(this.stream);
-    this.flashButton?.setButtonText(this.torchEnabled ? "Flash off" : "Flash");
-    this.flashButton?.setDisabled(!hasCamera);
-    this.flipButton?.setDisabled(this.cameraStartInProgress);
+    if (this.flashButton) {
+      this.flashButton.setAttribute("aria-pressed", String(this.torchEnabled));
+      this.flashButton.setAttribute("aria-label", this.torchEnabled ? "Turn flash off" : "Turn flash on");
+      this.flashButton.title = this.torchEnabled ? "Turn flash off" : "Turn flash on";
+      this.flashButton.disabled = !hasCamera || !this.stream?.getVideoTracks()[0]?.getCapabilities?.()?.["torch" as keyof MediaTrackCapabilities];
+    }
+    if (this.flipButton) this.flipButton.disabled = this.cameraStartInProgress;
   }
 
   private defaultFacingMode(): "environment" | "user" {

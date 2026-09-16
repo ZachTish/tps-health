@@ -1,3 +1,9 @@
+## 0.45.3 — Compact barcode controls
+
+The scanner now puts accessible flash, camera-switch, and image-import icons over the camera viewport. Flash has a pressed state, reflects camera torch support, and disables when unsupported. The Apple Shortcut button is removed; existing legacy inbox compatibility is retained. Manual camera start remains available when requested by the caller. Search, barcode decoding, portrait-lock lifecycle, and logging routes are unchanged. No settings or data migration.
+
+Verified the reloaded scanner modal visually: flash, camera-switch, and image-import icons overlay the camera viewport, with no Apple Shortcut button. A synthetic camera-unavailable response verified the disabled flash/error path; the camera hook was restored and the unlogged food draft was preserved. Existing search/scanning actions and settings are unchanged. Physical iPhone camera/torch operation still requires device acceptance. Full declared npm test and a separate final npm run build are required for the versioned artifacts; the stable build deploys only shipped files to Obsidian Plugin Test Vault. Hot Reload plus explicit test-plugin reload was used for UI verification. Release notes record final validation and SHA-256 hashes. Production installation remains the user’s BRAT pull.
+
 ## 0.45.2 — phone food search field
 
 Obsidian phone styles force setting buttons to full width, which consumed the food search input's entire row. Search and scan actions now have a fixed 44px flex basis and the search controls cannot wrap, preserving a usable text field. Search, Describe, Quick add, barcode scanning, review, logging, and explicit-close behavior remain unchanged; no settings or data migration. Minimum Obsidian: 1.12.0.
