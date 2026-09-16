@@ -1874,3 +1874,42 @@ test('deleting an atomic workout set preserves neighbors and clears a singleton 
   await service.deleteWorkoutSet(session.path,exercise.id,original.id);
   assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].sets.length,0);
 });
+
+
+test('supplement label amounts survive native creation, serving edits, daily totals and removal', async () => {
+  const { service, api, addFrontmatterFile, frontmatters } = createHarness();
+  const food = addFrontmatterFile('Supplement.md', {
+    kind: 'food', servingAmount: 2, servingUnit: 'capsule', vitaminB12Mcg: 2.4, vitaminDMcg: 25, calciumMg: 200, creatineG: 0,
+  });
+  const created = await service.createFoodEntry({ id: 'supplement-1', createdDate: '2026-08-25T17:20:00.000Z', completedDate: '2026-08-25T17:20:00.000Z',
+    item: { id: 'supplement', name: 'Supplement', source: 'custom-note', sourcePath: 'Supplement.md' },
+    quantity: .5, unit: 'serving', servingQuantity: 1, servingUnit: 'capsule',
+  });
+  let total = service.getDailyFoodTotals('2026-08-25');
+  assert.equal(total.vitaminB12Mcg, 1.2);
+  assert.equal(total.vitaminDMcg, 12.5);
+  assert.equal(total.calciumMg, 100);
+  assert.equal(total.creatineG, 0, 'explicit zero remains known');
+  assert.equal(total.magnesiumMg, undefined, 'unknown nutrients stay absent');
+  assert.equal(service.getDailyFoodEntries('2026-08-25')[0].vitaminB12Mcg, 1.2);
+  const authored = { ...(await api.resolve(created.file)).frontmatter, quantity: 4, unit: 'capsule' };
+  frontmatters.set(created.file, authored); service.indexFile(created.file, authored);
+  total = service.getDailyFoodTotals('2026-08-25');
+  assert.equal(total.vitaminDMcg, 50);
+  assert.equal(total.vitaminB12Mcg, 4.8);
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert.equal((await api.resolve(created.file)).frontmatter.vitaminB12Mcg, 4.8);
+  const definition = { ...frontmatters.get(food) }; delete definition.vitaminDMcg;
+  frontmatters.set(food, definition); service.indexFile(food, definition);
+  assert.equal(service.getDailyFoodTotals('2026-08-25').vitaminDMcg, undefined);
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert.equal((await api.resolve(created.file)).frontmatter.vitaminDMcg, undefined);
+});
+
+test('supplement properties honor configured atomic keys and aliases', async () => {
+ const { service, createCalls } = createHarness({ settings: { nativeRecordProperties: { creatineG: 'creatineDose' }, nativeRecordPropertyAliases: {} } });
+ await service.createFoodEntry({ id:'dose-key', createdDate:'2026-08-25T17:20:00.000Z', completedDate:'2026-08-25T17:20:00.000Z', item:{id:'dose',name:'Creatine',source:'manual'}, quantity:1, unit:'serving', nutritionOverride:{creatineG:3} });
+ assert.equal(createCalls[0].properties.creatineDose, 3);
+ assert.equal(createCalls[0].properties.creatineG, undefined);
+ assert.equal(service.getDailyFoodTotals('2026-08-25').creatineG, 3);
+});

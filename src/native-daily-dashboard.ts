@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENTS, extraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { DailyFoodMacroTotals, HealthMetricRenderConfig } from "./api";
 
 export type NativeDailyMetricState = "below" | "within" | "above" | "neutral";
@@ -134,7 +135,7 @@ const metricValue = (totals: DailyFoodMacroTotals, propertyKey: string): number 
     case "sugarAlcohol": return totals.sugarAlcoholG;
     case "alcohol": return totals.alcoholG;
     case "sodium": return totals.sodiumMg;
-    default: return null;
+    default: return isExtraNutrientKey(propertyKey) ? (extraNutrition(totals)[propertyKey] ?? null) : null;
   }
 };
 
@@ -148,6 +149,7 @@ const clamp = (value: number, min: number, max: number): number => Math.max(min,
 const targetLabel = (metric: HealthMetricRenderConfig): string => {
   const min = finite(metric.min);
   const max = finite(metric.max);
+  if (isExtraNutrientKey(metric.propertyKey) && min == null && max == null && finite(metric.goal) == null) return "";
   if (metric.kind === "range" && min != null && max != null) return `${min}–${max} ${metric.unit}`;
   if (metric.kind === "min" && min != null) return `at least ${min} ${metric.unit}`;
   if (metric.kind === "max" && max != null) return `up to ${max} ${metric.unit}`;
@@ -182,6 +184,7 @@ export function buildNativeDailyDashboardModel(
     caloriesBurned: 0,
     steps: 0,
   },
+  includeRecordedNutrients = true,
 ): NativeDailyDashboardModel {
   const metrics = configs.flatMap((config) => {
     const value = metricValue(totals, config.propertyKey);
@@ -198,6 +201,10 @@ export function buildNativeDailyDashboardModel(
     };
     return [model];
   });
+  for (const nutrient of EXTRA_NUTRIENTS) {
+    const value = totals[nutrient.key];
+    if (includeRecordedNutrients && value != null && !metrics.some(metric => metric.propertyKey === nutrient.key)) metrics.push({ propertyKey: nutrient.key, label: nutrient.label, unit: nutrient.unit, value, targetLabel: "", progress: 0, state: "neutral" });
+  }
   return {
     dateIso: totals.dateIso,
     entryCount: totals.entryCount,
@@ -209,7 +216,7 @@ export function buildNativeDailyDashboardModel(
 
 export function formatNativeDailyMetricValue(value: number): string {
   if (!Number.isFinite(value)) return "0";
-  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 1e6) / 1e6);
 }
 
 /** Rank logged entries, never add recipe children a second time to daily totals. */
@@ -220,7 +227,7 @@ export function nativeDailyNutrientContributors<T extends { title: string; path:
     consumedCalories: 'calories', calories: 'calories', protein: 'proteinG', carbs: 'carbsG',
     fat: 'fatG', fiber: 'fiberG', sugar: 'sugarG', sugarAlcohol: 'sugarAlcoholG', alcohol: 'alcoholG', sodium: 'sodiumMg',
   };
-  const key = keys[propertyKey];
+  const key = keys[propertyKey] || (isExtraNutrientKey(propertyKey) ? propertyKey : "");
   if (!key) return [];
   return entries.map(entry => ({ entry, value: Number((entry as Record<string, unknown>)[key]) }))
     .filter(({ value }) => Number.isFinite(value) && value > 0)

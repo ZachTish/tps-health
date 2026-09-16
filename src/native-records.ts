@@ -1,3 +1,6 @@
+import type { ExtraNutrition } from "./nutrients";
+import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
+import type { NutritionTotals } from "./types";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
@@ -176,7 +179,7 @@ export interface LegacyHealthImportPlan {
   workoutSessions: number;
   workoutExercises: number;
   unresolvedLines: number;
-  totals: Required<Nutrition>;
+  totals: NutritionTotals;
 }
 
 export interface LegacyHealthImportResult extends LegacyHealthImportPlan {
@@ -249,7 +252,7 @@ export interface NativeDailyActivityTotals {
   steps: number;
 }
 
-export interface NativeDailyFoodEntrySnapshot {
+export interface NativeDailyFoodEntrySnapshot extends ExtraNutrition {
   id: string;
   path: string;
   title: string;
@@ -300,7 +303,7 @@ interface LegacyHealthCandidate {
 
 const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 'workout-session', 'workout-exercise']);
 const FOOD_NUTRITION_KEYS = [
-  'calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg',
+  ...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS,
 ] as const;
 const CORE_FOOD_NUTRITION_KEYS = new Set<string>(['calories', 'proteinG', 'carbsG', 'fatG']);
 const REDUNDANT_FOOD_ENTRY_KEYS = [
@@ -325,7 +328,12 @@ function foodNutritionStorageValues(
   clearMissing = false,
 ): Record<string, unknown> {
   const values = nutrition as Record<string, unknown>;
+  const additional = extraNutrition(values);
   return Object.fromEntries(FOOD_NUTRITION_KEYS.map((key) => {
+    if (isExtraNutrientKey(key)) {
+      const value = additional[key];
+      return [key, value ?? (clearMissing ? null : undefined)];
+    }
     const value = stableNumber(numberValue(values[key]));
     return [key, CORE_FOOD_NUTRITION_KEYS.has(key) || value !== 0 ? value : clearMissing ? null : undefined];
   }).filter(([, value]) => value !== undefined));
@@ -848,7 +856,7 @@ interface NativeFoodEntryProjection {
   servings: number;
   amount?: number;
   amountUnit?: 'g' | 'ml';
-  nutrition: Record<(typeof FOOD_NUTRITION_KEYS)[number], number>;
+  nutrition: Record<(typeof CORE_NUTRIENT_KEYS)[number], number> & ExtraNutrition;
 }
 
 const positiveNumber = (value: unknown, fallback = 0): number => {
@@ -919,9 +927,10 @@ export function deriveNativeFoodEntryProjection(
     return null;
   }
   if (!Number.isFinite(servings) || servings < 0) return null;
-  const nutrition = Object.fromEntries(FOOD_NUTRITION_KEYS.map((key) => (
+  const nutrition = Object.fromEntries(CORE_NUTRIENT_KEYS.map((key) => (
     [key, stableNumber(numberValue(food[key]) * servings)]
   ))) as NativeFoodEntryProjection['nutrition'];
+  Object.assign(nutrition, extraNutrition(food, servings));
   return {
     servings: stableNumber(servings),
     amount: amount == null ? undefined : stableNumber(amount),
@@ -1834,16 +1843,17 @@ export class HealthNativeRecordService {
     };
   }
 
-  getDailyFoodTotals(dateIso: string): Required<Nutrition> & { entryCount: number } {
+  getDailyFoodTotals(dateIso: string): NutritionTotals & { entryCount: number } {
     const records = this.getKindRecords('food-entry').filter((record) => (
       record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
     ));
-    const totals = {
+    const totals: NutritionTotals = {
       calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0,
       sugarAlcoholG: 0, sugarAlcoholCaloriesPerG: 0, alcoholG: 0, sodiumMg: 0,
     };
     for (const record of records) {
-      for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += numberValue(record.frontmatter[key]);
+      for (const key of CORE_NUTRIENT_KEYS) totals[key] += numberValue(record.frontmatter[key]);
+      addExtraNutrition(totals, record.frontmatter);
     }
     return { entryCount: records.length, ...totals };
   }
@@ -1876,6 +1886,7 @@ export class HealthNativeRecordService {
         sugarAlcoholG: numberValue(record.frontmatter.sugarAlcoholG),
         alcoholG: numberValue(record.frontmatter.alcoholG),
         sodiumMg: numberValue(record.frontmatter.sodiumMg),
+        ...extraNutrition(record.frontmatter),
         note: String(record.frontmatter.note || ''),
         linkedFood: Boolean(foodReference(record.frontmatter)),
       }));
@@ -1943,6 +1954,7 @@ export class HealthNativeRecordService {
       sugarAlcoholG: nonNegativeNumber(patch.sugarAlcoholG),
       alcoholG: nonNegativeNumber(patch.alcoholG),
       sodiumMg: nonNegativeNumber(patch.sodiumMg),
+      ...extraNutrition(patch),
     };
     const updated = await this.updateRecord(current.file, {
       title,
@@ -2192,6 +2204,7 @@ export class HealthNativeRecordService {
       if (candidate.kind === 'food-entry') {
         foodEntries += 1;
         for (const key of NUTRITION_KEYS) totals[key] += numberValue(candidate.properties[key]);
+        addExtraNutrition(totals, candidate.properties);
       } else if (candidate.kind === 'activity-entry') activityEntries += 1;
       else if (candidate.kind === 'workout-session') workoutSessions += 1;
       else if (candidate.kind === 'workout-exercise') workoutExercises += 1;
@@ -2326,6 +2339,7 @@ export class HealthNativeRecordService {
               sugarAlcoholG: legacyNumber(fields.sugarAlcohol),
               alcoholG: legacyNumber(fields.alcohol),
               sodiumMg: legacyNumber(fields.sodium),
+              ...extraNutrition(fields),
               note: fields.note,
               tags: ['health', 'food-log'],
             },
@@ -2916,7 +2930,7 @@ export class HealthNativeRecordService {
 
 const NUTRITION_KEYS = ['calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg'] as const;
 
-function zeroNutritionTotals(): Required<Nutrition> {
+function zeroNutritionTotals(): NutritionTotals {
   return {
     calories: 0,
     proteinG: 0,

@@ -1244,7 +1244,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /fileIsInConfiguredFolder\(file\.path, plugin\.settings\.recipesFolder\)/);
   assert.match(mainSource, /function recipeIngredientLine\(item: FoodItem, quantity: number, unit: string\): string/);
   assert.match(mainSource, /return `- \$\{formatQuantityUnit\(quantity, unit \|\| "serving"\)\} - \$\{itemLabel\}`/);
-  assert.match(mainSource, /function resolveRecipeIngredientNutrition\(line: string, resolveFood\?: \(foodPath: string\) => FoodItem \| null\): Required<Nutrition> \| null/);
+  assert.match(mainSource, /function resolveRecipeIngredientNutrition\(line: string, resolveFood\?: \(foodPath: string\) => FoodItem \| null\): NutritionTotals \| null/);
   assert.match(mainSource, /const quantity = parseQuantity\(match\[1\]\)/);
   assert.match(mainSource, /if \(resolved\.unsupportedUnit\) return null/);
   assert.match(mainSource, /async openFoodNoteFile\(file: TFile\): Promise<void>/);
@@ -4018,7 +4018,7 @@ test("health API exposes deterministic agent food logging entry points", () => {
   assert.match(apiSource, /logFoodByFoodPath\(input: LogFoodByFoodPathInput\): Promise<FoodLogEntry>/);
   assert.match(apiSource, /ensureFoodLogBase\(\): Promise<string>/);
   assert.match(apiSource, /ensureWorkoutLogBase\(\): Promise<string>/);
-  assert.match(apiSource, /export interface DailyFoodMacroTotals extends Required<Nutrition>/);
+  assert.match(apiSource, /export interface DailyFoodMacroTotals extends NutritionTotals/);
   assert.match(apiSource, /getDailyFoodMacroTotals\(dateIso: string\): Promise<DailyFoodMacroTotals>/);
   assert.match(mainSource, /logFoodByBarcode: \(input\) => this\.traceApiCall\("logFoodByBarcode", input, \(\) => this\.logFoodByBarcode\(input\)\)/);
   assert.match(mainSource, /logFoodByFoodPath: \(input\) => this\.traceApiCall\("logFoodByFoodPath", input, \(\) => this\.logFoodByFoodPath\(input\)\)/);
@@ -4076,10 +4076,10 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(mainSource, /existing\.quantity = roundFoodLogQuantity\(existing\.quantity \+ \(draft\?\.quantity \?\? defaultFoodLogQuantity\(enriched\)\)\)/);
   assert.match(mainSource, /Decrease amount for \$\{entry\.item\.name\}/);
   assert.match(mainSource, /Increase amount for \$\{entry\.item\.name\}/);
-  assert.match(mainSource, /Math\.max\(step, roundFoodLogQuantity\(entry\.quantity \+ delta\)\)/);
+  assert.match(mainSource, /Math\.max\(0\.000001, roundFoodLogQuantity\(entry\.quantity \+ delta\)\)/);
   assert.match(mainSource, /function foodLogQuantityStep\(unit: string\): number/);
   assert.match(mainSource, /function roundFoodLogQuantity\(value: number\): number/);
-  assert.match(mainSource, /Math\.round\(value \* 100\) \/ 100/);
+  assert.match(mainSource, /Math\.round\(value \* 1e6\) \/ 1e6/);
   assert.match(mainSource, /multiplyNutrition\(entry\.item\.nutrition \|\| \{\}, resolveBatchFoodSelectionServing\(entry\)\.servings\)/);
   assert.match(mainSource, /function normalizeServingMultiplier\(value: number\): number/);
   assert.match(mainSource, /Math\.round\(value \* 1000000\) \/ 1000000/);
@@ -11708,4 +11708,83 @@ test("scanner uses accessible camera overlay actions without a Shortcut button",
   assert.match(opening, /iconAction\("switch-camera", "Flip camera"/);
   assert.match(opening, /iconAction\("image", "Scan image"/);
   assert.match(mainSource, /setAttribute\("aria-pressed", String\(this.torchEnabled\)\)/);
+});
+
+test('supplements persist exact label nutrients and named doses through save, reload, edit and atomic lines', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, resolveFoodLogServing } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+  plugin.settings.foodTemplatePath = '';
+  const nutrition = { vitaminB12Mcg: 2.4, vitaminDMcg: 25, magnesiumMg: 100, creatineG: 5, caffeineMg: 200, betaAlanineG: 3.2, ironMg: 0 };
+  const saved = await plugin.createFoodFromInput({ name: 'QA supplement', servingAmount: 2, servingUnit: 'capsule', nutrition });
+  const file = fake.app.vault.getAbstractFileByPath(saved.sourcePath);
+  const reloaded = plugin.foodFromFrontmatter(file, parseFrontmatter(fake.files.get(file.path)));
+  for (const [key,value] of Object.entries(nutrition)) assert.equal(reloaded.nutrition[key], value, key);
+  assert.equal(reloaded.nutrition.calciumMg, undefined);
+  const serving = resolveFoodLogServing(reloaded, 1, 'capsule');
+  assert.equal(serving.servings, .5);
+  assert.equal(resolveFoodLogServing(reloaded, 1, 'g').unsupportedUnit, true, 'no invented mass for capsules');
+  const { foodEntryLine } = await importFormatUtility();
+  const line = foodEntryLine({ id: 'supplement-log', item: reloaded, quantity: serving.servings, unit: 'serving', servingQuantity: 1, servingUnit: 'capsule', createdDate: '2026-09-16T12:00:00Z' });
+  assert.match(line, /\[vitaminB12Mcg:: 1.2\]/);
+  assert.match(line, /\[creatineG:: 2.5\]/);
+  const totals = plugin.calculateFoodTotals(line + '\n' + line);
+  assert.equal(totals.vitaminB12Mcg, 2.4); assert.equal(totals.creatineG, 5);
+  assert.equal(totals.calciumMg, undefined);
+  const updated = await plugin.upsertFoodFromInput({ path: file.path, name: 'QA supplement', servingAmount: 2, servingUnit: 'capsule', nutrition: { vitaminB12Mcg: 3 } });
+  assert.equal(updated.nutrition.vitaminB12Mcg, 3);
+  assert.equal(updated.nutrition.creatineG, undefined, 'cleared label amount does not leak from cached frontmatter');
+  assert.equal(parseFrontmatter(fake.files.get(file.path)).creatineG, undefined);
+  const precise = foodEntryLine({ id: 'small-dose', item: { ...reloaded, nutrition: { vitaminB12Mcg: .05 } }, quantity: .5, unit: 'serving', createdDate: '2026-09-16T12:00:00Z' });
+  assert.match(precise, /\[vitaminB12Mcg:: 0.025\]/, 'atomic line serialization does not round a small nutrient dose to zero');
+});
+
+test('custom templates retain supplement label amounts without adding required placeholders', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+  fake.files.set('Templates/Supplement.md', '---\ntitle: "{{name}}"\nservingAmount: {{servingAmount}}\nservingUnit: "{{servingUnit}}"\n---\n');
+  plugin.settings.foodTemplatePath = 'Templates/Supplement.md';
+  const saved = await plugin.createFoodFromInput({ name: 'QA preworkout', servingAmount: 1, servingUnit: 'scoop', nutrition: { creatineG: 3, caffeineMg: 175, vitaminB12Mcg: .08 } });
+  const fm = parseFrontmatter(fake.files.get(saved.sourcePath));
+  assert.equal(Number(fm.creatineG), 3); assert.equal(Number(fm.vitaminB12Mcg), .08);
+});
+
+test('OFF micronutrients use normalized grams without macro rounding or mixing unknown serving bases', async () => {
+  const { foodFactsNutrition } = await importPluginWithObsidianStub();
+  const product = { nutriments: { 'vitamin-b12_100g': .0000024, magnesium_100g: .1, caffeine_100g: .2, 'vitamin-d_serving': .000025 } };
+  const scaled = foodFactsNutrition(product, { grams: 50 }, 'per-100g');
+  assert.equal(scaled.vitaminB12Mcg, 1.2); assert.equal(scaled.magnesiumMg, 50); assert.equal(scaled.caffeineMg, 100);
+  const labeled = foodFactsNutrition(product, { amount: 2, unit: 'capsule', labeled: true }, 'labeled-serving');
+  assert.equal(labeled.vitaminDMcg, 25); assert.equal(labeled.magnesiumMg, undefined);
+  assert.equal(labeled.vitaminB12Mcg, undefined, 'per 100 g cannot be converted to capsule count without a mass');
+});
+
+test('USDA micronutrients convert mass units and reject ambiguous IU or missing units', async () => {
+  const built = await esbuild.build({ entryPoints: [fileURLToPath(new URL('../src/nutrients.ts', import.meta.url))], bundle: true, format: 'esm', write: false });
+  const { usdaExtraNutrition } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
+  assert.deepEqual(usdaExtraNutrition([
+    { nutrientName: 'Vitamin B-12', unitName: 'UG', value: 2.4 },
+    { nutrient: { name: 'Magnesium, Mg', unitName: 'G' }, amount: .1 },
+    { nutrientName: 'Vitamin A, RAE', unitName: 'IU', value: 5000 },
+    { nutrientName: 'Vitamin D (D2 + D3)', value: 25 },
+    { nutrientName: 'Folate, total', unitName: 'UG', value: 400 },
+    { nutrientName: 'Folate, DFE', unitName: 'UG', value: 667 },
+  ]), { vitaminB12Mcg: 2.4, magnesiumMg: 100, folateMcg: 667 });
+});
+
+test('configured atomic-line micronutrient rollups retain small values and clear stale unknowns', async () => {
+ installDeterministicBrowserGlobals();
+ const { default: Plugin } = await importPluginWithObsidianStub();
+ const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+ plugin.settings.foodLogTarget = 'daily-note';
+ plugin.settings.healthGoals = [{ propertyKey:'vitaminB12Mcg',label:'B12',unit:'mcg',kind:'min',min:2.4 }];
+ const path = 'Inbox/Nutrient rollup QA.md';
+ fake.files.set(path, '---\nvitaminB12Mcg: 99\n---\n- Dose [food:: Dose] [qty:: 1] [nutritionSnapshot:: true] [vitaminB12Mcg:: 0.025]\n');
+ const file = new globalThis.__TPSHealthTestTFile(path);
+ await plugin.updateDailyRollupForFile(file);
+ assert.equal(parseFrontmatter(fake.files.get(path)).vitaminB12Mcg, .025);
+ fake.files.set(path, '---\nvitaminB12Mcg: 99\n---\n- Unknown dose [food:: Dose] [qty:: 1] [nutritionSnapshot:: true]\n');
+ await plugin.updateDailyRollupForFile(file);
+ assert.equal(parseFrontmatter(fake.files.get(path)).vitaminB12Mcg, undefined);
 });

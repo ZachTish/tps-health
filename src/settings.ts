@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENTS } from "./nutrients";
 import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
@@ -908,6 +909,21 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         section.createEl("h5", { cls: "tps-health-settings-subheading", text: groupLabel });
       }
       for (const [key, label] of fields) this.addNativePropertyKeySetting(section, key, label);
+      if (groupLabel === "Food and nutrition fields") {
+        const fieldEditor = section.createDiv();
+        const renderNutrientKey = (key: string) => {
+          fieldEditor.empty();
+          const nutrient = EXTRA_NUTRIENTS.find(n => n.key === key);
+          if (nutrient) this.addNativePropertyKeySetting(fieldEditor, nutrient.key, `${nutrient.label} property`);
+        };
+        const selector = new Setting(section).setName("Vitamin, mineral or supplement field").addDropdown(dropdown => {
+          for (const nutrient of EXTRA_NUTRIENTS) dropdown.addOption(nutrient.key, `${nutrient.label} (${nutrient.unit})`);
+          dropdown.onChange(renderNutrientKey);
+        });
+        selector.settingEl.after(fieldEditor);
+        renderNutrientKey(EXTRA_NUTRIENTS[0].key);
+      }
+
     }
   }
 

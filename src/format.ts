@@ -1,3 +1,4 @@
+import { extraNutrition } from "./nutrients";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { ActivityLogEntry, FoodItem, FoodLogEntry, Nutrition, WorkoutPlanItem, WorkoutSet } from "./types";
 
@@ -65,6 +66,7 @@ export function foodEntryLine(entry: FoodLogEntry): string {
     dataviewField("sugarAlcohol", nutrition.sugarAlcoholG),
     dataviewField("alcohol", nutrition.alcoholG),
     dataviewField("sodium", nutrition.sodiumMg),
+    ...Object.entries(extraNutrition(nutrition)).map(([key, value]) => dataviewField(key, String(value))),
     entry.item.sourcePath ? dataviewField("foodPath", entry.item.sourcePath) : "",
     entry.dailyNotePath ? dataviewField("dailyNotePath", entry.dailyNotePath) : "",
     dataviewField("foodId", entry.id),
@@ -133,6 +135,7 @@ function scaleNutrition(nutrition: Nutrition, multiplier: number): Nutrition {
     sugarAlcoholG: scaledValue(nutrition.sugarAlcoholG, safeMultiplier),
     alcoholG: scaledValue(nutrition.alcoholG, safeMultiplier),
     sodiumMg: scaledValue(nutrition.sodiumMg, safeMultiplier),
+    ...extraNutrition(nutrition, safeMultiplier),
   };
 }
 

@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENT_KEYS, addExtraNutrition } from "./nutrients";
 import type { DailyFoodMacroTotals, HealthMetricRenderConfig } from './api';
 import type { NativeDailyFoodEntrySnapshot } from './native-records';
 import type { TPSHealthSettings, HealthNativeRecordPropertyKey } from './types';
@@ -6,6 +7,7 @@ import { configuredNativePropertyKey, readableNativeKinds } from './native-recor
 export const MACROS_BASE_TYPE = 'tps-health-macros';
 export type DatedFoodEntry = NativeDailyFoodEntrySnapshot & { dateIso: string };
 export const MACRO_PROPERTY_KEYS: Record<string, HealthNativeRecordPropertyKey> = {
+  ...Object.fromEntries(EXTRA_NUTRIENT_KEYS.map(key => [key, key])),
   consumedCalories: 'calories', cal: 'calories', protein: 'proteinG', carbs: 'carbsG', fat: 'fatG',
   fiber: 'fiberG', sugar: 'sugarG', sugarAlcohol: 'sugarAlcoholG', alcohol: 'alcoholG', sodium: 'sodiumMg',
 };
@@ -25,6 +27,7 @@ export function validMacroDate(value: string): boolean {
 }
 export function sumMacroEntries(dateIso: string, entries: NativeDailyFoodEntrySnapshot[]): DailyFoodMacroTotals {
   const totals: DailyFoodMacroTotals = { dateIso, entryCount: entries.length, calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0, sugarAlcoholG: 0, sugarAlcoholCaloriesPerG: 0, alcoholG: 0, sodiumMg: 0 };
+  for (const entry of entries) addExtraNutrition(totals, entry);
   for (const entry of entries) for (const key of ['calories','proteinG','carbsG','fatG','fiberG','sugarG','sugarAlcoholG','alcoholG','sodiumMg'] as const) {
     if (Number.isFinite(entry[key])) totals[key] += entry[key];
   }

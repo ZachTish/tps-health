@@ -2,6 +2,7 @@ import { claimMacrosBaseNew } from './macros-base-toolbar';
 import { BasesView, Notice, type BasesViewConfig, type BasesAllOptions, type QueryController } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { configuredNativePropertyKey } from './native-record-schema';
+import { EXTRA_NUTRIENTS } from './nutrients';
 import { MACRO_PROPERTY_KEYS, groupMacroDays, validMacroDate, visibleMacroGoals, MACROS_BASE_TYPE } from './macros-base-model';
 
 export class MacrosBaseView extends BasesView {
@@ -59,7 +60,7 @@ export class MacrosBaseView extends BasesView {
       this.body.createDiv({ text: 'Use Atomic notes in Health settings to show food logs here.' }); return;
     }
     const order = this.config.getOrder();
-    const goals = visibleMacroGoals(this.plugin.getMetricRenderConfigs(), order, this.plugin.settings).map(goal => {
+    const goals = visibleMacroGoals([...this.plugin.getMetricRenderConfigs(), ...EXTRA_NUTRIENTS.filter(n => !this.plugin.getMetricRenderConfigs().some(g => g.propertyKey === n.key)).map(n => ({ propertyKey: n.key, label: n.label, unit: n.unit, kind: "min" as const }))], order, this.plugin.settings).map(goal => {
       const key = configuredNativePropertyKey(this.plugin.settings, MACRO_PROPERTY_KEYS[goal.propertyKey]);
       const name = this.config.getDisplayName(`note.${key}`);
       return { ...goal, label: name && name !== key ? name : goal.label };

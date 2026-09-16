@@ -1,35 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import ts from 'typescript';
-
-const compilerOptions = { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 };
-const workoutSource = readFileSync(new URL('../src/workout-properties.ts', import.meta.url), 'utf8');
-const workoutCompiled = ts.transpileModule(workoutSource, {
-  compilerOptions,
-}).outputText;
-const workoutModule = { exports: {} };
-new Function('module', 'exports', workoutCompiled)(workoutModule, workoutModule.exports);
-const nativeSchemaSource = readFileSync(new URL('../src/native-record-schema.ts', import.meta.url), 'utf8');
-const nativeSchemaCompiled = ts.transpileModule(nativeSchemaSource, { compilerOptions }).outputText;
-const nativeSchemaModule = { exports: {} };
-new Function('module', 'exports', nativeSchemaCompiled)(nativeSchemaModule, nativeSchemaModule.exports);
-
-const source = readFileSync(new URL('../src/health-property-catalog.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions,
-}).outputText;
-const moduleRecord = { exports: {} };
-new Function('module', 'exports', 'require', compiled)(
-  moduleRecord,
-  moduleRecord.exports,
-  (specifier) => {
-    if (specifier === './workout-properties') return workoutModule.exports;
-    if (specifier === './native-record-schema') return nativeSchemaModule.exports;
-    throw new Error(`Unexpected test import: ${specifier}`);
-  },
-);
-const { buildHealthPropertyCatalog } = moduleRecord.exports;
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+const bundled = await build({ entryPoints: [fileURLToPath(new URL('../src/health-property-catalog.ts', import.meta.url))], bundle: true, write: false, format: 'esm' });
+const { buildHealthPropertyCatalog } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 
 const settings = (mode) => ({
   foodIdentificationMode: mode,

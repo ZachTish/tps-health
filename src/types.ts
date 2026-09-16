@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENT_PROPERTIES, type ExtraNutrientKey, type ExtraNutrition } from "./nutrients";
 export type RestTimerMode = "count-up" | "count-down";
 export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label" | "ai-research";
 export type FoodNoteType = "food" | "recipe" | "meal";
@@ -22,7 +23,7 @@ export const USDA_DEMO_API_KEY = "DEMO_KEY";
 export const TPS_HEALTH_SCHEMA_VERSION = 7;
 
 export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workoutSession" | "workoutExercise";
-export type HealthNativeRecordPropertyKey =
+export type HealthNativeRecordPropertyKey = ExtraNutrientKey
   | "completedDate" | "food" | "quantity" | "unit"
   | "calories" | "proteinG" | "carbsG" | "fatG" | "fiberG" | "sugarG" | "sugarAlcoholG" | "alcoholG" | "sodiumMg"
   | "note" | "activityType" | "startedAt" | "durationMinutes" | "distance" | "distanceUnit" | "steps"
@@ -104,7 +105,7 @@ export interface TPSHealthSettings {
   enableLogging: boolean;
 }
 
-export interface Nutrition {
+export interface CoreNutrition {
   calories?: number;
   proteinG?: number;
   carbsG?: number;
@@ -116,6 +117,9 @@ export interface Nutrition {
   alcoholG?: number;
   sodiumMg?: number;
 }
+
+export interface Nutrition extends CoreNutrition, ExtraNutrition {}
+export type NutritionTotals = Required<CoreNutrition> & ExtraNutrition;
 
 export type NutritionBasis = "labeled-serving" | "per-100g" | "per-100ml" | "estimated-serving";
 
@@ -322,6 +326,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
     workoutExercise: "workout-exercise",
   },
   nativeRecordProperties: {
+    ...EXTRA_NUTRIENT_PROPERTIES,
     completedDate: "completedDate",
     food: "food",
     quantity: "quantity",

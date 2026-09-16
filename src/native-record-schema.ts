@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENT_PROPERTIES } from "./nutrients";
 import type {
   HealthNativeRecordKindKey,
   HealthNativeRecordPropertyKey,
@@ -12,6 +13,7 @@ export const DEFAULT_HEALTH_NATIVE_RECORD_KINDS: Record<HealthNativeRecordKindKe
 };
 
 export const DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES: Record<HealthNativeRecordPropertyKey, string> = {
+  ...EXTRA_NUTRIENT_PROPERTIES,
   completedDate: "completedDate",
   food: "food",
   quantity: "quantity",

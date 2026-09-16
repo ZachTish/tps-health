@@ -206,3 +206,26 @@ test('macro rings expand one full-width contribution list and keep nutrients com
   assert.equal(walk(hidden).some(n => n.className === 'tps-health-native-daily-nutrients'), false);
   assert.equal(walk(hidden).some(n => n.className === 'tps-health-native-ring-button'), false);
 });
+
+
+test('typing a valid tray amount persists immediately without replacing the focused input', async () => {
+  const { tray } = await setup();
+  tray.selectionItems = [{ item: food('Creatine'), quantity: 1, unit: 'serving' }];
+  tray.selectionExpanded = true;
+  tray.renderSelection();
+  let saved = null;
+  tray.persistDraft = () => { saved = tray.selectionItems[0].quantity; };
+  const input = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-quantity');
+  input.value = '0.125';
+  input.listeners.get('input')();
+  assert.equal(saved, .125);
+  assert.equal(tray.selectionItems[0].quantity, .125);
+  assert.equal(input.value, '0.125');
+  assert.ok(walk(tray.selectionEl).includes(input), 'the input is not replaced while typing');
+  input.listeners.get('change')();
+  assert.equal(tray.selectionItems[0].quantity, .125, 'blur keeps fractional supplement servings');
+  input.value = '';
+  input.listeners.get('input')();
+  assert.equal(saved, .125, 'an unfinished empty edit does not replace the valid draft with zero');
+  tray.onClose();
+});

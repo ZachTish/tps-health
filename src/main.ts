@@ -1,3 +1,5 @@
+import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
+import type { NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
 import { MacrosBaseView } from "./macros-base-view";
 import { MACROS_BASE_TYPE, defaultMacrosBaseContent, initializeMacrosDateType, sumMacroEntries } from "./macros-base-model";
@@ -1444,7 +1446,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   renderMacrosBaseDay(container: HTMLElement, day: string, entries: NativeDailyFoodEntrySnapshot[], goals: HealthMetricRenderConfig[], display: NativeDailyDisplayOptions, disclosures: Map<string, boolean>): void {
-    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals), entries, display, {
+    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals, undefined, false), entries, display, {
       disclosures,
       components: (target, entry) => renderNativeDailyComponents(target, this, entry, disclosures),
       addFood: () => this.openFoodLogger({ dateIso: day, label: day, isToday: day === window.moment().format("YYYY-MM-DD"), focusAfterLog: false }),
@@ -4155,6 +4157,7 @@ export default class TPSHealthPlugin extends Plugin {
       nutrition.sugarAlcoholCaloriesPerG != null ? `sugarAlcoholCaloriesPerG: ${nutrition.sugarAlcoholCaloriesPerG}` : "",
       `alcoholG: ${nutrition.alcoholG || 0}`,
       `sodiumMg: ${nutrition.sodiumMg || 0}`,
+      ...Object.entries(extraNutrition(nutrition)).map(([key, value]) => `${key}: ${value}`),
       "---",
       "",
       isRecipeLikeFoodType(type) ? item.recipeBody || "" : "",
@@ -4200,6 +4203,7 @@ export default class TPSHealthPlugin extends Plugin {
       template,
     );
     const templateUpdates: Record<string, string> = {
+      ...Object.fromEntries(Object.entries(extraNutrition(nutrition)).map(([key, value]) => [key, String(value)])),
       ...(item.nutritionBasis ? { nutritionBasis: item.nutritionBasis } : {}),
       ...(item.ingredients ? { ingredientStatement: item.ingredients } : {}),
     };
@@ -4573,6 +4577,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
+      for (const key of EXTRA_NUTRIENT_KEYS) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -5020,6 +5025,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
       ...itemFrontmatter,
     };
+    for (const key of EXTRA_NUTRIENT_KEYS) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
@@ -5636,6 +5642,7 @@ export default class TPSHealthPlugin extends Plugin {
         sugarAlcoholCaloriesPerG: numberOrUndefined(fm.sugarAlcoholCaloriesPerG),
         alcoholG: numberOrUndefined(fm.alcoholG),
         sodiumMg: numberOrUndefined(fm.sodiumMg),
+        ...extraNutrition(fm),
       },
     });
   }
@@ -6300,7 +6307,8 @@ export default class TPSHealthPlugin extends Plugin {
       }
       for (const goal of this.settings.healthGoals) {
         const value = foodRollupValue(totals, goal.propertyKey);
-        if (value != null) frontmatter[goal.propertyKey] = round(value);
+        if (value != null) frontmatter[goal.propertyKey] = isExtraNutrientKey(goal.propertyKey) ? value : round(value);
+        else if (isExtraNutrientKey(goal.propertyKey)) delete frontmatter[goal.propertyKey];
       }
       frontmatter.healthUpdatedAt = isoNow();
     });
@@ -6314,7 +6322,7 @@ export default class TPSHealthPlugin extends Plugin {
     return totals;
   }
 
-  calculateFoodTotals(content: string, dailyNotePath?: string): Required<Nutrition> {
+  calculateFoodTotals(content: string, dailyNotePath?: string): NutritionTotals {
     return calculateFoodTotals(content, (foodPath) => {
       const file = this.app.vault.getAbstractFileByPath(foodPath);
       if (!(file instanceof TFile)) return null;
@@ -9301,8 +9309,8 @@ export default class TPSHealthPlugin extends Plugin {
     return {
       version: 1 as const,
       entities: {
-        food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "nutritionBasis", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", "ingredients", "sourceImagePath"],
-        foodLog: ["type", "foodPath", "servings", "amount", "unit", "foodServingAmount", "foodServingUnit", "foodServingGrams", "foodServingMl", "nutritionSnapshot", "cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium", "createdDate", "completedDate"],
+        food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "nutritionBasis", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", ...EXTRA_NUTRIENT_KEYS, "ingredients", "sourceImagePath"],
+        foodLog: ["type", "foodPath", "servings", "amount", "unit", "foodServingAmount", "foodServingUnit", "foodServingGrams", "foodServingMl", "nutritionSnapshot", "cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium", ...EXTRA_NUTRIENT_KEYS, "createdDate", "completedDate"],
         activityLog: ["type", "activity", "activityType", "activityId", "source", "sourceId", "device", "startedAt", "completedDate", "durationMinutes", "distance", "distanceUnit", "steps", "caloriesBurned", "dailyNotePath", "note"],
         exercise: ["name", "category", "primaryMuscles", "secondaryMuscles", "equipment", "defaultRestSeconds", "defaultSetType", "recommendedRestDays"],
         workoutPlan: ["name", "cooldownDays", "defaultRestSeconds", "lastCompletedDate", "nextEligibleDate", "lastSessionPath"],
@@ -10202,7 +10210,7 @@ interface FoodLogBaseEntry {
   foodPath?: string;
   dateKey: string;
   dateLabel: string;
-  nutrition: Required<Nutrition>;
+  nutrition: NutritionTotals;
 }
 
 function foodLogSnapshotItem(entry: FoodLogBaseEntry, linkedFood: FoodItem | null): FoodItem {
@@ -11293,10 +11301,8 @@ class FoodSearchModal extends FoodInputModal {
         .onChange(value => { entry.tags = normalizeFoodLogTags(value); tagSummary.setText(entry.tags.map(tag => `#${tag}`).join(", ") || "Tags"); void this.persistDraft(); }));
       tagSetting.settingEl.addClass("tps-health-log-tags");
       const controls = row.createDiv({ cls: "tps-health-selection-controls" });
-      const initialStep = foodLogQuantityStep(entry.unit);
       const adjustQuantity = (delta: number) => {
-        const step = foodLogQuantityStep(entry.unit);
-        entry.quantity = Math.max(step, roundFoodLogQuantity(entry.quantity + delta));
+        entry.quantity = Math.max(0.000001, roundFoodLogQuantity(entry.quantity + delta));
         this.refreshSelectionWithoutScroll(() => {
           this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
           this.refreshSelectionSummary();
@@ -11312,12 +11318,23 @@ class FoodSearchModal extends FoodInputModal {
       decrement.addEventListener("click", () => adjustQuantity(-foodLogQuantityStep(entry.unit)));
       const quantityInput = controls.createEl("input", {
         cls: "tps-health-selection-quantity",
-        attr: { type: "number", min: String(initialStep), step: String(initialStep), value: String(entry.quantity), "aria-label": `Amount for ${entry.item.name}` },
+        attr: { type: "number", min: "0.000001", step: "any", value: String(entry.quantity), "aria-label": `Amount for ${entry.item.name}` },
       });
       quantityInput.disabled = this.selectionSubmitting;
+      quantityInput.addEventListener("input", () => {
+        const value = Number(quantityInput.value);
+        if (!quantityInput.value.trim() || !Number.isFinite(value) || value <= 0) return;
+        entry.quantity = value;
+        this.refreshSelectionWithoutScroll(() => {
+          const macros = row.querySelector<HTMLElement>(".tps-health-selection-line-macros");
+          if (macros) renderCompactFoodMacros(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+          this.refreshSelectionSummary();
+        });
+        void this.persistDraft();
+      });
       quantityInput.addEventListener("change", () => {
-        const step = foodLogQuantityStep(entry.unit);
-        entry.quantity = Math.max(step, numberOrUndefined(quantityInput.value) || step);
+        const value = numberOrUndefined(quantityInput.value);
+        if (value != null && value > 0) entry.quantity = value;
         this.refreshSelectionWithoutScroll(() => {
           this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
           this.refreshSelectionSummary();
@@ -11342,7 +11359,7 @@ class FoodSearchModal extends FoodInputModal {
       unitSelect.disabled = this.selectionSubmitting;
       unitSelect.addEventListener("change", () => {
         entry.unit = unitSelect.value;
-        entry.quantity = Math.max(foodLogQuantityStep(entry.unit), entry.quantity);
+        entry.quantity = Math.max(0.000001, entry.quantity);
         this.refreshSelectionWithoutScroll(() => {
           this.refreshSelectionRow(entry, row, quantityInput, unitSelect);
           this.refreshSelectionSummary();
@@ -11408,10 +11425,9 @@ class FoodSearchModal extends FoodInputModal {
     quantityInput: HTMLInputElement,
     unitSelect: HTMLSelectElement,
   ): void {
-    const step = foodLogQuantityStep(entry.unit);
-    entry.quantity = Math.max(step, roundFoodLogQuantity(entry.quantity));
-    quantityInput.min = String(step);
-    quantityInput.step = String(step);
+    entry.quantity = Math.max(0.000001, roundFoodLogQuantity(entry.quantity));
+    quantityInput.min = "0.000001";
+    quantityInput.step = "any";
     quantityInput.value = String(entry.quantity);
     unitSelect.value = entry.unit;
     const macros = row.querySelector(".tps-health-selection-line-macros") as HTMLElement | null;
@@ -11677,7 +11693,7 @@ class FoodSearchModal extends FoodInputModal {
       current.item = saved;
       const unitOptions = foodLogUnitOptionsForSelection({ ...current, item: saved });
       if (!unitOptions.includes(current.unit)) current.unit = preferredFoodLogUnit(saved);
-      current.quantity = Math.max(foodLogQuantityStep(current.unit), current.quantity || foodLogQuantityStep(current.unit));
+      current.quantity = Math.max(0.000001, current.quantity || foodLogQuantityStep(current.unit));
       await this.persistDraft();
       this.renderSelection();
       logger.flow("FoodModal", "selection:edit-saved", { name: saved.name, sourcePath: saved.sourcePath || "", selected: this.selectionItems.length });
@@ -11953,10 +11969,11 @@ function foodQueueItemSignature(item: FoodItem): string {
     nutrition.sugarAlcoholG ?? null,
     nutrition.alcoholG ?? null,
     nutrition.sodiumMg ?? null,
+    ...EXTRA_NUTRIENT_KEYS.map(key => nutrition[key] ?? null),
   ]);
 }
 
-function addNutritionTotals(totals: Required<Nutrition>, nutrition: Nutrition): void {
+function addNutritionTotals(totals: NutritionTotals, nutrition: Nutrition): void {
   totals.calories += nutrition.calories || 0;
   totals.proteinG += nutrition.proteinG || 0;
   totals.carbsG += nutrition.carbsG || 0;
@@ -11966,6 +11983,7 @@ function addNutritionTotals(totals: Required<Nutrition>, nutrition: Nutrition): 
   totals.sugarAlcoholG += nutrition.sugarAlcoholG || 0;
   totals.alcoholG += nutrition.alcoholG || 0;
   totals.sodiumMg += nutrition.sodiumMg || 0;
+  addExtraNutrition(totals, nutrition);
 }
 
 async function recipeIngredientLineFromBatchSelection(plugin: TPSHealthPlugin, entry: BatchFoodSelection): Promise<string> {
@@ -16254,7 +16272,7 @@ class BarcodeFoodReviewModal extends Modal {
       servingAmount = Number(value) || 1;
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Serving unit").setDesc("Serving, bar, cup, 100 g, 12 fl oz…").addText((text) => text.setValue(servingUnit).onChange((value) => {
+    new Setting(formEl).setName("Serving unit").setDesc("Serving, capsule, tablet, scoop, g, ml…").addText((text) => text.setValue(servingUnit).onChange((value) => {
       servingUnit = value.trim() || "serving";
       updateCaloriePreview();
     }));
@@ -17724,6 +17742,7 @@ const CUSTOM_FOOD_NUTRITION_FIELDS: Array<keyof Nutrition> = [
   "sugarAlcoholCaloriesPerG",
   "alcoholG",
   "sodiumMg",
+  ...EXTRA_NUTRIENT_KEYS,
 ];
 
 function customFoodServingMetadataForSave(
@@ -17817,13 +17836,13 @@ class CustomFoodModal extends FoodInputModal {
       if (file instanceof TFile) return foodFromFileCache(this.plugin, file);
       return this.plugin.findRecipeIngredientFoodByName(ingredient.foodName);
     };
-    const recipeIngredientNutrition = (ingredient: RecipeIngredientDraft): Required<Nutrition> => {
+    const recipeIngredientNutrition = (ingredient: RecipeIngredientDraft): NutritionTotals => {
       const food = recipeIngredientFoodItem(ingredient);
       if (!food?.nutrition) return zeroNutrition();
       const resolved = resolveFoodLogServing(food, ingredient.quantity, ingredient.unit);
       return resolved.unsupportedUnit ? zeroNutrition() : multiplyNutrition(food.nutrition, resolved.servings);
     };
-    const recipeIngredientTotals = (): Required<Nutrition> => {
+    const recipeIngredientTotals = (): NutritionTotals => {
       const totals = zeroNutrition();
       for (const ingredient of recipeIngredients) addNutritionTotals(totals, recipeIngredientNutrition(ingredient));
       return totals;
@@ -17903,7 +17922,7 @@ class CustomFoodModal extends FoodInputModal {
         servingAmount = Number(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Serving unit").setDesc("Serving, bar, cup, 100 g, 12 fl oz…").addText((text) => text.setValue(servingUnit).onChange((value) => {
+      new Setting(formEl).setName("Serving unit").setDesc("Serving, capsule, tablet, scoop, g, ml…").addText((text) => text.setValue(servingUnit).onChange((value) => {
         servingUnit = value.trim() || "serving";
         updateCaloriePreview();
       }));
@@ -17930,6 +17949,30 @@ class CustomFoodModal extends FoodInputModal {
         updateCaloriePreview();
       }));
       new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg || 0)).onChange((value) => nutrition.sodiumMg = numberOrUndefined(value)));
+      const advanced = formEl.createEl("details", { cls: "tps-health-nutrient-editor" });
+      advanced.createEl("summary", { text: "Vitamins, minerals & supplements" });
+      const filter = advanced.createEl("input", { attr: { type: "search", placeholder: "Find a nutrient…", "aria-label": "Find a nutrient" } });
+      const rows: Array<{ el: HTMLElement; terms: string }> = [];
+      for (const nutrient of EXTRA_NUTRIENTS) {
+        const setting = new Setting(advanced).setName(`${nutrient.label} · ${nutrient.unit}`).addText(text => {
+          text.setValue(nutrition[nutrient.key] == null ? "" : String(nutrition[nutrient.key]));
+          text.inputEl.type = "number";
+          text.inputEl.min = "0";
+          text.inputEl.step = "any";
+          text.inputEl.setAttribute("aria-label", `${nutrient.label} (${nutrient.unit}) per serving`);
+          text.setPlaceholder("Unknown").onChange(value => {
+            if (!value.trim()) delete nutrition[nutrient.key];
+            else {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed >= 0) nutrition[nutrient.key] = parsed;
+            }
+            text.inputEl.setCustomValidity(value.trim() && (!Number.isFinite(Number(value)) || Number(value) < 0) ? "Enter a nonnegative label amount." : "");
+          });
+        });
+        rows.push({ el: setting.settingEl, terms: `${nutrient.label} ${nutrient.group}`.toLowerCase() });
+      }
+      filter.addEventListener("input", () => { for (const row of rows) row.el.hidden = !row.terms.includes(filter.value.trim().toLowerCase()); });
+
     }
     if (isRecipeLikeFoodType(this.type)) {
       const section = this.contentEl.createDiv({ cls: "tps-health-meal-ingredient-editor" });
@@ -18070,6 +18113,13 @@ class CustomFoodModal extends FoodInputModal {
       if (submitting) {
         logger.flowWarn("CustomFoodModal", "submit:suppressed-active", { type: this.type, name, editPath: this.editPath || "" });
         return;
+      }
+      const invalidNutrient = this.contentEl.querySelector<HTMLInputElement>(".tps-health-nutrient-editor input:invalid");
+      if (invalidNutrient) {
+        invalidNutrient.closest("details")?.setAttribute("open", "");
+        const row = invalidNutrient.closest<HTMLElement>(".setting-item");
+        if (row) row.hidden = false;
+        invalidNutrient.reportValidity(); invalidNutrient.focus({ preventScroll: true }); return;
       }
       if (!name) {
         logger.flowWarn("CustomFoodModal", "submit:missing-name", { type: this.type, editPath: this.editPath || "" });
@@ -18409,7 +18459,7 @@ function finitePositiveOr(value: unknown, fallback: number): number {
 
 function nonnegativeNutrition(value: Nutrition): Nutrition {
   const nutrition: Nutrition = {};
-  for (const key of ["calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "alcoholG", "sodiumMg"] as const) {
+  for (const key of NUTRIENT_KEYS) {
     const parsed = numberOrUndefined(value?.[key]);
     if (parsed != null) nutrition[key] = Math.max(0, parsed);
   }
@@ -19067,6 +19117,7 @@ function nutrientValue(nutrients: any[], nutrientIds: number[]): number | undefi
 
 function hasMacroData(nutriments: any): boolean {
   if (!nutriments) return false;
+  if (EXTRA_NUTRIENTS.some(n => n.off && [nutriments[`${n.off}_serving`], nutriments[`${n.off}_100g`]].some(v => numberOrUndefined(v) != null && Number(v) > 0))) return true;
   return hasSearchableMacroData({
     calories: numberOrUndefined(nutriments["energy-kcal_serving"]) ?? numberOrUndefined(nutriments["energy-kcal_100g"]),
     proteinG: numberOrUndefined(nutriments.proteins_serving) ?? numberOrUndefined(nutriments.proteins_100g),
@@ -19187,6 +19238,7 @@ function foodFrontmatter(
     sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG,
     alcoholG: nutrition.alcoholG || 0,
     sodiumMg: nutrition.sodiumMg || 0,
+    ...extraNutrition(nutrition),
     confidence: item.confidence,
     notes: item.notes,
   });
@@ -19942,6 +19994,7 @@ function usdaFoodNutrition(food: any): Nutrition {
     sugarAlcoholG: nutrientValue(nutrients, [1086]),
     alcoholG: nutrientValue(nutrients, [1018]),
     sodiumMg: nutrientValue(nutrients, [1093]),
+    ...usdaExtraNutrition(nutrients),
   };
 }
 
@@ -20159,7 +20212,7 @@ function foodLogQuantityStep(unit: string): number {
 }
 
 function roundFoodLogQuantity(value: number): number {
-  return Math.round(value * 100) / 100;
+  return Math.round(value * 1e6) / 1e6;
 }
 
 function isFoodLogUnitSupported(item: FoodItem, unit: string): boolean {
@@ -20824,7 +20877,7 @@ function foodUsageKeys(item: FoodItem): string[] {
 function hasSearchableMacroData(nutrition: Nutrition | undefined): boolean {
   if (!nutrition) return false;
   const macros = [nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.sugarAlcoholG, nutrition.alcoholG].map(numberOrUndefined);
-  return macros.some((value) => value != null && value > 0);
+  return macros.some((value) => value != null && value > 0) || Object.values(extraNutrition(nutrition)).some(value => value > 0);
 }
 
 function sodiumGramsToMg(value: unknown, multiplier = 1): number | undefined {
@@ -20897,7 +20950,7 @@ function foodFactsNutritionBasis(product: any, serving: FoodFactsServing): NonNu
 }
 
 function foodFactsHasServingNutrition(nutrients: any): boolean {
-  return ["energy-kcal", "proteins", "carbohydrates", "fat", "fiber", "sugars", "sodium"]
+  return ["energy-kcal", "proteins", "carbohydrates", "fat", "fiber", "sugars", "sodium", ...EXTRA_NUTRIENTS.map(n => n.off).filter(Boolean)]
     .some((key) => numberOrUndefined(nutrients?.[`${key}_serving`]) != null);
 }
 
@@ -20929,6 +20982,16 @@ function foodFactsNutrition(product: any, serving: FoodFactsServing, basis: NonN
     alcoholG: foodFactsServingValue(n, "alcohol", multiplier, useLabeledServingValues, hasMetricServing),
     sodiumMg: foodFactsSodiumMg(n, multiplier, useLabeledServingValues, hasMetricServing),
   };
+  for (const spec of EXTRA_NUTRIENTS) {
+    if (!spec.off) continue;
+    // OFF normalizes mass values to grams, including vitamins. Convert before rounding.
+    const unitFactor = spec.unit === "mcg" ? 1e6 : spec.unit === "mg" ? 1e3 : 1;
+    const labeled = numberOrUndefined(n[`${spec.off}_serving`]);
+    const per100 = numberOrUndefined(n[`${spec.off}_100g`]);
+    const value = foodFactsChooseServingValue(labeled == null ? undefined : labeled * unitFactor,
+      per100 == null ? undefined : per100 * multiplier * unitFactor, useLabeledServingValues, hasMetricServing);
+    if (value != null && value >= 0) Object.assign(nutrition, extraNutrition({ [spec.key]: value }));
+  }
   if (nutrition.sugarAlcoholG != null) nutrition.sugarAlcoholCaloriesPerG = foodFactsSugarAlcoholCaloriesPerGram(product);
   // Reported energy is independent of the subset of macros in a crowdsourced
   // record (notably alcohol). Never replace it with an incomplete calculation.
@@ -21039,7 +21102,9 @@ function foodFactsValuesAgree(left: number, right: number, toleranceRatio: numbe
 
 const FOOD_ROLLUP_PROPERTY_KEYS = ["consumedCalories", "cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"];
 
-function foodRollupValue(totals: Required<Nutrition>, propertyKey: string): number | null {
+function foodRollupValue(totals: NutritionTotals, propertyKey: string): number | null {
+  const extraKey = EXTRA_NUTRIENT_KEYS.find(key => key.toLowerCase() === propertyKey.toLowerCase());
+  if (extraKey) return totals[extraKey] ?? null;
   switch (propertyKey) {
     case "consumedCalories": return totals.calories;
     case "cal": return totals.calories;
@@ -21237,6 +21302,7 @@ function perMetricNutrition(item: FoodItem): { unit: "100g" | "100ml"; nutrition
       sugarAlcoholCaloriesPerG: item.nutrition.sugarAlcoholCaloriesPerG,
       alcoholG: scaleOptionalNutritionValue(item.nutrition.alcoholG, multiplier),
       sodiumMg: scaleOptionalNutritionValue(item.nutrition.sodiumMg, multiplier),
+      ...extraNutrition(item.nutrition, multiplier),
     },
   };
 }
@@ -22404,7 +22470,7 @@ function foodLogBaseSource(line: string, file: TFile, dailyNotePath?: string): s
     .join(" • ");
 }
 
-function sumFoodLogNutrition(entries: FoodLogBaseEntry[]): Required<Nutrition> {
+function sumFoodLogNutrition(entries: FoodLogBaseEntry[]): NutritionTotals {
   const totals = zeroNutrition();
   for (const entry of entries) {
     totals.calories += entry.nutrition.calories;
@@ -22416,12 +22482,13 @@ function sumFoodLogNutrition(entries: FoodLogBaseEntry[]): Required<Nutrition> {
     totals.sugarAlcoholG += entry.nutrition.sugarAlcoholG;
     totals.alcoholG += entry.nutrition.alcoholG;
     totals.sodiumMg += entry.nutrition.sodiumMg;
+    addExtraNutrition(totals, entry.nutrition);
   }
   return totals;
 }
 
-function calculateFoodTotals(content: string, resolveFood?: (foodPath: string) => FoodItem | null, dailyNotePath?: string): Required<Nutrition> {
-  const totals: Required<Nutrition> = {
+function calculateFoodTotals(content: string, resolveFood?: (foodPath: string) => FoodItem | null, dailyNotePath?: string): NutritionTotals {
+  const totals: NutritionTotals = {
     calories: 0,
     proteinG: 0,
     carbsG: 0,
@@ -22434,7 +22501,7 @@ function calculateFoodTotals(content: string, resolveFood?: (foodPath: string) =
     sodiumMg: 0,
   };
   for (const line of content.split("\n")) {
-    let resolved: Required<Nutrition> | null = null;
+    let resolved: NutritionTotals | null = null;
     if (isFoodLogLine(line)) {
       if (!isFoodLogForDailyNote(line, dailyNotePath)) continue;
       resolved = resolveFoodLogNutrition(line, resolveFood);
@@ -22451,11 +22518,12 @@ function calculateFoodTotals(content: string, resolveFood?: (foodPath: string) =
     totals.sugarAlcoholG += resolved.sugarAlcoholG;
     totals.alcoholG += resolved.alcoholG;
     totals.sodiumMg += resolved.sodiumMg;
+    addExtraNutrition(totals, resolved);
   }
   return totals;
 }
 
-function resolveRecipeIngredientNutrition(line: string, resolveFood?: (foodPath: string) => FoodItem | null): Required<Nutrition> | null {
+function resolveRecipeIngredientNutrition(line: string, resolveFood?: (foodPath: string) => FoodItem | null): NutritionTotals | null {
   if (!resolveFood) return null;
   const match = line.match(/^\s*[-*]\s+(\d+(?:\.\d+)?|\d+\s*\/\s*\d+|half)\s+([^-]+?)\s+-\s+\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/i);
   if (!match) return null;
@@ -22476,7 +22544,7 @@ function isFoodLogForDailyNote(line: string, dailyNotePath?: string): boolean {
   return !lineDailyNotePath || normalizePath(lineDailyNotePath) === normalizePath(dailyNotePath);
 }
 
-function resolveFoodLogNutrition(line: string, resolveFood?: (foodPath: string) => FoodItem | null): Required<Nutrition> {
+function resolveFoodLogNutrition(line: string, resolveFood?: (foodPath: string) => FoodItem | null): NutritionTotals {
   const foodPath = readStringField(line, "foodPath");
   const food = foodPath && resolveFood ? resolveFood(foodPath) : null;
   if (hasLineNutritionFields(line)) {
@@ -22489,14 +22557,14 @@ function resolveFoodLogNutrition(line: string, resolveFood?: (foodPath: string) 
 }
 
 function hasLineNutritionFields(line: string): boolean {
-  return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"].some((key) => readNumber(line, key) != null);
+  return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium", ...EXTRA_NUTRIENT_KEYS].some((key) => readNumber(line, key) != null);
 }
 
 function hasCompleteLineNutritionSnapshot(line: string): boolean {
   return ["cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium"].every((key) => readNumber(line, key) != null);
 }
 
-function readLineNutrition(line: string): Required<Nutrition> {
+function readLineNutrition(line: string): NutritionTotals {
   if ((readNumber(line, "servings") ?? readNumber(line, "qty")) === 0) return zeroNutrition();
   return {
     calories: readNumber(line, "cal") || 0,
@@ -22509,10 +22577,11 @@ function readLineNutrition(line: string): Required<Nutrition> {
     sugarAlcoholCaloriesPerG: 0,
     alcoholG: readNumber(line, "alcohol") || 0,
     sodiumMg: readNumber(line, "sodium") || 0,
+    ...extraNutrition(Object.fromEntries(EXTRA_NUTRIENT_KEYS.map(key => [key, readNumber(line, key)]))),
   };
 }
 
-function mergeLineNutritionOverrides(base: Required<Nutrition>, line: string): Required<Nutrition> {
+function mergeLineNutritionOverrides(base: NutritionTotals, line: string): NutritionTotals {
   return {
     calories: readNumber(line, "cal") ?? base.calories,
     proteinG: readNumber(line, "protein") ?? base.proteinG,
@@ -22524,10 +22593,12 @@ function mergeLineNutritionOverrides(base: Required<Nutrition>, line: string): R
     sugarAlcoholCaloriesPerG: base.sugarAlcoholCaloriesPerG,
     alcoholG: readNumber(line, "alcohol") ?? base.alcoholG,
     sodiumMg: readNumber(line, "sodium") ?? base.sodiumMg,
+    ...extraNutrition(base),
+    ...extraNutrition(Object.fromEntries(EXTRA_NUTRIENT_KEYS.map(key => [key, readNumber(line, key)]))),
   };
 }
 
-function zeroNutrition(): Required<Nutrition> {
+function zeroNutrition(): NutritionTotals {
   return {
     calories: 0,
     proteinG: 0,
@@ -22567,6 +22638,7 @@ function scaleKnownNutrition(nutrition: Nutrition, multiplier: number): Nutritio
     sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG,
     alcoholG: scaleKnownNutritionValue(nutrition.alcoholG, safeMultiplier),
     sodiumMg: scaleKnownNutritionValue(nutrition.sodiumMg, safeMultiplier),
+    ...extraNutrition(nutrition, safeMultiplier),
   };
 }
 
@@ -22575,7 +22647,7 @@ function scaleKnownNutritionValue(value: number | undefined, multiplier: number)
 }
 
 function foodLogLineNutritionHasValue(nutrition: Nutrition): boolean {
-  return [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.fiberG, nutrition.sugarG, nutrition.sugarAlcoholG, nutrition.alcoholG, nutrition.sodiumMg]
+  return [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.fiberG, nutrition.sugarG, nutrition.sugarAlcoholG, nutrition.alcoholG, nutrition.sodiumMg, ...Object.values(extraNutrition(nutrition))]
     .some((value) => value != null && Number.isFinite(Number(value)));
 }
 
@@ -22591,10 +22663,14 @@ function upsertFoodLogNutritionFields(line: string, nutrition: Nutrition): strin
     ["sugarAlcohol", nutrition.sugarAlcoholG],
     ["alcohol", nutrition.alcoholG],
     ["sodium", nutrition.sodiumMg],
+    ...EXTRA_NUTRIENT_KEYS.map(key => [key, nutrition[key]] as [string, number | undefined]),
   ];
   for (const [key, value] of fields) {
-    if (value == null || !Number.isFinite(Number(value))) continue;
-    next = upsertFoodLogCommentField(next, key, round(Number(value)));
+    if (value == null || !Number.isFinite(Number(value))) {
+      if (isExtraNutrientKey(key)) next = removeDataviewField(next, key);
+      continue;
+    }
+    next = upsertFoodLogCommentField(next, key, isExtraNutrientKey(key) ? Number(value) : round(Number(value)));
   }
   return next;
 }
@@ -22609,7 +22685,7 @@ function upsertFoodLogCommentField(line: string, key: string, value: string | nu
   return `${line.trimEnd()} <!-- ${field} -->`;
 }
 
-function multiplyNutrition(nutrition: Nutrition, multiplier: number): Required<Nutrition> {
+function multiplyNutrition(nutrition: Nutrition, multiplier: number): NutritionTotals {
   return {
     calories: (nutrition.calories || 0) * multiplier,
     proteinG: (nutrition.proteinG || 0) * multiplier,
@@ -22621,6 +22697,7 @@ function multiplyNutrition(nutrition: Nutrition, multiplier: number): Required<N
     sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG || 0,
     alcoholG: (nutrition.alcoholG || 0) * multiplier,
     sodiumMg: (nutrition.sodiumMg || 0) * multiplier,
+    ...extraNutrition(nutrition, multiplier),
   };
 }
 
@@ -22637,7 +22714,7 @@ function formatNutritionPreview(nutrition: Nutrition): string {
 function compactMacroParts(nutrition: Nutrition): string[] {
   const hasAnyValue = [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.sugarAlcoholG, nutrition.alcoholG]
     .some((value) => value != null && Math.abs(value) > 0.0001);
-  if (!hasAnyValue) return [];
+  if (!hasAnyValue) return EXTRA_NUTRIENTS.filter(n => (nutrition[n.key] ?? 0) > 0).slice(0, 3).map(n => `${formatNativeDailyMetricValue(nutrition[n.key]!)} ${n.unit} ${n.label}`);
   const parts = [
     nutrition.calories != null ? `${round(nutrition.calories)} kcal` : "",
     nutrition.proteinG != null ? `P ${round(nutrition.proteinG)}g` : "",

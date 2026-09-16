@@ -1,3 +1,5 @@
+import type { ExtraNutrition } from "./nutrients";
+import type { NutritionTotals } from "./types";
 import { ActivityLogEntry, ActivitySource, ExerciseItem, FoodItem, FoodLogEntry, FoodNoteType, HealthGoalKind, Nutrition, NutritionBasis, TPSHealthSettings, WorkoutLogTarget, WorkoutPlanItem, WorkoutSet } from "./types";
 import type { TPSHealthHomeActionProvider } from "./home-actions";
 
@@ -136,7 +138,7 @@ export interface FinishWorkoutInput {
   cooldownDays?: number;
 }
 
-export interface DailyRollup {
+export interface DailyRollup extends ExtraNutrition {
   calories: number;
   proteinG: number;
   carbsG: number;
@@ -218,7 +220,7 @@ export interface ActiveWorkoutState {
   setCount: number;
 }
 
-export interface DailyFoodMacroTotals extends Required<Nutrition> {
+export interface DailyFoodMacroTotals extends NutritionTotals {
   dateIso: string;
   entryCount: number;
 }

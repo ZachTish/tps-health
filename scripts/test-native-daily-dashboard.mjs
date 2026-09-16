@@ -281,3 +281,16 @@ test('only energy and main macros become rings; tracked nutrients stay in rows',
   assert.deepEqual(groups.primary.map(m => m.propertyKey), ['consumedCalories','protein','carbs','fat']);
   assert.deepEqual(groups.other.map(m => m.propertyKey), ['fiber','sodium']);
 });
+
+
+test('recorded micronutrients show compact contribution rows without fabricated targets', () => {
+ const model = buildNativeDailyDashboardModel({ ...totals, vitaminB12Mcg: .025, creatineG: 5, ironMg: 0 }, []);
+ assert.deepEqual(model.metrics.map(m => [m.propertyKey, m.value, m.unit, m.targetLabel, m.state]), [
+  ['vitaminB12Mcg', .025, 'mcg', '', 'neutral'], ['ironMg', 0, 'mg', '', 'neutral'], ['creatineG', 5, 'g', '', 'neutral'],
+ ]);
+ assert.equal(formatNativeDailyMetricValue(.025), '0.025');
+ assert.deepEqual(nativeDailyNutrientContributors('creatineG', [{title:'Powder',path:'a.md',creatineG:3},{title:'Preworkout',path:'b.md',creatineG:2}]).map(c => c.value), [3,2]);
+ assert.equal(buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [], undefined, false).metrics.length, 0, 'Base property visibility is respected');
+ const custom = buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [{propertyKey:'creatineG',label:'My creatine',unit:'g',kind:'max',max:6}]);
+ assert.equal(custom.metrics.length, 1); assert.equal(custom.metrics[0].targetLabel, 'up to 6 g');
+});

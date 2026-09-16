@@ -1,3 +1,4 @@
+import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, isExtraNutrientKey } from "./nutrients";
 import type {
   HealthPropertyCatalog,
   HealthPropertyCatalogEntry,
@@ -9,6 +10,7 @@ import { configuredNativePropertyKey, readableNativeKinds } from "./native-recor
 import type { CanonicalHealthNativeKind } from "./native-record-schema";
 
 const FOOD_PROPERTIES: Array<Omit<HealthPropertyCatalogEntry, "scope">> = [
+  ...EXTRA_NUTRIENTS.map(n => ({ id: n.key, key: n.key, label: `${n.label} (${n.unit})`, type: "number" as const, icon: "pill" })),
   { id: "brand", key: "brand", label: "Brand", type: "text", icon: "badge" },
   { id: "aliases", key: "aliases", label: "Search aliases", type: "list", listItemType: "text", icon: "search" },
   { id: "barcode", key: "barcode", label: "Barcode", type: "text", icon: "scan-barcode" },
@@ -45,6 +47,7 @@ const scoped = (
 });
 
 const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
+  ...EXTRA_NUTRIENTS.map(n => scoped(`record-${n.key}`, n.key, `${n.label} (${n.unit})`, "number", ["food-entry"], { icon: "pill" })),
   scoped('record-status', 'status', 'Status', 'selector', ['workout-session'], {
     icon: 'circle-check', options: ['active', 'complete', 'discarded'],
   }),
@@ -86,7 +89,7 @@ function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCata
       : [kind]
   ));
   return [
-    ...NATIVE_RECORD_PROPERTIES.map((property) => ({
+    ...NATIVE_RECORD_PROPERTIES.filter(property => !isExtraNutrientKey(property.key) || settings.healthGoals.some(goal => goal.propertyKey === property.key)).map((property) => ({
       ...property,
       key: Object.prototype.hasOwnProperty.call(settings.nativeRecordProperties, property.key)
         ? configuredNativePropertyKey(settings, property.key as keyof TPSHealthSettings['nativeRecordProperties'])
@@ -109,6 +112,7 @@ function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCata
 }
 
 const FOOD_ROLLUP_KEYS = new Set([
+  ...EXTRA_NUTRIENT_KEYS.map(key => key.toLowerCase()),
   "consumedcalories",
   "cal",
   "protein",
@@ -200,7 +204,7 @@ export function buildHealthPropertyCatalog(settings: TPSHealthSettings): HealthP
   });
   return {
     version: 2,
-    food: FOOD_PROPERTIES.map((property) => ({
+    food: FOOD_PROPERTIES.filter(property => !isExtraNutrientKey(property.key) || settings.healthGoals.some(goal => goal.propertyKey === property.key)).map((property) => ({
       ...property,
       options: property.options ? [...property.options] : undefined,
       scope: {
