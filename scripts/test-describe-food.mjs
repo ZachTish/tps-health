@@ -205,7 +205,7 @@ test("Describe delegates its review pipeline to TPS AI Gateway and retains the l
   assert.doesNotMatch(mainSource, /api\.openai\.com/);
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(mainSource, /\/api\/chat/);
-  assert.match(mainSource, /return this\.legacyOpenFoodDescriber\(description, dateContext, onProgress\)/);
+  assert.match(mainSource, /return await this\.legacyOpenFoodDescriber\(workflow\.description, workflow\.dateContext, onProgress, workflow\)/);
   assert.match(settingsSource, /setButtonText\("Open AI Gateway settings"\)/);
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
 });

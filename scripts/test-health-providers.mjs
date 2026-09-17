@@ -160,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -185,6 +185,7 @@ function createFakeHealthApp() {
   const secrets = new Map();
   const writes = [];
   const openedFiles = [];
+  const workspaceListeners = new Map();
   const TFile = globalThis.__TPSHealthTestTFile;
   const metadataCache = {
     getFileCache(file) {
@@ -193,6 +194,7 @@ function createFakeHealthApp() {
   };
   const vault = {
     configDir: ".obsidian",
+    getName: () => "Synthetic Health Test Vault",
     adapter: { read: async () => { throw new Error("no daily-notes config"); } },
     getMarkdownFiles: () => Array.from(files.keys()).sort().map((path) => new TFile(path)),
     getAbstractFileByPath(path) {
@@ -255,6 +257,22 @@ function createFakeHealthApp() {
         },
       },
       workspace: {
+        on(name, callback) {
+          const ref = { name, callback };
+          const listeners = workspaceListeners.get(name) || new Set();
+          listeners.add(ref);
+          workspaceListeners.set(name, listeners);
+          return ref;
+        },
+        offref(ref) { workspaceListeners.get(ref.name)?.delete(ref); },
+        off(name, callback) {
+          for (const ref of workspaceListeners.get(name) || []) {
+            if (ref.callback === callback) workspaceListeners.get(name).delete(ref);
+          }
+        },
+        trigger(name, ...args) {
+          for (const ref of [...(workspaceListeners.get(name) || [])]) ref.callback(...args);
+        },
         getActiveFile: () => null,
         getLeaf: () => ({
           openFile: async (file, options) => {
@@ -381,7 +399,13 @@ function frontmatterToYaml(frontmatter) {
 
 function installDeterministicBrowserGlobals() {
   globalThis.__TPSHealthTestNotices = [];
+  const localStorage = new Map();
   globalThis.window = {
+    localStorage: {
+      getItem: key => localStorage.get(key) ?? null,
+      setItem: (key, value) => localStorage.set(key, String(value)),
+      removeItem: key => localStorage.delete(key),
+    },
     moment: (value) => createFakeMoment(value),
     setTimeout: (callback) => {
       if (typeof callback === "function") callback();
@@ -773,8 +797,8 @@ test("batch logging is one-shot and cannot clear a different pending draft", asy
 
   assert.equal(logCalls, 1, "a second submission while the first is active must be ignored");
   assert.deepEqual(plugin.settings.pendingFoodLogDraft, newerDraft, "the origin cleanup must use compare-and-swap ownership");
-  assert.deepEqual(tray.selectionItems, []);
-  assert.equal(tray.__closed, true);
+  assert.deepEqual(tray.selectionItems.map(entry => entry.item.name), ["Different draft food"]);
+  assert.equal(tray.__closed, undefined, "the newer tray must remain available for review");
 });
 
 test("food log tags survive tray restore and reach only the logged entry", async () => {
@@ -3316,7 +3340,7 @@ test("AI Describe uses provider evidence for a numeric half bagel with cream che
     setItem: (key, value) => storage.set(key, String(value)),
     removeItem: (key) => storage.delete(key),
   };
-  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const { default: TPSHealthPlugin, resolveFoodLogServing } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
   fake.app.vault.getName = () => "Describe provider-backed half bagel vault";
   const requests = [];
@@ -3387,8 +3411,11 @@ test("AI Describe uses provider evidence for a numeric half bagel with cream che
   const selection = plugin.settings.pendingFoodLogDraft?.selectionItems?.[0];
   assert.equal(selection?.quantity, 0.5);
   assert.equal(selection?.item.name, "Bagel with cream cheese");
-  assert.equal(selection?.item.servingGrams, 62.5);
-  assert.equal(selection?.item.nutrition?.calories, 187.5);
+  assert.equal(selection?.item.servingAmount, 1);
+  assert.equal(selection?.item.servingGrams, 125);
+  const resolved=resolveFoodLogServing(selection.item,selection.quantity,selection.unit);
+  assert.equal(resolved.amount,62.5);
+  assert.equal(selection.item.nutrition.calories*resolved.servings,187.5);
 });
 
 test("AI Describe replaces an empty result with a final Gemini estimate after database matching misses", async () => {
@@ -11839,4 +11866,72 @@ test("labeled household weight overrides generic cup volume in food and meal cal
   assert.equal(half.servings,.5);assert.equal(half.amount,85);assert.equal(half.amountUnit,"g");
   assert.equal(resolveFoodLogServing(food,170,"g").servings,1);
   assert.equal(resolveFoodLogServing(food,240,"ml").unsupportedUnit,true,"an explicit cup weight is not an arbitrary ml-to-g density");
+});
+
+
+test('Describe generic servings show the per-unit weight and keep egg quantity edits consistent', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:Plugin,FoodSearchModal,resolveFoodLogServing,foodServingLabel}=await importPluginWithObsidianStub();
+  const plugin=new Plugin(createFakeHealthApp().app);
+  plugin.settings={...plugin.settings,pendingFoodLogDraft:null};
+  plugin.getLoggedFoodStats=async()=>new Map();
+  let remoteCalls=0;
+  plugin.searchFoods=async()=>{remoteCalls++;return [];};
+  await plugin.openFoodDescriber('one banana and two eggs');
+  assert.equal(remoteCalls,0,'the local curated matches must be sufficient');
+  const tray=new FoodSearchModal(plugin.app,plugin);
+  const eggs=tray.selectionItems.find(entry=>entry.item.name==='Egg, whole, cooked');
+  assert.ok(eggs);
+  tray.selectionItems=[eggs];
+  assert.equal(eggs.quantity,2);
+  assert.equal(eggs.unit,'serving');
+  assert.equal(eggs.item.servingAmount,1);
+  assert.equal(foodServingLabel(eggs.item),'50 g');
+  assert.equal(tray.selectedNutrition().calories,156);
+  assert.equal(resolveFoodLogServing(eggs.item,eggs.quantity,eggs.unit).amount,100);
+  eggs.quantity=1;
+  assert.equal(tray.selectedNutrition().calories,78);
+  assert.equal(tray.selectedNutrition().proteinG,6.3);
+  assert.equal(resolveFoodLogServing(eggs.item,eggs.quantity,eggs.unit).amount,50);
+});
+
+test('Describe preserves explicit gram quantities and their nutrition denominator', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:Plugin,FoodSearchModal,resolveFoodLogServing}=await importPluginWithObsidianStub();
+  const plugin=new Plugin(createFakeHealthApp().app);
+  plugin.settings={...plugin.settings,pendingFoodLogDraft:null};
+  plugin.getLoggedFoodStats=async()=>new Map();
+  plugin.searchFoods=async()=>[];
+  await plugin.openFoodDescriber('200 g eggs');
+  const tray=new FoodSearchModal(plugin.app,plugin);
+  const eggs=tray.selectionItems[0];
+  assert.equal(eggs.item.name,'Egg, whole, cooked');
+  assert.equal(eggs.quantity,200);
+  assert.equal(eggs.unit,'g');
+  assert.equal(eggs.item.servingAmount,200);
+  assert.equal(eggs.item.servingGrams,200);
+  assert.equal(tray.selectedNutrition().calories,312);
+  assert.equal(resolveFoodLogServing(eggs.item,200,'g').amount,200);
+  eggs.quantity=100;
+  assert.equal(tray.selectedNutrition().calories,156);
+  assert.equal(resolveFoodLogServing(eggs.item,100,'g').amount,100);
+});
+
+test('Describe serving normalization scales optional nutrients without filling unknown values or changing explicit units', async () => {
+  const {describeSelectionItem}=await importPluginWithObsidianStub();
+  const estimate={itemId:'supplement-estimate',label:'Supplement',quantity:2,unit:'serving',estimatedWeightG:20,confidence:0.7,estimatedNutritionForAmount:{calories:30,carbsG:0,creatineG:10,caffeineMg:200,vitaminB12Mcg:4.8}};
+  const serving=describeSelectionItem(estimate);
+  assert.equal(serving.item.nutrition.calories,15);
+  assert.equal(serving.item.nutrition.creatineG,5);
+  assert.equal(serving.item.nutrition.caffeineMg,100);
+  assert.equal(serving.item.nutrition.vitaminB12Mcg,2.4);
+  assert.equal(serving.item.nutrition.carbsG,0);
+  assert.equal(serving.item.nutrition.proteinG,undefined);
+  for (const unit of ['g','ml','capsule']) {
+    const explicit=describeSelectionItem({...estimate,unit});
+    assert.equal(explicit.item.servingAmount,2);
+    assert.equal(explicit.item.servingGrams,20);
+    assert.equal(explicit.item.nutrition.creatineG,10);
+    assert.equal(explicit.item.nutrition.calories,30);
+  }
 });

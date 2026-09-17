@@ -30,12 +30,12 @@ const walk = node => [node, ...node.children.flatMap(walk)];
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 const food = name => ({ id: name, name, source: "custom-note", servingAmount: 1, servingUnit: "serving", nutrition: { calories: 100 } });
-async function setup() {
-  installDeterministicBrowserGlobals();
+async function setup(existingPlugin = null) {
+  if (!existingPlugin) installDeterministicBrowserGlobals();
   const { default: Plugin, FoodSearchModal } = await importPluginWithObsidianStub();
-  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
-  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: null };
-  const tray = new FoodSearchModal(fake.app, plugin);
+  const fake = createFakeHealthApp(), plugin = existingPlugin || new Plugin(fake.app);
+  if (!existingPlugin) plugin.settings = { ...plugin.settings, pendingFoodLogDraft: null };
+  const tray = new FoodSearchModal(plugin.app, plugin);
   const h = { tray, plugin };
   tray.searchInput = "";
   tray.contentEl = nativeTrayTestElement(); tray.modalEl = nativeTrayTestElement();
@@ -360,4 +360,183 @@ test('an exact Michelob Ultra product ranks ahead of a curated seltzer variant',
   plugin.searchOpenFoodFacts = async () => [{...food('Michelob Ultra'), source:'open-food-facts', brand:'Michelob', nutrition:{calories:95,carbsG:2.6}}];
   const results=await plugin.searchFoods('michelob ultra');
   assert.equal(results[0].name,'Michelob Ultra');
+});
+
+
+test('Describe completion refreshes a reopened logger and keeps subsequent additions durable', async () => {
+  const {tray: original, plugin} = await setup();
+  await original.addSelection(food('Existing oats'), null, {enrich:false});
+  await original.persistDraft();
+  let finishDescribe;
+  plugin.openFoodDescriber = async () => {
+    await new Promise(resolve => { finishDescribe = resolve; });
+    await plugin.appendDescribedFoods([{item:food('Described banana'),quantity:1,unit:'serving'}], null, 'describe-reopened');
+  };
+  const originalCreateFragment = document.createDocumentFragment;
+  document.createDocumentFragment = () => ({append() {},createEl() { return {addEventListener() {}}; }});
+  try {
+    walk(original.contentEl).find(n=>n.className==='tps-health-describe-input').value = 'banana';
+    walk(original.contentEl).find(n=>n.className==='mod-cta tps-health-describe-action').listeners.get('click')();
+    for (let i=0;i<4;i++) await turn();
+    original.onClose();
+    const {tray: reopened} = await setup(plugin);
+    finishDescribe();
+    for (let i=0;i<12;i++) await turn();
+    assert.deepEqual(original.selectionItems.map(e=>e.item.name), ['Existing oats'], 'closed logger must unsubscribe');
+    assert.deepEqual(reopened.selectionItems.map(e=>e.item.name), ['Existing oats','Described banana']);
+    assert.equal(reopened.selectionExpanded, true);
+    assert.equal(walk(reopened.selectionEl).find(n=>n.className==='tps-health-selection-body').hidden, false);
+    await reopened.addSelection(food('New yoghurt'), null, {enrich:false});
+    await reopened.persistDraft();
+    assert.deepEqual(plugin.settings.pendingFoodLogDraft.selectionItems.map(e=>e.item.name), ['New yoghurt','Existing oats','Described banana']);
+    const logged=[];
+    plugin.logFood = async item => { logged.push(item.name); };
+    await reopened.logSelected();
+    assert.deepEqual(logged, ['New yoghurt','Existing oats','Described banana']);
+    assert.equal(plugin.settings.pendingFoodLogDraft, null);
+    reopened.onClose();
+  } finally {
+    document.createDocumentFragment = originalCreateFragment;
+  }
+});
+
+test('a stale logger refreshes the newer tray before it is allowed to write any food logs', async () => {
+  const {tray,plugin} = await setup();
+  await tray.addSelection(food('Stale oats'), null, {enrich:false});
+  await tray.persistDraft();
+  await plugin.savePendingFoodLogDraft({id:'new-owner',selectionItems:[{item:food('Current banana'),quantity:2,unit:'serving'}],consumedDateInput:'2026-09-17T13:00'});
+  const logged=[];
+  plugin.logFood = async (item,quantity) => { logged.push({name:item.name,quantity}); };
+  await tray.logSelected();
+  assert.deepEqual(logged, [], 'stale visible items must never be logged');
+  assert.deepEqual(tray.selectionItems.map(e=>e.item.name), ['Current banana']);
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems[0].quantity, 2);
+  assert.equal(tray.selectionExpanded, true);
+  await tray.logSelected();
+  assert.deepEqual(logged, [{name:'Current banana',quantity:2}]);
+  assert.equal(plugin.settings.pendingFoodLogDraft, null);
+  tray.onClose();
+});
+
+test('Describe completing during a food write never requeues the food already logged', async () => {
+  const {tray,plugin} = await setup();
+  await tray.addSelection(food('Existing oats'), null, {enrich:false});
+  await tray.persistDraft();
+  let finishLog;
+  const logged=[];
+  plugin.logFood = async item => {
+    await new Promise(resolve => { finishLog = resolve; });
+    logged.push(item.name);
+  };
+  const inFlightLog=tray.logSelected();
+  for (let i=0;i<4;i++) await turn();
+  await plugin.appendDescribedFoods([{item:food('Described banana'),quantity:1,unit:'serving'}], null, 'describe-during-log');
+  finishLog();
+  await inFlightLog;
+  assert.deepEqual(logged, ['Existing oats']);
+  assert.deepEqual(tray.selectionItems.map(e=>e.item.name), ['Described banana']);
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft.selectionItems.map(e=>e.item.name), ['Described banana']);
+  tray.onClose();
+});
+
+test('an unrelated tray owner arriving during a batch write stops remaining stale submissions', async () => {
+  const {tray,plugin} = await setup();
+  tray.selectionItems = [{item:food('First oats'),quantity:1,unit:'serving'},{item:food('Second eggs'),quantity:1,unit:'serving'}];
+  await tray.persistDraft();
+  let finishLog;
+  const logged=[];
+  plugin.logFood = async item => {
+    if (!logged.length) await new Promise(resolve => { finishLog = resolve; });
+    logged.push(item.name);
+  };
+  const inFlightLog=tray.logSelected();
+  for (let i=0;i<4;i++) await turn();
+  await plugin.savePendingFoodLogDraft({id:'unrelated-owner',selectionItems:[{item:food('Current yoghurt'),quantity:3,unit:'serving'}]});
+  finishLog();
+  await inFlightLog;
+  assert.deepEqual(logged, ['First oats']);
+  assert.deepEqual(tray.selectionItems.map(e=>e.item.name), ['Current yoghurt']);
+  assert.equal(plugin.settings.pendingFoodLogDraft.id, 'unrelated-owner');
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems[0].quantity, 3);
+  assert.equal(tray.selectionSubmitting, false);
+  tray.onClose();
+});
+
+
+for (const editBeforeRetry of [false, true]) test(`a prepared Describe tray survives a failed settings save ${editBeforeRetry ? 'and later edits ' : ''}without duplicate estimates`, async () => {
+  const {tray,plugin} = await setup();
+  await tray.addSelection(food('Existing oats'),null,{enrich:false});
+  await tray.persistDraft();
+  plugin.app.vault.getName = () => 'Synthetic Describe Save Failure';
+  const stored=new Map();
+  window.localStorage = {getItem:key=>stored.get(key)??null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)};
+  const workflow={version:2,id:'describe-save-failure',description:'banana',createdAt:new Date().toISOString(),dateContext:null,preparedSelectionItems:[{item:food('Banana'),quantity:1,unit:'serving'}]};
+  plugin.writePendingFoodDescribeWorkflow(workflow);
+  let saves=0;
+  const saveSettings=plugin.saveSettings.bind(plugin);
+  plugin.saveSettings=async ()=>{
+    if (++saves===1) throw new Error('Synthetic settings save failure');
+    await saveSettings();
+  };
+  let fallbackCalls=0;
+  plugin.legacyOpenFoodDescriber=async ()=>{
+    fallbackCalls++;
+    await plugin.appendDescribedFoods(workflow.preparedSelectionItems,null,'fallback-should-not-run');
+    return null;
+  };
+  await assert.rejects(plugin.runFoodDescribeWorkflow(workflow), /Synthetic settings save failure/);
+  assert.equal(fallbackCalls,0,'a storage failure is not an AI failure');
+  assert.equal(plugin.readPendingFoodDescribeWorkflow()?.id,workflow.id);
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft.selectionItems.map(e=>e.item.name),['Existing oats','Banana']);
+  if (editBeforeRetry) {
+    tray.selectionItems.find(entry=>entry.item.name==='Banana').quantity=3;
+    await tray.persistDraft();
+    assert.notEqual(plugin.settings.pendingFoodLogDraft.id,workflow.id,'editing must exercise a different modal owner');
+    assert.equal(plugin.readPendingFoodDescribeWorkflow(),null,'a durable edit acknowledges the published estimates');
+  } else {
+    await plugin.runFoodDescribeWorkflow(plugin.readPendingFoodDescribeWorkflow());
+  }
+  assert.ok(saves>=2,'retry must actually persist the already prepared tray');
+  assert.equal(fallbackCalls,0);
+  assert.equal(plugin.readPendingFoodDescribeWorkflow(),null);
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft.selectionItems.map(e=>e.item.name),['Existing oats','Banana']);
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems.find(entry=>entry.item.name==='Banana').quantity,editBeforeRetry ? 3 : 1);
+  tray.onClose();
+});
+
+
+for (const action of ['log','remove','clear']) test(`successfully ${action === 'log' ? 'logging' : action === 'remove' ? 'removing an estimate from' : 'clearing'} a tray after a Describe save failure prevents resurrection on resume`, async () => {
+  const {tray,plugin}=await setup();
+  await tray.addSelection(food('Existing oats'),null,{enrich:false});
+  await tray.persistDraft();
+  const workflow={version:2,id:`describe-after-save-failure-${action}`,description:'banana',createdAt:new Date().toISOString(),dateContext:null,preparedSelectionItems:[{item:food('Described banana'),quantity:1,unit:'serving'}]};
+  plugin.writePendingFoodDescribeWorkflow(workflow);
+  let saves=0;
+  const saveSettings=plugin.saveSettings.bind(plugin);
+  plugin.saveSettings=async ()=>{
+    if (++saves===1) throw new Error('Synthetic settings save failure');
+    await saveSettings();
+  };
+  await assert.rejects(plugin.runFoodDescribeWorkflow(workflow),/Synthetic settings save failure/);
+  assert.equal(plugin.readPendingFoodDescribeWorkflow()?.id,workflow.id);
+  assert.deepEqual(tray.selectionItems.map(entry=>entry.item.name),['Existing oats','Described banana']);
+  const logged=[];
+  plugin.logFood=async item=>{logged.push(item.name);};
+  if (action==='log') {
+    await tray.logSelected();
+    assert.deepEqual(logged,['Existing oats','Described banana']);
+  } else {
+    const control=walk(tray.selectionEl).find(node=>action==='clear' ? node.text==='Clear tray' : node.attributes?.['aria-label']==='Remove Described banana');
+    assert.ok(control,'exercise the visible tray action');
+    control.listeners.get('click')();
+    for (let i=0;i<8;i++) await turn();
+    assert.deepEqual(logged,[]);
+  }
+  const expectedRemaining=action==='remove' ? ['Existing oats'] : [];
+  assert.deepEqual(tray.selectionItems.map(entry=>entry.item.name),expectedRemaining);
+  assert.equal(plugin.readPendingFoodDescribeWorkflow(),null,'successful persistence must acknowledge the prepared workflow');
+  tray.onClose();
+  await plugin.resumePendingFoodDescribeWorkflow('layout-ready');
+  assert.deepEqual(plugin.settings.pendingFoodLogDraft?.selectionItems.map(entry=>entry.item.name)||[],expectedRemaining);
+  assert.equal(plugin.readPendingFoodDescribeWorkflow(),null);
 });

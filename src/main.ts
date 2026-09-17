@@ -1596,10 +1596,6 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async openFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {
-    if (!this.getAiGatewayApi()) {
-      logger.flow("FoodDescribe", "provider:local", { reason: "gateway-unavailable" });
-      return this.legacyOpenFoodDescriber(description, dateContext, onProgress);
-    }
     const normalizedDescription = description.trim();
     const existing = this.readPendingFoodDescribeWorkflow();
     if (existing && existing.description !== normalizedDescription) {
@@ -1621,6 +1617,10 @@ export default class TPSHealthPlugin extends Plugin {
     let retainForResume = false;
     const operation = (async () => {
       try {
+        if (!workflow.preparedSelectionItems?.length && !this.getAiGatewayApi()) {
+          logger.flow("FoodDescribe", "provider:local", { reason: "gateway-unavailable" });
+          return await this.legacyOpenFoodDescriber(workflow.description, workflow.dateContext, onProgress, workflow);
+        }
         return await this.openFoodDescriberWithAi(workflow.description, workflow.dateContext, onProgress, workflow);
       } catch (error) {
         if (isPendingAiJobError(error)) {
@@ -1628,9 +1628,19 @@ export default class TPSHealthPlugin extends Plugin {
           logger.flow("FoodDescribe", "workflow:waiting", { workflowId: workflow.id });
           throw error;
         }
+        if (workflow.preparedSelectionItems?.length) {
+          retainForResume = true;
+          logger.flowWarn("FoodDescribe", "workflow:publish-retry", { workflowId: workflow.id, reason: logger.errorSummary(error) });
+          throw error;
+        }
         logger.flowWarn("FoodDescribe", "provider:local-fallback", { reason: logger.errorSummary(error) });
         new Notice("AI Describe was unavailable. Using local food matching instead.");
-        return this.legacyOpenFoodDescriber(workflow.description, workflow.dateContext, onProgress);
+        try {
+          return await this.legacyOpenFoodDescriber(workflow.description, workflow.dateContext, onProgress, workflow);
+        } catch (fallbackError) {
+          retainForResume = Boolean(workflow.preparedSelectionItems?.length);
+          throw fallbackError;
+        }
       } finally {
         if (!retainForResume) this.clearPendingFoodDescribeWorkflow(workflow.id);
       }
@@ -1655,7 +1665,6 @@ export default class TPSHealthPlugin extends Plugin {
     try {
       await this.runFoodDescribeWorkflow(workflow);
       new Notice("Your described food tray is ready.", 10000);
-      this.app.workspace.trigger("tps:health-food-describe-ready" as any, { workflowId: workflow.id, timestamp: Date.now() });
     } catch (error) {
       if (isPendingAiJobError(error)) return;
       logger.flowError("FoodDescribe", "workflow:resume-failed", error, { workflowId: workflow.id, reason });
@@ -1886,7 +1895,7 @@ export default class TPSHealthPlugin extends Plugin {
     return api?.completeStructured ? api : null;
   }
 
-  private async legacyOpenFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void): Promise<InlineFoodDraft | null> {
+  private async legacyOpenFoodDescriber(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void, workflow?: PendingFoodDescribeWorkflow): Promise<InlineFoodDraft | null> {
     const extraction = localDescribeFoodExtraction(description);
     if (!extraction.foods.length) {
       throw new Error("Describe what you ate first.");
@@ -1930,7 +1939,11 @@ export default class TPSHealthPlugin extends Plugin {
       noteCreation: false,
       ...summarizeDateContext(dateContext),
     });
-    await this.appendDescribedFoods(selectionItems, dateContext);
+    if (workflow) {
+      workflow.preparedSelectionItems = selectionItems.map(cloneBatchFoodSelection);
+      this.writePendingFoodDescribeWorkflow(workflow);
+    }
+    await this.appendDescribedFoods(selectionItems, dateContext, workflow?.id);
     if (matched < extraction.foods.length) new Notice(`Built ${selectionItems.length} tray item${selectionItems.length === 1 ? "" : "s"}. Review the local estimate${selectionItems.length - matched === 1 ? "" : "s"} before logging.`);
     return null;
   }
@@ -1938,16 +1951,25 @@ export default class TPSHealthPlugin extends Plugin {
   private async appendDescribedFoods(selectionItems: BatchFoodSelection[], dateContext: FoodLogDateContext | null, draftId = id("describe-food")): Promise<void> {
     const current = this.settings.pendingFoodLogDraft;
     // A resumed prepared workflow must not append the same estimates twice.
-    if (current?.id === draftId) return;
-    await this.savePendingFoodLogDraft({
+    if (current?.id === draftId) {
+      // A prior storage failure may have installed only the in-memory draft.
+      await this.savePendingFoodLogDraft(current);
+      return;
+    }
+    const queuedIds = new Set((current?.selectionItems || []).map(entry => entry.item.id));
+    const saved = this.savePendingFoodLogDraft({
       id: draftId,
       updatedAt: new Date().toISOString(),
       activeTab: "search",
       searchInput: current?.searchInput || "",
       consumedDateInput: current?.consumedDateInput ?? initialFoodLogConsumedDateInput(dateContext),
       dateContext: current?.dateContext ?? (dateContext ? { ...dateContext } : null),
-      selectionItems: [...(current?.selectionItems || []), ...selectionItems].map(cloneBatchFoodSelection),
+      selectionItems: [...(current?.selectionItems || []), ...selectionItems.filter(entry => !queuedIds.has(entry.item.id))].map(cloneBatchFoodSelection),
     });
+    // savePendingFoodLogDraft installs the new owner synchronously. Reconcile
+    // open loggers before another input/log action can use their old snapshot.
+    this.app.workspace.trigger("tps:health-food-describe-ready" as any, { workflowId: draftId, timestamp: Date.now() });
+    await saved;
   }
 
   openWorkoutStarter(dateContext: FoodLogDateContext | null = null): void {
@@ -1972,9 +1994,19 @@ export default class TPSHealthPlugin extends Plugin {
     return draft;
   }
 
+  private acknowledgePreparedFoodDescribe(...drafts: (PendingFoodLogDraft | null)[]): void {
+    const workflow = this.readPendingFoodDescribeWorkflow();
+    if (!workflow?.preparedSelectionItems?.length) return;
+    if (drafts.some(draft => {
+      const ids = new Set((draft?.selectionItems || []).map(entry => entry.item.id));
+      return workflow.preparedSelectionItems!.every(entry => ids.has(entry.item.id));
+    })) this.clearPendingFoodDescribeWorkflow(workflow.id);
+  }
+
   async savePendingFoodLogDraft(draft: PendingFoodLogDraft | null): Promise<void> {
     this.settings.pendingFoodLogDraft = draft;
     await this.saveSettings();
+    this.acknowledgePreparedFoodDescribe(draft);
     logger.flow("FoodDraft", "saved", {
       selected: draft?.selectionItems?.length || 0,
       activeTab: draft?.activeTab || "",
@@ -1984,9 +2016,11 @@ export default class TPSHealthPlugin extends Plugin {
 
   async clearPendingFoodLogDraft(): Promise<void> {
     if (!this.settings.pendingFoodLogDraft) return;
-    const selected = this.settings.pendingFoodLogDraft.selectionItems?.length || 0;
+    const previous = this.settings.pendingFoodLogDraft;
+    const selected = previous.selectionItems?.length || 0;
     this.settings.pendingFoodLogDraft = null;
     await this.saveSettings();
+    this.acknowledgePreparedFoodDescribe(previous);
     logger.flow("FoodDraft", "cleared", { selected });
   }
 
@@ -2001,9 +2035,13 @@ export default class TPSHealthPlugin extends Plugin {
       });
       return false;
     }
-    const previousSelected = this.settings.pendingFoodLogDraft?.selectionItems.length || 0;
+    const previous = this.settings.pendingFoodLogDraft;
+    const previousSelected = previous?.selectionItems.length || 0;
     this.settings.pendingFoodLogDraft = draft;
     await this.saveSettings();
+    // A successful user edit, removal, or log claim also settles an earlier
+    // failed Describe publication; its estimates must not replay on startup.
+    this.acknowledgePreparedFoodDescribe(previous, draft);
     logger.flow("FoodDraft", draft ? "replace:saved" : "replace:cleared", {
       draftId: draft?.id || expectedId || "",
       previousSelected,
@@ -10622,6 +10660,7 @@ class FoodSearchModal extends FoodInputModal {
   private restoredPendingDraft = false;
   private describeRequestActive = false;
   private describeDismissed = false;
+  private describeReadyRef: EventRef | null = null;
   private readonly draftId: string;
   private draftExpectedId: string | null;
   private suppressDraftPersistOnClose = false;
@@ -10933,9 +10972,19 @@ class FoodSearchModal extends FoodInputModal {
     void this.refreshSelectionItemsFromSources();
     setActiveTab(this.activeFoodLogTab);
     if (this.restoredPendingDraft) this.statusEl.setText(`Restored ${this.selectionItems.length} unlogged food${this.selectionItems.length === 1 ? "" : "s"}.`);
+    this.describeReadyRef = this.app.workspace.on("tps:health-food-describe-ready" as any, (event: unknown) => {
+      const workflowId = (event as { workflowId?: string } | undefined)?.workflowId;
+      if (!workflowId || this.plugin.settings.pendingFoodLogDraft?.id !== workflowId) return;
+      this.adoptPreparedDescribeTray();
+      this.selectionExpanded = true;
+      this.renderSelection();
+      this.statusEl.setText("Food estimate added. Review portions before logging.");
+    });
   }
 
   onClose(): void {
+    if (this.describeReadyRef) this.app.workspace.offref(this.describeReadyRef);
+    this.describeReadyRef = null;
     if (this.describeRequestActive) {
       this.describeDismissed = true;
       logger.flow("FoodDescribe", "job:dismissed-while-running", summarizeDateContext(this.dateContext));
@@ -10961,10 +11010,22 @@ class FoodSearchModal extends FoodInputModal {
   private adoptPreparedDescribeTray(): void {
     const draft = this.plugin.getPendingFoodLogDraft(this.dateContext);
     if (!draft?.selectionItems.length) throw new Error("No food estimate was prepared. Try again.");
+    this.adoptPendingTray();
+  }
+
+  private adoptPendingTray(): void {
+    const draft = this.plugin.settings.pendingFoodLogDraft;
     this.cancelDraftPersistTimer();
-    this.draftExpectedId = draft.id;
-    this.selectionItems = draft.selectionItems.map(cloneBatchFoodSelection);
-    this.consumedDateInput = draft.consumedDateInput ?? this.consumedDateInput;
+    this.draftExpectedId = draft?.id || null;
+    // Preserve unchanged entries referenced by an in-flight log operation.
+    const remaining = [...this.selectionItems];
+    this.selectionItems = (draft?.selectionItems || []).map((selection) => {
+      const signature = batchFoodSelectionSignature(selection);
+      const index = remaining.findIndex(entry => batchFoodSelectionSignature(entry) === signature);
+      return index >= 0 ? remaining.splice(index, 1)[0] : cloneBatchFoodSelection(selection);
+    });
+    this.consumedDateInput = draft?.consumedDateInput ?? this.consumedDateInput;
+    this.selectionExpanded = this.selectionItems.length > 0;
   }
 
   private openBarcodeScanner(): void {
@@ -11535,13 +11596,27 @@ class FoodSearchModal extends FoodInputModal {
           currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
           selected: this.selectionItems.length,
         });
+        this.selectionSubmitting = false;
+        this.adoptPendingTray();
+        this.renderSelection();
+        new Notice("The food tray changed. Review it before logging; nothing was logged.", 10000);
+        return;
       }
     } catch (error) {
-      persistWarningShown = true;
       logger.flowError("FoodModal", "selection:log-draft-claim-failed", error, { draftId: this.draftId, selected: this.selectionItems.length });
-      new Notice("TPS Health could not save the current tray state. Keep this logger open while logging.", 10000);
+      this.selectionSubmitting = false;
+      this.renderSelection();
+      new Notice("Could not save the tray. Nothing was logged. Try again.", 10000);
+      return;
     }
     for (const captured of snapshot) {
+      if ((this.plugin.settings.pendingFoodLogDraft?.id || null) !== this.draftExpectedId) {
+        this.selectionSubmitting = false;
+        this.adoptPendingTray();
+        this.renderSelection();
+        new Notice("The food tray changed. Review it before continuing.", 10000);
+        return;
+      }
       try {
         await this.plugin.logFood(captured.selection.item, captured.selection.quantity, captured.selection.unit, undefined, completedDate, captured.selection.item.source !== "custom-inline", this.dateContext?.foodLogTarget, {
           focusAfterLog: this.dateContext?.focusAfterLog,
@@ -11589,6 +11664,11 @@ class FoodSearchModal extends FoodInputModal {
             selected: this.selectionItems.length,
             logged: loggedCount,
           });
+          this.selectionSubmitting = false;
+          this.adoptPendingTray();
+          this.renderSelection();
+          new Notice(`Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. The tray changed; review the remaining foods before continuing.`, 10000);
+          return;
         }
       } catch (error) {
         logger.flowError("FoodModal", "selection:log-consume-persist-failed", error, {
@@ -18549,17 +18629,23 @@ function describeSelectionItem(food: DescribePlannedFood): BatchFoodSelection {
   const quantity = Math.max(0.01, Number(food.quantity) || 1);
   const unit = normalizeServingUnit(food.unit || "serving");
   const estimatedWeightG = Math.max(0.1, Number(food.estimatedWeightG) || 0.1);
+  // A generic serving is one described unit, not the entire described batch.
+  // Explicit grams, milliliters, and household units retain their denominator.
+  const servingMultiplier = unit === "serving" ? 1 / quantity : 1;
+  const nutrition = servingMultiplier === 1
+    ? food.estimatedNutritionForAmount
+    : scaleKnownNutrition(food.estimatedNutritionForAmount, servingMultiplier);
   return {
     item: {
       id: id("describe-estimate"),
       name: food.label.trim() || "Food estimate",
       source: "custom-inline",
-      servingAmount: quantity,
+      servingAmount: unit === "serving" ? 1 : quantity,
       servingUnit: unit,
-      servingGrams: estimatedWeightG,
+      servingGrams: estimatedWeightG * servingMultiplier,
       nutritionBasis: "estimated-serving",
       confidence: Math.max(0, Math.min(1, Number(food.confidence) || 0)),
-      nutrition: nonnegativeNutrition(food.estimatedNutritionForAmount),
+      nutrition: nonnegativeNutrition(nutrition),
       notes: "Describe estimate; no reusable food note was created.",
     },
     quantity,

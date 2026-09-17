@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.46.3](https://github.com/ZachTish/tps-health/releases/tag/0.46.3) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.46.4](https://github.com/ZachTish/tps-health/releases/tag/0.46.4) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -117,3 +117,16 @@ Regression coverage exercises settled search, stale/closed queries, explicit bar
 
 
 0.46.3 test-vault UI verification: mobile emulation at 390 px showed seven combined Michelob Ultra results without Enter, with exact products above the curated seltzer variant. Describe with a deterministic gateway fixture immediately expanded review, retained the existing two-unit food, and added one estimated banana with its serving/nutrition. Search actions scroll after results; method tabs remain above the Describe form. Narrow-layout review exposed theme padding squeezing remove/close icons to 4 px; their glyphs now retain 20 px within 44 px controls. The review hides the underlying results while expanded. At the narrowest phone widths, the serving selector gets its own full-width row so its label is readable. No food log was written during this UI check. Physical iOS and live AI-provider execution are not claimed.
+
+
+## 0.46.4 — Keep Describe and the visible tray synchronized
+
+Verification of 0.46.3 exposed races when Describe completed after closing/reopening the logger, or while an existing food was being logged. Open loggers now adopt completed estimates immediately, expand review, and preserve unchanged entry identities so a successful log removes its original tray entry. A logger with an unrelated stale tray stops and displays the current tray before submitting more foods. Failure to save the initial tray prevents any log writes.
+
+A failed tray save no longer invokes food-matching fallback or creates duplicate estimates. Prepared estimates remain available for retry, including the no-Gateway local matching path. A later successful save, quantity edit, removal, clear, or log claim acknowledges the prepared workflow so already handled estimates cannot reappear at startup. These guards cover the tested interleavings; they do not make note writes and settings saves one atomic filesystem transaction. Search behavior, settings destinations/schema, commands, notes, and minimum Obsidian 1.12.0 remain unchanged.
+
+Regression coverage adds reopened loggers, stale ownership, Describe completing during batch logging, interrupted persistence/retry, edits after failed saves, and log/remove/clear followed by workflow resume. Generic-serving Describe estimates now define one serving consistently: two eggs show two 50 g servings and retain the same total nutrition. Explicit gram/milliliter quantities keep their existing basis. Existing notes and previously queued estimates are not rewritten. Full validation and UI results are recorded below. The release is a backward-compatible patch; production installation remains the user's BRAT pull.
+
+Validation: 402 automated tests passed, zero failed, with one optional live USDA test skipped for lack of a test credential. The full declared suite and TypeScript build passed. In the reloaded 0.46.4 test vault, a deliberately delayed synthetic AI response completed after the logger was closed and reopened; the visible tray expanded with both existing and new foods. A portion edit survived another reopen, and an in-memory logging fixture consumed each item once and cleared both tray and pending workflow. No consumption notes were written in this check. Actual no-Gateway matching added “one banana and two eggs” to the existing tray at a measured 390 px modal width; Michelob Ultra returned seven combined results without Enter. The final serving fix displayed two egg servings of 50 g at 156 kcal, then 78 kcal after decreasing to one. Original pending tray state and desktop mode were restored.
+
+The mandatory separate final production-mode build deploys only shipped artifacts through the shared test-vault helper; reload uses `plugin:reload id=tps-health`. Physical iPhone keyboard behavior and a live AI-provider request remain unverified. Public Open Food Facts was exercised, but database coverage/label correctness remain provider-dependent. No production installation is claimed.
