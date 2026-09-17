@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.46.1](https://github.com/ZachTish/tps-health/releases/tag/0.46.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.46.2](https://github.com/ZachTish/tps-health/releases/tag/0.46.2) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -90,3 +90,16 @@ The same denominator drives atomic note projections. Saving an edited food clear
 Regression coverage reproduces stale per-100 metadata, gram/milliliter switching, half-serving calculations, unsupported cross-unit conversions, count-based edits, returned and persisted food data, atomic projections, and tray refresh. The optional live Open Food Facts check now has a 15-second timeout so an unavailable provider cannot hang the suite.
 
 Validation: 379 automated tests passed, with one optional live USDA check skipped for lack of a test key; full suite and TypeScript build passed. In the reloaded test vault, a synthetic 355 g note with stale 100 g metadata reproduced the old dropdown and then displayed **serving (355 g)** after the fix. Entering 177.5 g showed half the calories/carbs (23.3 kcal / 0.3 g at UI precision). The food editor showed the same 355 g serving; saving 355 ml through **Update linked instances** removed `servingGrams` and persisted `servingMl: 355` with a labeled basis. Original tray state was restored and the fixture archived under `_archive/Health Serving QA 0461`. Reload uses `plugin:reload id=tps-health`; the separate final production-mode build deploys only shipped artifacts through the shared test-vault helper. No physical mobile or production installation is claimed.
+
+
+## 0.46.2 — Reject incompatible food quantities
+
+Refreshing or editing a queued food keeps the entered quantity **and unit**. If a definition changes from grams to milliliters, the tray no longer silently interprets 177.5 g as 177.5 servings. The original unit remains visible with a concise correction message; logging is blocked until the user selects a supported unit. Valid selections retain their existing behavior. One shared row renderer keeps input, blur, and full-refresh messages/calculations consistent without replacing the focused controls.
+
+The logging API rejects unsupported units, zero, negative, and nonfinite quantities before creating a consumption record. Batch preflight retains an invalid tray without writing any of its entries; recipe ingredient creation also rejects unsupported conversions. The API still revalidates against the resolved food definition, covering edits between tray refresh and submission. No unit density or replacement quantity is guessed. Existing notes/logs are not bulk migrated. Settings, commands, minimum Obsidian 1.12.0, and valid atomic note/line contracts remain unchanged.
+
+Cleanup review: the retired TPS Home action compatibility API and Apple Shortcut scanner compatibility path are candidates for a separately announced removal; legacy atomic-line writers require a migration/export plan before retirement. These are flagged, not removed by this patch. Keep the requested Macros Base, provider fallbacks, migrations, and shared identity APIs until their consumers and compatibility requirements are explicitly resolved.
+
+Labeled household portions now take precedence over generic volume conversions: a food defined as one cup weighing 170 g logs half a cup as 85 g, rather than becoming an unsupported 120 ml conversion. This agrees with the atomic note projection path. Removed the unreachable Apple Shortcut launcher, URL builder, and visibility predicate left behind when its button was retired; existing Shortcut inbox compatibility remains pending a separate removal decision.
+
+Validation: 383 automated tests passed, zero failed; one optional live USDA test was skipped because no test key is configured. The full declared suite and TypeScript/build passed. In the reloaded Obsidian Plugin Test Vault, an old 177.5 g tray against a newly ml-based definition retained g, displayed the correction message, and wrote nothing on Log. Selecting ml showed 50 kcal / 12.5 g carbs and the Log button created an atomic entry with those exact values. The synthetic entry was archived, original pending tray/root settings restored, and fixtures moved to `_archive/Health Audit 0462`. Final deployment uses the shared helper and reload uses `plugin:reload id=tps-health`. No physical mobile or production mutation is claimed.

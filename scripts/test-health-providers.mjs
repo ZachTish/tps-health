@@ -459,7 +459,7 @@ test("selected food tray edit action keeps the vault-backed pending draft valid"
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, type, freshItem\.name, false, freshItem, this\.dateContext, freshItem\.sourcePath, async \(saved\) => \{/);
   assert.match(mainSource, /logger\.flowWarn\("FoodModal", "selection:edit-missing-entry"/);
   assert.match(mainSource, /current\.item = saved;/);
-  assert.match(mainSource, /if \(!unitOptions\.includes\(current\.unit\)\) current\.unit = preferredFoodLogUnit\(saved\);/);
+  assert.doesNotMatch(mainSource, /current\.unit = preferredFoodLogUnit\(saved\)/);
   assert.match(mainSource, /await this\.persistDraft\(\);\s+this\.renderSelection\(\);/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-saved"/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "callback:start"/);
@@ -4080,7 +4080,7 @@ test("selected food tray shows per-line macros for the chosen serving amount", (
   assert.match(mainSource, /function foodLogQuantityStep\(unit: string\): number/);
   assert.match(mainSource, /function roundFoodLogQuantity\(value: number\): number/);
   assert.match(mainSource, /Math\.round\(value \* 1e6\) \/ 1e6/);
-  assert.match(mainSource, /multiplyNutrition\(entry\.item\.nutrition \|\| \{\}, resolveBatchFoodSelectionServing\(entry\)\.servings\)/);
+  assert.match(mainSource, /renderBatchFoodSelectionMacros\(macros, entry\)/);
   assert.match(mainSource, /function normalizeServingMultiplier\(value: number\): number/);
   assert.match(mainSource, /Math\.round\(value \* 1000000\) \/ 1000000/);
   assert.doesNotMatch(mainSource, /return \{ servings: round\(servings\), inputQuantity, inputUnit/);
@@ -4237,7 +4237,7 @@ test("unsupported serving units fail closed instead of becoming a full serving",
     automaticDailyRollups: false,
   };
 
-  await plugin.logFood({
+  await assert.rejects(() => plugin.logFood({
     id: "gram-food",
     name: "Gram Food",
     source: "manual",
@@ -4245,17 +4245,9 @@ test("unsupported serving units fail closed instead of becoming a full serving",
     servingUnit: "serving",
     servingGrams: 46,
     nutrition: { calories: 92, proteinG: 23, carbsG: 4.6, fatG: 2.3 },
-  }, 1, "ml", undefined, "2026-06-25T12:00:00.000Z", false, "daily-note", { focusAfterLog: false });
+  }, 1, "ml", undefined, "2026-06-25T12:00:00.000Z", false, "daily-note", { focusAfterLog: false }), /supported unit/i);
 
-  const dailyContent = files.get("Daily Notes/2026-06-25.md");
-  assert.match(dailyContent, /\[qty:: 1\]/);
-  assert.match(dailyContent, /\[unit:: ml\]/);
-  assert.match(dailyContent, /\[servings:: 0\]/);
-  assert.match(dailyContent, /\[amount:: 1\]/);
-  assert.match(dailyContent, /\[amountUnit:: ml\]/);
-  const totals = calculateFoodTotals(dailyContent);
-  assert.equal(totals.calories, 0);
-  assert.equal(totals.proteinG, 0);
+  assert.equal(files.has("Daily Notes/2026-06-25.md"), false, "invalid units must not create a zero-nutrition log");
 });
 
 test("custom food creation validates manual input and writes to the configured destination", async () => {
@@ -6475,12 +6467,8 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /if \(this\.options\.adapters\?\.createNativeDetector\) \{\s+this\.nativeBarcodeDetector = this\.options\.adapters\.createNativeDetector\(\);/);
   assert.match(mainSource, /formats: \["ean_13", "ean_8", "upc_a", "upc_e", "code_128"\]/);
   assert.match(mainSource, /const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan\.md"/);
-  assert.match(mainSource, /const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode"/);
   assert.match(mainSource, /private shortcutInboxEventRefs: EventRef\[\] = \[\]/);
   assert.match(mainSource, /private shortcutInboxProcessing = false/);
-  assert.match(mainSource, /statusEl\.setText\(`Opening Apple Shortcut\. TPS Health is watching \$\{SHORTCUT_BARCODE_INBOX_PATH\} for the scanned barcode\.`\);/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut:open", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
-  assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut:popup-blocked", \{ inboxPath: SHORTCUT_BARCODE_INBOX_PATH \}\)/);
   assert.match(mainSource, /this\.app\.vault\.on\("create", \(changed\) => \{/);
   assert.match(mainSource, /this\.app\.vault\.on\("modify", \(changed\) => \{/);
   assert.match(mainSource, /this\.shortcutInboxPollInterval = window\.setInterval\(\(\) => \{/);
@@ -6492,7 +6480,6 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /await this\.app\.vault\.modify\(file, `Processed by TPS Health at \$\{isoNow\(\)\}\\n`\);/);
   assert.match(mainSource, /await this\.app\.vault\.modify\(file,[\s\S]+if \(this\.stopped \|\| this\.lookupInProgress\) return;\s+await this\.lookup\(barcode, statusEl\);/);
   assert.match(mainSource, /await this\.lookup\(barcode, statusEl\);/);
-  assert.match(mainSource, /function appleShortcutBarcodeUrl\(\): string \{\s+return `shortcuts:\/\/run-shortcut\?name=\$\{encodeURIComponent\(SHORTCUT_BARCODE_NAME\)\}`;/);
   assert.match(mainSource, /function shortcutBarcodeFromContent\(content: string\): string \| null \{\s+const match = content\.match\(\/\(\?:\^\|\\D\)\(\\d\{7,14\}\)\(\?:\\D\|\$\)\/\);/);
   assert.match(mainSource, /function createBarcodeReader\(\): any/);
   assert.match(mainSource, /function createLiveBarcodeReader\(\): any/);
@@ -6829,11 +6816,11 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.equal(dailyEntry.item.sourcePath, "Health/Foods/Search Yogurt.md");
   assert.match(fake.files.get("Daily/2026-06-21.md"), /## Food\n\n- 1 cup - \[\[Health\/Foods\/Search Yogurt\|Search Yogurt\]\]/);
   assert.match(fake.files.get("Daily/2026-06-21.md"), /\[foodPath:: Health\/Foods\/Search Yogurt\.md\]/);
-  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[servings:: 1\.6\]/);
-  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[cal:: 192\]/);
-  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[protein:: 24\]/);
-  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[carbs:: 14\.4\]/);
-  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[fat:: 3\.2\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[servings:: 1\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[cal:: 120\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[protein:: 15\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[carbs:: 9\]/);
+  assert.match(fake.files.get("Daily/2026-06-21.md"), /\[fat:: 2\]/);
   assert.equal(fake.files.has("Calendar.md"), false);
 
   plugin.settings.defaultFoodLogSection = "";
@@ -6872,10 +6859,10 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
   assert.match(recipeContent, /tags:\n\s+- "tps\/recipe"/);
   assert.match(recipeContent, /servingUnit: "serving"/);
   assert.match(recipeContent, /recipeServings: 1/);
-  assert.match(recipeContent, /calories: 316/);
-  assert.match(recipeContent, /proteinG: 34\.5/);
-  assert.match(recipeContent, /carbsG: 25\.9/);
-  assert.match(recipeContent, /fatG: 7\.2/);
+  assert.match(recipeContent, /calories: 244/);
+  assert.match(recipeContent, /proteinG: 25\.5/);
+  assert.match(recipeContent, /carbsG: 20\.5/);
+  assert.match(recipeContent, /fatG: 6/);
   assert.deepEqual(parseFrontmatter(recipeContent).ingredients, [
     "0.5 bar - [[Health/Foods/Provider Bar|Provider Bar]]",
     "1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
@@ -6917,13 +6904,13 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
       "- 1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
     ].join("\n"),
   });
-  assert.equal(multiServingRecipe.nutrition.calories, 79);
-  assert.equal(multiServingRecipe.nutrition.proteinG, 8.625);
+  assert.equal(multiServingRecipe.nutrition.calories, 61);
+  assert.equal(multiServingRecipe.nutrition.proteinG, 6.375);
   const multiServingRecipeContent = fake.files.get("Health/Recipes/Four Serving Snack Plate.md");
   assert.match(multiServingRecipeContent, /kind: ["']?recipe["']?/);
   assert.match(multiServingRecipeContent, /recipeServings: 4/);
-  assert.match(multiServingRecipeContent, /calories: 79/);
-  assert.match(multiServingRecipeContent, /proteinG: 8\.625/);
+  assert.match(multiServingRecipeContent, /calories: 61/);
+  assert.match(multiServingRecipeContent, /proteinG: 6\.375/);
   assert.equal(parseFrontmatter(multiServingRecipeContent).ingredients.length, 2);
   assert.equal(stripFrontmatter(multiServingRecipeContent), "");
 
@@ -6938,12 +6925,12 @@ test("fake vault food writes cover no-write cancel, upsert, single-file, daily-n
       "- 1 cup - [[Health/Foods/Search Yogurt|Search Yogurt]]",
     ].join("\n"),
   });
-  assert.equal(meal.nutrition.calories, 316);
+  assert.equal(meal.nutrition.calories, 244);
   const mealContent = fake.files.get("Health/Recipes/Single Serving Snack Plate.md");
   assert.match(mealContent, /kind: ["']?meal["']?/);
   assert.match(mealContent, /servingUnit: "meal"/);
   assert.match(mealContent, /recipeServings: 1/);
-  assert.match(mealContent, /calories: 316/);
+  assert.match(mealContent, /calories: 244/);
   assert.equal(parseFrontmatter(mealContent).ingredients.length, 2);
   assert.equal(stripFrontmatter(mealContent), "");
 
@@ -11703,8 +11690,9 @@ test("rotated barcode crops use opaque white margins before drawing", async () =
 });
 
 test("scanner uses accessible camera overlay actions without a Shortcut button", () => {
-  const opening = mainSource.slice(mainSource.indexOf('class BarcodeScannerModal'), mainSource.indexOf('private shouldShowAppleShortcutButton'));
+  const opening = mainSource.slice(mainSource.indexOf('class BarcodeScannerModal'), mainSource.indexOf('private async startShortcutInboxWatcher'));
   assert.doesNotMatch(opening, /setButtonText\("Apple Shortcut"/);
+  assert.doesNotMatch(mainSource, /shortcuts:\/\/run-shortcut/);
   assert.match(opening, /iconAction\("zap", "Turn flash on"/);
   assert.match(opening, /iconAction\("switch-camera", "Flip camera"/);
   assert.match(opening, /iconAction\("image", "Scan image"/);
@@ -11825,4 +11813,30 @@ test("saving a household serving removes stale metric mappings from disk and the
   assert.equal(foodServingLabel(saved), "2 capsule");
   assert.equal(resolveFoodLogServing(saved, 1, "capsule").servings, .5);
   assert.equal(resolveFoodLogServing(saved, 100, "g").unsupportedUnit, true);
+});
+
+
+test("food logging rejects unsupported units and invalid amounts before creating records", async () => {
+  installDeterministicBrowserGlobals();
+  const {default:Plugin}=await importPluginWithObsidianStub();
+  const fake=createFakeHealthApp(),plugin=new Plugin(fake.app);
+  let writes=0;
+  plugin.nativeRecordService={isEnabled:()=>true,createFoodEntry:async()=>{writes++;throw Error("Unexpected record write");}};
+  const food={id:"qa",name:"QA",source:"manual",servingAmount:355,servingUnit:"ml",servingMl:355,nutrition:{calories:100}};
+  await assert.rejects(()=>plugin.logFood(food,177.5,"g",undefined,undefined,false),/supported unit/i);
+  for (const quantity of [0,-1,NaN,Infinity]) {
+    await assert.rejects(()=>plugin.logFood(food,quantity,"ml",undefined,undefined,false),/greater than 0/i);
+  }
+  assert.equal(writes,0);
+});
+
+
+test("labeled household weight overrides generic cup volume in food and meal calculations", async () => {
+  installDeterministicBrowserGlobals();
+  const {resolveFoodLogServing}=await importPluginWithObsidianStub();
+  const food={id:"yogurt",name:"Yogurt",source:"manual",servingAmount:1,servingUnit:"cup",servingGrams:170,nutrition:{calories:120}};
+  const half=resolveFoodLogServing(food,.5,"cup");
+  assert.equal(half.servings,.5);assert.equal(half.amount,85);assert.equal(half.amountUnit,"g");
+  assert.equal(resolveFoodLogServing(food,170,"g").servings,1);
+  assert.equal(resolveFoodLogServing(food,240,"ml").unsupportedUnit,true,"an explicit cup weight is not an arbitrary ml-to-g density");
 });

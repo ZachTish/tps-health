@@ -244,3 +244,34 @@ test("tray refresh notices a serving basis change even when amount and nutrients
   assert.equal(tray.selectionItems[0].quantity,1);
   assert.equal(persisted,1);
 });
+
+
+test("refresh preserves an incompatible queued unit instead of reinterpreting its quantity", async () => {
+  const {tray,plugin} = await setup();
+  const original = {...food("Unit QA"),servingAmount:355,servingUnit:"g",servingGrams:355};
+  tray.selectionItems=[{item:original,quantity:177.5,unit:"g"}];
+  tray.refreshFoodItemFromSource=async()=>({...original,servingUnit:"ml",servingGrams:undefined,servingMl:355});
+  tray.persistDraft=async()=>{};tray.renderSelection=()=>{};
+  await tray.refreshSelectionItemsFromSources();
+  assert.equal(tray.selectionItems[0].unit,"g");
+  assert.equal(tray.selectionItems[0].quantity,177.5);
+  let writes=0;plugin.logFood=async()=>{writes++;};
+  await tray.logSelected();
+  assert.equal(writes,0,"invalid tray entries must be caught before any food log is written");
+  assert.equal(tray.selectionItems.length,1,"invalid selections stay available for correction");
+});
+
+
+test("incompatible tray units remain visible with a correction message and valid units recover", async () => {
+  const {tray}=await setup();
+  const item={...food("Drink"),servingAmount:355,servingUnit:"ml",servingMl:355};
+  tray.selectionItems=[{item,quantity:177.5,unit:"g"}];
+  tray.renderSelection();
+  let nodes=walk(tray.selectionEl);
+  assert.ok(nodes.some(n=>n.className==="tps-health-selection-line-macros" && n.text.includes("Choose a supported unit")));
+  assert.ok(nodes.some(n=>n.tag==="option" && n.text==="g"));
+  tray.selectionItems[0].unit="ml";
+  tray.renderSelection();nodes=walk(tray.selectionEl);
+  assert.ok(!nodes.some(n=>n.text.includes("Choose a supported unit")));
+  assert.equal(tray.selectedNutrition().calories,50);
+});

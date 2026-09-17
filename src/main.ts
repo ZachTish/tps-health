@@ -383,7 +383,6 @@ const DEFAULT_FOOD_LOG_BASE_PATH = "Food Log.base";
 const DEFAULT_ACTIVITY_LOG_BASE_PATH = "Activity Log.base";
 const LEGACY_WORKOUT_LOG_BASE_PATH = "Workout Log.base";
 const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan.md";
-const SHORTCUT_BARCODE_NAME = "TPS Health Scan Barcode";
 const DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS = 300;
 const DAILY_NOTE_TEMPLATER_SETTLE_BUFFER_MS = 100;
 const DAILY_NOTE_TEMPLATER_POLL_MS = 25;
@@ -3982,8 +3981,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
     const loggedItem = persistFoodNote ? await this.findOrCreateFoodNote(item) : normalizeFoodMetricServing(item);
     const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
+    if (resolvedServing.unsupportedUnit || resolvedServing.servings <= 0) {
+      logger.flowWarn("FoodLog", "write:unsupported-unit", { unit, servingUnit: loggedItem.servingUnit });
+      throw new Error(`Choose a supported unit for ${loggedItem.name}.`);
+    }
     const consumedAt = completedDate || isoNow();
     const entry: FoodLogEntry = {
       id: id("food"),
@@ -11293,7 +11297,7 @@ class FoodSearchModal extends FoodInputModal {
       edit.addEventListener("click", () => this.openSelectionFoodEditor(entry));
       const copy = row.createDiv({ cls: "tps-health-selection-copy" });
 
-      renderCompactFoodMacros(copy.createDiv({ cls: "tps-health-selection-line-macros" }), multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+      renderBatchFoodSelectionMacros(copy.createDiv({ cls: "tps-health-selection-line-macros" }), entry);
       const tags = row.createEl("details", { cls: "tps-health-selection-tags" });
       const tagSummary = tags.createEl("summary", { text: (entry.tags || []).map(tag => `#${tag}`).join(", ") || "Tags" });
       const tagSetting = new Setting(tags).setName("Tags").addText(text => text
@@ -11328,7 +11332,7 @@ class FoodSearchModal extends FoodInputModal {
         entry.quantity = value;
         this.refreshSelectionWithoutScroll(() => {
           const macros = row.querySelector<HTMLElement>(".tps-health-selection-line-macros");
-          if (macros) renderCompactFoodMacros(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+          if (macros) renderBatchFoodSelectionMacros(macros, entry);
           this.refreshSelectionSummary();
         });
         void this.persistDraft();
@@ -11433,7 +11437,7 @@ class FoodSearchModal extends FoodInputModal {
     unitSelect.value = entry.unit;
     const macros = row.querySelector(".tps-health-selection-line-macros") as HTMLElement | null;
     if (macros) {
-      renderCompactFoodMacros(macros, multiplyNutrition(entry.item.nutrition || {}, resolveBatchFoodSelectionServing(entry).servings));
+      renderBatchFoodSelectionMacros(macros, entry);
     }
   }
 
@@ -11461,6 +11465,13 @@ class FoodSearchModal extends FoodInputModal {
     }
     if (!this.selectionItems.length) {
       logger.flowWarn("FoodModal", "selection:log-empty", summarizeDateContext(this.dateContext));
+      return;
+    }
+    const invalid = this.selectionItems.find(entry => resolveBatchFoodSelectionServing(entry).unsupportedUnit);
+    if (invalid) {
+      this.selectionExpanded = true;
+      this.renderSelection();
+      new Notice(`Choose a supported unit for ${invalid.item.name}. The tray has been kept.`, 8000);
       return;
     }
     const snapshot = this.selectionItems.map((entry) => ({
@@ -11692,8 +11703,6 @@ class FoodSearchModal extends FoodInputModal {
         return;
       }
       current.item = saved;
-      const unitOptions = foodLogUnitOptionsForSelection({ ...current, item: saved });
-      if (!unitOptions.includes(current.unit)) current.unit = preferredFoodLogUnit(saved);
       current.quantity = Math.max(0.000001, current.quantity || foodLogQuantityStep(current.unit));
       await this.persistDraft();
       this.renderSelection();
@@ -11709,8 +11718,6 @@ class FoodSearchModal extends FoodInputModal {
       if (!refreshed) continue;
       if (foodQueueItemSignature(refreshed) === foodQueueItemSignature(entry.item)) continue;
       entry.item = refreshed;
-      const unitOptions = foodLogUnitOptionsForSelection({ ...entry, item: refreshed });
-      if (!unitOptions.includes(entry.unit)) entry.unit = preferredFoodLogUnit(refreshed);
       changed = true;
     }
     if (!changed) {
@@ -11993,6 +12000,7 @@ async function recipeIngredientLineFromBatchSelection(plugin: TPSHealthPlugin, e
   const amountGrams = describedSelectionAmountGrams(entry);
   if (amountGrams) return recipeIngredientLine(item, amountGrams, "g");
   const resolved = resolveBatchFoodSelectionServing({ ...entry, item });
+  if (resolved.unsupportedUnit) throw new Error(`Choose a supported unit for ${item.name}.`);
   return recipeIngredientLine(item, resolved.inputQuantity, resolved.inputUnit);
 }
 
@@ -12012,9 +12020,20 @@ function resolveBatchFoodSelectionServing(entry: BatchFoodSelection): ResolvedFo
   return resolveFoodLogServingWithGramAmount(entry.item, entry.quantity, entry.unit, describedSelectionAmountGrams(entry));
 }
 
+function renderBatchFoodSelectionMacros(container: HTMLElement, entry: BatchFoodSelection): void {
+  const resolved = resolveBatchFoodSelectionServing(entry);
+  if (resolved.unsupportedUnit) {
+    container.setText(`Choose a supported unit (currently ${entry.unit}).`);
+    return;
+  }
+  renderCompactFoodMacros(container, multiplyNutrition(entry.item.nutrition || {}, resolved.servings));
+}
+
 function foodLogUnitOptionsForSelection(entry: BatchFoodSelection): string[] {
   const options = foodLogUnitOptions(entry.item);
   if (entry.describedUnit && !options.some((unit) => servingUnitsMatch(unit, entry.describedUnit || ""))) options.unshift(entry.describedUnit);
+  // Keep an obsolete selected unit visible until the user explicitly corrects it.
+  if (!options.includes(entry.unit)) options.push(entry.unit);
   return options;
 }
 
@@ -15327,22 +15346,6 @@ class BarcodeScannerModal extends Modal {
     this.resumeCameraWhenVisible = false;
     this.options.onClose?.();
     this.contentEl.empty();
-  }
-
-  private shouldShowAppleShortcutButton(): boolean {
-    return this.isIOSLike();
-  }
-
-  private openAppleShortcut(statusEl: HTMLElement): void {
-    void this.startShortcutInboxWatcher(statusEl);
-    statusEl.setText(`Opening Apple Shortcut. TPS Health is watching ${SHORTCUT_BARCODE_INBOX_PATH} for the scanned barcode.`);
-    const url = appleShortcutBarcodeUrl();
-    logger.flow("Barcode", "shortcut:open", { inboxPath: SHORTCUT_BARCODE_INBOX_PATH });
-    const opened = window.open(url, "_blank");
-    if (!opened) {
-      logger.flowWarn("Barcode", "shortcut:popup-blocked", { inboxPath: SHORTCUT_BARCODE_INBOX_PATH });
-      window.location.href = url;
-    }
   }
 
   private async startShortcutInboxWatcher(statusEl: HTMLElement): Promise<void> {
@@ -20144,8 +20147,12 @@ function resolveFoodLogServing(item: FoodItem, quantity: number, unit: string): 
   const inputQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
   const inputUnit = normalizeServingUnit(unit || "serving");
   const metricServing = metricServingForFood(item);
+  const foodServingAmount = item.servingAmount || 1;
+  const foodServingUnit = normalizeServingUnit(item.servingUnit || "serving");
+  const isSameServingUnit = inputUnit === foodServingUnit || inputUnit === singularUnitName(foodServingUnit) || singularUnitName(inputUnit) === singularUnitName(foodServingUnit);
   const directMetric = metricAmountFromUnit(inputQuantity, inputUnit);
-  if (directMetric) {
+  // A labeled cup may weigh 170 g; its explicit serving beats generic cup volume.
+  if (directMetric && !isSameServingUnit) {
     if (!metricServing) return unsupportedFoodLogServing(inputQuantity, inputUnit, directMetric);
     if (directMetric.unit === metricServing.unit) {
       const servings = directMetric.amount / metricServing.amount;
@@ -20154,9 +20161,6 @@ function resolveFoodLogServing(item: FoodItem, quantity: number, unit: string): 
     return unsupportedFoodLogServing(inputQuantity, inputUnit, directMetric);
   }
 
-  const foodServingAmount = item.servingAmount || 1;
-  const foodServingUnit = normalizeServingUnit(item.servingUnit || "serving");
-  const isSameServingUnit = inputUnit === foodServingUnit || inputUnit === singularUnitName(foodServingUnit) || singularUnitName(inputUnit) === singularUnitName(foodServingUnit);
   if (!isSameServingUnit && inputUnit !== "serving") {
     return unsupportedFoodLogServing(inputQuantity, inputUnit);
   }
@@ -21431,10 +21435,6 @@ function createBarcodeHints(tryHarder: boolean): Map<any, any> {
   ]);
   if (tryHarder) hints.set(DecodeHintType.TRY_HARDER, true);
   return hints;
-}
-
-function appleShortcutBarcodeUrl(): string {
-  return `shortcuts://run-shortcut?name=${encodeURIComponent(SHORTCUT_BARCODE_NAME)}`;
 }
 
 function shortcutBarcodeFromContent(content: string): string | null {
