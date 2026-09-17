@@ -1,3 +1,4 @@
+import { authoredMetricServing } from "./food-serving";
 import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
@@ -4577,7 +4578,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
-      for (const key of EXTRA_NUTRIENT_KEYS) if (updated[key] == null) delete frontmatter[key];
+      for (const key of [...EXTRA_NUTRIENT_KEYS, "servingGrams", "servingMl", "nutritionBasis"]) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -5025,7 +5026,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
       ...itemFrontmatter,
     };
-    for (const key of EXTRA_NUTRIENT_KEYS) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
+    for (const key of [...EXTRA_NUTRIENT_KEYS, "servingGrams", "servingMl", "nutritionBasis"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
@@ -11958,6 +11959,7 @@ function foodQueueItemSignature(item: FoodItem): string {
     item.servingUnit || "",
     item.servingGrams ?? null,
     item.servingMl ?? null,
+    item.nutritionBasis ?? null,
     item.recipeServings ?? null,
     item.ingredients || "",
     nutrition.calories ?? null,
@@ -19135,6 +19137,18 @@ function normalizedQuantity(value: unknown): number {
 
 function normalizeFoodMetricServing(item: FoodItem): FoodItem {
   const serving = sanitizeFoodServingMetrics(normalizeFoodServingPortion(item));
+  const authored = authoredMetricServing(serving);
+  if (authored) {
+    // Direct note edits can leave imported conversion fields and basis behind.
+    // Nutrition remains exactly as authored; only its denominator is reconciled.
+    const per100Matches = authored.amount === 100 && serving.nutritionBasis === `per-100${authored.unit}`;
+    return {
+      ...serving,
+      servingGrams: authored.unit === "g" ? authored.amount : undefined,
+      servingMl: authored.unit === "ml" ? authored.amount : undefined,
+      nutritionBasis: isPer100NutritionBasis(serving) && !per100Matches ? "labeled-serving" : serving.nutritionBasis,
+    };
+  }
   if (serving.servingGrams || serving.servingMl) return serving;
   const metric = parseMetricServing(serving.servingAmount || 1, serving.servingUnit || "");
   const inferredDrinkServing = !metric && serving.nutritionBasis == null

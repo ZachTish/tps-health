@@ -1913,3 +1913,15 @@ test('supplement properties honor configured atomic keys and aliases', async () 
  assert.equal(createCalls[0].properties.creatineG, undefined);
  assert.equal(service.getDailyFoodTotals('2026-08-25').creatineG, 3);
 });
+
+
+test('edited metric food serving governs atomic gram conversions and serving amounts', () => {
+  for (const unit of ['g', 'ml']) {
+    const food = {servingAmount:355,servingUnit:unit,servingGrams:100,servingMl:100,nutritionBasis:'per-100g',calories:46.5,alcoholG:6.3};
+    const half = deriveNativeFoodEntryProjection({quantity:177.5,unit},food);
+    assert.equal(half.servings,.5);
+    assert.equal(half.nutrition.calories,23.25);
+    assert.equal(deriveNativeFoodEntryProjection({quantity:1,unit:'serving'},food).amount,355);
+    assert.equal(deriveNativeFoodEntryProjection({quantity:1,unit: unit === 'g' ? 'ml' : 'g'},food),null);
+  }
+});

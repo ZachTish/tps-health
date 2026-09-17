@@ -229,3 +229,18 @@ test('typing a valid tray amount persists immediately without replacing the focu
   assert.equal(saved, .125, 'an unfinished empty edit does not replace the valid draft with zero');
   tray.onClose();
 });
+
+
+test("tray refresh notices a serving basis change even when amount and nutrients stay the same", async () => {
+  const {tray} = await setup();
+  const original = {...food("QA"),servingAmount:100,servingUnit:"g",servingGrams:100,nutritionBasis:"per-100g"};
+  tray.selectionItems = [{item:original,quantity:1,unit:"serving"}];
+  tray.refreshFoodItemFromSource = async () => ({...original,nutritionBasis:"labeled-serving"});
+  let persisted = 0;
+  tray.persistDraft = async () => {persisted++;};
+  tray.renderSelection = () => {};
+  await tray.refreshSelectionItemsFromSources();
+  assert.equal(tray.selectionItems[0].item.nutritionBasis,"labeled-serving");
+  assert.equal(tray.selectionItems[0].quantity,1);
+  assert.equal(persisted,1);
+});

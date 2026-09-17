@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.45.3](https://github.com/ZachTish/tps-health/releases/tag/0.45.3) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.46.1](https://github.com/ZachTish/tps-health/releases/tag/0.46.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -79,3 +79,14 @@ Validation includes supplement save/reload/edit/removal, custom templates, small
 
 
 Test-vault UI verification (2026-09-16): Obsidian 1.14.2 app package, desktop and mobile emulation with a 390 px editor. Created a synthetic two-capsule supplement via Search → Create food, logged one capsule through the Log button, and verified B12 1.2 mcg, magnesium 50 mg, creatine 2.5 g, and caffeine 100 mg in the atomic log and Macros contribution rows. Clearing vitamin D with “Update linked instances” removed it from the definition and log. Negative label amounts kept the editor open and focused the invalid field. Nutrient search retained entered values; measured disclosure/row scroll width equaled client width after fixing inherited setting-control widths. X/reopen retained a typed 0.125 dose; backdrop click only dismissed focus. All five settings routes rendered, and the nutrient-property selector exposed 37 options and the selected field. Synthetic files were archived under `_archive/Health Supplements QA 0460`; original test settings and pending tray were restored. Reload uses `plugin:reload id=tps-health` in the test vault; final build deploys only shipped artifacts through the shared helper. No production installation or physical iPhone QA is claimed.
+
+
+## 0.46.1 — Keep food servings aligned with note edits
+
+An explicit `servingAmount` with `servingUnit` g/grams or ml/milliliters is the nutrition denominator, taking precedence over stale imported `servingGrams`, `servingMl`, and incompatible `nutritionBasis` values. Changing 100 g to 355 g makes the logger display **serving (355 g)** and makes 177.5 g half a serving. Nutrition values stay exactly as entered; this repair does not guess product facts or rescale the authored label. Coherent per-100 foods retain their existing labels and defaults. Household servings retain their explicit metric mappings; no density or capsule weight is inferred by this reconciliation.
+
+The same denominator drives atomic note projections. Saving an edited food clears obsolete metric/basis fields instead of leaving them in frontmatter. Persistent tray refresh detects basis-only changes without changing the user's selected quantity. Ordinary reads normalize in memory; they do not bulk rewrite food definitions or historical atomic-line snapshots. Settings, commands, layouts, and minimum Obsidian 1.12.0 are unchanged.
+
+Regression coverage reproduces stale per-100 metadata, gram/milliliter switching, half-serving calculations, unsupported cross-unit conversions, count-based edits, returned and persisted food data, atomic projections, and tray refresh. The optional live Open Food Facts check now has a 15-second timeout so an unavailable provider cannot hang the suite.
+
+Validation: 379 automated tests passed, with one optional live USDA check skipped for lack of a test key; full suite and TypeScript build passed. In the reloaded test vault, a synthetic 355 g note with stale 100 g metadata reproduced the old dropdown and then displayed **serving (355 g)** after the fix. Entering 177.5 g showed half the calories/carbs (23.3 kcal / 0.3 g at UI precision). The food editor showed the same 355 g serving; saving 355 ml through **Update linked instances** removed `servingGrams` and persisted `servingMl: 355` with a labeled basis. Original tray state was restored and the fixture archived under `_archive/Health Serving QA 0461`. Reload uses `plugin:reload id=tps-health`; the separate final production-mode build deploys only shipped artifacts through the shared test-vault helper. No physical mobile or production installation is claimed.

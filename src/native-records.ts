@@ -1,3 +1,4 @@
+import { authoredMetricServing } from "./food-serving";
 import type { ExtraNutrition } from "./nutrients";
 import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
@@ -883,6 +884,8 @@ function metricAmount(quantity: number, unit: string): { amount: number; unit: '
 }
 
 function foodMetricServing(food: Record<string, unknown>): { amount: number; unit: 'g' | 'ml' } | null {
+  const authored = authoredMetricServing(food);
+  if (authored) return authored;
   const grams = positiveNumber(food.servingGrams);
   if (grams) return { amount: grams, unit: 'g' };
   const ml = positiveNumber(food.servingMl);

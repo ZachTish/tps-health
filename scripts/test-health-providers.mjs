@@ -4576,6 +4576,7 @@ test("Open Food Facts barcode lookup returns a packaged product with macro data"
   let response;
   try {
     response = await fetch("https://world.openfoodfacts.org/api/v2/product/737628064502.json?fields=code,product_name,brands,nutriments", {
+      signal: AbortSignal.timeout(15000),
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
     });
   } catch (error) {
@@ -11787,4 +11788,41 @@ test('configured atomic-line micronutrient rollups retain small values and clear
  fake.files.set(path, '---\nvitaminB12Mcg: 99\n---\n- Unknown dose [food:: Dose] [qty:: 1] [nutritionSnapshot:: true]\n');
  await plugin.updateDailyRollupForFile(file);
  assert.equal(parseFrontmatter(fake.files.get(path)).vitaminB12Mcg, undefined);
+});
+
+
+test("authored gram and milliliter servings override stale imported note metadata", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, foodServingLabel, defaultFoodLogQuantity, resolveFoodLogServing } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  for (const unit of ["g", "ml"]) {
+    const note = { servingAmount: 355, servingUnit: unit, servingGrams: 100, servingMl: 100,
+      nutritionBasis: "per-100g", calories: 46.5, carbsG: .6, alcoholG: 6.3 };
+    const food = plugin.foodFromFrontmatter({path:"QA.md",basename:"QA"}, note);
+    assert.equal(foodServingLabel(food), `355 ${unit}`);
+    assert.equal(food.nutritionBasis, "labeled-serving");
+    assert.equal(defaultFoodLogQuantity(food), 1);
+    assert.equal(food.nutrition.calories, 46.5, "serving edits never invent or rescale the authored nutrition");
+    assert.equal(resolveFoodLogServing(food, 355, unit).servings, 1);
+    assert.equal(resolveFoodLogServing(food, 177.5, unit).servings, .5);
+    assert.equal(resolveFoodLogServing(food, 1, "serving").amount, 355);
+    assert.equal(resolveFoodLogServing(food, 1, unit === "g" ? "ml" : "g").unsupportedUnit, true);
+  }
+});
+
+test("saving a household serving removes stale metric mappings from disk and the returned food", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, customFoodServingMetadataForSave, foodServingLabel, resolveFoodLogServing } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodsFolder: "Health/Foods", foodTemplatePath: "" };
+  const original = await plugin.createFoodFromInput({name:"Serving QA", servingAmount:100, servingUnit:"g", servingGrams:100, nutritionBasis:"per-100g", nutrition:{carbsG:10}});
+  const metadata = customFoodServingMetadataForSave(original, 2, "capsule", {carbsG:10});
+  const saved = await plugin.upsertFoodFromInput({path:original.sourcePath,name:original.name,servingAmount:2,servingUnit:"capsule", ...metadata, nutrition:{carbsG:10}});
+  const fm = parseFrontmatter(fake.files.get(saved.sourcePath));
+  assert.equal(fm.servingGrams, undefined);
+  assert.equal(fm.servingMl, undefined);
+  assert.equal(saved.servingGrams, undefined);
+  assert.equal(foodServingLabel(saved), "2 capsule");
+  assert.equal(resolveFoodLogServing(saved, 1, "capsule").servings, .5);
+  assert.equal(resolveFoodLogServing(saved, 100, "g").unsupportedUnit, true);
 });
