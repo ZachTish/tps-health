@@ -305,14 +305,17 @@ function splitTopLevelFoodParts(value: string): string[] {
     // ham and 1 slice cheese" as one editable tray row.
     if (COMPOSITE_DISH_PATTERN.test(part) && /\bwith\b/i.test(part)) return [part];
     return part
-      .split(/\s+and\s+(?=(?:\d|an?\s|some\s))/i)
+      .split(/\s+and\s+(?=(?:\d|an?\s|some\s|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s))/i)
       .map((candidate) => candidate.trim())
       .filter(Boolean);
   });
   return parts.length ? parts : [value.trim() || "Food estimate"];
 }
 
+const SPOKEN_AMOUNTS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+
 function numberFromToken(value: string): number {
+  if (SPOKEN_AMOUNTS[value.toLowerCase()]) return SPOKEN_AMOUNTS[value.toLowerCase()];
   const fraction = value.match(/^(\d+)\/(\d+)$/);
   if (fraction) return Number(fraction[1]) / Number(fraction[2]);
   const parsed = Number(value);
@@ -328,7 +331,7 @@ export function parseFoodDescription(value: string): DescribedFoodPart[] {
 
   return splitTopLevelFoodParts(cleaned)
     .map((original) => {
-      const amountMatch = original.match(/^(\d+(?:\.\d+)?|\d+\/\d+)\s+(.+)$/);
+      const amountMatch = original.match(/^(\d+(?:\.\d+)?|\d+\/\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(.+)$/i);
       const fractionMatch = !amountMatch
         ? original.match(/^(?:a\s+)?(half|quarter|third)(?:\s+of)?\s+(.+)$/i)
         : null;

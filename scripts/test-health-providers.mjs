@@ -407,7 +407,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   );
   assert.ok(
     foodSearchOpen.indexOf('this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" })')
-      < foodSearchOpen.indexOf('this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" })'),
+      < foodSearchOpen.indexOf('this.resultsEl = resultsScroll.createDiv({ cls: "tps-health-search-results" })'),
     "the tray must render above the potentially long food results list",
   );
   assert.match(mainSource, /this\.renderSelection\(\);\s+this\.resetSearchForNextFood\(enriched\.name\);/);
@@ -437,7 +437,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.doesNotMatch(foodSearchOpen, /pendingDraft\?\.activeTab \|\| "mine"/);
   assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "describe"\]/);
   assert.doesNotMatch(foodSearchModalSource, /this\.searchInput = "";/);
-  assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+this\.resultsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
+  assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+const resultsScroll = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-scroll" \}\);\s+this\.resultsEl = resultsScroll\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = resultsScroll\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);
   assert.match(stylesSource, /\.tps-health-selection\.is-empty/);
@@ -1943,7 +1943,7 @@ test("usage index coalesces reads and cannot publish a snapshot invalidated mid-
   assert.equal(reads, 1, "the held scan should still perform only one underlying read");
 });
 
-test("local-as-you-type search stays offline while explicit search invokes providers", async () => {
+test("local search stays offline while combined search invokes providers", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -1991,7 +1991,7 @@ test("local-as-you-type search stays offline while explicit search invokes provi
   assert.match(mainSource, /private queueSearch\(query: string\): void[\s\S]+this\.runLocalSearch\(query, token\)/);
   assert.match(mainSource, /private submitOnlineSearch\(query: string\): void/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken/);
-  assert.match(mainSource, /Press Enter (?:for|to check) online databases/);
+  assert.match(mainSource, /FOOD_ONLINE_SEARCH_DEBOUNCE_MS = 800/);
   assert.match(mainSource, /class FoodLogEditorSuggest[\s\S]+this\.plugin\.searchLocalFoods\(draft\.query\)/);
 });
 

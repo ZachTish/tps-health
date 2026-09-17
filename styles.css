@@ -4871,6 +4871,7 @@ body .tps-health-food-search-frame .tps-health-selection-row > .tps-health-selec
   grid-area: remove;
   width: 44px;
   min-height: 44px;
+  padding: 0;
   align-self: start;
 }
 body .tps-health-food-search-frame .tps-health-selection-controls {
@@ -4911,6 +4912,7 @@ body .modal.tps-health-food-search-frame {
   overflow: hidden;
 }
 body .tps-health-food-search-frame .modal-content {
+  container: tps-health-food-logger / inline-size;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -4935,7 +4937,7 @@ body .tps-health-food-search-frame .tps-health-food-search-bar {
   display: flex; gap: 4px; align-items: center; margin: 0;
 }
 body .tps-health-food-search-frame .tps-health-food-search-setting {
-  flex: 1; min-width: 0; margin: 0; padding: 0; border: 0;
+  flex: 1; min-width: 0; margin: 0; padding: 0 !important; border: 0;
 }
 body .tps-health-food-search-frame .tps-health-food-search-setting .setting-item-control {
   display: flex; flex-wrap: nowrap; gap: 0; width: 100%; border-radius: 22px;
@@ -4968,7 +4970,7 @@ body .tps-health-food-search-frame .tps-health-status {
   order: 3; flex: 0 0 auto; margin: 0; padding: 2px 0; min-height: 20px;
   font-size: var(--font-ui-smaller); color: var(--text-muted);
 }
-body .tps-health-food-search-frame .tps-health-search-results {
+body .tps-health-food-search-frame .tps-health-search-scroll {
   order: 4; flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
   overscroll-behavior: contain; overflow-anchor: none; margin: 0; padding: 0;
 }
@@ -4989,7 +4991,7 @@ body .tps-health-food-search-frame .tps-health-result-actions button {
   background: transparent; border: 0; box-shadow: none; color: var(--interactive-accent);
 }
 body .tps-health-food-search-frame .tps-health-search-actions {
-  order: 5; flex: 0 0 auto; margin: 0; max-height: 20%; overflow: auto;
+  margin: 0; max-height: none; overflow: visible;
 }
 body .tps-health-food-search-frame .tps-health-search-actions:empty { display: none; }
 body .tps-health-food-search-frame .tps-health-selection,
@@ -5019,7 +5021,7 @@ body .tps-health-food-search-frame .tps-health-review-heading {
   position: sticky; top: 0; background: var(--background-primary); z-index: 1;
 }
 body .tps-health-food-search-frame .tps-health-review-heading h3 { margin: 12px 0; font-size: var(--font-ui-medium); }
-body .tps-health-food-search-frame .tps-health-review-heading button { width: 44px; height: 44px; background: transparent; box-shadow: none; }
+body .tps-health-food-search-frame .tps-health-review-heading button { width: 44px; height: 44px; padding: 0; background: transparent; box-shadow: none; }
 body .tps-health-food-search-frame .tps-health-review-actions { display: flex; gap: 8px; padding-bottom: 8px; }
 body .tps-health-food-search-frame .tps-health-review-actions button { flex: 1; height: 36px; }
 body.is-mobile .modal.tps-health-food-search-frame {
@@ -5027,13 +5029,13 @@ body.is-mobile .modal.tps-health-food-search-frame {
   padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
 }
 @media (max-width: 400px) {
-  body .tps-health-food-search-frame .tps-health-food-search-setting input { font-size: 14px; }
+  body .tps-health-food-search-frame .tps-health-food-search-setting input { font-size: 16px; }
   body .tps-health-food-search-frame .tps-health-result-actions button { width: 36px; min-width: 36px; }
 }
 /* Obsidian's tablet modal sizing uses forced viewport dimensions. */
 body.is-mobile .modal.tps-health-food-search-frame {
-  width: min(390px, 100vw) !important;
-  max-width: 390px !important;
+  width: min(520px, 100vw) !important;
+  max-width: 100vw !important;
   min-width: 0 !important;
   left: 50% !important;
   right: auto !important;
@@ -5177,4 +5179,38 @@ body.is-mobile .modal.tps-health-food-search-frame {
 }
 .tps-health-food-editor-grid .tps-health-nutrient-editor .setting-item-name {
   overflow-wrap: anywhere;
+}
+
+/* Keep the phone keyboard from zooming inputs and compress only decoration. */
+body.is-mobile .tps-health-food-search-frame :is(input, textarea, select) { font-size: 16px; }
+body .tps-health-food-search-frame .tps-health-food-tabs { margin-top: 6px; }
+body .tps-health-food-search-frame .tps-health-describe-input { min-height: 96px; }
+body .tps-health-food-search-frame .tps-health-selection-time {
+  flex-wrap: wrap; gap: 6px; padding-top: 12px;
+}
+body .tps-health-food-search-frame .tps-health-selection-time .setting-item-control {
+  min-width: 0; flex: 1 1 180px; margin: 0;
+}
+body .tps-health-food-search-frame .tps-health-selection-time input { width: 100%; min-width: 0; }
+
+body .tps-health-food-search-frame .tps-health-search-results {
+  overflow: visible; max-height: none; margin: 0;
+}
+body .tps-health-food-search-frame .tps-health-search-actions .setting-item { padding: 8px 0; gap: 8px; }
+body .tps-health-food-search-frame[data-food-mode]:not([data-food-mode="search"]) .tps-health-food-tabs {
+  order: 0; margin: 0 42px 10px 0;
+}
+body .tps-health-food-search-frame[data-food-mode]:not([data-food-mode="search"]) .tps-health-food-tab-panels {
+  padding-right: 0; max-height: none;
+}
+
+body .tps-health-food-search-frame :is(.tps-health-selection-remove, .tps-health-review-heading button) svg {
+  flex: 0 0 20px; width: 20px; height: 20px;
+}
+body .tps-health-food-search-frame:has(.tps-health-selection-body:not([hidden])) .tps-health-search-scroll { visibility: hidden; }
+@container tps-health-food-logger (max-width: 340px) {
+  body .tps-health-food-search-frame .tps-health-selection-controls {
+    grid-template-columns: 44px minmax(48px, 1fr) 44px;
+    grid-template-areas: "decrement quantity increment" "unit unit unit";
+  }
 }

@@ -34,6 +34,7 @@ async function setup() {
   installDeterministicBrowserGlobals();
   const { default: Plugin, FoodSearchModal } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  plugin.settings = { ...plugin.settings, pendingFoodLogDraft: null };
   const tray = new FoodSearchModal(fake.app, plugin);
   const h = { tray, plugin };
   tray.searchInput = "";
@@ -274,4 +275,89 @@ test("incompatible tray units remain visible with a correction message and valid
   tray.renderSelection();nodes=walk(tray.selectionEl);
   assert.ok(!nodes.some(n=>n.text.includes("Choose a supported unit")));
   assert.equal(tray.selectedNutrition().calories,50);
+});
+
+test('typing Michelob Ultra searches databases after settling, and old queries cannot win', async () => {
+  const {tray, plugin} = await setup();
+  const timers = new Map(); let next = 0;
+  window.setTimeout = (fn, delay) => { timers.set(++next, {fn, delay}); return next; };
+  window.clearTimeout = id => timers.delete(id);
+  const tick = async delay => { for (const [id, task] of [...timers]) if (task.delay === delay) { timers.delete(id); task.fn(); } await turn(); };
+  plugin.searchLocalFoods = async () => [];
+  const queries = []; plugin.searchFoods = async query => { queries.push(query); return [food('Michelob Ultra')]; };
+  tray.queueSearch('michelob'); await tick(100);
+  tray.queueSearch('michelob ultra'); await tick(100);
+  assert.deepEqual(queries, []);
+  await tick(700);
+  assert.deepEqual(queries, ['michelob ultra']);
+  assert.deepEqual(titles(tray), ['Michelob Ultra']);
+  tray.queueSearch('later'); await tick(100);
+  tray.onClose(); await tick(700);
+  assert.deepEqual(queries, ['michelob ultra']);
+});
+
+test('typing a barcode never adds a food without explicit submission', async () => {
+  const {tray, plugin} = await setup(); let lookups = 0;
+  plugin.searchLocalFoods = async () => [];
+  tray.handleBarcodeAdd = async () => lookups++;
+  tray.queueSearch('4006381333931'); await turn();
+  assert.equal(lookups, 0);
+  tray.submitOnlineSearch('4006381333931'); await turn();
+  assert.equal(lookups, 1);
+});
+
+test('Describe shows completed estimates in the same expanded tray and preserves earlier foods', async () => {
+  const {tray, plugin} = await setup();
+  await tray.addSelection(food('Existing oats'), null, {enrich:false});
+  plugin.searchLocalFoods = async () => [food('Banana')];
+  plugin.getAiGatewayApi = () => null;
+  plugin.searchFoods = async () => [];
+  walk(tray.contentEl).find(n=>n.text === 'Describe').listeners.get('click')();
+  const input = walk(tray.contentEl).find(n=>n.className === 'tps-health-describe-input');
+  input.value = 'a banana';
+  await walk(tray.contentEl).find(n=>n.className === 'mod-cta tps-health-describe-action').listeners.get('click')();
+  // The button listener starts an async job; wait for matching and persistence.
+  for (let i=0;i<12;i++) await turn();
+  assert.equal(tray.activeFoodLogTab, 'search');
+  assert.equal(tray.selectionExpanded, true);
+  assert.equal(tray.selectionItems.length, 2);
+  assert.equal(tray.selectionItems[0].item.name, 'Existing oats');
+  assert.match(tray.selectionItems[1].item.name, /banana/i);
+  assert.equal(walk(tray.selectionEl).find(n=>n.className === 'tps-health-selection-body').hidden, false);
+  assert.equal(tray.__closed, undefined);
+  assert.equal(input.value, '');
+  await tray.persistDraft();
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems.length, 2);
+});
+
+test('prepared Describe retries append exactly once and keep the selected consumption time', async () => {
+  const {plugin} = await setup();
+  plugin.settings.pendingFoodLogDraft = {id:'earlier',consumedDateInput:'2026-09-17T12:30',selectionItems:[{item:food('Oats'),quantity:2,unit:'serving'}]};
+  const estimate = [{item:food('Banana'),quantity:1,unit:'serving'}];
+  await plugin.appendDescribedFoods(estimate, null, 'describe-fixture');
+  await plugin.appendDescribedFoods(estimate, null, 'describe-fixture');
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems.length, 2);
+  assert.equal(plugin.settings.pendingFoodLogDraft.selectionItems[0].quantity, 2);
+  assert.equal(plugin.settings.pendingFoodLogDraft.consumedDateInput, '2026-09-17T12:30');
+});
+
+test('a failed Describe keeps its text and existing tray for retry', async () => {
+  const {tray, plugin} = await setup();
+  await tray.addSelection(food('Oats'), null, {enrich:false});
+  plugin.openFoodDescriber = async () => {throw new Error('Provider offline');};
+  const input=walk(tray.contentEl).find(n=>n.className==='tps-health-describe-input'); input.value='two eggs';
+  const action=walk(tray.contentEl).find(n=>n.className==='mod-cta tps-health-describe-action');
+  action.listeners.get('click')(); for(let i=0;i<5;i++) await turn();
+  assert.equal(input.value,'two eggs'); assert.equal(action.disabled,false);
+  assert.equal(action.text,'Try again'); assert.equal(tray.selectionItems.length,1);
+  assert.match(tray.statusEl.text,/Provider offline/);
+});
+
+test('an exact Michelob Ultra product ranks ahead of a curated seltzer variant', async () => {
+  const {plugin} = await setup();
+  plugin.searchCustomFoods = async () => [];
+  plugin.searchUsdaFoods = async () => [];
+  plugin.searchOpenFoodFacts = async () => [{...food('Michelob Ultra'), source:'open-food-facts', brand:'Michelob', nutrition:{calories:95,carbsG:2.6}}];
+  const results=await plugin.searchFoods('michelob ultra');
+  assert.equal(results[0].name,'Michelob Ultra');
 });

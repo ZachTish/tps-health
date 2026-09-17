@@ -425,6 +425,7 @@ const OPEN_FOOD_FACTS_SEARCH_FIELDS = [
   "ingredients_text",
 ].join(",");
 const FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100;
+const FOOD_ONLINE_SEARCH_DEBOUNCE_MS = 800;
 const BARCODE_IMAGE_MAX_DIMENSION = 1600;
 const FOOD_LABEL_IMAGE_MAX_DIMENSION = 1600;
 const FOOD_LABEL_IMAGE_JPEG_QUALITY = 0.82;
@@ -1708,7 +1709,7 @@ export default class TPSHealthPlugin extends Plugin {
   private async openFoodDescriberWithAi(description: string, dateContext: FoodLogDateContext | null = null, onProgress?: (message: string) => void, workflow?: PendingFoodDescribeWorkflow): Promise<null> {
     const startedAt = Date.now();
     if (workflow?.preparedSelectionItems?.length) {
-      await this.savePendingFoodLogDraft({ id: workflow.id, updatedAt: new Date().toISOString(), activeTab: "mine", searchInput: "", consumedDateInput: initialFoodLogConsumedDateInput(dateContext), dateContext: dateContext ? { ...dateContext } : null, selectionItems: workflow.preparedSelectionItems.map(cloneBatchFoodSelection) });
+      await this.appendDescribedFoods(workflow.preparedSelectionItems, dateContext, workflow.id);
       logger.flow("FoodDescribe", "workflow:prepared-tray-restored", { workflowId: workflow.id, selected: workflow.preparedSelectionItems.length });
       return null;
     }
@@ -1858,7 +1859,7 @@ export default class TPSHealthPlugin extends Plugin {
       workflow.preparedSelectionItems = selectionItems.map(cloneBatchFoodSelection);
       this.writePendingFoodDescribeWorkflow(workflow);
     }
-    await this.savePendingFoodLogDraft({ id: workflow?.id || id("describe-food"), updatedAt: new Date().toISOString(), activeTab: "mine", searchInput: "", consumedDateInput: initialFoodLogConsumedDateInput(dateContext), dateContext: dateContext ? { ...dateContext } : null, selectionItems });
+    await this.appendDescribedFoods(selectionItems, dateContext, workflow?.id);
     return null;
   }
 
@@ -1929,17 +1930,24 @@ export default class TPSHealthPlugin extends Plugin {
       noteCreation: false,
       ...summarizeDateContext(dateContext),
     });
-    await this.savePendingFoodLogDraft({
-      id: id("describe-food"),
-      updatedAt: new Date().toISOString(),
-      activeTab: "mine",
-      searchInput: "",
-      consumedDateInput: initialFoodLogConsumedDateInput(dateContext),
-      dateContext: dateContext ? { ...dateContext } : null,
-      selectionItems,
-    });
+    await this.appendDescribedFoods(selectionItems, dateContext);
     if (matched < extraction.foods.length) new Notice(`Built ${selectionItems.length} tray item${selectionItems.length === 1 ? "" : "s"}. Review the local estimate${selectionItems.length - matched === 1 ? "" : "s"} before logging.`);
     return null;
+  }
+
+  private async appendDescribedFoods(selectionItems: BatchFoodSelection[], dateContext: FoodLogDateContext | null, draftId = id("describe-food")): Promise<void> {
+    const current = this.settings.pendingFoodLogDraft;
+    // A resumed prepared workflow must not append the same estimates twice.
+    if (current?.id === draftId) return;
+    await this.savePendingFoodLogDraft({
+      id: draftId,
+      updatedAt: new Date().toISOString(),
+      activeTab: "search",
+      searchInput: current?.searchInput || "",
+      consumedDateInput: current?.consumedDateInput ?? initialFoodLogConsumedDateInput(dateContext),
+      dateContext: current?.dateContext ?? (dateContext ? { ...dateContext } : null),
+      selectionItems: [...(current?.selectionItems || []), ...selectionItems].map(cloneBatchFoodSelection),
+    });
   }
 
   openWorkoutStarter(dateContext: FoodLogDateContext | null = null): void {
@@ -10685,6 +10693,7 @@ class FoodSearchModal extends FoodInputModal {
       if (this.searchButtonEl) this.searchButtonEl.disabled = false;
       this.statusEl.setAttr("aria-busy", "false");
       this.activeFoodLogTab = mode;
+      this.modalEl.setAttr("data-food-mode", mode);
       logger.flow("FoodModal", "tab:set", { mode, selected: this.selectionItems.length });
       this.persistDraft();
       for (const [candidate, button] of tabButtons) {
@@ -10823,7 +10832,8 @@ class FoodSearchModal extends FoodInputModal {
       describeInput.blur();
       this.statusEl.setText("Separating the foods you described…");
       try {
-        const initialDraft = await this.plugin.openFoodDescriber(description, this.dateContext, (message) => {
+        await this.persistDraft();
+        await this.plugin.openFoodDescriber(description, this.dateContext, (message) => {
           if (!this.describeDismissed) this.statusEl.setText(message);
         });
         logger.flow("FoodDescribe", "job:ready", { dismissed: this.describeDismissed, ...summarizeDateContext(this.dateContext) });
@@ -10832,12 +10842,25 @@ class FoodSearchModal extends FoodInputModal {
           const ready = document.createDocumentFragment();
           ready.append("Your food tray is ready. ");
           const openTray = ready.createEl("button", { text: "Open tray", cls: "mod-cta" });
-          openTray.addEventListener("click", () => new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext).open());
+          openTray.addEventListener("click", () => {
+            const modal = new FoodSearchModal(this.app, this.plugin, null, this.dateContext);
+            modal.selectionExpanded = true;
+            modal.open();
+          });
           new Notice(ready, 12000);
           return;
         }
-        this.closeFromAction();
-        new FoodSearchModal(this.app, this.plugin, initialDraft, this.dateContext).open();
+        this.adoptPreparedDescribeTray();
+        setActiveTab("search");
+        this.selectionExpanded = true;
+        this.renderSelection();
+        this.statusEl.setText("Food estimate added. Review portions before logging.");
+        this.selectionEl.querySelector<HTMLButtonElement>('[aria-label="Close food review"]')?.focus({ preventScroll: true });
+        describeInput.value = "";
+        describeInput.readOnly = false;
+        describeAction.disabled = false;
+        describeAction.setText("Estimate meal");
+        panelByMode.describe.setAttr("aria-busy", "false");
       } catch (error) {
         logger.flowError("FoodDescribe", "job:failed", error, summarizeDateContext(this.dateContext));
         this.describeRequestActive = false;
@@ -10903,8 +10926,9 @@ class FoodSearchModal extends FoodInputModal {
     setIcon(scanButton, "scan-barcode");
     scanButton.addEventListener("click", () => this.openBarcodeScanner());
     this.selectionEl = this.contentEl.createDiv({ cls: "tps-health-selection" });
-    this.resultsEl = this.contentEl.createDiv({ cls: "tps-health-search-results" });
-    this.actionsEl = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
+    const resultsScroll = this.contentEl.createDiv({ cls: "tps-health-search-scroll" });
+    this.resultsEl = resultsScroll.createDiv({ cls: "tps-health-search-results" });
+    this.actionsEl = resultsScroll.createDiv({ cls: "tps-health-search-actions" });
     this.renderSelection();
     void this.refreshSelectionItemsFromSources();
     setActiveTab(this.activeFoodLogTab);
@@ -10932,6 +10956,15 @@ class FoodSearchModal extends FoodInputModal {
     this.searchInputEl = null;
     this.searchButtonEl = null;
     this.contentEl.empty();
+  }
+
+  private adoptPreparedDescribeTray(): void {
+    const draft = this.plugin.getPendingFoodLogDraft(this.dateContext);
+    if (!draft?.selectionItems.length) throw new Error("No food estimate was prepared. Try again.");
+    this.cancelDraftPersistTimer();
+    this.draftExpectedId = draft.id;
+    this.selectionItems = draft.selectionItems.map(cloneBatchFoodSelection);
+    this.consumedDateInput = draft.consumedDateInput ?? this.consumedDateInput;
   }
 
   private openBarcodeScanner(): void {
@@ -10963,7 +10996,12 @@ class FoodSearchModal extends FoodInputModal {
     logger.flow("FoodModal", "search:local-queued", { query, token });
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = null;
-      if (token === this.searchToken) void this.runLocalSearch(query, token);
+      if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
+      void this.runLocalSearch(query, token);
+      if (query.trim().length >= 2 && !/^\d+$/.test(query.trim())) this.searchTimer = window.setTimeout(() => {
+        this.searchTimer = null;
+        if (token === this.searchToken && this.activeFoodLogTab === "search") this.submitOnlineSearch(query);
+      }, FOOD_ONLINE_SEARCH_DEBOUNCE_MS - FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
     }, FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
   }
 
@@ -10992,8 +11030,8 @@ class FoodSearchModal extends FoodInputModal {
           ? `${items.length} quick match${items.length === 1 ? "" : "es"} · checking online databases...`
           : "Checking online databases..."
         : items.length
-          ? `${items.length} quick match${items.length === 1 ? "" : "es"}. Press Enter for online databases.`
-          : "No saved match. Press Enter to check online databases.",
+          ? `${items.length} saved match${items.length === 1 ? "" : "es"} · checking databases shortly…`
+          : "Checking food databases shortly…",
       "Quick matches",
     );
   }
@@ -11383,7 +11421,6 @@ class FoodSearchModal extends FoodInputModal {
 
     const consumedTimeSetting = new Setting(trayBody)
       .setName("Consumed time")
-      .setDesc("Optional; clear it to use the current time.")
       .addText((text) => {
         configureFoodLogDateTimeInput(text.inputEl);
         text.setValue(this.consumedDateInput);
@@ -11811,7 +11848,6 @@ class FoodSearchModal extends FoodInputModal {
   private renderCreateAction(query: string, cta = true): void {
     new Setting(this.actionsEl)
       .setName(`Create "${query}"`)
-      .setDesc("Create a local food note, then choose serving count and log it.")
       .addButton((button) => {
         button.setButtonText("Create food");
         if (cta) button.setCta();
@@ -11824,8 +11860,7 @@ class FoodSearchModal extends FoodInputModal {
 
   private renderFoodResearchAction(query: string): void {
     const setting = new Setting(this.actionsEl)
-      .setName("Still not seeing it?")
-      .setDesc("Ask Gemini to research the exact packaged product with Google. This is slower and may require a Nutrition Facts photo.");
+      .setName("Search other sources");
     setting.addButton((button) => button
       .setButtonText("Search wider with Gemini")
       .setCta()
@@ -20802,7 +20837,7 @@ function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = n
   const exactNameTokenMatch = foodSearchTokenMatchScore(tokens, normalizedName, foodSearchHaystackTokens(normalizedName));
   const brandTokenMatch = normalizedBrand ? foodSearchTokenMatchScore(tokens, normalizedBrand, foodSearchHaystackTokens(normalizedBrand)) : { exact: 0, fuzzy: 0, total: 0 };
   const usage = foodUsageForItem(item, usageStats);
-  if (scoreQueryVariants.some((variant) => normalizedName === variant)) score += 80;
+  if (scoreQueryVariants.some((variant) => normalizedName === variant)) score += 160;
   if (scoreQueryVariants.some((variant) => normalizedName.includes(variant))) score += 40;
   if (normalizedBrand && normalizedQuery.includes(normalizedBrand)) score += 30;
   score += tokenMatch.exact * 16 + tokenMatch.fuzzy * 7;

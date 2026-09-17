@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.46.2](https://github.com/ZachTish/tps-health/releases/tag/0.46.2) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.46.3](https://github.com/ZachTish/tps-health/releases/tag/0.46.3) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -103,3 +103,17 @@ Cleanup review: the retired TPS Home action compatibility API and Apple Shortcut
 Labeled household portions now take precedence over generic volume conversions: a food defined as one cup weighing 170 g logs half a cup as 85 g, rather than becoming an unsupported 120 ml conversion. This agrees with the atomic note projection path. Removed the unreachable Apple Shortcut launcher, URL builder, and visibility predicate left behind when its button was retired; existing Shortcut inbox compatibility remains pending a separate removal decision.
 
 Validation: 383 automated tests passed, zero failed; one optional live USDA test was skipped because no test key is configured. The full declared suite and TypeScript/build passed. In the reloaded Obsidian Plugin Test Vault, an old 177.5 g tray against a newly ml-based definition retained g, displayed the correction message, and wrote nothing on Log. Selecting ml showed 50 kcal / 12.5 g carbs and the Log button created an atomic entry with those exact values. The synthetic entry was archived, original pending tray/root settings restored, and fixtures moved to `_archive/Health Audit 0462`. Final deployment uses the shared helper and reload uses `plugin:reload id=tps-health`. No physical mobile or production mutation is claimed.
+
+
+## 0.46.3 — Search and Describe tray reliability
+
+The main food logger shows saved matches immediately and searches configured food databases after an 800 ms typing pause. Enter or the search icon still searches immediately; typed barcode numbers require explicit submission so a partial barcode cannot add a food. Query changes, tab switches, and closing invalidate earlier work. Provider caches, branded-food preferences, rate-limit handling, and bounded timeouts remain in place. Recipe ingredient/editor suggestions retain their local-first behavior. Exact product names receive stronger ranking than broad curated variants.
+
+Describe appends its completed estimates to the existing persistent tray, preserving quantities and consumed time, then opens review in the same modal. It no longer replaces earlier selections or hides completion behind a newly opened collapsed tray. Prepared-workflow retries with the same draft ID do not append twice. Closing during preparation retains the existing completion notice with an **Open tray** action that opens review expanded. Failures retain the description and allow retry. Common written quantities (one through twelve) are parsed as amounts, including separate foods joined by “and”. AI estimates still require portion/nutrition review; provider availability and accuracy are not guaranteed.
+
+Phone layout removes inherited search-field padding, keeps secondary research/create actions at the end of the scrolling results instead of squeezing the list with a fixed panel, and puts method tabs before Describe/Quick add forms. Mobile controls use 16 px input text to avoid focus zoom, and consumed-time controls can wrap. Search/Describe, Scan, Quick add, Create food/meal, research, review, tags, consumed time, and explicit-X dismissal remain available. The five settings destinations and persisted settings schema are unchanged. Minimum Obsidian remains 1.12.0.
+
+Regression coverage exercises settled search, stale/closed queries, explicit barcode submission, exact product ranking, spoken quantities, Describe completion in place, retention of existing foods/time, prepared retries, and failure recovery. Live public Open Food Facts lookup returned Michelob Ultra results; AI UI testing uses a deterministic fixture, not private provider credentials. Physical iPhone keyboard behavior requires device testing. Stable builds deploy only shipped files to the test vault; reload uses `plugin:reload id=tps-health`. Production installation remains the user's BRAT pull.
+
+
+0.46.3 test-vault UI verification: mobile emulation at 390 px showed seven combined Michelob Ultra results without Enter, with exact products above the curated seltzer variant. Describe with a deterministic gateway fixture immediately expanded review, retained the existing two-unit food, and added one estimated banana with its serving/nutrition. Search actions scroll after results; method tabs remain above the Describe form. Narrow-layout review exposed theme padding squeezing remove/close icons to 4 px; their glyphs now retain 20 px within 44 px controls. The review hides the underlying results while expanded. At the narrowest phone widths, the serving selector gets its own full-width row so its label is readable. No food log was written during this UI check. Physical iOS and live AI-provider execution are not claimed.

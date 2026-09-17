@@ -234,11 +234,11 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
   assert.match(mainSource, /describeAction\.setText\("Estimating…"\)/);
   assert.match(mainSource, /describeInput\.blur\(\)/);
   assert.match(mainSource, /if \(!this\.describeDismissed\) this\.statusEl\.setText\(message\)/);
-  assert.match(mainSource, /new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /this\.adoptPreparedDescribeTray\(\)/);
   assert.match(mainSource, /describeAction\.setText\("Try again"\)/);
   assert.match(mainSource, /Your description is still here\./);
   assert.match(mainSource, /job:dismissed-while-running/);
-  assert.match(mainSource, /openTray\.addEventListener\("click", \(\) => new FoodSearchModal\(this\.app, this\.plugin, initialDraft, this\.dateContext\)\.open\(\)\)/);
+  assert.match(mainSource, /modal\.selectionExpanded = true;\s+modal\.open\(\)/);
 });
 
 test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
@@ -252,9 +252,17 @@ test("Describe persists a resumable workflow and uses stable durable jobs for ea
   assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);
   assert.match(mainSource, /resumePendingFoodDescribeWorkflow\("layout-ready"\)/);
   assert.match(mainSource, /isPendingAiJobError\(error\)/);
-  assert.match(mainSource, /id: workflow\?\.id \|\| id\("describe-food"\)/);
+  assert.match(mainSource, /appendDescribedFoods\(selectionItems, dateContext, workflow\?\.id\)/);
   assert.match(mainSource, /workflow\.preparedSelectionItems = selectionItems\.map\(cloneBatchFoodSelection\)/);
   assert.match(mainSource, /workflow:prepared-tray-restored/);
   assert.match(mainSource, /this\.settings\.pendingFoodLogDraft\?\.id === workflow\.id/);
   assert.match(mainSource, /tps:health-food-describe-ready/);
+});
+
+test('spoken portions stay quantities rather than brand search words', () => {
+  assert.deepEqual(parseFoodDescription('one banana and two eggs'), [
+    {original:'one banana',query:'banana',quantity:1},
+    {original:'two eggs',query:'eggs',quantity:2},
+  ]);
+  assert.equal(parseFoodDescription('Three scoops of whey')[0].quantity,3);
 });
