@@ -16,7 +16,7 @@ import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
 import { buildHealthPropertyCatalog } from "./health-property-catalog";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine } from "./format";
-import { resolveFoodLogDateKey } from "./food-log-date";
+import { foodLogDateIndicator, resolveFoodLogDateKey } from "./food-log-date";
 import { resolveNativeDailyDateFilter } from "./native-daily-date-filter";
 import { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescribeFoodExtraction, isUsableDescribeFoodReview, localDescribeFoodEstimate, parseFoodDescription, type DescribeExtractedFood, type DescribeFoodExtraction, type DescribeFoodPlan, type DescribeFoodReview, type DescribeNutritionEstimate, type DescribePlannedFood, type DescribeReviewedFood } from "./describe-food";
@@ -10635,6 +10635,7 @@ class FoodSearchModal extends FoodInputModal {
   private selectionEl!: HTMLElement;
   private selectionItems: BatchFoodSelection[] = [];
   private consumedDateInput: string;
+  private dateBannerEl: HTMLElement | null = null;
   private searchInput = "";
   private barcodeInput = "";
   private activeFoodLogTab: FoodLogTab;
@@ -10697,6 +10698,8 @@ class FoodSearchModal extends FoodInputModal {
     this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-search-frame");
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Log food" });
+    this.dateBannerEl = this.contentEl.createDiv({ cls: "tps-health-log-date-banner" });
+    this.updateDateBanner();
     this.statusEl = this.contentEl.createDiv({ cls: "tps-health-status" });
     this.statusEl.setAttr("role", "status");
     this.statusEl.setAttr("aria-live", "polite");
@@ -11327,7 +11330,12 @@ class FoodSearchModal extends FoodInputModal {
 
   }
 
+  private updateDateBanner(): void {
+    if (this.dateBannerEl) renderFoodLogDateBanner(this.dateBannerEl, this.consumedDateInput, this.dateContext);
+  }
+
   private renderSelection(): void {
+    this.updateDateBanner();
     if (!this.selectionEl) return;
     const scrollTop = this.selectionEl.querySelector<HTMLElement>(".tps-health-selection-body")?.scrollTop || 0;
     preserveFoodModalScroll(this.contentEl, () => this.renderSelectionContents());
@@ -11480,6 +11488,7 @@ class FoodSearchModal extends FoodInputModal {
         text.setValue(this.consumedDateInput);
         text.inputEl.addEventListener("input", () => {
           this.consumedDateInput = text.inputEl.value;
+          this.updateDateBanner();
           void this.persistDraft();
         });
       });
@@ -12171,6 +12180,20 @@ function recipeIngredientLine(item: FoodItem, quantity: number, unit: string): s
 function foodLogAmountUnit(line: string): "g" | "ml" | undefined {
   const unit = normalizeServingUnit(readStringField(line, "amountUnit") || "");
   return unit === "g" || unit === "ml" ? unit : undefined;
+}
+
+function renderFoodLogDateBanner(container: HTMLElement, input: string, dateContext: FoodLogDateContext | null): void {
+  const indicator = foodLogDateIndicator(resolveBatchFoodCompletedDate(input, dateContext));
+  container.empty();
+  container.setAttr("data-date-state", indicator.state);
+  container.setAttr("role", "status");
+  container.setAttr("aria-live", "polite");
+  container.setAttr("aria-atomic", "true");
+  const icon = container.createSpan({ cls: "tps-health-log-date-icon", attr: { "aria-hidden": "true" } });
+  setIcon(icon, indicator.icon);
+  const copy = container.createDiv({ cls: "tps-health-log-date-copy" });
+  copy.createDiv({ cls: "tps-health-log-date-label", text: indicator.label });
+  copy.createDiv({ cls: "tps-health-log-date-value", text: indicator.dateLabel });
 }
 
 function foodLogDateTimeLocalNow(): string {
@@ -16505,12 +16528,18 @@ class FoodLogModal extends FoodInputModal {
     let unit = this.initialDraft?.unit || preferredFoodLogUnit(this.item);
     let tags: string[] = [];
     let consumedDateInput = initialFoodLogConsumedDateInput(this.dateContext);
+    const dateBanner = this.contentEl.createDiv({ cls: "tps-health-log-date-banner" });
+    let consumedTimeInputEl: HTMLInputElement | null = null;
+    const updateDateStatus = () => {
+      renderFoodLogDateBanner(dateBanner, consumedDateInput, this.dateContext);
+      if (consumedTimeInputEl) consumedTimeInputEl.value = /^now$/i.test(consumedDateInput)
+        ? foodLogDateTimeLocalNow()
+        : /^\d{4}-\d{2}-\d{2}$/.test(consumedDateInput) ? `${consumedDateInput}T00:00` : consumedDateInput;
+    };
+    updateDateStatus();
     if (this.dateContext && !this.dateContext.isToday) {
       const dateContext = this.dateContext;
       new Notice(`Food log date: ${dateContext.label}`);
-      const dateStatus = this.contentEl.createDiv({ cls: "tps-health-status tps-health-date-choice" });
-      const updateDateStatus = () => dateStatus.setText(`Consumed time: ${consumedDateInput === dateContext.dateIso ? dateContext.label : consumedDateInput || "now"}`);
-      updateDateStatus();
       new Setting(this.contentEl)
         .setName("Consumed date")
         .setDesc("Choose now or the open daily note date.")
@@ -16560,9 +16589,13 @@ class FoodLogModal extends FoodInputModal {
       .setDesc("Uses Obsidian's local date-time picker. Clear it to log at the current time.")
       .addText((text) => {
         configureFoodLogDateTimeInput(text.inputEl);
+        consumedTimeInputEl = text.inputEl;
         text
           .setValue(consumedDateInput)
-          .onChange((value) => consumedDateInput = value.trim());
+          .onChange((value) => {
+            consumedDateInput = value.trim();
+            renderFoodLogDateBanner(dateBanner, consumedDateInput, this.dateContext);
+          });
       });
     new Setting(this.contentEl)
       .setName("Tags")

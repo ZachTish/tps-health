@@ -14,3 +14,18 @@ export function resolveFoodLogDateKey(input: {
     || extractFoodLogIsoDate(input.completedDate)
     || extractFoodLogIsoDate(input.createdDate);
 }
+
+/** Compare local calendar days, not UTC dates or elapsed 24-hour periods. */
+export function foodLogDateIndicator(value: string | undefined, now = new Date(), locale?: string) {
+  const parsed = value ? new Date(value) : now;
+  const date = Number.isFinite(parsed.getTime()) ? parsed : now;
+  const dayKey = (d: Date) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  const difference = dayKey(date) - dayKey(now);
+  const state = difference === 0 ? "today" : difference < 0 ? "past" : "future";
+  return {
+    state,
+    icon: state === "today" ? "sun" : state === "past" ? "moon" : "calendar",
+    label: state === "today" ? "Logging today" : state === "past" ? "Logging a past day" : "Logging a future day",
+    dateLabel: date.toLocaleDateString(locale, { weekday: "long", month: "short", day: "numeric", year: "numeric" }),
+  };
+}

@@ -556,3 +556,49 @@ test('macro rings, rows, nutrient contributions and food summaries display one d
   }
   assert.equal(food.proteinG,12.345); assert.equal(metric.value,12.345);
 });
+
+test('the day banner stays visible across food modes and updates with the tray consumed date', async () => {
+  const {tray}=await setup();
+  const banner=tray.dateBannerEl;
+  assert.equal(banner.parentElement,tray.contentEl);
+  assert.equal(banner.attributes['role'],'status'); assert.equal(banner.attributes['aria-atomic'],'true');
+  tray.consumedDateInput='2000-01-01T12:00'; tray.renderSelection();
+  assert.equal(banner.attributes['data-date-state'],'past');
+  assert.equal(walk(banner).find(n=>n.className==='tps-health-log-date-icon').dataset.icon,'moon');
+  walk(tray.contentEl).find(n=>n.className==='tps-health-food-tab'&&n.text==='Describe').listeners.get('click')();
+  assert.equal(banner.parentElement,tray.contentEl); assert.equal(banner.attributes['data-date-state'],'past');
+  tray.selectionItems=[{item:food('Oats'),quantity:1,unit:'serving'}];
+  let timeInput;
+  globalThis.__TPSHealthTestSettingControl=(type,name,callback)=> {
+    const control={inputEl:nativeTrayTestElement('input'),setValue(v){this.inputEl.value=v;return this;},setPlaceholder(){return this;},onChange(){return this;}};
+    callback(control); if(name==='Consumed time')timeInput=control.inputEl;
+  };
+  try {tray.renderSelection();} finally {delete globalThis.__TPSHealthTestSettingControl;}
+  timeInput.value='2099-01-01T12:00'; timeInput.listeners.get('input')();
+  assert.equal(banner.attributes['data-date-state'],'future');
+  assert.equal(walk(banner).find(n=>n.className==='tps-health-log-date-icon').dataset.icon,'calendar');
+  timeInput.value=''; timeInput.listeners.get('input')();
+  assert.equal(banner.attributes['data-date-state'],'today');
+});
+
+test('single-food date banner tracks the picker and Now/selected-day buttons together', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:Plugin,FoodLogModal}=await importPluginWithObsidianStub();
+  const plugin=new Plugin(createFakeHealthApp().app);
+  const modal=new FoodLogModal(plugin.app,plugin,food('Oats'),null,{dateIso:'2000-01-01',label:'Jan 1, 2000',isToday:false});
+  modal.contentEl=nativeTrayTestElement(); modal.modalEl=nativeTrayTestElement();
+  const controls=[];
+  globalThis.__TPSHealthTestSettingControl=(type,name,callback)=>{
+    const c={type,name,inputEl:nativeTrayTestElement('input'),buttonEl:nativeTrayTestElement('button'),setValue(v){this.inputEl.value=v;return this;},setPlaceholder(){return this;},setButtonText(v){this.label=v;return this;},setCta(){return this;},addOption(){return this;},onChange(fn){this.change=fn;return this;},onClick(fn){this.click=fn;return this;}};
+    callback(c);controls.push(c);
+  };
+  try {modal.onOpen();} finally {delete globalThis.__TPSHealthTestSettingControl;}
+  const banner=walk(modal.contentEl).find(n=>n.className==='tps-health-log-date-banner');
+  const time=controls.find(c=>c.name==='Consumed time');
+  assert.equal(banner.attributes['data-date-state'],'past');
+  time.change('2099-01-01T12:00'); assert.equal(banner.attributes['data-date-state'],'future');
+  controls.find(c=>c.label==='Now').click(); assert.equal(banner.attributes['data-date-state'],'today');
+  assert.ok(!time.inputEl.value.startsWith('2099'));
+  controls.find(c=>c.label==='Jan 1, 2000').click();
+  assert.equal(banner.attributes['data-date-state'],'past'); assert.equal(time.inputEl.value,'2000-01-01T00:00');
+});

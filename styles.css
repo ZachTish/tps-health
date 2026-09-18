@@ -5220,3 +5220,21 @@ body .tps-health-food-search-frame:has(.tps-health-selection-body:not([hidden]))
 .tps-health-food-data-details summary { cursor: pointer; padding: 6px 0; }
 .tps-health-food-data-details summary:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 .tps-health-food-data-details > div { white-space: pre-line; overflow-wrap: anywhere; padding: 4px 0 8px; }
+
+/* The logging day stays outside the search/review scroller on narrow screens. */
+.tps-health-log-date-banner {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto; min-width: 0;
+  padding: 10px 12px; margin: 4px 0 12px; border: 1px solid var(--background-modifier-border);
+  border-left: 4px solid var(--text-muted); border-radius: 10px;
+  background: var(--background-secondary); color: var(--text-normal);
+}
+.tps-health-log-date-banner[data-date-state="past"] { border-color: var(--text-warning); }
+.tps-health-log-date-banner[data-date-state="future"] { border-color: var(--interactive-accent); }
+.tps-health-log-date-icon { display: flex; flex: 0 0 24px; color: var(--text-muted); }
+.tps-health-log-date-icon svg { width: 24px; height: 24px; }
+.tps-health-log-date-banner[data-date-state="past"] .tps-health-log-date-icon { color: var(--text-warning); }
+.tps-health-log-date-banner[data-date-state="future"] .tps-health-log-date-icon { color: var(--interactive-accent); }
+.tps-health-log-date-copy { min-width: 0; overflow-wrap: anywhere; }
+.tps-health-log-date-label { font-size: var(--font-ui-small); font-weight: 600; }
+.tps-health-log-date-value { font-size: var(--font-ui-medium); font-weight: 700; line-height: 1.4; }
+body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; margin: 0 42px 10px 0; padding: 8px 10px; }
