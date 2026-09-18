@@ -1868,7 +1868,7 @@ export class HealthNativeRecordService {
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
   }
 
-  /** Project only the current Bases result, using the same normalized record index as inline blocks. */
+  /** Project selected food records from the normalized index, without duplicates or archived records. */
   getFoodEntriesForPaths(paths: string[]): (NativeDailyFoodEntrySnapshot & { dateIso: string })[] {
     return [...new Set(paths)].map(path => this.recordsByPath.get(path))
       .filter((record): record is IndexedHealthRecord => !!record && record.kind === 'food-entry' && record.frontmatter.archived !== true)

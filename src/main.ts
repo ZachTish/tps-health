@@ -3,8 +3,6 @@ import { authoredMetricServing } from "./food-serving";
 import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
-import { MacrosBaseView } from "./macros-base-view";
-import { MACROS_BASE_TYPE, defaultMacrosBaseContent, initializeMacrosDateType, sumMacroEntries } from "./macros-base-model";
 import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
@@ -753,11 +751,6 @@ export default class TPSHealthPlugin extends Plugin {
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
-    if (typeof this.registerBasesView === "function") this.registerBasesView(MACROS_BASE_TYPE, {
-      name: "Macros", icon: "chart-pie", factory: (controller, container) => new MacrosBaseView(controller, container, this),
-      options: config => MacrosBaseView.options(config),
-    });
-    this.addCommand({ id: "open-macros-base", name: "Open Macros Base", callback: () => void this.openMacrosBase() });
 
     this.register(this.onActiveWorkoutStateChanged(() => this.scheduleWorkoutActionBars()));
     this.api = this.createApi();
@@ -1441,30 +1434,6 @@ export default class TPSHealthPlugin extends Plugin {
       ...summarizeDateContext(dateContext),
     });
     new FoodSearchModal(this.app, this, initialDraft, dateContext, initialTab).open();
-  }
-
-  async openMacrosBase(): Promise<void> {
-    try {
-      initializeMacrosDateType(this.app, this.settings);
-      const path = "Macros.base";
-      let file = this.app.vault.getAbstractFileByPath(path);
-      if (!file) file = await this.app.vault.create(path, defaultMacrosBaseContent(this.settings));
-      if (!(file instanceof TFile)) throw new Error("Macros.base is not a file.");
-      await this.app.workspace.getLeaf(false).openFile(file);
-    } catch (error) { logger.flowError("MacrosBase", "open:failed", error); new Notice("Could not open Macros.base. Check the destination."); }
-  }
-
-  renderMacrosBaseDay(container: HTMLElement, day: string, entries: NativeDailyFoodEntrySnapshot[], goals: HealthMetricRenderConfig[], display: NativeDailyDisplayOptions, disclosures: Map<string, boolean>, includeRecordedNutrients = true): void {
-    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals, undefined, includeRecordedNutrients), entries, display, {
-      disclosures,
-      components: (target, entry) => renderNativeDailyComponents(target, this, entry, disclosures),
-      addFood: () => this.openFoodLogger({ dateIso: day, label: day, isToday: day === window.moment().format("YYYY-MM-DD"), focusAfterLog: false }),
-      openFoodEntry: path => void this.openNativeDailyRecord(path),
-      editFoodEntry: entry => this.openNativeFoodEntryEditor(entry),
-      removeFoodEntry: entry => void this.removeNativeDailyEntry(entry),
-      logActivity: () => {}, startWorkout: () => {}, activeWorkout: null, resumeWorkout: () => {}, finishWorkout: () => {},
-      openActivityEntry: () => {}, editActivityEntry: () => {}, removeActivityEntry: () => {},
-    });
   }
 
   async openFoodLogBase(): Promise<void> {

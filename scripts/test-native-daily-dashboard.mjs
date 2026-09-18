@@ -292,7 +292,6 @@ test('recorded micronutrients show compact contribution rows without fabricated 
  ]);
  assert.equal(formatNativeDailyMetricValue(.025), '0.025');
  assert.deepEqual(nativeDailyNutrientContributors('creatineG', [{title:'Powder',path:'a.md',creatineG:3},{title:'Preworkout',path:'b.md',creatineG:2}]).map(c => c.value), [3,2]);
- assert.equal(buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [], undefined, false).metrics.length, 0, 'Base property visibility is respected');
  const custom = buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [{propertyKey:'creatineG',label:'My creatine',unit:'g',kind:'max',max:6}]);
  assert.equal(custom.metrics.filter(m => m.propertyKey === 'creatineG').length, 1); assert.equal(custom.metrics[0].targetLabel, 'up to 6 g');
 });
@@ -318,8 +317,6 @@ test('recorded nutrients need no goals or property registrations in macro views'
   }
   assert.equal(model.metrics.some(m => m.propertyKey === 'vitaminDMcg'), false);
   assert.equal(model.metrics.some(m => m.propertyKey === 'sugarAlcohol'), false);
-  const strict = buildNativeDailyDashboardModel(recorded, [{propertyKey:'alcohol',label:'Alcohol',unit:'g',kind:'min'}], undefined, false);
-  assert.deepEqual(strict.metrics.map(m => [m.propertyKey, m.value]), [['alcohol',14]]);
 });
 
 test('Health nutrient choices include alcohol without a goal and preserve custom targets', () => {

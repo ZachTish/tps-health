@@ -64,7 +64,6 @@ async function importPluginWithObsidianStub() {
       constructor(app) { this.app = app; this.__pluginData = null; }
       addCommand() {}
       addSettingTab() {}
-      registerBasesView() {}
       registerEditorExtension() {}
       registerEvent() {}
       loadData() { return Promise.resolve(this.__pluginData == null ? null : JSON.parse(JSON.stringify(this.__pluginData))); }
@@ -102,7 +101,6 @@ async function importPluginWithObsidianStub() {
     globalThis.__TPSHealthTestMarkdownView = MarkdownView;
     export class MarkdownRenderChild { constructor(containerEl) { this.containerEl = containerEl; } onload() {} onunload() {} }
     export class EditorSuggest {}
-    export class BasesView {}
     export class App {}
     export const Platform = { isDesktop: true, isMobile: false, isDesktopApp: true, isMobileApp: false, isIosApp: false, isAndroidApp: false };
     export const editorLivePreviewField = {};
@@ -11922,4 +11920,32 @@ test('Describe serving normalization scales optional nutrients without filling u
     assert.equal(explicit.item.nutrition.creatineG,10);
     assert.equal(explicit.item.nutrition.calories,30);
   }
+});
+
+
+test("Health startup keeps macro blocks without registering a Macros Base or creation command", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "registerWorkoutTaskCompletionTracking", "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => ({});
+  plugin.saveData = async () => {};
+  const commands = [], blocks = [], bases = [];
+  plugin.addCommand = command => commands.push(command.id);
+  plugin.registerMarkdownCodeBlockProcessor = language => blocks.push(language);
+  plugin.registerBasesView = type => bases.push(type);
+  await plugin.onload();
+  assert.deepEqual(blocks, ["tps-health-macros", "tps-health-activity", "tps-health-daily"]);
+  assert.deepEqual(bases, []);
+  assert.equal(commands.includes("open-macros-base"), false);
+  for (const id of ["log-food", "log-activity", "open-food-log-base", "open-workout-log-base"]) assert.ok(commands.includes(id), id);
+  assert.equal(typeof plugin.openMacrosBase, "undefined");
 });

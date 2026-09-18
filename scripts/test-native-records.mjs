@@ -1837,7 +1837,7 @@ test('an unloaded service cannot refresh controls when an old mobile read finish
  assert.equal(await h.service.waitForWorkoutIndexSettled(),false);
 });
 
-test('Macros Base projects only selected atomic food records in query order', async () => {
+test('food record projection preserves requested order and excludes duplicates and non-food records', async () => {
   const { service } = createHarness({ apiVersion: 6 });
   const food = (id, amount) => ({id,createdDate:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:00:00.000Z',item:{id,name:id,source:'manual',nutrition:{calories:amount}},quantity:1,unit:'serving'});
   const a=await service.createFoodEntry(food('base-a',100));

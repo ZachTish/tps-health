@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.47.4](https://github.com/ZachTish/tps-health/releases/tag/0.47.4) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.0.0](https://github.com/ZachTish/tps-health/releases/tag/1.0.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -12,7 +12,7 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 
 **Log food** searches saved foods and databases together; scanning sits beside search, with Describe and quick-add routes available. The persistent tray keeps unlogged items, and the logger closes through its explicit close button. Categorize food logs with tags instead of a section selector.
 
-Macros can be shown in inline blocks or a dedicated **Macros Base** with native date-range filters. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
+Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 
 **Start workout** or **Start blank workout** opens the workout flow. Set deletion and separate dropset boundaries are supported. Workout controls appear for an open active workout; rendered content belongs in Live Preview and Reading mode, while Source mode stays literal. Atomic note workouts have their own notes. Atomic line workouts retain a real level-2 heading in the Daily Note for their legacy inline blocks.
 
@@ -32,7 +32,7 @@ The reference's old `Default food log section` and Apple Shortcut instructions d
 
 ## Atomic line compatibility and API
 
-Health no longer registers the retired `tps-health-food-log` Base view. GCM's generic `tps-table` remains available for legacy log tables: `lineFilterKey: food`, `totalsRow: top`, and `createCommandId: tps-health:log-food`. GCM TPS Table scans matching Markdown inline-property lines. The dedicated Macros Base is a separate nutrition summary surface.
+Health no longer registers the retired `tps-health-food-log` Base view. GCM's generic `tps-table` remains available for legacy log tables: `lineFilterKey: food`, `totalsRow: top`, and `createCommandId: tps-health:log-food`. GCM TPS Table scans matching Markdown inline-property lines. Nutrition summaries use the `tps-health-macros` block; existing Macros Base configurations are retained as files but their retired layout no longer renders.
 
 The enabled plugin exposes `app.tpsHealth`/`api` for food lookup, exact-food logging, activities, workout plans, and sessions. Prefer a barcode or exact food-note path for deterministic logging. See [the detailed reference](REFERENCE.md) and [src/main.ts](src/main.ts) for API and record contracts; the reference preserves release-specific validation and retired workflows as history.
 
@@ -58,6 +58,27 @@ Documentation-only maintenance does not create a new plugin version. Published r
 
 For prior feature details and release-specific evidence, see [REFERENCE.md](REFERENCE.md) and [GitHub releases](https://github.com/ZachTish/tps-health/releases). The September 16 cleanup changes documentation and repository metadata, not shipped behavior.
 
+
+## 1.0.0 — Macros stays a block
+
+Removes the custom Macros Bases layout, **Open Macros Base** command, **Daily logging → Appearance → Macros Base → Open**, and their unused model, toolbar interception, rendering bridge and CSS. Health no longer registers a Bases view. The existing Food Log and Activity Log table commands remain; they are separate record lists. Settings navigation still has the same five destinations and Daily logging default, with no new controls, disclosures or persisted fields. **Macros block** and **Nutrient rows** appearance preferences remain.
+
+Use a macro block in a Daily Note, or put it on an ordinary Markdown dashboard page with an explicit date selector:
+
+````markdown
+```tps-health-macros
+style: rings
+nutrients: collapsed
+foods: collapsed
+date(note.date) == today()
+```
+````
+
+The existing block retains recorded nutrients, configured goals, food/recipe contribution expansion and date-aware **Add food**. It renders in Reading and Live Preview; Source stays literal. An empty block uses its containing Daily Note's date. Rings/rows, hidden/collapsed/expanded nutrients and narrow-layout wrapping are unchanged. No new dedicated workspace page is introduced.
+
+This is a major release because saved Macros Base layouts and their command/hotkeys are intentionally retired. Existing `.base` files, embeds, settings, food logs and nutrient values are not deleted, rewritten or migrated. Replace Macros Base embeds manually with the block above, or select a supported layout to keep using the file as a record list. The block selects one day, not a multi-day aggregate. Minimum Obsidian remains 1.12.0.
+
+Focused regression coverage verifies real plugin startup registers all three Health blocks without any Bases view or Macros Base command, remaining record-list commands, settings/control preservation, recorded nutrients and existing block rendering. Validation: 429 tests passed, zero failed, with one optional live USDA test skipped without its credential. TypeScript and the full declared suite passed. Test-vault UI verification showed the retained Rings and Nutrient rows settings with no Macros Base action, and a real `tps-health-macros` Reading-mode block displayed synthetic calories/protein/carbs/fat rings plus fiber, sodium, vitamin C and creatine. Runtime checks confirmed the Macros Base registration and command were absent. Model/render tests retain contribution expansion, display styles, recorded nutrients, and configured goals. The synthetic block note was moved directly from Inbox to `_archive/Health Macros Block QA 1.0.0.md`; temporary in-memory data overrides were restored and Health `data.json` remained byte-identical. No providers were called during UI QA and no real food logs were written. The separate final build deploys through the shared test-vault helper, followed by the named Health reload. Physical iOS QA is not claimed. Historical sections below describe the versions when they shipped; Macros Base references there are superseded by this removal. Production installation remains the user's BRAT pull.
 
 ## 0.46.0 — Supplement nutrients and serving stability
 
