@@ -303,7 +303,7 @@ interface LegacyHealthCandidate {
 }
 
 const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 'workout-session', 'workout-exercise']);
-const FOOD_NUTRITION_KEYS = [
+const foodNutritionKeys = () => [
   ...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS,
 ] as const;
 const CORE_FOOD_NUTRITION_KEYS = new Set<string>(['calories', 'proteinG', 'carbsG', 'fatG']);
@@ -330,7 +330,7 @@ function foodNutritionStorageValues(
 ): Record<string, unknown> {
   const values = nutrition as Record<string, unknown>;
   const additional = extraNutrition(values);
-  return Object.fromEntries(FOOD_NUTRITION_KEYS.map((key) => {
+  return Object.fromEntries(foodNutritionKeys().map((key) => {
     if (isExtraNutrientKey(key)) {
       const value = additional[key];
       return [key, value ?? (clearMissing ? null : undefined)];
@@ -2887,7 +2887,7 @@ export class HealthNativeRecordService {
         foodPath: this.resolveFoodSourcePath(foodReference(updated.frontmatter), path),
         quantity: numberValue(updated.frontmatter.quantity),
         unit: String(updated.frontmatter.unit || ''),
-        changedKeys: [...REDUNDANT_FOOD_ENTRY_KEYS, ...FOOD_NUTRITION_KEYS],
+        changedKeys: [...REDUNDANT_FOOD_ENTRY_KEYS, ...foodNutritionKeys()],
       });
     } catch (error) {
       logger.flowError('NativeFoodProjection', 'reconcile:failed', error, { path });

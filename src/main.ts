@@ -1,6 +1,6 @@
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
-import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
+import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
 import { MacrosBaseView } from "./macros-base-view";
@@ -700,6 +700,7 @@ export default class TPSHealthPlugin extends Plugin {
     const storedSettings = await this.loadData();
     this.settingsPersistenceBlockedByFutureSchema = isFutureTPSHealthSettings(storedSettings);
     this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {});
+    configureCustomNutrients(this.settings.customNutrients);
     logger.setLoggingEnabled(this.settings.enableLogging);
     const legacyUsdaApiKey = legacyUsdaApiKeyValue(storedSettings);
     let usdaKeyMigration: ReturnType<typeof planLegacyUsdaApiKeyMigration> = null;
@@ -1127,6 +1128,38 @@ export default class TPSHealthPlugin extends Plugin {
     const operation = Promise.resolve().then(() => this.flushSettingsSaveQueue());
     this.settingsSavePromise = operation;
     await operation;
+    if (configureCustomNutrients(this.settings.customNutrients)) {
+      this.invalidateFoodSearchIndexes("custom-nutrients");
+      this.nativeRecordService?.refreshConfiguration();
+      this.app.workspace.trigger("tps-health:appearance-changed");
+    }
+  }
+
+  async addCustomNutrient(label: string, unit: string): Promise<CustomNutrientDefinition> {
+    const key = `healthNutrient_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const definition = normalizeCustomNutrients([{key, label, unit}])[0];
+    if (!definition) throw new Error("Enter a name (up to 80 characters) and unit (up to 24 characters).");
+    if (EXTRA_NUTRIENTS.some(n => n.label.toLocaleLowerCase() === definition.label.toLocaleLowerCase() && n.unit.toLocaleLowerCase() === definition.unit.toLocaleLowerCase())) throw new Error("That nutrient and unit already exist.");
+    await this.updateCustomNutrients([...(this.settings.customNutrients || []), definition]);
+    return definition;
+  }
+
+  async updateCustomNutrients(definitions: CustomNutrientDefinition[]): Promise<void> {
+    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing nutrient definitions.");
+    const previous = this.settings.customNutrients || [];
+    const normalized = normalizeCustomNutrients(definitions);
+    if (normalized.length !== definitions.length) throw new Error("Every nutrient needs a valid name and unit.");
+    for (const old of previous) {
+      const next = normalized.find(n => n.key === old.key);
+      if (!next || next.unit !== old.unit) throw new Error("Archive nutrients instead of deleting them; create a new nutrient to use a different unit.");
+    }
+    if (normalized.some((n, index) => normalized.some((other, otherIndex) => index !== otherIndex && n.label.toLocaleLowerCase() === other.label.toLocaleLowerCase() && n.unit.toLocaleLowerCase() === other.unit.toLocaleLowerCase()))) throw new Error("Use distinct names for nutrients with the same unit.");
+    this.settings.customNutrients = normalized;
+    try {
+      await this.saveSettings();
+      logger.flow("Settings", "custom-nutrients:updated", {count:normalized.length, archived:normalized.filter(n => n.archived).length});
+    }
+    catch (error) { this.settings.customNutrients = previous; throw error; }
   }
 
   private async persistActiveWorkoutFilenameMigration(
@@ -9457,11 +9490,12 @@ export default class TPSHealthPlugin extends Plugin {
       getActiveWorkout: () => this.getActiveWorkoutState(),
       getSettings: () => ({
         ...this.settings,
+        customNutrients: this.settings.customNutrients.map(definition => ({...definition})),
         healthGoals: this.settings.healthGoals.map((goal) => ({ ...goal })),
         nativeRecordKinds: { ...this.settings.nativeRecordKinds },
         nativeRecordProperties: { ...this.settings.nativeRecordProperties },
-        nativeRecordKindAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordKindAliases).map(([key, values]) => [key, [...values]])),
-        nativeRecordPropertyAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordPropertyAliases).map(([key, values]) => [key, [...values]])),
+        nativeRecordKindAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordKindAliases).map(([key, values]) => [key, [...(values || [])]])),
+        nativeRecordPropertyAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordPropertyAliases).map(([key, values]) => [key, [...(values || [])]])),
       }),
       getDailyRollup: () => this.traceApiCall("getDailyRollup", {}, () => this.getDailyRollup()),
       updateDailyRollup: () => this.traceApiCall("updateDailyRollup", {}, () => this.updateDailyRollup()),
@@ -17878,7 +17912,7 @@ function chooseFoodDuplicateResolution(
   return new Promise((resolve) => new FoodDuplicateResolutionModal(app, incoming, candidates, resolve).open());
 }
 
-const CUSTOM_FOOD_NUTRITION_FIELDS: Array<keyof Nutrition> = [
+const customFoodNutritionFields = (): Array<keyof Nutrition> => [
   "calories",
   "proteinG",
   "carbsG",
@@ -17904,7 +17938,7 @@ function customFoodServingMetadataForSave(
   const servingUnchanged = Boolean(baseFood) &&
     baseAmount === servingAmount &&
     normalizeServingUnit(baseUnit) === normalizeServingUnit(normalizedUnit);
-  const nutritionUnchanged = Boolean(baseFood) && CUSTOM_FOOD_NUTRITION_FIELDS.every((key) =>
+  const nutritionUnchanged = Boolean(baseFood) && customFoodNutritionFields().every((key) =>
     (baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
   if (servingUnchanged && nutritionUnchanged) {
     return {
@@ -18045,7 +18079,7 @@ class CustomFoodModal extends FoodInputModal {
         caloriePreview.setText(`Recipe yield: ${round(recipeServings)} ${this.type === "meal" ? "meal" : "servings"}; per serving: ${round(perServing.calories)} kcal`);
         return;
       }
-      const preservingImport = this.baseFood?.nutritionProvenance && CUSTOM_FOOD_NUTRITION_FIELDS.every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
+      const preservingImport = this.baseFood?.nutritionProvenance && customFoodNutritionFields().every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
       caloriePreview.setText(preservingImport
         ? `Reported energy: ${nutrition.calories == null ? "unknown" : `${round(nutrition.calories)} kcal`} per ${servingAmount} ${servingUnit}`
         : `Calories calculated from macros: ${caloriesFromMacros(nutrition)} kcal per ${servingAmount} ${servingUnit}`);
@@ -18100,10 +18134,11 @@ class CustomFoodModal extends FoodInputModal {
       }));
       new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg ?? "")).onChange((value) => nutrition.sodiumMg = nutritionNumber(value)));
       const advanced = formEl.createEl("details", { cls: "tps-health-nutrient-editor" });
-      advanced.createEl("summary", { text: "Vitamins, minerals & supplements" });
+      advanced.createEl("summary", { text: "Vitamins, minerals & custom nutrients" });
+      advanced.createDiv({text:"Add your own nutrients in Health settings → Food & goals → Custom nutrients.", cls:"tps-health-status"});
       const filter = advanced.createEl("input", { attr: { type: "search", placeholder: "Find a nutrient…", "aria-label": "Find a nutrient" } });
       const rows: Array<{ el: HTMLElement; terms: string }> = [];
-      for (const nutrient of EXTRA_NUTRIENTS) {
+      for (const nutrient of EXTRA_NUTRIENTS.filter(n => !n.archived || nutrition[n.key] != null)) {
         const setting = new Setting(advanced).setName(`${nutrient.label} · ${nutrient.unit}`).addText(text => {
           text.setValue(nutrition[nutrient.key] == null ? "" : String(nutrition[nutrient.key]));
           text.inputEl.type = "number";
@@ -18364,7 +18399,7 @@ class CustomFoodModal extends FoodInputModal {
           servingUnit,
           recipeServings,
           ...servingMetadata,
-          nutritionProvenance: this.baseFood?.nutritionProvenance && CUSTOM_FOOD_NUTRITION_FIELDS.every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null)) ? this.baseFood.nutritionProvenance : undefined,
+          nutritionProvenance: this.baseFood?.nutritionProvenance && customFoodNutritionFields().every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null)) ? this.baseFood.nutritionProvenance : undefined,
           sourceImagePath: this.baseFood?.sourceImagePath,
           notes: this.baseFood?.notes,
           nutrition,

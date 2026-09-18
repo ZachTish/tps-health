@@ -1,3 +1,4 @@
+import { normalizeCustomNutrients } from "./nutrients";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 import { normalizeVaultDestinationFolder } from "./vault-destination";
@@ -117,6 +118,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.includeBrandedFoodSearch = booleanSetting(settings.includeBrandedFoodSearch, DEFAULT_SETTINGS.includeBrandedFoodSearch);
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
 
+  settings.customNutrients = normalizeCustomNutrients(settings.customNutrients);
   settings.healthGoals = normalizeHealthGoals(settings.healthGoals, settings);
   settings.settingsVersion = isFutureTPSHealthSettings(storedRecord)
     ? healthSettingsVersion(storedRecord)

@@ -120,7 +120,7 @@ export function configuredNativePropertyKey(
   const configured = String(settings.nativeRecordProperties?.[canonicalKey] || "").trim();
   return isValidFrontmatterPropertyKey(configured)
     ? configured
-    : DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[canonicalKey];
+    : DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[canonicalKey] ?? canonicalKey;
 }
 
 export function encodeNativeRecordProperties(

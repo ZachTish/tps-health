@@ -7,7 +7,7 @@ export function nutritionNumber(value: unknown): number | undefined {
 }
 
 /** Absolute label amounts per labeled serving. Unknown is absent, never a fabricated zero. */
-export const EXTRA_NUTRIENTS = [
+export const BUILT_IN_NUTRIENTS = [
   {"key": "vitaminAMcg", "label": "Vitamin A (RAE)", "unit": "mcg", "group": "Vitamins", "off": ""},
   {"key": "vitaminCMg", "label": "Vitamin C", "unit": "mg", "group": "Vitamins", "off": "vitamin-c"},
   {"key": "vitaminDMcg", "label": "Vitamin D", "unit": "mcg", "group": "Vitamins", "off": "vitamin-d"},
@@ -46,7 +46,36 @@ export const EXTRA_NUTRIENTS = [
   {"key": "omega3G", "label": "Omega-3", "unit": "g", "group": "Other nutrients", "off": "omega-3-fat"},
   {"key": "cholesterolMg", "label": "Cholesterol", "unit": "mg", "group": "Other nutrients", "off": "cholesterol"},
 ] as const;
-export type ExtraNutrientKey = typeof EXTRA_NUTRIENTS[number]['key'];
+export type CustomNutrientKey = `healthNutrient_${string}`;
+export interface CustomNutrientDefinition { key: CustomNutrientKey; label: string; unit: string; archived?: boolean }
+export type ExtraNutrientKey = typeof BUILT_IN_NUTRIENTS[number]['key'] | CustomNutrientKey;
+export interface NutrientDefinition { key: ExtraNutrientKey; label: string; unit: string; group: string; off: string; archived?: boolean }
+/** One registry per loaded Health plugin. Configure before indexing or processing food. */
+export const EXTRA_NUTRIENTS: NutrientDefinition[] = [...BUILT_IN_NUTRIENTS];
+
+export function normalizeCustomNutrients(raw: unknown): CustomNutrientDefinition[] {
+  if (!Array.isArray(raw)) return [];
+  const keys = new Set<string>();
+  return raw.flatMap(value => {
+    if (!value || typeof value !== 'object') return [];
+    const {key, label, unit} = value;
+    if (typeof key !== 'string' || !/^healthNutrient_[a-z0-9_]+$/.test(key) || keys.has(key)) return [];
+    if (typeof label !== 'string' || !label.trim() || label.trim().length > 80 || /[\r\n]/.test(label)) return [];
+    if (typeof unit !== 'string' || !unit.trim() || unit.trim().length > 24 || /[\r\n]/.test(unit)) return [];
+    keys.add(key);
+    return [{key: key as CustomNutrientKey, label: label.trim(), unit: unit.trim(), ...(value.archived === true ? {archived:true} : {})}];
+  });
+}
+
+export function configureCustomNutrients(raw: unknown): boolean {
+  const definitions = normalizeCustomNutrients(raw).map(n => ({...n,group:'Custom nutrients',off:''}));
+  const next = [...BUILT_IN_NUTRIENTS, ...definitions];
+  if (JSON.stringify(next) === JSON.stringify(EXTRA_NUTRIENTS)) return false;
+  EXTRA_NUTRIENTS.splice(0, EXTRA_NUTRIENTS.length, ...next);
+  EXTRA_NUTRIENT_KEYS.splice(0, EXTRA_NUTRIENT_KEYS.length, ...next.map(n => n.key));
+  NUTRIENT_KEYS.splice(0, NUTRIENT_KEYS.length, ...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS);
+  return true;
+}
 export type ExtraNutrition = Partial<Record<ExtraNutrientKey, number>>;
 export const EXTRA_NUTRIENT_KEYS = EXTRA_NUTRIENTS.map(n => n.key);
 export const CORE_NUTRIENT_KEYS = ['calories', 'proteinG', 'carbsG', 'fatG', 'fiberG', 'sugarG', 'sugarAlcoholG', 'alcoholG', 'sodiumMg'] as const;

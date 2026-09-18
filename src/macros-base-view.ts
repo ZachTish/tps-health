@@ -3,7 +3,7 @@ import { BasesView, Notice, type BasesViewConfig, type BasesAllOptions, type Que
 import type TPSHealthPlugin from './main';
 import { configuredNativePropertyKey } from './native-record-schema';
 import { availableNutrientConfigs } from './native-daily-dashboard';
-import { MACRO_PROPERTY_KEYS, groupMacroDays, validMacroDate, visibleMacroGoals, MACROS_BASE_TYPE } from './macros-base-model';
+import { macroPropertyKey, groupMacroDays, validMacroDate, visibleMacroGoals, MACROS_BASE_TYPE } from './macros-base-model';
 
 export class MacrosBaseView extends BasesView {
   type = MACROS_BASE_TYPE;
@@ -62,7 +62,7 @@ export class MacrosBaseView extends BasesView {
     const order = this.config.getOrder();
     const includeRecordedNutrients = this.config.get('nutrientSelection') !== 'properties';
     const goals = visibleMacroGoals(availableNutrientConfigs(this.plugin.getMetricRenderConfigs()), order, this.plugin.settings).map(goal => {
-      const key = configuredNativePropertyKey(this.plugin.settings, MACRO_PROPERTY_KEYS[goal.propertyKey]);
+      const key = configuredNativePropertyKey(this.plugin.settings, macroPropertyKey(goal.propertyKey)!);
       const name = this.config.getDisplayName(`note.${key}`);
       return { ...goal, label: name && name !== key ? name : goal.label };
     });

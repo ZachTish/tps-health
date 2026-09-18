@@ -160,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -11922,4 +11922,38 @@ test('Describe serving normalization scales optional nutrients without filling u
     assert.equal(explicit.item.nutrition.creatineG,10);
     assert.equal(explicit.item.nutrition.calories,30);
   }
+});
+
+
+test('user-defined nutrients save, reload, scale and log without a compiled nutrient list', async () => {
+ installDeterministicBrowserGlobals();
+ const {default:Plugin,configureCustomNutrients,foodEntryLine,resolveFoodLogServing}=await importPluginWithObsidianStub();
+ const fake=createFakeHealthApp();const plugin=new Plugin(fake.app);
+ plugin.settings=JSON.parse(JSON.stringify(plugin.settings));plugin.settings.customNutrients=[];plugin.settings.foodTemplatePath='';
+ try {
+  const definition=await plugin.addCustomNutrient('Polyphenols','mg');
+  assert.equal(plugin.__pluginData.customNutrients[0].key,definition.key);
+  const saved=await plugin.createFoodFromInput({name:'Custom QA',servingAmount:2,servingUnit:'capsule',nutrition:{[definition.key]:120}});
+  const file=fake.app.vault.getAbstractFileByPath(saved.sourcePath);
+  const reloaded=plugin.foodFromFrontmatter(file,parseFrontmatter(fake.files.get(file.path)));
+  assert.equal(reloaded.nutrition[definition.key],120);
+  const serving=resolveFoodLogServing(reloaded,1,'capsule');
+  const line=foodEntryLine({id:'arbitrary',item:reloaded,quantity:serving.servings,unit:'serving',createdDate:'2026-09-18T12:00:00Z'});
+  assert.equal(plugin.calculateFoodTotals(line)[definition.key],60);
+  const recipe=await plugin.createFoodFromInput({type:'recipe',name:'Custom nutrient recipe',servingAmount:1,servingUnit:'serving',recipeServings:4,ingredients:`- 1 serving - [[${saved.sourcePath}|Custom QA]]`});
+  assert.equal(recipe.nutrition[definition.key],30,'recipe yield scales arbitrary nutrients');
+  const originalSave=plugin.saveData;
+  plugin.saveData=async()=>{throw new Error('Synthetic save failure');};
+  await assert.rejects(plugin.addCustomNutrient('Unsaved nutrient','ml'),/Synthetic save failure/);
+  plugin.saveData=originalSave;
+  assert.equal(plugin.settings.customNutrients.length,1,'failed creation restores definitions');
+  await assert.rejects(plugin.addCustomNutrient('Polyphenols','mg'),/already exist/);
+  await assert.rejects(plugin.updateCustomNutrients([{...definition,unit:'g'}]),/different unit/);
+  await assert.rejects(plugin.updateCustomNutrients([]),/Archive/);
+  await plugin.updateCustomNutrients([{...definition,label:'Plant compounds',archived:true}]);
+  assert.equal(plugin.calculateFoodTotals(line)[definition.key],60);
+  const updated=await plugin.upsertFoodFromInput({path:file.path,name:'Custom QA',servingAmount:2,servingUnit:'capsule',nutrition:{}});
+  assert.equal(updated.nutrition[definition.key],undefined);
+  assert.equal(parseFrontmatter(fake.files.get(file.path))[definition.key],undefined);
+ } finally {configureCustomNutrients([]);}
 });

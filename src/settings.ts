@@ -1,4 +1,5 @@
-import { EXTRA_NUTRIENTS } from "./nutrients";
+import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
+import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
 import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
@@ -337,6 +338,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.includeBrandedFoodSearch = value;
           await this.plugin.saveSettings();
         }));
+
+    const customNutrients = createSettingsGroup(page, "Custom nutrients", "Track any label amount with your own name and unit. These fields belong to Health and do not add GCM menu properties. Goals are optional.");
+    renderCustomNutrientSettings(customNutrients, this.plugin);
 
     const goals = createSettingsGroup(
       page,

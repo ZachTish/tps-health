@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.47.4](https://github.com/ZachTish/tps-health/releases/tag/0.47.4) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.48.0](https://github.com/ZachTish/tps-health/releases/tag/0.48.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -189,3 +189,16 @@ No GCM settings, property registrations, Health goals, existing Base files or st
 Patch release for incomplete display of already-supported nutrition tracking. Minimum Obsidian remains 1.12.0. Regression coverage exercises saving/indexing/totals with no goals or property configuration, automatic Base rows and the explicit property-only mode, target preservation, unknown values and all requested nutrient categories.
 
 Validation (2026-09-18): all 435 tests passed, one optional live USDA test skipped without its credential. TypeScript and the separate final production build passed; shared deployment reported `target=test`, followed by `plugin:reload id=tps-health` in the named test vault. The real Macros Base day renderer displayed synthetic fiber 3.5 g, alcohol 14 g, vitamin C 90 mg, magnesium 125 mg, creatine 2.5 g and known iron 0 mg with an empty goal/property selection. Expanding Creatine showed its contributing food and exact amount. A 388 px container had no horizontal overflow. In-memory UI fixtures were removed; no notes, settings or outbound provider calls were created, and Health runtime `data.json` stayed byte-identical. No physical iOS run or production installation is claimed.
+
+
+## 0.48.0 — User-defined nutrients
+
+The supported nutrients are now extensible, rather than limited to the built-in vitamins, minerals and supplements. In **Health → Food & goals → Custom nutrients**, enter any nutrient/measurement name and its unit, then choose **Add nutrient**. In a food’s editor, open **Vitamins, minerals & custom nutrients** and enter its amount per labeled serving. Log the food normally; serving conversion, recipes, atomic lines/notes, daily totals, nutrient details and macro contribution rows all use the same registered definition. No GCM property-menu definition or Health goal is required. The standard nutrients remain presets with their existing provider conversions.
+
+Custom amounts are nonnegative additive quantities. Units are user-authored text (for example mg, ml or billion CFU); Health scales by food portions, never guesses conversions between custom units or assigns a custom amount a calorie contribution. Unknown amounts remain absent and known zero remains known. Custom nutrient definitions do not imply that a provider reports them; enter known label amounts manually. Existing rounding behavior remains display-only.
+
+Definitions persist in Health’s new optional `customNutrients` array (empty by default), with a stable generated `healthNutrient_*` key, label, unit and optional archived flag. Numeric amounts use that key in existing food/log storage. Names can change without changing keys or values. Units are immutable to protect historical meaning; create a separate definition for another unit. Archive instead of deleting: archived definitions remain readable in totals and editable on foods already containing them, while being omitted from blank food editors. Settings synchronization/backup must include the definitions so other devices know their labels and units. Use 0.48.0+ on devices logging custom amounts. No existing nutrient keys, notes, defaults or GCM registrations are migrated.
+
+The existing five settings destinations and default **Daily logging** route remain; the new controls extend **Food & goals** with direct name/unit inputs, an add action before the collection, and one selected editor. Selection/focus are transient; only definitions persist. Existing settings/mobile layout and the food editor’s single disclosure are reused. Macro rows still follow the existing collapsed/expanded/hidden preference and Base recorded-versus-selected mode. Atomic note storage still requires GCM’s record bridge; custom nutrient-menu configuration does not.
+
+This is a backward-compatible feature release. Regression coverage uses arbitrary definitions created after module loading, including a unit outside the built-in mass units, and checks save/reload, serving scaling, native projections, atomic lines, deletion of a food’s amount, archive, stable units, unknown versus zero, Base selection, contributor totals and unchanged GCM catalogs. Minimum Obsidian remains 1.12.0.

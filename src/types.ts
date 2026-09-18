@@ -1,4 +1,4 @@
-import { EXTRA_NUTRIENT_PROPERTIES, type ExtraNutrientKey, type ExtraNutrition } from "./nutrients";
+import { EXTRA_NUTRIENT_PROPERTIES, type ExtraNutrientKey, type CustomNutrientDefinition, type ExtraNutrition } from "./nutrients";
 export type RestTimerMode = "count-up" | "count-down";
 export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label" | "ai-research";
 export type FoodNoteType = "food" | "recipe" | "meal";
@@ -85,6 +85,7 @@ export interface TPSHealthSettings {
   macroBlockStyle: "rings" | "table";
   macroNutrientRows: "collapsed" | "expanded" | "hidden";
   healthGoals: HealthGoal[];
+  customNutrients: CustomNutrientDefinition[];
   calorieGoal: number;
   proteinGoalG: number;
   activityGoalMinutes: number;
@@ -379,6 +380,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   includeBrandedFoodSearch: true,
   macroBlockStyle: "rings",
   macroNutrientRows: "collapsed",
+  customNutrients: [],
   healthGoals: [
     { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400, color: "var(--interactive-accent)" },
     { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 180, color: "var(--color-green)" },

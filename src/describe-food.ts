@@ -1,3 +1,4 @@
+import type { ExtraNutrition } from "./nutrients";
 export interface DescribedFoodPart {
   original: string;
   query: string;
@@ -5,7 +6,7 @@ export interface DescribedFoodPart {
   unit?: string;
 }
 
-export interface DescribeNutritionEstimate {
+export interface DescribeNutritionEstimate extends ExtraNutrition {
   calories: number;
   proteinG: number;
   carbsG: number;

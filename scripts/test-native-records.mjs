@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 
 async function loadModule() {
   const result = await build({
-    entryPoints: [fileURLToPath(new URL('../src/native-records.ts', import.meta.url))],
+    stdin: {contents: 'export * from "./native-records"; export {configureCustomNutrients} from "./nutrients";', resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader:'ts'},
     bundle: true,
     write: false,
     platform: 'node',
@@ -50,6 +50,7 @@ async function loadModule() {
 }
 
 const {
+  configureCustomNutrients,
   HealthNativeRecordService,
   buildNativeHealthRecordFileName,
   deriveNativeFoodEntryProjection,
@@ -1939,4 +1940,25 @@ test('tracking nutrients requires the record bridge but no GCM menu definitions 
     assert.equal(totals[key], value, key);
     assert.equal(service.getDailyFoodEntries('2026-08-25')[0][key], value, key);
   }
+});
+
+
+test('custom nutrients persist through native creation, food serving edits and removal with no configured properties', async () => {
+ const key='healthNutrient_polyphenols';
+ configureCustomNutrients([{key,label:'Polyphenols',unit:'mg'}]);
+ try {
+  const {service,api,addFrontmatterFile,frontmatters}=createHarness();
+  const food=addFrontmatterFile('Custom.md',{kind:'food',servingAmount:2,servingUnit:'capsule',[key]:120});
+  const record=await service.createFoodEntry({id:'custom-nutrient',nutritionOverride:{[key]:60},createdDate:'2026-08-25T17:20:00Z',completedDate:'2026-08-25T17:20:00Z',item:{id:'food',name:'Custom',source:'custom-note',sourcePath:food.path},quantity:.5,unit:'serving',servingQuantity:1,servingUnit:'capsule'});
+  assert.equal((await api.resolve(record.file)).frontmatter[key],60);
+  assert.equal(service.getDailyFoodTotals('2026-08-25')[key],60);
+  const edited={...frontmatters.get(food),[key]:140};frontmatters.set(food,edited);service.indexFile(food,edited);
+  assert.equal(service.getDailyFoodTotals('2026-08-25')[key],70);
+  await new Promise(resolve=>setTimeout(resolve,180));
+  assert.equal((await api.resolve(record.file)).frontmatter[key],70);
+  delete edited[key];frontmatters.set(food,edited);service.indexFile(food,edited);
+  await new Promise(resolve=>setTimeout(resolve,180));
+  assert.equal((await api.resolve(record.file)).frontmatter[key],undefined);
+  assert.equal(service.getDailyFoodTotals('2026-08-25')[key],undefined);
+ } finally {configureCustomNutrients([]);}
 });

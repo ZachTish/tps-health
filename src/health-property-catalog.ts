@@ -1,4 +1,4 @@
-import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, isExtraNutrientKey } from "./nutrients";
+import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, isExtraNutrientKey } from "./nutrients";
 import type {
   HealthPropertyCatalog,
   HealthPropertyCatalogEntry,

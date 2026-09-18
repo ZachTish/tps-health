@@ -1,4 +1,4 @@
-import { EXTRA_NUTRIENT_KEYS, addExtraNutrition } from "./nutrients";
+import { EXTRA_NUTRIENT_KEYS, isExtraNutrientKey, addExtraNutrition } from "./nutrients";
 import type { DailyFoodMacroTotals, HealthMetricRenderConfig } from './api';
 import type { NativeDailyFoodEntrySnapshot } from './native-records';
 import type { TPSHealthSettings, HealthNativeRecordPropertyKey } from './types';
@@ -11,6 +11,7 @@ export const MACRO_PROPERTY_KEYS: Record<string, HealthNativeRecordPropertyKey> 
   consumedCalories: 'calories', cal: 'calories', protein: 'proteinG', carbs: 'carbsG', fat: 'fatG',
   fiber: 'fiberG', sugar: 'sugarG', sugarAlcohol: 'sugarAlcoholG', alcohol: 'alcoholG', sodium: 'sodiumMg',
 };
+export const macroPropertyKey = (key: string): HealthNativeRecordPropertyKey | undefined => MACRO_PROPERTY_KEYS[key] ?? (isExtraNutrientKey(key) ? key : undefined);
 export function groupMacroDays(entries: DatedFoodEntry[]): Map<string, DatedFoodEntry[]> {
   const days = new Map<string, DatedFoodEntry[]>();
   const seen = new Set<string>();
@@ -35,7 +36,7 @@ export function sumMacroEntries(dateIso: string, entries: NativeDailyFoodEntrySn
 }
 export function visibleMacroGoals(goals: HealthMetricRenderConfig[], order: string[], settings: TPSHealthSettings): HealthMetricRenderConfig[] {
   return order.flatMap(property => goals.filter(goal => {
-    const key = MACRO_PROPERTY_KEYS[goal.propertyKey];
+    const key = macroPropertyKey(goal.propertyKey);
     return key && property === `note.${configuredNativePropertyKey(settings, key)}`;
   }));
 }
@@ -44,7 +45,7 @@ export function defaultMacrosBaseContent(settings: TPSHealthSettings): string {
   const kinds = readableNativeKinds(settings, 'food-entry').map(kind => `note.kind == ${JSON.stringify(kind)}`);
   return JSON.stringify({
     properties: Object.fromEntries(settings.healthGoals.flatMap(goal => {
-      const property = MACRO_PROPERTY_KEYS[goal.propertyKey];
+      const property = macroPropertyKey(goal.propertyKey);
       return property ? [[`note.${key(property)}`, { displayName: goal.label }]] : [];
     })),
     formulas: { Day: `date(note.${key('completedDate')}).date()` },
