@@ -1,3 +1,4 @@
+import { nutrientGoalChange } from "./nutrient-goals";
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
 import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
@@ -1361,6 +1362,18 @@ export default class TPSHealthPlugin extends Plugin {
     if (this.settingsPersistenceBlockedNoticeShown) return;
     this.settingsPersistenceBlockedNoticeShown = true;
     new Notice("TPS Health did not save settings because this vault contains settings from a newer TPS Health version. Update this device first.", 12000);
+  }
+
+  async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false): Promise<void> {
+    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing goals.");
+    const previous = {healthGoals:this.settings.healthGoals,calorieGoal:this.settings.calorieGoal,proteinGoalG:this.settings.proteinGoalG};
+    const next = nutrientGoalChange(this.settings, key, minimum, maximum, remove);
+    Object.assign(this.settings, next);
+    try {
+      await this.saveSettings();
+      this.app.workspace.trigger("tps-health:appearance-changed");
+      logger.flow("Settings", "nutrient-goal:updated", {key, removed:remove});
+    } catch (error) { Object.assign(this.settings, previous); throw error; }
   }
 
   async updateBuiltInHealthGoalTarget(

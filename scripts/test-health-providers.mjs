@@ -11982,3 +11982,21 @@ test("Health startup keeps macro blocks without registering a Macros Base or cre
   for (const id of ["log-food", "log-activity", "open-food-log-base", "open-workout-log-base"]) assert.ok(commands.includes(id), id);
   assert.equal(typeof plugin.openMacrosBase, "undefined");
 });
+
+test('nutrient goal saves persist, refresh presentation and roll back on failure', async () => {
+ installDeterministicBrowserGlobals();
+ const {default:Plugin}=await importPluginWithObsidianStub();
+ const fake=createFakeHealthApp();const plugin=new Plugin(fake.app);
+ plugin.settings=JSON.parse(JSON.stringify(plugin.settings));
+ await plugin.saveNutrientGoal('leucineG','2','4');
+ assert.equal(plugin.__pluginData.healthGoals.find(g=>g.propertyKey==='leucineG').max,4);
+ const before=JSON.stringify(plugin.settings.healthGoals);
+ const save=plugin.saveData; plugin.saveData=async()=>{throw new Error('Synthetic goal save failure');};
+ await assert.rejects(plugin.saveNutrientGoal('leucineG','3','5'),/Synthetic goal save failure/);
+ assert.equal(JSON.stringify(plugin.settings.healthGoals),before);
+ plugin.saveData=save;
+ await plugin.saveNutrientGoal('leucineG','','',true);
+ assert.equal(plugin.__pluginData.healthGoals.some(g=>g.propertyKey==='leucineG'),false);
+ plugin.settingsPersistenceBlockedByFutureSchema=true;
+ await assert.rejects(plugin.saveNutrientGoal('leucineG','2','4'),/Update Health/);
+});

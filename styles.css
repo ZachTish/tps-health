@@ -5228,3 +5228,18 @@ body .tps-health-food-search-frame:has(.tps-health-selection-body:not([hidden]))
 .tps-health-log-date-label { font-size: var(--font-ui-small); font-weight: 600; }
 .tps-health-log-date-value { font-size: var(--font-ui-medium); font-weight: 700; line-height: 1.4; }
 body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; margin: 0 42px 10px 0; padding: 8px 10px; }
+
+.tps-health-settings-nutrient-goals { container-type: inline-size; }
+.tps-health-settings-nutrient-goals select { max-width: 100%; min-width: 0; }
+.tps-health-settings-nutrient-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.tps-health-settings-nutrient-summary p { flex-basis: 100%; }
+.tps-health-settings-nutrient-summary button {
+  height: auto; min-height: 36px; white-space: normal; text-align: left; padding: 8px 10px;
+}
+.tps-health-settings-nutrient-summary button[aria-pressed="true"] { border-color: var(--interactive-accent); }
+.tps-health-settings-nutrient-goals button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+@container (max-width: 520px) {
+  .tps-health-settings-nutrient-goals .setting-item { flex-direction: column; align-items: stretch; gap: 8px; }
+  .tps-health-settings-nutrient-goals .setting-item-control { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; }
+  .tps-health-settings-nutrient-goals input, .tps-health-settings-nutrient-goals select { width: 100%; }
+}

@@ -1,3 +1,4 @@
+import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
 import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
@@ -338,29 +339,16 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    const customNutrients = createSettingsGroup(page, "Custom nutrients", "Track any label amount with your own name and unit. These fields belong to Health and do not add GCM menu properties. Goals are optional.");
-    renderCustomNutrientSettings(customNutrients, this.plugin);
+    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Browse nutrients and set daily minimums, maximums or ranges. Food data can be incomplete; missing nutrients are never inferred. Targets are your own, not automatic dietary recommendations.");
+    let goalJson: HTMLTextAreaElement | undefined;
+    const refreshGoals = renderNutrientGoalSettings(nutrientGoals, this.plugin, () => {
+      if (goalJson) goalJson.value = JSON.stringify(this.plugin.settings.healthGoals, null, 2);
+    });
 
-    const goals = createSettingsGroup(
-      page,
-      "Daily goals",
-    );
-    new Setting(goals)
-      .setName("Calorie goal")
-      .addText((text) => text
-        .setValue(String(this.plugin.settings.calorieGoal))
-        .onChange(async (value) => {
-          await this.plugin.updateBuiltInHealthGoalTarget("calorieGoal", positiveNumber(value, DEFAULT_SETTINGS.calorieGoal));
-        }));
+    const customNutrients = createSettingsGroup(page, "Custom nutrients", "Add any name and unit missing from the catalog. Your nutrients are available in the target picker and food editor without GCM menu properties.");
+    renderCustomNutrientSettings(customNutrients, this.plugin, refreshGoals);
 
-    new Setting(goals)
-      .setName("Protein goal g")
-      .addText((text) => text
-        .setValue(String(this.plugin.settings.proteinGoalG))
-        .onChange(async (value) => {
-          await this.plugin.updateBuiltInHealthGoalTarget("proteinGoalG", positiveNumber(value, DEFAULT_SETTINGS.proteinGoalG));
-        }));
-
+    const goals = createSettingsGroup(page, "Activity goal");
     new Setting(goals)
       .setName("Activity goal minutes")
       .addText((text) => text
@@ -373,12 +361,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       page,
       "custom-goals",
       "Custom goal JSON",
-      "Optional labels, colors, ranges, and additional metrics. The scalar goals above remain canonical for calories, protein, and activity.",
+      "Advanced labels, colors and other saved metrics. Nutrient targets above cover everyday goal editing.",
     );
     new Setting(customGoals)
       .setName("Health goals")
-      .setDesc("One JSON goal per metric. Built-in calorie, protein, and activity target bounds come from the canonical fields above; use this JSON for labels, colors, ranges, and additional metrics.")
+      .setDesc("One JSON goal per metric. Calorie maximum, protein minimum and activity minimum remain canonical; use the target controls above to change those bounds.")
       .addTextArea((text) => {
+        goalJson = text.inputEl;
         text.inputEl.rows = 8;
         text.inputEl.addClass("tps-health-settings-json");
         text
@@ -395,6 +384,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
                 .filter((goal): goal is NonNullable<typeof goal> => Boolean(goal)), this.plugin.settings);
               logger.flow("Settings", "health-goals:parsed", { count: this.plugin.settings.healthGoals.length });
               await this.plugin.saveSettings();
+              refreshGoals();
             } catch (error) {
               logger.flowWarn("Settings", "health-goals:invalid-json", { error: logger.errorSummary(error) });
               // Leave the last valid goal config in place while the user edits JSON.

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const settingsSource = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
+const nutrientGoalSource = readFileSync(new URL("../src/nutrient-goal-settings.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const readmeSource = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
@@ -100,7 +101,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
       ? new RegExp(`addLibraryFolderSetting\\(folders, "${key}"`)
       : null;
     assert.match(
-      settingsSource,
+      ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : settingsSource,
       folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
       `${key} must remain connected to the settings UI`,
     );
@@ -269,4 +270,15 @@ test("Daily logging keeps block appearance controls and removes the retired Macr
   assert.match(settingsSource, /this\.plugin\.settings\.macroBlockStyle/);
   assert.match(settingsSource, /this\.plugin\.settings\.macroNutrientRows/);
   assert.doesNotMatch(stylesSource, /\.tps-health-macros-base/);
+});
+
+test("Nutrient settings provide one searchable editor, accessible controls and mobile layout", () => {
+ assert.match(settingsSource,/renderNutrientGoalSettings/);
+ for (const label of ['Find a nutrient','Nutrient category','Select nutrient goal','Save target','Remove goal']) assert.ok(nutrientGoalSource.includes(label));
+ assert.match(nutrientGoalSource,/aria-live/);
+ assert.match(nutrientGoalSource,/aria-pressed/);
+ assert.match(nutrientGoalSource,/\.focus\(\)/);
+ assert.doesNotMatch(nutrientGoalSource,/createEl\(['"]details/);
+ assert.match(stylesSource,/@container \(max-width: 520px\)/);
+ assert.ok(stylesSource.includes('.tps-health-settings-nutrient-summary button'));
 });

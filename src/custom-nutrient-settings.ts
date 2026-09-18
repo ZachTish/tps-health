@@ -2,7 +2,7 @@ import { Setting } from 'obsidian';
 import type TPSHealthPlugin from './main';
 
 /** Definitions live in Health; archiving never removes recorded nutrition. */
-export function renderCustomNutrientSettings(container: HTMLElement, plugin: TPSHealthPlugin): void {
+export function renderCustomNutrientSettings(container: HTMLElement, plugin: TPSHealthPlugin, onChanged: () => void = () => {}): void {
   let name = '', unit = '';
   const message = container.createDiv({attr:{role:'status','aria-live':'polite'}});
   let nameInput: HTMLInputElement;
@@ -32,7 +32,7 @@ export function renderCustomNutrientSettings(container: HTMLElement, plugin: TPS
     const save = async (patch: {label?:string;archived?:boolean}) => {
       try {
         await plugin.updateCustomNutrients(definitions.map(n => n.key === definition.key ? {...n,...patch} : n));
-        message.setText('Nutrient updated.');
+        message.setText('Nutrient updated.'); onChanged();
       } catch (error) { message.setText(String((error as Error).message)); }
       finally { renderList(); list.querySelector<HTMLSelectElement>('select')?.focus(); }
     };
@@ -48,7 +48,7 @@ export function renderCustomNutrientSettings(container: HTMLElement, plugin: TPS
     try {
       const definition = await plugin.addCustomNutrient(name, unit);
       selected = definition.key; message.setText('Nutrient added. Enter its amount when creating or editing a food.');
-      renderList(); nameInput.focus();
+      renderList(); onChanged(); nameInput.focus();
     } catch (error) { message.setText(String((error as Error).message)); }
     finally { button.setDisabled(false); }
   }));
