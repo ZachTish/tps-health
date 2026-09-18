@@ -1,3 +1,5 @@
+import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
+import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange } from "./nutrient-goals";
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
@@ -1034,6 +1036,7 @@ export default class TPSHealthPlugin extends Plugin {
       registerNativeDailySection("tps-health-macros", "macros");
       registerNativeDailySection("tps-health-activity", "activity");
       registerNativeDailySection("tps-health-daily", "combined");
+      registerNativeDailySection("tps-health-overview", "overview");
     }
     this.registerMarkdownPostProcessor((root, ctx) => {
       ctx.addChild(new TPSHealthRenderedControlsChild(root, this, ctx));
@@ -1362,6 +1365,18 @@ export default class TPSHealthPlugin extends Plugin {
     if (this.settingsPersistenceBlockedNoticeShown) return;
     this.settingsPersistenceBlockedNoticeShown = true;
     new Notice("TPS Health did not save settings because this vault contains settings from a newer TPS Health version. Update this device first.", 12000);
+  }
+
+  async saveEnergySettings(bmr: string, factor: string): Promise<void> {
+    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing energy settings.");
+    const next = parseEnergySettings(bmr, factor);
+    const previous = {energyBmrKcal:this.settings.energyBmrKcal,energyActivityFactor:this.settings.energyActivityFactor};
+    Object.assign(this.settings, next);
+    try {
+      await this.saveSettings();
+      this.app.workspace.trigger("tps-health:appearance-changed");
+      logger.flow("Settings", "energy-estimate:updated", {enabled:next.energyBmrKcal != null});
+    } catch (error) { Object.assign(this.settings, previous); throw error; }
   }
 
   async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false): Promise<void> {
@@ -12666,7 +12681,7 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
   }
 }
 
-type NativeDailyDashboardSection = "macros" | "activity" | "combined";
+type NativeDailyDashboardSection = "macros" | "activity" | "combined" | "overview";
 
 export function activeWorkoutElapsedLabel(startedAt: string, now = Date.now()): string {
   const started = Date.parse(String(startedAt || ""));
@@ -12776,7 +12791,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       const model = buildNativeDailyDashboardModel(
         totals,
         this.plugin.getMetricRenderConfigs(),
-        this.section === "combined"
+        (this.section === "combined" || this.section === "overview")
           ? this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso)
           : undefined,
       );
@@ -12793,6 +12808,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         this.plugin.nativeRecordService?.getDailyActivityEntries(this.dateContext.dateIso) ?? [],
         this.display,
         actions,
+        this.section === "overview" ? dailyEnergyEstimate(this.plugin.settings, totals) : undefined,
       );
       this.syncActiveWorkoutTimer(activeWorkout);
     } catch (error) {
@@ -12847,9 +12863,11 @@ function renderNativeDailyDashboard(
   activityEntries: NativeDailyActivityEntrySnapshot[],
   display: NativeDailyDisplayOptions,
   actions: NativeDailyDashboardActions,
+  energy?: DailyEnergyEstimate,
 ): void {
   prepareNativeDailyDashboardHost(container);
   const stack = container.createDiv({ cls: "tps-health-native-daily-stack" });
+  if (energy) renderEnergyOverview(stack, energy);
   renderNativeDailyMacrosBlock(stack, model, foodEntries, display, actions);
   renderNativeDailyActivityBlock(stack, model.activity, activityEntries, actions);
 }

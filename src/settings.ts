@@ -1,3 +1,4 @@
+import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
@@ -338,6 +339,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.includeBrandedFoodSearch = value;
           await this.plugin.saveSettings();
         }));
+
+    const energy = createSettingsGroup(page, "Energy estimate", "Estimate total daily energy expenditure (TDEE) from your BMR and activity level.");
+    renderEnergySettings(energy, this.plugin);
 
     const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Browse nutrients and set daily minimums, maximums or ranges. Food data can be incomplete; missing nutrients are never inferred. Targets are your own, not automatic dietary recommendations.");
     let goalJson: HTMLTextAreaElement | undefined;

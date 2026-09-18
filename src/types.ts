@@ -86,6 +86,8 @@ export interface TPSHealthSettings {
   macroNutrientRows: "collapsed" | "expanded" | "hidden";
   healthGoals: HealthGoal[];
   customNutrients: CustomNutrientDefinition[];
+  energyBmrKcal: number | null;
+  energyActivityFactor: number;
   calorieGoal: number;
   proteinGoalG: number;
   activityGoalMinutes: number;
@@ -390,6 +392,8 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
     { propertyKey: "sodium", label: "Sodium", unit: "mg", kind: "max", max: 2300, color: "var(--color-orange)" },
     { propertyKey: "activity", label: "Activity", unit: "min", kind: "min", min: 45, color: "var(--color-orange)" },
   ],
+  energyBmrKcal: null,
+  energyActivityFactor: 1.4,
   calorieGoal: 2400,
   proteinGoalG: 180,
   activityGoalMinutes: 45,

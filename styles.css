@@ -5243,3 +5243,13 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
   .tps-health-settings-nutrient-goals .setting-item-control { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; }
   .tps-health-settings-nutrient-goals input, .tps-health-settings-nutrient-goals select { width: 100%; }
 }
+
+.tps-health-energy-overview { container-type: inline-size; border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 16px; }
+.tps-health-energy-overview h3 { margin: 0 0 12px; font-size: 1.1em; }
+.tps-health-energy-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.tps-health-energy-card { padding: 12px; border-radius: 8px; background: var(--background-secondary); min-width: 0; }
+.tps-health-energy-card dt { color: var(--text-muted); font-size: var(--font-ui-small); }
+.tps-health-energy-card dd { margin: 8px 0 0; font-size: 1.2em; font-weight: 600; overflow-wrap: anywhere; }
+.tps-health-energy-overview p { font-size: var(--font-ui-small); margin-bottom: 0; }
+.tps-health-energy-note { color: var(--text-muted); }
+@container (max-width: 520px) { .tps-health-energy-cards { grid-template-columns: 1fr; } }

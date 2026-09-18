@@ -11976,7 +11976,7 @@ test("Health startup keeps macro blocks without registering a Macros Base or cre
   plugin.registerMarkdownCodeBlockProcessor = language => blocks.push(language);
   plugin.registerBasesView = type => bases.push(type);
   await plugin.onload();
-  assert.deepEqual(blocks, ["tps-health-macros", "tps-health-activity", "tps-health-daily"]);
+  assert.deepEqual(blocks, ["tps-health-macros", "tps-health-activity", "tps-health-daily", "tps-health-overview"]);
   assert.deepEqual(bases, []);
   assert.equal(commands.includes("open-macros-base"), false);
   for (const id of ["log-food", "log-activity", "open-food-log-base", "open-workout-log-base"]) assert.ok(commands.includes(id), id);
@@ -11999,4 +11999,24 @@ test('nutrient goal saves persist, refresh presentation and roll back on failure
  assert.equal(plugin.__pluginData.healthGoals.some(g=>g.propertyKey==='leucineG'),false);
  plugin.settingsPersistenceBlockedByFutureSchema=true;
  await assert.rejects(plugin.saveNutrientGoal('leucineG','2','4'),/Update Health/);
+});
+
+test('energy settings save atomically, preserve intake goals, notify views and restore failed writes',async()=>{
+ installDeterministicBrowserGlobals();
+ const {default:Plugin}=await importPluginWithObsidianStub();
+ const fake=createFakeHealthApp();const plugin=new Plugin(fake.app);
+ plugin.settings=JSON.parse(JSON.stringify(plugin.settings));
+ const goals=JSON.stringify(plugin.settings.healthGoals);
+ await plugin.saveEnergySettings('1650','1.6');
+ assert.equal(plugin.__pluginData.energyBmrKcal,1650);
+ assert.equal(plugin.__pluginData.energyActivityFactor,1.6);
+ assert.equal(JSON.stringify(plugin.settings.healthGoals),goals);
+ const save=plugin.saveData;plugin.saveData=async()=>{throw new Error('Energy save failure');};
+ await assert.rejects(plugin.saveEnergySettings('1700','1.8'),/Energy save failure/);
+ assert.equal(plugin.settings.energyBmrKcal,1650);assert.equal(plugin.settings.energyActivityFactor,1.6);
+ plugin.saveData=save;
+ await plugin.saveEnergySettings('','1.6');
+ assert.equal(plugin.__pluginData.energyBmrKcal,null);
+ plugin.settingsPersistenceBlockedByFutureSchema=true;
+ await assert.rejects(plugin.saveEnergySettings('1650','1.6'),/Update Health/);
 });

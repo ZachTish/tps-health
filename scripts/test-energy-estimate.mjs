@@ -1,0 +1,54 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {fileURLToPath} from 'node:url';
+import {readFileSync} from 'node:fs';
+const result=await build({stdin:{contents:"export * from './energy-estimate'; export * from './energy-overview'; export * from './settings-normalization'; export {DEFAULT_SETTINGS} from './types';",resolveDir:fileURLToPath(new URL('../src',import.meta.url)),loader:'ts'},bundle:true,format:'esm',platform:'node',write:false});
+const m=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+const totals={dateIso:'2026-09-18',entryCount:2,calories:2000};
+test('full-day burn uses BMR times PAL and compares logged consumption with the correct sign',()=>{
+ const profile={energyBmrKcal:1600,energyActivityFactor:1.5};
+ const below=m.dailyEnergyEstimate(profile,totals);
+ assert.equal(below.estimatedBurnKcal,2400);
+ assert.equal(below.differenceKcal,-400);
+ assert.equal(m.energyComparisonText(below),'400 kcal below estimate');
+ const above=m.dailyEnergyEstimate(profile,{...totals,calories:2700});
+ assert.equal(above.differenceKcal,300);
+ assert.equal(m.energyComparisonText(above),'300 kcal above estimate');
+ assert.equal(m.energyComparisonText(m.dailyEnergyEstimate(profile,{...totals,calories:2400})),'Matches estimate');
+ assert.deepEqual(m.dailyEnergyEstimate(profile,{...totals,caloriesBurned:900}),below,'logged exercise must never inflate a PAL estimate');
+});
+test('missing BMR and unlogged days do not invent a burn or an apparent deficit',()=>{
+ assert.equal(m.dailyEnergyEstimate(m.DEFAULT_SETTINGS,totals).estimatedBurnKcal,null);
+ const noFood=m.dailyEnergyEstimate({energyBmrKcal:1600,energyActivityFactor:1.4},{...totals,entryCount:0,calories:0});
+ assert.equal(noFood.estimatedBurnKcal,2240);
+ assert.equal(noFood.consumedKcal,null);
+ assert.equal(noFood.differenceKcal,null);
+ assert.equal(m.energyComparisonText(noFood),'No food logged');
+ const zero=m.dailyEnergyEstimate({energyBmrKcal:1600,energyActivityFactor:1.4},{...totals,entryCount:1,calories:0});
+ assert.equal(zero.consumedKcal,0,'known logged zero is distinct from an unlogged day');
+});
+test('profile validation preserves decimals and disabling while rejecting invalid inputs',()=>{
+ assert.deepEqual(m.parseEnergySettings('1600.25','1.45'),{energyBmrKcal:1600.25,energyActivityFactor:1.45});
+ assert.deepEqual(m.parseEnergySettings('','1.4'),{energyBmrKcal:null,energyActivityFactor:1.4});
+ for(const [bmr,factor] of [['0','1.4'],['-2','1.4'],['Infinity','1.4'],['1800',''],['1800','0.9'],['1,800','1.4'],['1e308','2']]) assert.throws(()=>m.parseEnergySettings(bmr,factor));
+ const saved=m.normalizeTPSHealthSettings({...m.DEFAULT_SETTINGS,...m.parseEnergySettings('1600.25','1.45')});
+ const reloaded=m.normalizeTPSHealthSettings(JSON.parse(JSON.stringify(saved)));
+ assert.equal(reloaded.energyBmrKcal,1600.25);assert.equal(reloaded.energyActivityFactor,1.45);
+ assert.equal(reloaded.calorieGoal,m.DEFAULT_SETTINGS.calorieGoal,'burn estimate never changes consumption goals');
+ const model=m.dailyEnergyEstimate(reloaded,totals);
+ assert.equal(model.estimatedBurnKcal,1600.25*1.45,'round only when displaying');
+ assert.equal(m.normalizeTPSHealthSettings({energyBmrKcal:true,energyActivityFactor:-1}).energyBmrKcal,null);
+ assert.equal(m.normalizeTPSHealthSettings({energyBmrKcal:1e308,energyActivityFactor:3}).energyBmrKcal,null);
+});
+test('overview uses existing date, nutrition and activity rendering with separate responsive energy cards',()=>{
+ const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+ assert.ok(main.includes('registerNativeDailySection("tps-health-overview", "overview")'));
+ assert.ok(main.includes('this.section === "overview" ? dailyEnergyEstimate(this.plugin.settings, totals) : undefined'));
+ assert.ok(main.includes('if (energy) renderEnergyOverview(stack, energy)'));
+ const settings=readFileSync(new URL('../src/energy-settings.ts',import.meta.url),'utf8');
+ assert.ok(settings.includes('aria-live'));
+ assert.ok(settings.includes('button.buttonEl.focus()'));
+ const styles=readFileSync(new URL('../styles.css',import.meta.url),'utf8');
+ assert.ok(styles.includes('.tps-health-energy-cards { grid-template-columns: 1fr; }'));
+});

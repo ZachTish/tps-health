@@ -1,4 +1,4 @@
-import { normalizeCustomNutrients } from "./nutrients";
+import { nutritionNumber, normalizeCustomNutrients } from "./nutrients";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthGoal, HealthGoalKind, TPS_HEALTH_SCHEMA_VERSION, TPSHealthSettings, USDA_API_KEY_SECRET, USDA_API_KEY_SECRET_MAX, USDA_DEMO_API_KEY } from "./types";
 import { normalizeVaultDestinationFolder } from "./vault-destination";
@@ -105,6 +105,11 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
 
   settings.defaultRestSeconds = positiveInteger(settings.defaultRestSeconds, DEFAULT_SETTINGS.defaultRestSeconds);
   settings.defaultWorkoutCooldownDays = nonNegativeInteger(settings.defaultWorkoutCooldownDays, DEFAULT_SETTINGS.defaultWorkoutCooldownDays);
+  const bmr = nutritionNumber(settings.energyBmrKcal);
+  const factor = nutritionNumber(settings.energyActivityFactor);
+  settings.energyBmrKcal = bmr != null && bmr > 0 ? bmr : null;
+  settings.energyActivityFactor = factor != null && factor >= 1 ? factor : DEFAULT_SETTINGS.energyActivityFactor;
+  if (settings.energyBmrKcal != null && !Number.isFinite(settings.energyBmrKcal * settings.energyActivityFactor)) settings.energyBmrKcal = null;
   settings.calorieGoal = positiveNumber(settings.calorieGoal, DEFAULT_SETTINGS.calorieGoal);
   settings.proteinGoalG = positiveNumber(settings.proteinGoalG, DEFAULT_SETTINGS.proteinGoalG);
   settings.activityGoalMinutes = positiveNumber(settings.activityGoalMinutes, DEFAULT_SETTINGS.activityGoalMinutes);

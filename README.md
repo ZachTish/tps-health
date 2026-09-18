@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [1.2.0](https://github.com/ZachTish/tps-health/releases/tag/1.2.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.3.0](https://github.com/ZachTish/tps-health/releases/tag/1.3.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -242,3 +242,29 @@ The editor validates finite nonnegative bounds and rejects reversed ranges; save
 Backward-compatible feature release, minimum Obsidian 1.12.0. Regression tests cover catalog breadth, category/search filtering, USDA mass conversion and missing values, serving scaling, arbitrary/archived custom nutrients, range/zero/no-target persistence, removal without data loss, canonical scalar/legacy compatibility, invalid targets, failed saves, accessibility structure and mobile styles. Final validation and artifact hashes are recorded in the release notes.
 
 Validation (2026-09-18): 439 tests passed, zero failed, one optional live USDA test skipped without a test credential. Full suite, TypeScript and the separate production build passed; the shared helper deployed only shipped artifacts to the named test vault. Reloaded Health and checked all five settings destinations. In the actual target editor, saved a synthetic leucine range (2–4 g), rejected an invalid 5–4 range without overwriting it, and confirmed the original range after plugin reload. Added an arbitrary QA nutrient through the existing controls, found it immediately in the shared picker, saved a minimum and removed that goal through the UI. The target editor measured 388 px with 388 px scroll width and stacked controls. Keyboard focus returned to the selector after saving. All temporary definitions/targets were restored, no consumption notes or provider calls were made, and GCM settings were untouched. New built-in nutrient keys acquire their default Health storage mapping through the existing normalizer; existing mappings and runtime-owned state are preserved. Physical iOS validation remains user device testing. Production receives the release only through the user's BRAT pull.
+
+
+## 1.3.0 — Daily energy overview
+
+Set **Health → Food & goals → Energy estimate → BMR (kcal/day)** and **Daily activity factor**, then choose **Save energy settings**. Estimated total daily energy expenditure (TDEE) is BMR × the full-day activity factor. BMR defaults to blank, so no personal burn estimate is invented. The editable activity factor defaults to 1.4; common factors span approximately 1.4 (sedentary) to 2.5 (very active). Clear BMR and save to disable the estimate. Existing calorie and nutrient goals are unchanged.
+
+This uses the [FAO/WHO/UNU physical activity level definition](https://www.fao.org/4/y5686e/y5686e04.htm): total daily energy expenditure expressed as a multiple of BMR. [NIDDK's Body Weight Planner](https://www.niddk.nih.gov/bwp) provides context for typical activity factors. The multiplier already represents everyday activity and typical exercise; recorded workout/activity calories are displayed separately and never added a second time. This is a habitual full-day estimate, not measured expenditure or calories burned so far. It does not infer BMR, prescribe an intake, predict weight changes, add wearable data, or convert steps/workout duration into energy.
+
+Add the comprehensive block to a Daily Note:
+
+~~~markdown
+```tps-health-overview
+foods: collapsed
+nutrients: collapsed
+```
+~~~
+
+On an ordinary dashboard note, add a date filter inside the block, such as **date == today()** or **date == date("2026-09-18")**. It uses the same validated single-date filter and Native Markdown records requirement as the existing daily blocks. The overview contains estimated burn, logged intake and the intake-minus-burn comparison, followed by existing macro/nutrient and activity/workout sections with their existing actions. Values round only for display, to one decimal place. An empty food day displays **No food logged**, not a fabricated calorie deficit. A logged zero stays zero. Differences say **below estimate**, **above estimate** or **matches estimate**, without treating either direction as a goal. The comparison covers only recorded intake; incomplete food logging affects it.
+
+The current BMR and factor apply to every displayed date, including historical and future dates. This version does not store dated energy profiles or day-specific overrides. Existing macros, activity and combined daily blocks retain their behavior. Energy settings refresh mounted overviews, and food/activity/workout record changes use the existing date-scoped refresh and contribution controls. No GCM property definitions are required or added.
+
+Settings remain on the same five routes with **Daily logging** the default. **Food & goals** gains one direct Energy estimate group beside nutrient targets, with two labeled decimal inputs, an explicit atomic save and an announced result; all prior settings/actions/disclosures remain. New optional settings are energyBmrKcal (null by default) and energyActivityFactor (1.4). Invalid/nonfinite inputs and factors below 1 are rejected, failed saves restore prior values, and newer-schema protection is preserved. No nutrition records, goals or navigation state are migrated. The overview's semantic definition-list cards stack below 520 px using plugin-namespaced CSS; existing settings mobile behavior remains.
+
+Backward-compatible feature release, minimum Obsidian 1.12.0. Tests cover formula/sign, precision, missing BMR, empty days versus known zero, double-count prevention, validation, normalization/reload, save rollback, unchanged intake goals, processor registration and responsive layout. Final test-vault validation and artifact hashes are recorded in the release notes.
+
+Validation (2026-09-18): all 444 tests passed, zero failed, one optional live USDA test skipped without its test credential. TypeScript and the separate final production build passed and deployed to the test vault. Reloaded Health; through real settings saved BMR 1600 and factor 1.5, rejected factor 0.5 without overwriting the saved profile, and confirmed persistence after another reload. A synthetic Inbox overview with temporary in-memory food/activity snapshots showed 2400 kcal estimated burn, 2000 kcal intake and 400 kcal below estimate despite 900 separately recorded activity calories. Empty-day, live profile update/equal-balance and disabled-BMR states rendered correctly. At 388 px outer width, the energy cards stacked into one column with no horizontal overflow. All five settings routes were inspected; save restored button focus. Temporary methods, profile values and the prior view were restored, and the QA note moved directly to _archive/Health Energy QA 1.3.0. No food/activity records, GCM definitions or outbound calls were created. Physical iOS acceptance remains user testing. Production installation remains the user's BRAT pull.
