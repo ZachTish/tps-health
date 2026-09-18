@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.46.4](https://github.com/ZachTish/tps-health/releases/tag/0.46.4) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.47.0](https://github.com/ZachTish/tps-health/releases/tag/0.47.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -130,3 +130,17 @@ Regression coverage adds reopened loggers, stale ownership, Describe completing 
 Validation: 402 automated tests passed, zero failed, with one optional live USDA test skipped for lack of a test credential. The full declared suite and TypeScript build passed. In the reloaded 0.46.4 test vault, a deliberately delayed synthetic AI response completed after the logger was closed and reopened; the visible tray expanded with both existing and new foods. A portion edit survived another reopen, and an in-memory logging fixture consumed each item once and cleared both tray and pending workflow. No consumption notes were written in this check. Actual no-Gateway matching added “one banana and two eggs” to the existing tray at a measured 390 px modal width; Michelob Ultra returned seven combined results without Enter. The final serving fix displayed two egg servings of 50 g at 156 kcal, then 78 kcal after decreasing to one. Original pending tray state and desktop mode were restored.
 
 The mandatory separate final production-mode build deploys only shipped artifacts through the shared test-vault helper; reload uses `plugin:reload id=tps-health`. Physical iPhone keyboard behavior and a live AI-provider request remain unverified. Public Open Food Facts was exercised, but database coverage/label correctness remain provider-dependent. No production installation is claimed.
+
+## 0.47.0 — Food data quality and saved-first search
+
+Matching saved food notes now appear before online and built-in results. Search, barcode lookup and reuse preserve their authored serving and nutrition; explicit editing remains available. Zero-calorie and partial records remain searchable, while missing/malformed nutrients remain unknown through import, templates and note reload.
+
+Search results show calorie/macro coverage and one **Nutrition data details** disclosure with source/dataset, record ID, dates, total tracked-field coverage and review warnings. This is evidence and completeness, not a verified badge. Details use native keyboard behavior, visible focus and wrapping mobile text. Settings retain the same five destinations/default route and no persisted navigation state.
+
+USDA core units and OFF kJ, salt, alcohol ABV and carbohydrate/polyol handling are corrected. Imported reported energy is preserved. All 42 built-in foods lack recorded source evidence: they remain available as unverified estimates, rank below comparable sourced records, and cannot overwrite them. No production notes or historical zeroes are rewritten. Optional `nutritionProvenance` is an additive import receipt, also accepted by food create/upsert APIs. Manual macro-only API calls retain their existing calculated-calorie behavior.
+
+See [the complete data audit](FOOD-DATA-AUDIT.md) for the source inventory, competitor research, implementation decisions, coverage and limits. Reproduce the built-in inventory with `node scripts/audit-food-catalog.mjs`. Existing daily totals still sum known numeric values; search coverage does not certify historical daily totals. Provider coverage, unsupported nutrient forms, physical iPhone behavior and label correctness remain limitations.
+
+Validation: 419 automated tests passed with zero failures; one optional live USDA test was skipped because no test key was configured. The full declared suite, TypeScript, separate final production-mode build and shared test-vault deployment passed. Reload used `plugin:reload id=tps-health`. Desktop and mobile emulation at a 390 px viewport verified two saved fixtures above an exact database match, a searchable zero-calorie fixture, source dates/coverage, provider and implausible-serving warnings, keyboard disclosure toggling and visible focus, with no horizontal overflow or accidental Add. QA used synthetic provider responses; the suite separately exercised public Open Food Facts. Physical iPhone behavior and live USDA data remain unverified.
+
+Synthetic food notes were created in Inbox and moved directly to `_archive` after QA. Provider methods and the pending tray were restored; Health runtime `data.json` remained byte-identical through deployment/reload and QA. Desktop mode was restored. The dirty canonical stable checkout was preserved by working from released `origin/main` in a clean contained feature worktree. This backward-compatible minor release adds data-quality/provenance behavior without a settings migration. It is ready for the user's BRAT pull; no production installation is claimed.

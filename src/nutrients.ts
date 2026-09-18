@@ -1,3 +1,11 @@
+/** Missing, malformed and negative values are unknown, never measured zeroes. */
+export function nutritionNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" && typeof value !== "string") return undefined;
+  if (typeof value === "string" && !/^\s*(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?\s*$/i.test(value)) return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
 /** Absolute label amounts per labeled serving. Unknown is absent, never a fabricated zero. */
 export const EXTRA_NUTRIENTS = [
   {"key": "vitaminAMcg", "label": "Vitamin A (RAE)", "unit": "mcg", "group": "Vitamins", "off": ""},
@@ -48,9 +56,8 @@ export function extraNutrition(values: object, multiplier = 1): ExtraNutrition {
   const result: ExtraNutrition = {};
   for (const {key} of EXTRA_NUTRIENTS) {
     const raw = source[key];
-    if (raw == null || raw === '' || typeof raw === 'boolean') continue;
-    const value = Number(raw);
-    if (Number.isFinite(value) && value >= 0 && Number.isFinite(multiplier) && multiplier >= 0)
+    const value = nutritionNumber(raw);
+    if (value != null && Number.isFinite(multiplier) && multiplier >= 0)
       result[key] = Math.round(value * multiplier * 1e9) / 1e9;
   }
   return result;
@@ -82,8 +89,9 @@ export function usdaExtraNutrition(nutrients: any[]): ExtraNutrition {
    if (!row) continue;
    const raw = row.amount ?? row.value;
    const unit = String(row.nutrient?.unitName ?? row.unitName ?? '').toLowerCase();
-   if (raw == null || raw === '' || !factors[unit] || !Number.isFinite(Number(raw)) || Number(raw) < 0) continue;
-   result[spec.key] = Number(raw) * factors[unit] / factors[spec.unit];
+   const value = nutritionNumber(raw);
+   if (value == null || !factors[unit]) continue;
+   result[spec.key] = value * factors[unit] / factors[spec.unit];
  }
  return extraNutrition(result);
 }

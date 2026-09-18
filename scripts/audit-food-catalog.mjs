@@ -1,0 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+const start = source.indexOf('const CURATED_COMMON_FOODS: CuratedCommonFood[] = [');
+if (start < 0) throw new Error('Built-in catalogue not found');
+const literal = source.slice(source.indexOf('[', start + 'const CURATED_COMMON_FOODS: CuratedCommonFood[]'.length), source.indexOf('\n];', start) + 2);
+const foods = runInNewContext(`(${literal})`, {}, {timeout: 1000});
+const extendedKeys = [...readFileSync(new URL('../src/nutrients.ts', import.meta.url), 'utf8').matchAll(/"key": "([^"]+)"/g)].map(match => match[1]);
+const keys = ['calories', 'proteinG', 'carbsG', 'fatG'];
+const inventory = foods.map(food => ({name:food.name,brand:food.brand || '',basis:food.servingGrams ? `${food.servingGrams} g` : food.servingMl ? `${food.servingMl} ml` : food.servingUnit || '100 g',coreFields:keys.filter(k=>Number.isFinite(food.nutrition[k])).length,nutrients:Object.keys(food.nutrition).length,sourceEvidence:!!food.nutritionProvenance}));
+console.log(JSON.stringify({records:foods.length,branded:foods.filter(f=>f.brand).length,completeCore:inventory.filter(f=>f.coreFields===4).length,withSourceEvidence:inventory.filter(f=>f.sourceEvidence).length,withExtendedNutrients:foods.filter(food=>extendedKeys.some(key=>Number.isFinite(food.nutrition[key]))).length,inventory},null,2));

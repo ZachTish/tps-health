@@ -123,6 +123,16 @@ export type NutritionTotals = Required<CoreNutrition> & ExtraNutrition;
 
 export type NutritionBasis = "labeled-serving" | "per-100g" | "per-100ml" | "estimated-serving";
 
+export interface FoodNutritionProvenance {
+  provider: "usda" | "open-food-facts" | "curated";
+  recordId?: string;
+  dataset?: string;
+  url?: string;
+  updatedAt?: string;
+  retrievedAt?: string;
+  warnings?: string[];
+}
+
 export interface FoodItem {
   id: string;
   name: string;
@@ -139,6 +149,7 @@ export interface FoodItem {
   servingGrams?: number;
   servingMl?: number;
   nutritionBasis?: NutritionBasis;
+  nutritionProvenance?: FoodNutritionProvenance;
   recipeServings?: number;
   source: FoodSource;
   sourcePath?: string;

@@ -160,7 +160,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -511,8 +511,6 @@ test("food search ranks messy out-of-order branded queries and gram servings", (
   assert.match(mainSource, /metricServing\.unit === "g" \? 8 : 4/);
   assert.match(mainSource, /replace\(\/\[’'\]\/g, ""\)/);
   assert.match(mainSource, /function hasSearchableMacroData\(nutrition: Nutrition \| undefined\): boolean/);
-  assert.match(mainSource, /const macros = \[nutrition\.proteinG, nutrition\.carbsG, nutrition\.fatG, nutrition\.sugarAlcoholG, nutrition\.alcoholG\]\.map\(numberOrUndefined\);/);
-  assert.match(mainSource, /return macros\.some\(\(value\) => value != null && value > 0\)/);
   assert.match(mainSource, /nutrition\.sugarAlcoholG != null \? `SA \$\{round\(nutrition\.sugarAlcoholG\)\}g` : ""/);
   assert.match(mainSource, /nutrition\.alcoholG != null \? `Alc \$\{round\(nutrition\.alcoholG\)\}g` : ""/);
 });
@@ -1300,7 +1298,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(stylesSource, /button\.tps-health-recipe-ingredient-food|\.tps-health-recipe-ingredient-food \{/);
 });
 
-test("food search excludes macro-less candidates and matches Breyer's spelling variants", async () => {
+test("food search retains explicit zero and partial candidates and matches Breyer's spelling variants", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -1357,9 +1355,9 @@ test("food search excludes macro-less candidates and matches Breyer's spelling v
 
   const results = await plugin.searchFoods("breyers");
   assert.ok(results.some((item) => item.name === "Breyer's Vanilla Ice Cream"));
-  assert.equal(results.some((item) => item.name === "Breyers Missing Macros"), false);
-  assert.equal(results.some((item) => item.name === "Breyers Zero Macros"), false);
-  assert.ok(results.every((item) => [item.nutrition?.proteinG, item.nutrition?.carbsG, item.nutrition?.fatG, item.nutrition?.sugarAlcoholG, item.nutrition?.alcoholG].some((value) => value != null && value > 0)));
+  assert.equal(results.some((item) => item.name === "Breyers Missing Macros"), true);
+  assert.equal(results.some((item) => item.name === "Breyers Zero Macros"), true);
+  assert.ok(results.every(item => Object.values(item.nutrition || {}).some(value => value != null && value >= 0)));
 });
 
 test("food search matches tokens across name brand aliases notes and ingredients", async () => {
@@ -2586,7 +2584,7 @@ test("dedupe keeps the best coherent serving pair while ranking textual relevanc
     nutrition: { calories: 188, proteinG: 18.8, carbsG: 25, fatG: 4.69, fiberG: 2, sugarG: 1, sugarAlcoholG: 0, sodiumMg: 875 },
   };
   const [merged] = dedupeFoods([labeled, richPer100]);
-  assert.equal(merged.source, "open-food-facts", "identity metadata may still come from the richer candidate");
+  assert.equal(merged.source, "usda", "the source must identify the provider of the retained nutrition");
   assert.equal(merged.nutritionBasis, "labeled-serving");
   assert.equal(merged.servingAmount, 0.5);
   assert.equal(merged.servingUnit, "lavash");
@@ -2620,7 +2618,7 @@ test("dedupe keeps the best coherent serving pair while ranking textual relevanc
   assert.equal(rankFoodSearchResults("josephs lavash bread", [exactPer100, equalLabeled])[0]?.id, "equal-labeled");
 });
 
-test("stale local barcode foods are enriched once and persist the labeled serving pair without replacing local identity", async () => {
+test("saved barcode lookups preserve authored nutrition and never fetch or rewrite the note", async () => {
   installDeterministicBrowserGlobals();
   const deterministicSetTimeout = window.setTimeout;
   const deterministicClearTimeout = window.clearTimeout;
@@ -2648,6 +2646,7 @@ test("stale local barcode foods are enriched once and persist the labeled servin
     "---",
     "Local body stays here.",
   ].join("\n"));
+  const originalContent = fake.files.get(path);
   const detailProduct = {
     code: "0074117000734",
     product_name: "Lavash Bread",
@@ -2678,32 +2677,20 @@ test("stale local barcode foods are enriched once and persist the labeled servin
     assert.equal(enriched?.name, "My Josephs Lavash");
     assert.deepEqual(enriched?.aliases, ["wrap bread", "favorite lavash"]);
     assert.equal(enriched?.notes, "Keep local note");
-    assert.equal(enriched?.nutritionBasis, "labeled-serving");
-    assert.equal(enriched?.servingAmount, 0.5);
-    assert.equal(enriched?.servingUnit, "lavash");
-    assert.equal(enriched?.servingGrams, 32);
-    assert.equal(enriched?.nutrition?.calories, 60);
-    assert.equal(requests.length, 1);
-
-    const persisted = parseFrontmatter(fake.files.get(path));
-    assert.equal(persisted.title, "My Josephs Lavash");
-    assert.equal(persisted.name, undefined, "title is the single display-name property");
-    assert.equal(persisted.aliases, "wrap bread, favorite lavash");
-    assert.equal(persisted.notes, "Keep local note");
-    assert.equal(persisted.nutritionBasis, "labeled-serving");
-    assert.equal(persisted.servingAmount, 0.5);
-    assert.equal(persisted.servingUnit, "lavash");
-    assert.equal(persisted.servingGrams, 32);
-    assert.equal(persisted.calories, 60);
-    assert.match(fake.files.get(path), /Local body stays here\./);
-
+    assert.equal(enriched?.nutritionBasis, undefined);
+    assert.equal(enriched?.servingAmount, 1);
+    assert.equal(enriched?.servingUnit, "serving");
+    assert.equal(enriched?.servingGrams, undefined);
+    assert.equal(enriched?.nutrition?.calories, 188);
+    assert.equal(requests.length, 0);
+    assert.equal(fake.files.get(path), originalContent);
     const reloaded = await plugin.lookupFoodByBarcode("0074117000734");
-    assert.equal(reloaded?.nutritionBasis, "labeled-serving");
-    assert.equal(reloaded?.nutrition?.calories, 60);
-    assert.equal(requests.length, 1, "a persisted labeled local note must not repeat exact-product enrichment");
-    const resolved = await plugin.findOrCreateFoodNote(enriched);
-    assert.equal(resolved.nutritionBasis, "labeled-serving");
-    assert.equal(resolved.nutrition?.calories, 60);
+    assert.equal(reloaded?.nutrition?.calories, 188);
+    const resolved = await plugin.findOrCreateFoodNote({ ...enriched, nutrition: { calories: 60 }, servingGrams: 32, nutritionBasis: "labeled-serving" });
+    assert.equal(resolved.nutrition?.calories, 188);
+    assert.equal(requests.length, 0);
+    assert.equal(fake.files.get(path), originalContent);
+
   } finally {
     window.setTimeout = deterministicSetTimeout;
     window.clearTimeout = deterministicClearTimeout;
@@ -2868,7 +2855,8 @@ test("provider search reconstructs split branded identities without product fall
     const online = await plugin.searchOpenFoodFacts("north harbor storm");
     assert.equal(online[0]?.name, "North Harbor Storm Hard Seltzer");
     assert.equal(online[0]?.brand, undefined, "a missing provider brand must not be guessed from a hardcoded brand list");
-    assert.equal(online[0]?.nutrition?.alcoholG, 8, "alcohol-only products must survive the provider nutrition guard");
+    assert.equal(online[0]?.nutrition?.alcoholG, undefined, "ABV cannot become grams without a volume serving");
+    assert.ok(online[0]?.nutritionProvenance?.warnings.some(w => w.includes("Alcohol grams unknown")));
     assert.ok(online[0]?.aliases?.some((alias) => /storm hard seltzer/i.test(alias)));
     assert.match(decodeURIComponent(requests[0].url), /q=north\+harbor\+storm/);
     assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:/);
@@ -2987,7 +2975,7 @@ test("barcode lookup resolves local UPC aliases and coalesces equivalent remote 
   assert.equal(michelob?.servingMl, 355);
   assert.equal(michelob?.nutrition?.calories, 80);
   assert.equal(michelob?.nutrition?.alcoholG, 11.2);
-  assert.equal(localRemoteCalls, 0, "the verified common-product fallback must resolve before a remote barcode request");
+  assert.equal(localRemoteCalls, 1, "the unverified built-in estimate is only used after a provider miss");
   assert.equal((await localPlugin.searchLocalFoods("michelob ultra seltzer"))[0]?.name, michelob?.name);
   const honeycrisp = (await localPlugin.searchLocalFoods("large honeycrisp apple"))[0];
   assert.equal(honeycrisp?.name, "Honeycrisp apple, large");
@@ -10315,9 +10303,9 @@ test("custom food calories are calculated from macros including alcohol", () => 
 test("sugar alcohol calories subtract polyols from regular carb calories", () => {
   assert.equal(caloriesFromMacros({ carbsG: 100, sugarAlcoholG: 100, sugarAlcoholCaloriesPerG: 0 }), 0);
   assert.equal(caloriesFromMacros({ carbsG: 20, sugarAlcoholG: 10, sugarAlcoholCaloriesPerG: 2 }), 60);
-  assert.match(mainSource, /foodFactsServingValue\(nutrients, "polyols"/);
-  assert.match(mainSource, /foodFactsLooksLikePureSugarAlcohol\(product\)/);
-  assert.match(mainSource, /if \(\/\\berythritol\\b\/\.test\(text\)\) return 0;/);
+  assert.match(mainSource, /for \(const key of \["polyols", "sugar-alcohol", "sugar-alcohols"\]/);
+  assert.doesNotMatch(mainSource, /foodFactsLooksLikePureSugarAlcohol\(product\)/);
+  assert.match(mainSource, /function foodFactsSugarAlcoholCaloriesPerGram/);
 });
 
 test("food log unit options are scoped to the food serving type", async () => {
@@ -10829,7 +10817,7 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /name: "Great Value Shredded Hash Browns", brand: "Great Value"/);
   assert.match(mainSource, /aliases: \["great value hash brown potatoes", "great value hash browns", "great value shredded hash brown potatoes", "walmart hash browns", "hash brown potatoes"\]/);
   assert.match(mainSource, /const scoreQueryVariants = correctedQuery && correctedQuery !== normalizedQuery/);
-  assert.match(mainSource, /if \(item\.source === "curated"\) score \+= 80/);
+  assert.match(mainSource, /if \(item\.source === "curated"\) score -= 20/);
   assert.match(mainSource, /if \(item\.source === "usda" && !item\.brand\) score \+= 18/);
   assert.match(mainSource, /if \(item\.source === "custom-note"\) score \+= 45/);
   assert.match(mainSource, /if \(usage\.count\) score \+= 90 \+ Math\.min\(usage\.count, 10\) \* 10/);

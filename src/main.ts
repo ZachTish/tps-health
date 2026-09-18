@@ -1,3 +1,4 @@
+import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
 import { EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
@@ -420,6 +421,9 @@ const OPEN_FOOD_FACTS_SEARCH_FIELDS = [
   "serving_quantity_unit",
   "serving_size",
   "nutriments",
+  "last_modified_t",
+  "data_quality_errors_tags",
+  "data_quality_warnings_tags",
   "image_small_url",
   "image_thumb_url",
   "ingredients_text",
@@ -4195,19 +4199,20 @@ export default class TPSHealthPlugin extends Plugin {
       item.servingGrams ? `servingGrams: ${round(item.servingGrams)}` : "",
       item.servingMl ? `servingMl: ${round(item.servingMl)}` : "",
       item.nutritionBasis ? `nutritionBasis: ${item.nutritionBasis}` : "",
+      item.nutritionProvenance ? `nutritionProvenance: ${JSON.stringify(foodNutritionProvenance(item.nutritionProvenance))}` : "",
       isRecipeLikeFoodType(type) ? `recipeServings: ${recipeServingsForFood(item, type)}` : "",
       isRecipeLikeFoodType(type) ? yamlStringList("ingredients", recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")) : "",
       item.confidence != null ? `confidence: ${item.confidence}` : "",
-      `calories: ${nutrition.calories || 0}`,
-      `proteinG: ${nutrition.proteinG || 0}`,
-      `carbsG: ${nutrition.carbsG || 0}`,
-      `fatG: ${nutrition.fatG || 0}`,
-      `fiberG: ${nutrition.fiberG || 0}`,
-      `sugarG: ${nutrition.sugarG || 0}`,
-      `sugarAlcoholG: ${nutrition.sugarAlcoholG || 0}`,
+      nutritionNumber(nutrition.calories) != null ? `calories: ${nutrition.calories}` : "",
+      nutritionNumber(nutrition.proteinG) != null ? `proteinG: ${nutrition.proteinG}` : "",
+      nutritionNumber(nutrition.carbsG) != null ? `carbsG: ${nutrition.carbsG}` : "",
+      nutritionNumber(nutrition.fatG) != null ? `fatG: ${nutrition.fatG}` : "",
+      nutritionNumber(nutrition.fiberG) != null ? `fiberG: ${nutrition.fiberG}` : "",
+      nutritionNumber(nutrition.sugarG) != null ? `sugarG: ${nutrition.sugarG}` : "",
+      nutritionNumber(nutrition.sugarAlcoholG) != null ? `sugarAlcoholG: ${nutrition.sugarAlcoholG}` : "",
       nutrition.sugarAlcoholCaloriesPerG != null ? `sugarAlcoholCaloriesPerG: ${nutrition.sugarAlcoholCaloriesPerG}` : "",
-      `alcoholG: ${nutrition.alcoholG || 0}`,
-      `sodiumMg: ${nutrition.sodiumMg || 0}`,
+      nutritionNumber(nutrition.alcoholG) != null ? `alcoholG: ${nutrition.alcoholG}` : "",
+      nutritionNumber(nutrition.sodiumMg) != null ? `sodiumMg: ${nutrition.sodiumMg}` : "",
       ...Object.entries(extraNutrition(nutrition)).map(([key, value]) => `${key}: ${value}`),
       "---",
       "",
@@ -4237,16 +4242,16 @@ export default class TPSHealthPlugin extends Plugin {
       servingMl: item.servingMl == null ? "" : String(round(item.servingMl)),
       nutritionBasis: item.nutritionBasis || "",
       recipeServings: isRecipeLikeFoodType(type) ? String(recipeServingsForFood(item, type)) : "",
-      calories: String(nutrition.calories || 0),
-      proteinG: String(nutrition.proteinG || 0),
-      carbsG: String(nutrition.carbsG || 0),
-      fatG: String(nutrition.fatG || 0),
-      fiberG: String(nutrition.fiberG || 0),
-      sugarG: String(nutrition.sugarG || 0),
-      sugarAlcoholG: String(nutrition.sugarAlcoholG || 0),
+      calories: String(nutritionNumber(nutrition.calories) ?? ""),
+      proteinG: String(nutritionNumber(nutrition.proteinG) ?? ""),
+      carbsG: String(nutritionNumber(nutrition.carbsG) ?? ""),
+      fatG: String(nutritionNumber(nutrition.fatG) ?? ""),
+      fiberG: String(nutritionNumber(nutrition.fiberG) ?? ""),
+      sugarG: String(nutritionNumber(nutrition.sugarG) ?? ""),
+      sugarAlcoholG: String(nutritionNumber(nutrition.sugarAlcoholG) ?? ""),
       sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG == null ? "" : String(nutrition.sugarAlcoholCaloriesPerG),
-      alcoholG: String(nutrition.alcoholG || 0),
-      sodiumMg: String(nutrition.sodiumMg || 0),
+      alcoholG: String(nutritionNumber(nutrition.alcoholG) ?? ""),
+      sodiumMg: String(nutritionNumber(nutrition.sodiumMg) ?? ""),
       confidence: item.confidence == null ? "" : String(item.confidence),
     };
     const rendered = Object.entries(replacements).reduce(
@@ -4256,6 +4261,7 @@ export default class TPSHealthPlugin extends Plugin {
     const templateUpdates: Record<string, string> = {
       ...Object.fromEntries(Object.entries(extraNutrition(nutrition)).map(([key, value]) => [key, String(value)])),
       ...(item.nutritionBasis ? { nutritionBasis: item.nutritionBasis } : {}),
+      ...(item.nutritionProvenance ? { nutritionProvenance: JSON.stringify(foodNutritionProvenance(item.nutritionProvenance)) } : {}),
       ...(item.ingredients ? { ingredientStatement: item.ingredients } : {}),
     };
     const withCanonicalIngredients = item.ingredients
@@ -4477,8 +4483,6 @@ export default class TPSHealthPlugin extends Plugin {
       if (source instanceof TFile && isFoodLikeMarkdownFile(this, source, this.app.metadataCache.getFileCache(source))) {
         const existing = this.foodFromFrontmatter(source, this.app.metadataCache.getFileCache(source)?.frontmatter || {});
         if (hasSearchableMacroData(existing.nutrition)) {
-          const upgraded = await this.upgradeLocalFoodServingPair(existing, item, "source-path");
-          if (upgraded !== existing) return upgraded;
           logger.flow("Food", "find-or-create:path-hit", { name: existing.name, sourcePath: source.path });
           return existing;
         }
@@ -4488,8 +4492,6 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const existing = item.barcode ? this.findFoodByBarcode(item.barcode) : null;
     if (existing) {
-      const upgraded = await this.upgradeLocalFoodServingPair(existing, item, "barcode");
-      if (upgraded !== existing) return upgraded;
       logger.flow("Food", "find-or-create:barcode-hit", { name: existing.name, sourcePath: existing.sourcePath || "", barcode: item.barcode || "" });
       return existing;
     }
@@ -4628,7 +4630,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
-      for (const key of [...EXTRA_NUTRIENT_KEYS, "servingGrams", "servingMl", "nutritionBasis"]) if (updated[key] == null) delete frontmatter[key];
+      for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis"]) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -5076,7 +5078,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
       ...itemFrontmatter,
     };
-    for (const key of [...EXTRA_NUTRIENT_KEYS, "servingGrams", "servingMl", "nutritionBasis"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
+    for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
@@ -5674,8 +5676,9 @@ export default class TPSHealthPlugin extends Plugin {
         : foodIngredientStatementFromFrontmatter(fm),
       servingAmount: isMeal ? 1 : Number(fm.servingAmount || 1),
       servingUnit: isMeal ? "meal" : String(fm.servingUnit || "serving"),
-      servingGrams: isMeal ? undefined : numberOrUndefined(fm.servingGrams),
-      servingMl: isMeal ? undefined : numberOrUndefined(fm.servingMl),
+      servingGrams: isMeal ? undefined : nutritionNumber(fm.servingGrams),
+      servingMl: isMeal ? undefined : nutritionNumber(fm.servingMl),
+      nutritionProvenance: foodNutritionProvenance(fm.nutritionProvenance),
       nutritionBasis: isMeal ? undefined : nutritionBasisFromValue(fm.nutritionBasis),
       recipeServings: isMeal ? 1 : numberOrUndefined(fm.recipeServings),
       source: "custom-note",
@@ -5683,16 +5686,16 @@ export default class TPSHealthPlugin extends Plugin {
       confidence: numberOrUndefined(fm.confidence),
       notes: fm.notes ? String(fm.notes) : undefined,
       nutrition: {
-        calories: numberOrUndefined(fm.calories),
-        proteinG: numberOrUndefined(fm.proteinG),
-        carbsG: numberOrUndefined(fm.carbsG),
-        fatG: numberOrUndefined(fm.fatG),
-        fiberG: numberOrUndefined(fm.fiberG),
-        sugarG: numberOrUndefined(fm.sugarG),
-        sugarAlcoholG: numberOrUndefined(fm.sugarAlcoholG),
-        sugarAlcoholCaloriesPerG: numberOrUndefined(fm.sugarAlcoholCaloriesPerG),
-        alcoholG: numberOrUndefined(fm.alcoholG),
-        sodiumMg: numberOrUndefined(fm.sodiumMg),
+        calories: nutritionNumber(fm.calories),
+        proteinG: nutritionNumber(fm.proteinG),
+        carbsG: nutritionNumber(fm.carbsG),
+        fatG: nutritionNumber(fm.fatG),
+        fiberG: nutritionNumber(fm.fiberG),
+        sugarG: nutritionNumber(fm.sugarG),
+        sugarAlcoholG: nutritionNumber(fm.sugarAlcoholG),
+        sugarAlcoholCaloriesPerG: nutritionNumber(fm.sugarAlcoholCaloriesPerG),
+        alcoholG: nutritionNumber(fm.alcoholG),
+        sodiumMg: nutritionNumber(fm.sodiumMg),
         ...extraNutrition(fm),
       },
     });
@@ -5848,6 +5851,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...itemServing,
       nutritionBasis: basis,
       source: "open-food-facts",
+      nutritionProvenance: openFoodFactsProvenance(product),
       nutrition: foodFactsNutrition(product, serving, basis),
     });
   }
@@ -5886,6 +5890,7 @@ export default class TPSHealthPlugin extends Plugin {
             servingMl: serving.servingMl,
             nutritionBasis: serving.nutritionBasis,
             source: "usda",
+            nutritionProvenance: { provider: "usda", recordId: String(food.fdcId), dataset: String(food.dataType || "Unknown dataset"), url: `https://fdc.nal.usda.gov/food-details/${encodeURIComponent(food.fdcId)}/nutrients`, updatedAt: food.publicationDate ? String(food.publicationDate) : undefined, retrievedAt: new Date().toISOString() },
             nutrition,
           } as FoodItem;
         })
@@ -6184,59 +6189,16 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async enrichFoodSearchItem(item: FoodItem): Promise<FoodItem> {
-    const enrichLocalServing = item.source === "custom-note" && foodNeedsProviderServingEnrichment(item);
-    if (!item.barcode || (item.source !== "open-food-facts" && !enrichLocalServing)) return item;
+    if (!item.barcode || item.source !== "open-food-facts") return item;
     try {
       const full = await this.lookupOpenFoodFactsBarcode(item.barcode);
       if (!full) return item;
       const enriched = mergeEnrichedFoodSearchItem(item, full);
-      return enrichLocalServing
-        ? await this.upgradeLocalFoodServingPair(item, enriched, "provider-enrichment")
-        : enriched;
+      return enriched;
     } catch (error) {
       logger.flowWarn("FoodSearch", "open-food-facts:enrich-failed", { barcode: maskBarcode(item.barcode), error: logger.errorSummary(error) });
       return item;
     }
-  }
-
-  private async upgradeLocalFoodServingPair(local: FoodItem, candidate: FoodItem, route: string): Promise<FoodItem> {
-    if (local.source !== "custom-note" || foodServingPairQuality(candidate) <= foodServingPairQuality(local)) return local;
-    const file = local.sourcePath ? this.app.vault.getAbstractFileByPath(local.sourcePath) : null;
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("Food", "serving-upgrade:missing-note", { route, name: local.name, sourcePath: local.sourcePath || "" });
-      return local;
-    }
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-    const type = foodNoteTypeFromFrontmatter(frontmatter, file, this.settings);
-    if (type !== "food") {
-      logger.flowWarn("Food", "serving-upgrade:non-food-skip", { route, name: local.name, sourcePath: file.path, type });
-      return local;
-    }
-    const identity = mergeFoodCandidateMetadata(local, candidate);
-    const upgraded = mergeFoodServingPair({
-      ...identity,
-      id: local.id,
-      name: local.name,
-      aliases: local.aliases,
-      source: "custom-note",
-      sourcePath: file.path,
-      notes: local.notes,
-    }, candidate);
-    try {
-      await this.updateFoodNote(file, upgraded, "food", false);
-      logger.flow("Food", "serving-upgrade:done", {
-        route,
-        name: local.name,
-        sourcePath: file.path,
-        previousBasis: local.nutritionBasis || "",
-        nutritionBasis: upgraded.nutritionBasis || "",
-        servingGrams: upgraded.servingGrams || 0,
-        servingMl: upgraded.servingMl || 0,
-      });
-    } catch (error) {
-      logger.flowWarn("Food", "serving-upgrade:persist-failed", { route, name: local.name, sourcePath: file.path, error: logger.errorSummary(error) });
-    }
-    return upgraded;
   }
 
   private async lookupOpenFoodFactsBarcodeCandidate(code: string): Promise<FoodItem | null> {
@@ -6244,7 +6206,7 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("Barcode", "lookup-candidate:start", { barcode: maskBarcode(code) });
     try {
       const response = await requestUrl({
-        url: `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=code,product_name,brands,categories,categories_tags,serving_quantity,serving_quantity_unit,serving_size,nutriments,image_url,ingredients_text`,
+        url: `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=${OPEN_FOOD_FACTS_SEARCH_FIELDS},image_url`,
         headers: this.foodFactsHeaders(),
         throw: false,
       });
@@ -6292,6 +6254,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...itemServing,
       nutritionBasis: basis,
       source: "open-food-facts",
+      nutritionProvenance: openFoodFactsProvenance(product),
       nutrition: foodFactsNutrition(product, serving, basis),
     });
   }
@@ -9558,15 +9521,15 @@ export default class TPSHealthPlugin extends Plugin {
       });
       return enriched;
     }
-    const curated = curatedFoodByBarcode(normalized);
-    if (curated) {
-      logger.flow("Barcode", "lookup:curated-hit", { barcode: maskBarcode(normalized), name: curated.name });
-      return curated;
-    }
     const remote = await this.lookupOpenFoodFactsBarcode(normalized);
     if (remote) {
       logger.flow("Barcode", "lookup:remote-hit", { barcode: maskBarcode(normalized), name: remote.name, source: remote.source });
       return remote;
+    }
+    const curated = curatedFoodByBarcode(normalized);
+    if (curated) {
+      logger.flow("Barcode", "lookup:curated-hit", { barcode: maskBarcode(normalized), name: curated.name });
+      return curated;
     }
     logger.flow("Barcode", "lookup:no-match", { barcode: maskBarcode(normalized) });
     return null;
@@ -11256,6 +11219,10 @@ class FoodSearchModal extends FoodInputModal {
     row.setAttr("aria-label", item.name);
     const titleButton = row.createEl("button", { cls: "tps-health-result-title", text: item.name, attr: { type: "button", "aria-label": `Choose amount for ${item.name}` } });
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
+    const dataDetails = row.createEl("details", { cls: "tps-health-food-data-details" });
+    dataDetails.createEl("summary", { text: "Nutrition data details" });
+    dataDetails.createDiv({ text: foodDataDetail(item) });
+    dataDetails.addEventListener("click", event => event.stopPropagation());
 
     let adding = false;
     const add = async () => {
@@ -16398,33 +16365,33 @@ class BarcodeFoodReviewModal extends Modal {
     }));
     if (preserveLabelCalories) {
       new Setting(formEl).setName("Calories").setDesc(this.item.source === "nutrition-label" ? "Copied from the photographed label." : "Supported by the grounded sources; verify the package.").addText((text) => text.setValue(String(nutrition.calories ?? 0)).onChange((value) => {
-        nutrition.calories = numberOrUndefined(value);
+        nutrition.calories = nutritionNumber(value);
         updateCaloriePreview();
       }));
     }
-    new Setting(formEl).setName("Protein g").addText((text) => text.setValue(String(nutrition.proteinG || 0)).onChange((value) => {
-      nutrition.proteinG = numberOrUndefined(value);
+    new Setting(formEl).setName("Protein g").addText((text) => text.setValue(String(nutrition.proteinG ?? "")).onChange((value) => {
+      nutrition.proteinG = nutritionNumber(value);
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Carbs g").addText((text) => text.setValue(String(nutrition.carbsG || 0)).onChange((value) => {
-      nutrition.carbsG = numberOrUndefined(value);
+    new Setting(formEl).setName("Carbs g").addText((text) => text.setValue(String(nutrition.carbsG ?? "")).onChange((value) => {
+      nutrition.carbsG = nutritionNumber(value);
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Fat g").addText((text) => text.setValue(String(nutrition.fatG || 0)).onChange((value) => {
-      nutrition.fatG = numberOrUndefined(value);
+    new Setting(formEl).setName("Fat g").addText((text) => text.setValue(String(nutrition.fatG ?? "")).onChange((value) => {
+      nutrition.fatG = nutritionNumber(value);
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Fiber g").addText((text) => text.setValue(String(nutrition.fiberG || 0)).onChange((value) => nutrition.fiberG = numberOrUndefined(value)));
-    new Setting(formEl).setName("Sugar g").addText((text) => text.setValue(String(nutrition.sugarG || 0)).onChange((value) => nutrition.sugarG = numberOrUndefined(value)));
-    new Setting(formEl).setName("Sugar alcohol g").setDesc("Separate from regular carbs; erythritol is 0 kcal/g.").addText((text) => text.setValue(String(nutrition.sugarAlcoholG || 0)).onChange((value) => {
-      nutrition.sugarAlcoholG = numberOrUndefined(value);
+    new Setting(formEl).setName("Fiber g").addText((text) => text.setValue(String(nutrition.fiberG ?? "")).onChange((value) => nutrition.fiberG = nutritionNumber(value)));
+    new Setting(formEl).setName("Sugar g").addText((text) => text.setValue(String(nutrition.sugarG ?? "")).onChange((value) => nutrition.sugarG = nutritionNumber(value)));
+    new Setting(formEl).setName("Sugar alcohol g").setDesc("Separate from regular carbs; erythritol is 0 kcal/g.").addText((text) => text.setValue(String(nutrition.sugarAlcoholG ?? "")).onChange((value) => {
+      nutrition.sugarAlcoholG = nutritionNumber(value);
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Alcohol g").setDesc("Calculated at 7 kcal per gram.").addText((text) => text.setValue(String(nutrition.alcoholG || 0)).onChange((value) => {
-      nutrition.alcoholG = numberOrUndefined(value);
+    new Setting(formEl).setName("Alcohol g").setDesc("Calculated at 7 kcal per gram.").addText((text) => text.setValue(String(nutrition.alcoholG ?? "")).onChange((value) => {
+      nutrition.alcoholG = nutritionNumber(value);
       updateCaloriePreview();
     }));
-    new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg || 0)).onChange((value) => nutrition.sodiumMg = numberOrUndefined(value)));
+    new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg ?? "")).onChange((value) => nutrition.sodiumMg = nutritionNumber(value)));
     updateCaloriePreview();
     let submitting = false;
     new Setting(this.contentEl)
@@ -18018,7 +17985,10 @@ class CustomFoodModal extends FoodInputModal {
         caloriePreview.setText(`Recipe yield: ${round(recipeServings)} ${this.type === "meal" ? "meal" : "servings"}; per serving: ${round(perServing.calories)} kcal`);
         return;
       }
-      caloriePreview.setText(`Calories calculated from macros: ${caloriesFromMacros(nutrition)} kcal per ${servingAmount} ${servingUnit}`);
+      const preservingImport = this.baseFood?.nutritionProvenance && CUSTOM_FOOD_NUTRITION_FIELDS.every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
+      caloriePreview.setText(preservingImport
+        ? `Reported energy: ${nutrition.calories == null ? "unknown" : `${round(nutrition.calories)} kcal`} per ${servingAmount} ${servingUnit}`
+        : `Calories calculated from macros: ${caloriesFromMacros(nutrition)} kcal per ${servingAmount} ${servingUnit}`);
     };
     const formEl = this.contentEl.createDiv({ cls: "tps-health-food-editor-grid" });
     new Setting(formEl).setName("Name").addText((text) => text.setValue(name).onChange((value) => name = value.trim()));
@@ -18046,29 +18016,29 @@ class CustomFoodModal extends FoodInputModal {
         servingUnit = value.trim() || "serving";
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Protein g").addText((text) => text.setValue(String(nutrition.proteinG || 0)).onChange((value) => {
-        nutrition.proteinG = numberOrUndefined(value);
+      new Setting(formEl).setName("Protein g").addText((text) => text.setValue(String(nutrition.proteinG ?? "")).onChange((value) => {
+        nutrition.proteinG = nutritionNumber(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Carbs g").addText((text) => text.setValue(String(nutrition.carbsG || 0)).onChange((value) => {
-        nutrition.carbsG = numberOrUndefined(value);
+      new Setting(formEl).setName("Carbs g").addText((text) => text.setValue(String(nutrition.carbsG ?? "")).onChange((value) => {
+        nutrition.carbsG = nutritionNumber(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Fat g").addText((text) => text.setValue(String(nutrition.fatG || 0)).onChange((value) => {
-        nutrition.fatG = numberOrUndefined(value);
+      new Setting(formEl).setName("Fat g").addText((text) => text.setValue(String(nutrition.fatG ?? "")).onChange((value) => {
+        nutrition.fatG = nutritionNumber(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Fiber g").addText((text) => text.setValue(String(nutrition.fiberG || 0)).onChange((value) => nutrition.fiberG = numberOrUndefined(value)));
-      new Setting(formEl).setName("Sugar g").addText((text) => text.setValue(String(nutrition.sugarG || 0)).onChange((value) => nutrition.sugarG = numberOrUndefined(value)));
-      new Setting(formEl).setName("Sugar alcohol g").setDesc("Separate from regular carbs; erythritol is 0 kcal/g.").addText((text) => text.setValue(String(nutrition.sugarAlcoholG || 0)).onChange((value) => {
-        nutrition.sugarAlcoholG = numberOrUndefined(value);
+      new Setting(formEl).setName("Fiber g").addText((text) => text.setValue(String(nutrition.fiberG ?? "")).onChange((value) => nutrition.fiberG = nutritionNumber(value)));
+      new Setting(formEl).setName("Sugar g").addText((text) => text.setValue(String(nutrition.sugarG ?? "")).onChange((value) => nutrition.sugarG = nutritionNumber(value)));
+      new Setting(formEl).setName("Sugar alcohol g").setDesc("Separate from regular carbs; erythritol is 0 kcal/g.").addText((text) => text.setValue(String(nutrition.sugarAlcoholG ?? "")).onChange((value) => {
+        nutrition.sugarAlcoholG = nutritionNumber(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Alcohol g").setDesc("Calculated at 7 kcal per gram.").addText((text) => text.setValue(String(nutrition.alcoholG || 0)).onChange((value) => {
-        nutrition.alcoholG = numberOrUndefined(value);
+      new Setting(formEl).setName("Alcohol g").setDesc("Calculated at 7 kcal per gram.").addText((text) => text.setValue(String(nutrition.alcoholG ?? "")).onChange((value) => {
+        nutrition.alcoholG = nutritionNumber(value);
         updateCaloriePreview();
       }));
-      new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg || 0)).onChange((value) => nutrition.sodiumMg = numberOrUndefined(value)));
+      new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg ?? "")).onChange((value) => nutrition.sodiumMg = nutritionNumber(value)));
       const advanced = formEl.createEl("details", { cls: "tps-health-nutrient-editor" });
       advanced.createEl("summary", { text: "Vitamins, minerals & supplements" });
       const filter = advanced.createEl("input", { attr: { type: "search", placeholder: "Find a nutrient…", "aria-label": "Find a nutrient" } });
@@ -18334,6 +18304,7 @@ class CustomFoodModal extends FoodInputModal {
           servingUnit,
           recipeServings,
           ...servingMetadata,
+          nutritionProvenance: this.baseFood?.nutritionProvenance && CUSTOM_FOOD_NUTRITION_FIELDS.every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null)) ? this.baseFood.nutritionProvenance : undefined,
           sourceImagePath: this.baseFood?.sourceImagePath,
           notes: this.baseFood?.notes,
           nutrition,
@@ -19233,25 +19204,24 @@ function compactObject<T extends Record<string, unknown>>(value: T): T {
 }
 
 function nutrientValue(nutrients: any[], nutrientIds: number[]): number | undefined {
+  const mass: Record<string, number> = { g: 1, mg: 0.001, mcg: 0.000001, ug: 0.000001, "µg": 0.000001 };
   for (const id of nutrientIds) {
-    const nutrient = nutrients.find((item) => Number(item.nutrientId) === id);
-    const value = numberOrUndefined(nutrient?.value);
-    if (value != null) return value;
+    for (const nutrient of nutrients.filter(item => Number(item.nutrientId ?? item.nutrient?.id) === id)) {
+      const value = nutritionNumber(nutrient.amount ?? nutrient.value);
+      if (value == null) continue;
+      const expected = [1008, 2047, 2048].includes(id) ? "kcal" : id === 1062 ? "kj" : id === 1093 ? "mg" : "g";
+      const unit = String(nutrient.unitName ?? nutrient.nutrient?.unitName ?? expected).trim().toLowerCase();
+      if (unit === expected) return value;
+      if (mass[unit] && mass[expected]) return nutritionNumber(value * mass[unit] / mass[expected]);
+    }
   }
   return undefined;
 }
 
 function hasMacroData(nutriments: any): boolean {
-  if (!nutriments) return false;
-  if (EXTRA_NUTRIENTS.some(n => n.off && [nutriments[`${n.off}_serving`], nutriments[`${n.off}_100g`]].some(v => numberOrUndefined(v) != null && Number(v) > 0))) return true;
-  return hasSearchableMacroData({
-    calories: numberOrUndefined(nutriments["energy-kcal_serving"]) ?? numberOrUndefined(nutriments["energy-kcal_100g"]),
-    proteinG: numberOrUndefined(nutriments.proteins_serving) ?? numberOrUndefined(nutriments.proteins_100g),
-    carbsG: numberOrUndefined(nutriments.carbohydrates_serving) ?? numberOrUndefined(nutriments.carbohydrates_100g),
-    fatG: numberOrUndefined(nutriments.fat_serving) ?? numberOrUndefined(nutriments.fat_100g),
-    sugarAlcoholG: numberOrUndefined(nutriments.polyols_serving) ?? numberOrUndefined(nutriments.polyols_100g),
-    alcoholG: numberOrUndefined(nutriments.alcohol_serving) ?? numberOrUndefined(nutriments.alcohol_100g),
-  });
+  if (!nutriments || typeof nutriments !== "object") return false;
+  const names = ["energy-kcal", "energy-kj", "energy", "proteins", "carbohydrates", "fat", "fiber", "sugars", "sodium", "salt", "polyols", "alcohol", ...EXTRA_NUTRIENTS.map(n => n.off).filter(Boolean)];
+  return names.some(key => ["serving", "100g"].some(basis => nutritionNumber(nutriments[`${key}_${basis}`]) != null));
 }
 
 function normalizedQuantity(value: unknown): number {
@@ -19332,10 +19302,11 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
     servingMl: input.servingMl,
     nutritionBasis: input.nutritionBasis,
     recipeServings: input.recipeServings,
-    source: "manual",
+    source: foodNutritionProvenance(input.nutritionProvenance)?.provider || "manual",
+    nutritionProvenance: foodNutritionProvenance(input.nutritionProvenance),
     confidence: input.confidence,
     notes: input.notes,
-    nutrition: nutritionWithMacroCalories(input.nutrition || {}),
+    nutrition: foodNutritionProvenance(input.nutritionProvenance) ? input.nutrition : nutritionWithMacroCalories(input.nutrition || {}),
   });
 }
 
@@ -19366,17 +19337,18 @@ function foodFrontmatter(
     servingMl: item.servingMl == null ? undefined : round(item.servingMl),
     nutritionBasis: isRecipeLikeFoodType(type) ? undefined : item.nutritionBasis,
     recipeServings: isRecipeLikeFoodType(type) ? recipeServingsForFood(item, type) : undefined,
-    calories: nutrition.calories || 0,
-    proteinG: nutrition.proteinG || 0,
-    carbsG: nutrition.carbsG || 0,
-    fatG: nutrition.fatG || 0,
-    fiberG: nutrition.fiberG || 0,
-    sugarG: nutrition.sugarG || 0,
-    sugarAlcoholG: nutrition.sugarAlcoholG || 0,
+    calories: nutritionNumber(nutrition.calories),
+    proteinG: nutritionNumber(nutrition.proteinG),
+    carbsG: nutritionNumber(nutrition.carbsG),
+    fatG: nutritionNumber(nutrition.fatG),
+    fiberG: nutritionNumber(nutrition.fiberG),
+    sugarG: nutritionNumber(nutrition.sugarG),
+    sugarAlcoholG: nutritionNumber(nutrition.sugarAlcoholG),
     sugarAlcoholCaloriesPerG: nutrition.sugarAlcoholCaloriesPerG,
-    alcoholG: nutrition.alcoholG || 0,
-    sodiumMg: nutrition.sodiumMg || 0,
+    alcoholG: nutritionNumber(nutrition.alcoholG),
+    sodiumMg: nutritionNumber(nutrition.sodiumMg),
     ...extraNutrition(nutrition),
+    nutritionProvenance: foodNutritionProvenance(item.nutritionProvenance),
     confidence: item.confidence,
     notes: item.notes,
   });
@@ -20123,7 +20095,7 @@ function hasUsdaCoreMacroFields(food: any): boolean {
 function usdaFoodNutrition(food: any): Nutrition {
   const nutrients = Array.isArray(food?.foodNutrients) ? food.foodNutrients : [];
   return {
-    calories: nutrientValue(nutrients, [1008, 2047, 2048]),
+    calories: nutrientValue(nutrients, [1008, 2047, 2048]) ?? kjToKcal(nutrientValue(nutrients, [1062])),
     proteinG: nutrientValue(nutrients, [1003]),
     carbsG: nutrientValue(nutrients, [1005]),
     fatG: nutrientValue(nutrients, [1004]),
@@ -20763,6 +20735,7 @@ function searchCuratedFoods(query: string): FoodItem[] {
       servingGrams: item.servingGrams,
       servingMl: item.servingMl,
       source: "curated",
+      nutritionProvenance: { provider: "curated", dataset: "Unverified built-in estimate" },
       nutrition: item.nutrition,
     }));
 }
@@ -20795,6 +20768,7 @@ function curatedFoodByBarcode(barcode: string): FoodItem | null {
     servingMl: curated.servingMl,
     nutritionBasis: "labeled-serving",
     source: "curated",
+    nutritionProvenance: { provider: "curated", dataset: "Unverified built-in estimate" },
     nutrition: curated.nutrition,
   };
 }
@@ -20839,7 +20813,7 @@ const CURATED_COMMON_FOODS: CuratedCommonFood[] = [
   { name: "Barebells Salty Peanut Protein Bar", brand: "Barebells", aliases: ["barebells peanut", "barebell peanut", "salty peanut", "protein bar"], servingUnit: "bar", servingGrams: 55, nutrition: { calories: 200, proteinG: 20, carbsG: 17, fatG: 7, fiberG: 3, sugarG: 1, sodiumMg: 210 } },
   { name: "Legendary Foods Protein Pastry, Brown Sugar Cinnamon", brand: "Legendary Foods", aliases: ["legendary", "legendary pop tart", "protein poptart", "protein pastry", "brown sugar"], servingUnit: "pastry", servingGrams: 61, nutrition: { calories: 180, proteinG: 20, carbsG: 22, fatG: 9, fiberG: 6, sugarG: 1, sodiumMg: 360 } },
   { name: "Legendary Foods Protein Pastry, S'mores", brand: "Legendary Foods", aliases: ["legendary smores", "legendary s'mores", "protein poptart", "protein pastry"], servingUnit: "pastry", servingGrams: 61, nutrition: { calories: 180, proteinG: 20, carbsG: 22, fatG: 8, fiberG: 6, sugarG: 1, sodiumMg: 360 } },
-  { name: "Instant ramen, prepared", aliases: ["ramen", "ramen noodles"], servingUnit: "package", servingGrams: 85, nutrition: { calories: 380, proteinG: 10, carbsG: 52, fatG: 14, fiberG: 2, sugarG: 2, sodiumMg: 1600 } },
+  { name: "Instant ramen, package estimate", aliases: ["ramen", "ramen noodles"], servingUnit: "package", servingGrams: 85, nutrition: { calories: 380, proteinG: 10, carbsG: 52, fatG: 14, fiberG: 2, sugarG: 2, sodiumMg: 1600 } },
   { name: "Whiskey, 80 proof", aliases: ["whisky", "bourbon", "scotch"], servingUnit: "1.5 fl oz", servingMl: 44, nutrition: { calories: 97, alcoholG: 14 } },
   { name: "Vodka, 80 proof", aliases: ["vodka shot"], servingUnit: "1.5 fl oz", servingMl: 44, nutrition: { calories: 97, alcoholG: 14 } },
 ];
@@ -20861,7 +20835,7 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
       score: foodSearchScore(item, normalizedQuery, usageStats),
       tokenMatch: foodSearchItemTokenMatch(item, tokens),
     }))
-    .sort((a, b) => closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats) || b.score - a.score)
+    .sort((a, b) => Number(b.item.source === "custom-note") - Number(a.item.source === "custom-note") || closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats) || b.score - a.score)
     .map(({ item }) => item);
 }
 
@@ -20935,7 +20909,7 @@ function foodSearchScore(item: FoodItem, normalizedQuery: string, usageStats = n
   if (item.barcode) score += 2;
   if (item.source === "custom-note") score += 45;
   if (usage.count) score += 90 + Math.min(usage.count, 10) * 10 + (usage.lastLoggedAt ? 15 : 0);
-  if (item.source === "curated") score += 80;
+  if (item.source === "curated") score -= 20;
   if (item.source === "usda" && !item.brand) score += 18;
   if (item.source === "open-food-facts") score += tokens.length > 1 ? 8 : -18;
   if (item.source === "usda" && item.brand) score -= 24;
@@ -21015,13 +20989,12 @@ function foodUsageKeys(item: FoodItem): string[] {
 
 function hasSearchableMacroData(nutrition: Nutrition | undefined): boolean {
   if (!nutrition) return false;
-  const macros = [nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.sugarAlcoholG, nutrition.alcoholG].map(numberOrUndefined);
-  return macros.some((value) => value != null && value > 0) || Object.values(extraNutrition(nutrition)).some(value => value > 0);
+  return NUTRIENT_KEYS.some(key => nutritionNumber(nutrition[key]) != null);
 }
 
 function sodiumGramsToMg(value: unknown, multiplier = 1): number | undefined {
-  const sodiumG = numberOrUndefined(value);
-  return sodiumG == null ? undefined : Math.round(sodiumG * multiplier * 1000 * 10) / 10;
+  const sodiumG = nutritionNumber(value);
+  return sodiumG == null ? undefined : nutritionNumber(Math.round(sodiumG * multiplier * 1000 * 10) / 10);
 }
 
 interface FoodFactsServing {
@@ -21090,7 +21063,7 @@ function foodFactsNutritionBasis(product: any, serving: FoodFactsServing): NonNu
 
 function foodFactsHasServingNutrition(nutrients: any): boolean {
   return ["energy-kcal", "proteins", "carbohydrates", "fat", "fiber", "sugars", "sodium", ...EXTRA_NUTRIENTS.map(n => n.off).filter(Boolean)]
-    .some((key) => numberOrUndefined(nutrients?.[`${key}_serving`]) != null);
+    .some((key) => nutritionNumber(nutrients?.[`${key}_serving`]) != null);
 }
 
 function foodFactsItemServing(serving: FoodFactsServing, basis: NonNullable<FoodItem["nutritionBasis"]>): Pick<FoodItem, "servingAmount" | "servingUnit" | "servingGrams" | "servingMl"> {
@@ -21105,28 +21078,84 @@ function foodFactsItemServing(serving: FoodFactsServing, basis: NonNullable<Food
   return { servingAmount: 100, servingUnit: "g", servingGrams: 100 };
 }
 
+function kjToKcal(kj: number | undefined): number | undefined {
+  return kj == null ? undefined : kj / 4.184;
+}
+
+function foodFactsEnergyKcal(n: any, multiplier: number, labeled: boolean, metric: boolean): number | undefined {
+  return kjToKcal(foodFactsServingValue(n, "energy-kj", multiplier, labeled, metric)
+    ?? foodFactsServingValue(n, "energy", multiplier, labeled, metric));
+}
+
+function foodFactsAlcoholG(n: any, servingMl: number | undefined): number | undefined {
+  // OFF alcohol_100g and alcohol_serving are % vol, not normalized mass.
+  const abv = nutritionNumber(n.alcohol_100g) ?? nutritionNumber(n.alcohol_serving);
+  if (abv == null || abv > 100) return undefined;
+  if (abv === 0) return 0;
+  return servingMl ? alcoholGramsFromAbv(abv, servingMl) : undefined;
+}
+
+function openFoodFactsProvenance(product: any): NonNullable<FoodItem["nutritionProvenance"]> {
+  const warnings: string[] = [];
+  for (const key of ["data_quality_errors_tags", "data_quality_warnings_tags"]) {
+    if (Array.isArray(product?.[key])) for (const flag of product[key]) {
+      if (typeof flag === "string") warnings.push(`Provider flag: ${flag.slice(0, 160)}`);
+    }
+  }
+  const n = product?.nutriments || {};
+  const serving = foodFactsServing(product);
+  if (nutritionNumber(n.polyols_serving) != null || nutritionNumber(n.polyols_100g) != null) warnings.push("Polyol energy factor is a generic estimate; reported calories are preserved");
+  if (nutritionNumber(n["carbohydrates-total_100g"]) == null && nutritionNumber(n["carbohydrates-total_serving"]) == null && (nutritionNumber(n.carbohydrates_100g) != null || nutritionNumber(n.carbohydrates_serving) != null)) warnings.push("Carbohydrate definition follows the source; total carbohydrate is not separately reported");
+  for (const [key, value] of Object.entries(n)) {
+    if (/_(?:serving|100g)$/.test(key) && value != null && value !== "" && nutritionNumber(value) == null) {
+      warnings.push("Invalid source nutrient values were omitted"); break;
+    }
+  }
+  if ((nutritionNumber(n.alcohol_100g) ?? nutritionNumber(n.alcohol_serving) ?? 0) > 0 && !serving.ml) warnings.push("Alcohol grams unknown: the source reports ABV without a volume serving");
+  const metricAmount = serving.grams || serving.ml;
+  if (metricAmount) {
+    for (const key of ["energy-kcal", "proteins", "carbohydrates", "fat"]) {
+      const labeled = nutritionNumber(n[`${key}_serving`]), per100 = nutritionNumber(n[`${key}_100g`]);
+      if (labeled != null && per100 != null && !foodFactsValuesAgree(labeled, per100 * metricAmount / 100, 0.2, key === "energy-kcal" ? 10 : 2)) {
+        warnings.push("Serving and per-100 values disagree; compare the package label"); break;
+      }
+    }
+  }
+  const modified = nutritionNumber(product?.last_modified_t);
+  const date = modified == null ? null : new Date(modified * 1000);
+  const recordId = String(product?.code || "");
+  return {
+    provider: "open-food-facts", recordId, dataset: "Community label data",
+    url: recordId ? `https://world.openfoodfacts.org/product/${encodeURIComponent(recordId)}` : undefined,
+    updatedAt: date && Number.isFinite(date.getTime()) ? date.toISOString() : undefined,
+    retrievedAt: new Date().toISOString(), warnings: Array.from(new Set(warnings)).slice(0, 20),
+  };
+}
+
 function foodFactsNutrition(product: any, serving: FoodFactsServing, basis: NonNullable<FoodItem["nutritionBasis"]>): Nutrition {
   const n = product?.nutriments || {};
   const multiplier = serving.grams ? serving.grams / 100 : serving.ml ? serving.ml / 100 : 1;
   const hasMetricServing = Boolean(serving.grams || serving.ml);
   const useLabeledServingValues = basis === "labeled-serving";
   const nutrition: Nutrition = {
-    calories: foodFactsServingValue(n, "energy-kcal", multiplier, useLabeledServingValues, hasMetricServing),
+    calories: foodFactsServingValue(n, "energy-kcal", multiplier, useLabeledServingValues, hasMetricServing)
+      ?? foodFactsEnergyKcal(n, multiplier, useLabeledServingValues, hasMetricServing),
     proteinG: foodFactsServingValue(n, "proteins", multiplier, useLabeledServingValues, hasMetricServing),
-    carbsG: foodFactsServingValue(n, "carbohydrates", multiplier, useLabeledServingValues, hasMetricServing),
+    carbsG: foodFactsServingValue(n, "carbohydrates-total", multiplier, useLabeledServingValues, hasMetricServing)
+      ?? foodFactsServingValue(n, "carbohydrates", multiplier, useLabeledServingValues, hasMetricServing),
     fatG: foodFactsServingValue(n, "fat", multiplier, useLabeledServingValues, hasMetricServing),
     fiberG: foodFactsServingValue(n, "fiber", multiplier, useLabeledServingValues, hasMetricServing),
     sugarG: foodFactsServingValue(n, "sugars", multiplier, useLabeledServingValues, hasMetricServing),
     sugarAlcoholG: foodFactsSugarAlcoholG(n, product, multiplier, useLabeledServingValues, hasMetricServing),
-    alcoholG: foodFactsServingValue(n, "alcohol", multiplier, useLabeledServingValues, hasMetricServing),
+    alcoholG: foodFactsAlcoholG(n, useLabeledServingValues ? serving.ml : undefined),
     sodiumMg: foodFactsSodiumMg(n, multiplier, useLabeledServingValues, hasMetricServing),
   };
   for (const spec of EXTRA_NUTRIENTS) {
     if (!spec.off) continue;
     // OFF normalizes mass values to grams, including vitamins. Convert before rounding.
     const unitFactor = spec.unit === "mcg" ? 1e6 : spec.unit === "mg" ? 1e3 : 1;
-    const labeled = numberOrUndefined(n[`${spec.off}_serving`]);
-    const per100 = numberOrUndefined(n[`${spec.off}_100g`]);
+    const labeled = nutritionNumber(n[`${spec.off}_serving`]);
+    const per100 = nutritionNumber(n[`${spec.off}_100g`]);
     const value = foodFactsChooseServingValue(labeled == null ? undefined : labeled * unitFactor,
       per100 == null ? undefined : per100 * multiplier * unitFactor, useLabeledServingValues, hasMetricServing);
     if (value != null && value >= 0) Object.assign(nutrition, extraNutrition({ [spec.key]: value }));
@@ -21144,51 +21173,19 @@ function foodFactsSugarAlcoholG(
   useLabeledServingValue: boolean,
   canScalePer100: boolean,
 ): number | undefined {
-  const values = [
-    foodFactsServingValue(nutrients, "polyols", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "sugar-alcohol", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "sugar-alcohols", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "erythritol", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "xylitol", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "maltitol", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "sorbitol", multiplier, useLabeledServingValue, canScalePer100),
-    foodFactsServingValue(nutrients, "mannitol", multiplier, useLabeledServingValue, canScalePer100),
-  ].filter((value): value is number => value != null);
-  if (values.length) return Math.max(...values);
-  return foodFactsLooksLikePureSugarAlcohol(product)
-    ? foodFactsServingValue(nutrients, "carbohydrates", multiplier, useLabeledServingValue, canScalePer100)
-    : undefined;
+  for (const key of ["polyols", "sugar-alcohol", "sugar-alcohols"]) {
+    const total = foodFactsServingValue(nutrients, key, multiplier, useLabeledServingValue, canScalePer100);
+    if (total != null) return total;
+  }
+  // A named subtype is not evidence that all polyols were reported. Do not
+  // manufacture a total from an ingredient mention or an incomplete subtotal.
+  return undefined;
 }
 
-function foodFactsSugarAlcoholCaloriesPerGram(product: any): number {
-  const text = normalizeLookup([
-    product?.product_name,
-    product?.product_name_en,
-    product?.generic_name,
-    product?.ingredients_text,
-    product?.categories,
-    Array.isArray(product?.categories_tags) ? product.categories_tags.join(" ") : "",
-  ].filter(Boolean).join(" "));
-  if (/\berythritol\b/.test(text)) return 0;
-  if (/\bmannitol\b/.test(text)) return 1.6;
-  if (/\b(?:isomalt|lactitol)\b/.test(text)) return 2;
-  if (/\bmaltitol\b/.test(text)) return 2.1;
-  if (/\bxylitol\b/.test(text)) return 2.4;
-  if (/\bsorbitol\b/.test(text)) return 2.6;
-  if (/\bhydrogenated starch hydrolysates?\b/.test(text)) return 3;
+function foodFactsSugarAlcoholCaloriesPerGram(_product: any): number {
+  // Generic polyol estimate used only when users later derive calories from
+  // macros. Imported reported energy remains authoritative.
   return 2;
-}
-
-function foodFactsLooksLikePureSugarAlcohol(product: any): boolean {
-  const text = normalizeLookup([
-    product?.product_name,
-    product?.product_name_en,
-    product?.generic_name,
-    product?.ingredients_text,
-    product?.categories,
-    Array.isArray(product?.categories_tags) ? product.categories_tags.join(" ") : "",
-  ].filter(Boolean).join(" "));
-  return /\b(erythritol|xylitol|maltitol|sorbitol|mannitol|isomalt|lactitol|polyols?|sugar alcohols?)\b/.test(text);
 }
 
 function foodFactsServingValue(
@@ -21198,20 +21195,20 @@ function foodFactsServingValue(
   useLabeledServingValue: boolean,
   canScalePer100: boolean,
 ): number | undefined {
-  const serving = numberOrUndefined(nutrients?.[`${key}_serving`]);
+  const serving = nutritionNumber(nutrients?.[`${key}_serving`]);
   const scaled = foodFactsScaledValue(nutrients, key, multiplier);
   return foodFactsChooseServingValue(serving, scaled, useLabeledServingValue, canScalePer100);
 }
 
 function foodFactsScaledValue(nutrients: any, key: string, multiplier: number): number | undefined {
-  const per100 = numberOrUndefined(nutrients?.[`${key}_100g`]);
-  return per100 == null ? undefined : round(per100 * multiplier);
+  const per100 = nutritionNumber(nutrients?.[`${key}_100g`]);
+  return per100 == null ? undefined : nutritionNumber(per100 * multiplier);
 }
 
 function foodFactsSodiumMg(nutrients: any, multiplier: number, useLabeledServingValue: boolean, canScalePer100: boolean): number | undefined {
   return foodFactsChooseServingValue(
-    sodiumGramsToMg(nutrients?.sodium_serving),
-    sodiumGramsToMg(nutrients?.sodium_100g, multiplier),
+    sodiumGramsToMg(nutrients?.sodium_serving) ?? sodiumGramsToMg(nutritionNumber(nutrients?.salt_serving), 1 / 2.5),
+    sodiumGramsToMg(nutrients?.sodium_100g, multiplier) ?? sodiumGramsToMg(nutritionNumber(nutrients?.salt_100g), multiplier / 2.5),
     useLabeledServingValue,
     canScalePer100,
   );
@@ -21267,12 +21264,19 @@ function dedupeFoods(items: FoodItem[]): FoodItem[] {
     const matchingNutritionKey = (keysByName.get(normalizedName) || [])
       .find((candidateKey) => {
         const existing = byKey.get(candidateKey);
-        return Boolean(existing && sameNamedEquivalentMetricFood(existing, item));
+        return Boolean(existing && !(existing.source === "custom-note" && item.source === "custom-note" && existing.sourcePath !== item.sourcePath) && sameNamedEquivalentMetricFood(existing, item));
       });
-    const key = matchingNutritionKey || foodDedupeKey(item);
+    let key = matchingNutritionKey || foodDedupeKey(item);
+    const sameKey = byKey.get(key);
+    if (sameKey?.source === "custom-note" && item.source === "custom-note" && sameKey.sourcePath !== item.sourcePath) key += `:path:${item.sourcePath || item.id}`;
     const existing = byKey.get(key);
     if (!existing) byKey.set(key, item);
-    else {
+    else if (existing.source === "custom-note" || item.source === "custom-note") {
+      byKey.set(key, existing.source === "custom-note" ? existing : item);
+    } else if ((existing.source === "curated") !== (item.source === "curated")) {
+      // An unsourced fallback must not overwrite a provider's identified record.
+      byKey.set(key, existing.source === "curated" ? item : existing);
+    } else {
       const itemIsPreferred = foodCandidateCompletenessScore(item) > foodCandidateCompletenessScore(existing);
       const preferred = itemIsPreferred ? item : existing;
       const supplemental = itemIsPreferred ? existing : item;
@@ -21361,6 +21365,8 @@ function mergeEnrichedFoodSearchItem(searchItem: FoodItem, detailItem: FoodItem)
 function mergeFoodServingPair(identity: FoodItem, servingSource: FoodItem): FoodItem {
   return normalizeFoodMetricServing({
     ...identity,
+    source: servingSource.source,
+    nutritionProvenance: servingSource.nutritionProvenance,
     servingAmount: servingSource.servingAmount,
     servingUnit: servingSource.servingUnit,
     servingGrams: servingSource.servingGrams,
@@ -21377,12 +21383,6 @@ function foodServingPairQuality(item: FoodItem): number {
   if (hasMetric && !isPer100NutritionBasis(item)) return 3;
   if (isPer100NutritionBasis(item)) return 2;
   return 1;
-}
-
-function foodNeedsProviderServingEnrichment(item: FoodItem): boolean {
-  if (isPer100NutritionBasis(item)) return true;
-  const servingUnit = normalizeServingUnit(item.servingUnit || "serving");
-  return servingUnit === "serving" && !metricServingForFood(item);
 }
 
 function mergeFoodCandidateMetadata(preferred: FoodItem, supplemental: FoodItem): FoodItem {
@@ -22848,7 +22848,7 @@ function formatNutritionPreview(nutrition: Nutrition): string {
 
 function compactMacroParts(nutrition: Nutrition): string[] {
   const hasAnyValue = [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.sugarAlcoholG, nutrition.alcoholG]
-    .some((value) => value != null && Math.abs(value) > 0.0001);
+    .some((value) => nutritionNumber(value) != null);
   if (!hasAnyValue) return EXTRA_NUTRIENTS.filter(n => (nutrition[n.key] ?? 0) > 0).slice(0, 3).map(n => `${formatNativeDailyMetricValue(nutrition[n.key]!)} ${n.unit} ${n.label}`);
   const parts = [
     nutrition.calories != null ? `${round(nutrition.calories)} kcal` : "",
@@ -22890,7 +22890,12 @@ function foodResultMeta(item: FoodItem): string {
     "ai-research": "Gemini research",
     manual: "Manual",
   }[item.source] || item.source;
-  return [item.brand, source, serving].filter(Boolean).join(" • ");
+  const quality = assessFoodData(item);
+  return [item.brand, source, item.nutritionProvenance?.dataset, serving,
+    item.source === "curated" ? "Unverified estimate" : "",
+    quality.coreKnown < 4 ? `${quality.coreKnown}/4 calorie/macro fields` : "",
+    quality.issues.some(issue => !issue.includes("fields missing")) ? "Review data" : "",
+  ].filter(Boolean).join(" • ");
 }
 
 function normalizeCoreDailyNoteFolder(value: string): string {
