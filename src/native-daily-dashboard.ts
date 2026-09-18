@@ -139,6 +139,19 @@ const metricValue = (totals: DailyFoodMacroTotals, propertyKey: string): number 
   }
 };
 
+/** Health owns these display choices; neither goals nor GCM menu fields are required. */
+export function availableNutrientConfigs(configs: readonly HealthMetricRenderConfig[]): HealthMetricRenderConfig[] {
+  const nutrients: HealthMetricRenderConfig[] = [
+    { propertyKey: "fiber", label: "Fiber", unit: "g", kind: "min" },
+    { propertyKey: "sugar", label: "Sugar", unit: "g", kind: "min" },
+    { propertyKey: "sugarAlcohol", label: "Sugar alcohol", unit: "g", kind: "min" },
+    { propertyKey: "alcohol", label: "Alcohol", unit: "g", kind: "min" },
+    { propertyKey: "sodium", label: "Sodium", unit: "mg", kind: "min" },
+    ...EXTRA_NUTRIENTS.map(n => ({ propertyKey: n.key, label: n.label, unit: n.unit, kind: "min" as const })),
+  ];
+  return [...configs, ...nutrients.filter(n => !configs.some(config => config.propertyKey === n.propertyKey))];
+}
+
 const finite = (value: unknown): number | null => {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -149,7 +162,7 @@ const clamp = (value: number, min: number, max: number): number => Math.max(min,
 const targetLabel = (metric: HealthMetricRenderConfig, format: (value: number) => string = String): string => {
   const min = finite(metric.min);
   const max = finite(metric.max);
-  if (isExtraNutrientKey(metric.propertyKey) && min == null && max == null && finite(metric.goal) == null) return "";
+  if (min == null && max == null && finite(metric.goal) == null) return "";
   if (metric.kind === "range" && min != null && max != null) return `${format(min)}–${format(max)} ${metric.unit}`;
   if (metric.kind === "min" && min != null) return `at least ${format(min)} ${metric.unit}`;
   if (metric.kind === "max" && max != null) return `up to ${format(max)} ${metric.unit}`;
@@ -201,9 +214,14 @@ export function buildNativeDailyDashboardModel(
     };
     return [model];
   });
-  for (const nutrient of EXTRA_NUTRIENTS) {
-    const value = totals[nutrient.key];
-    if (includeRecordedNutrients && value != null && !metrics.some(metric => metric.propertyKey === nutrient.key)) metrics.push({ propertyKey: nutrient.key, label: nutrient.label, unit: nutrient.unit, value, targetLabel: "", progress: 0, state: "neutral" });
+  for (const nutrient of availableNutrientConfigs([])) {
+    const value = metricValue(totals, nutrient.propertyKey);
+    // Core totals historically use zero for missing data. Do not fill the UI with
+    // unknown zeroes; optional extended totals retain explicit known zeroes.
+    if (includeRecordedNutrients && value != null && (value > 0 || isExtraNutrientKey(nutrient.propertyKey))
+      && !metrics.some(metric => metric.propertyKey === nutrient.propertyKey)) {
+      metrics.push({ propertyKey: nutrient.propertyKey, label: nutrient.label, unit: nutrient.unit, value, targetLabel: "", progress: 0, state: "neutral" });
+    }
   }
   return {
     dateIso: totals.dateIso,

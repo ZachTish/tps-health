@@ -1454,8 +1454,8 @@ export default class TPSHealthPlugin extends Plugin {
     } catch (error) { logger.flowError("MacrosBase", "open:failed", error); new Notice("Could not open Macros.base. Check the destination."); }
   }
 
-  renderMacrosBaseDay(container: HTMLElement, day: string, entries: NativeDailyFoodEntrySnapshot[], goals: HealthMetricRenderConfig[], display: NativeDailyDisplayOptions, disclosures: Map<string, boolean>): void {
-    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals, undefined, false), entries, display, {
+  renderMacrosBaseDay(container: HTMLElement, day: string, entries: NativeDailyFoodEntrySnapshot[], goals: HealthMetricRenderConfig[], display: NativeDailyDisplayOptions, disclosures: Map<string, boolean>, includeRecordedNutrients = true): void {
+    renderNativeDailyMacrosBlock(container, buildNativeDailyDashboardModel(sumMacroEntries(day, entries), goals, undefined, includeRecordedNutrients), entries, display, {
       disclosures,
       components: (target, entry) => renderNativeDailyComponents(target, this, entry, disclosures),
       addFood: () => this.openFoodLogger({ dateIso: day, label: day, isToday: day === window.moment().format("YYYY-MM-DD"), focusAfterLog: false }),

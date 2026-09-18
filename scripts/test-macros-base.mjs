@@ -66,3 +66,28 @@ test('date typing initializes only the configured unassigned property',()=>{
  initializeMacrosDateType({metadataTypeManager:{getAssignedWidget:()=> 'text',setType:()=>assert.fail('must preserve chosen type')}},settings);
  initializeMacrosDateType({},settings);
 });
+
+const viewBundle = await build({entryPoints:[fileURLToPath(new URL('../src/macros-base-view.ts',import.meta.url))],bundle:true,write:false,platform:'node',format:'esm',plugins:[{name:'obsidian-stub',setup(build){build.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'stub'}));build.onLoad({filter:/.*/,namespace:'stub'},()=>({contents:'export class BasesView {} export class Notice {}',loader:'js'}));}}]});
+const {MacrosBaseView} = await import('data:text/javascript;base64,'+Buffer.from(viewBundle.outputFiles[0].text).toString('base64'));
+test('Macros Base automatically includes recorded nutrients without visible properties; opt-out stays explicit',()=>{
+  const node=()=>({scrollTop:0,addClass(){},empty(){},createDiv:()=>node(),createEl:()=>node(),addEventListener(){}});
+  const calls=[];
+  const plugin={settings:DEFAULT_SETTINGS,getMetricRenderConfigs:()=>[],nativeRecordService:{isEnabled:()=>true,getFoodEntriesForPaths:()=>[{...entry('a','2026-09-14',100),alcoholG:14,creatineG:5}]},renderMacrosBaseDay:(...args)=>calls.push(args)};
+  const oldWindow=globalThis.window;
+  globalThis.window={moment:()=>({format:()=> '2026-09-14'})};
+  try {
+    const view=new MacrosBaseView({},node(),plugin);
+    let selection;
+    view.config={getOrder:()=>[],getDisplayName:key=>key,get:key=>key==='nutrientSelection'?selection:undefined};
+    view.data={groupedData:[{entries:[{file:{path:'a'}}],hasKey:()=>false}]};
+    view.render();
+    assert.equal(calls[0][6],true);
+    assert.deepEqual(calls[0][3],[]);
+    assert.equal(calls[0][2][0].creatineG,5);
+    selection='properties';view.render();
+    assert.equal(calls[1][6],false);
+    view.config.getOrder=()=>['note.alcoholG','note.creatineG'];view.render();
+    assert.deepEqual(calls[2][3].map(g=>g.propertyKey),['alcohol','creatineG']);
+    assert.equal(MacrosBaseView.options({}).find(o=>o.key==='nutrientSelection').default,'recorded');
+  } finally {globalThis.window=oldWindow;}
+});

@@ -29,7 +29,7 @@ async function loadDateFilterModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { splitNativeDailyMetrics, nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMacroValue, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
+const { availableNutrientConfigs, splitNativeDailyMetrics, nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMacroValue, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
 const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -51,6 +51,7 @@ test('daily dashboard maps indexed nutrition to configured goal metrics', () => 
   assert.equal(model.calories, 126);
   assert.deepEqual(model.metrics.map((metric) => [metric.propertyKey, metric.value]), [
     ['consumedCalories', 126], ['protein', 0.7], ['carbs', 33.4],
+    ['fiber', 5.8], ['sugar', 25.2], ['sodium', 2],
   ]);
   assert.equal(model.metrics[0].targetLabel, 'up to 2100 kcal');
   assert.equal(model.metrics[1].state, 'below');
@@ -286,13 +287,14 @@ test('only energy and main macros become rings; tracked nutrients stay in rows',
 test('recorded micronutrients show compact contribution rows without fabricated targets', () => {
  const model = buildNativeDailyDashboardModel({ ...totals, vitaminB12Mcg: .025, creatineG: 5, ironMg: 0 }, []);
  assert.deepEqual(model.metrics.map(m => [m.propertyKey, m.value, m.unit, m.targetLabel, m.state]), [
+  ['fiber', 5.8, 'g', '', 'neutral'], ['sugar', 25.2, 'g', '', 'neutral'], ['sodium', 2, 'mg', '', 'neutral'],
   ['vitaminB12Mcg', .025, 'mcg', '', 'neutral'], ['ironMg', 0, 'mg', '', 'neutral'], ['creatineG', 5, 'g', '', 'neutral'],
  ]);
  assert.equal(formatNativeDailyMetricValue(.025), '0.025');
  assert.deepEqual(nativeDailyNutrientContributors('creatineG', [{title:'Powder',path:'a.md',creatineG:3},{title:'Preworkout',path:'b.md',creatineG:2}]).map(c => c.value), [3,2]);
  assert.equal(buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [], undefined, false).metrics.length, 0, 'Base property visibility is respected');
  const custom = buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [{propertyKey:'creatineG',label:'My creatine',unit:'g',kind:'max',max:6}]);
- assert.equal(custom.metrics.length, 1); assert.equal(custom.metrics[0].targetLabel, 'up to 6 g');
+ assert.equal(custom.metrics.filter(m => m.propertyKey === 'creatineG').length, 1); assert.equal(custom.metrics[0].targetLabel, 'up to 6 g');
 });
 
 test('macros round display to one decimal without changing totals, goal comparisons or other surfaces', () => {
@@ -302,4 +304,31 @@ test('macros round display to one decimal without changing totals, goal comparis
   assert.equal(model.metrics[0].targetLabel,'up to 12.3 g');
   assert.equal(model.metrics[0].state,'above');
   assert.equal(formatNativeDailyMetricValue(.025),'0.025');
+});
+
+
+test('recorded nutrients need no goals or property registrations in macro views', () => {
+  const recorded = { ...totals, alcoholG: 14, fiberG: 3, creatineG: 5, vitaminCMg: 90, magnesiumMg: 150 };
+  const model = buildNativeDailyDashboardModel(recorded, []);
+  for (const key of ['alcohol', 'fiber', 'creatineG', 'vitaminCMg', 'magnesiumMg']) {
+    const metric = model.metrics.find(m => m.propertyKey === key);
+    assert.ok(metric, key);
+    assert.equal(metric.targetLabel, '');
+    assert.equal(metric.state, 'neutral');
+  }
+  assert.equal(model.metrics.some(m => m.propertyKey === 'vitaminDMcg'), false);
+  assert.equal(model.metrics.some(m => m.propertyKey === 'sugarAlcohol'), false);
+  const strict = buildNativeDailyDashboardModel(recorded, [{propertyKey:'alcohol',label:'Alcohol',unit:'g',kind:'min'}], undefined, false);
+  assert.deepEqual(strict.metrics.map(m => [m.propertyKey, m.value]), [['alcohol',14]]);
+});
+
+test('Health nutrient choices include alcohol without a goal and preserve custom targets', () => {
+  const goal = {propertyKey:'fiber',label:'My fiber',unit:'g',kind:'min',min:25};
+  const choices = availableNutrientConfigs([goal]);
+  assert.equal(choices.filter(m => m.propertyKey === 'fiber').length, 1);
+  assert.equal(choices.find(m => m.propertyKey === 'fiber'), goal);
+  for (const key of ['alcohol','creatineG','vitaminCMg','magnesiumMg']) assert.ok(choices.some(m => m.propertyKey === key));
+  const model = buildNativeDailyDashboardModel({...totals, alcoholG: 14}, [goal]);
+  assert.equal(model.metrics[0].targetLabel, 'at least 25 g');
+  assert.equal(model.metrics.filter(m => m.propertyKey === 'fiber').length, 1);
 });

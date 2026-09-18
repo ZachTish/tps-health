@@ -1925,3 +1925,18 @@ test('edited metric food serving governs atomic gram conversions and serving amo
     assert.equal(deriveNativeFoodEntryProjection({quantity:1,unit: unit === 'g' ? 'ml' : 'g'},food),null);
   }
 });
+
+
+test('tracking nutrients requires the record bridge but no GCM menu definitions or Health goals', async () => {
+  const { service, api, createCalls } = createHarness({ settings: {healthGoals:[],nativeRecordProperties:{},nativeRecordPropertyAliases:{}} });
+  const nutrients = {creatineG:2.5,alcoholG:14,fiberG:3.5,vitaminCMg:90,magnesiumMg:125};
+  const created = await service.createFoodEntry({ id:'independent-nutrients',createdDate:'2026-08-25T17:20:00.000Z',completedDate:'2026-08-25T17:20:00.000Z',item:{id:'independent',name:'Synthetic nutrition',source:'manual'},quantity:1,unit:'serving',nutritionOverride:nutrients });
+  const persisted = (await api.resolve(created.file)).frontmatter;
+  const totals = service.getDailyFoodTotals('2026-08-25');
+  for (const [key,value] of Object.entries(nutrients)) {
+    assert.equal(createCalls[0].properties[key], value, key);
+    assert.equal(persisted[key], value, key);
+    assert.equal(totals[key], value, key);
+    assert.equal(service.getDailyFoodEntries('2026-08-25')[0][key], value, key);
+  }
+});

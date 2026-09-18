@@ -2,7 +2,7 @@ import { claimMacrosBaseNew } from './macros-base-toolbar';
 import { BasesView, Notice, type BasesViewConfig, type BasesAllOptions, type QueryController } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { configuredNativePropertyKey } from './native-record-schema';
-import { EXTRA_NUTRIENTS } from './nutrients';
+import { availableNutrientConfigs } from './native-daily-dashboard';
 import { MACRO_PROPERTY_KEYS, groupMacroDays, validMacroDate, visibleMacroGoals, MACROS_BASE_TYPE } from './macros-base-model';
 
 export class MacrosBaseView extends BasesView {
@@ -60,7 +60,8 @@ export class MacrosBaseView extends BasesView {
       this.body.createDiv({ text: 'Use Atomic notes in Health settings to show food logs here.' }); return;
     }
     const order = this.config.getOrder();
-    const goals = visibleMacroGoals([...this.plugin.getMetricRenderConfigs(), ...EXTRA_NUTRIENTS.filter(n => !this.plugin.getMetricRenderConfigs().some(g => g.propertyKey === n.key)).map(n => ({ propertyKey: n.key, label: n.label, unit: n.unit, kind: "min" as const }))], order, this.plugin.settings).map(goal => {
+    const includeRecordedNutrients = this.config.get('nutrientSelection') !== 'properties';
+    const goals = visibleMacroGoals(availableNutrientConfigs(this.plugin.getMetricRenderConfigs()), order, this.plugin.settings).map(goal => {
       const key = configuredNativePropertyKey(this.plugin.settings, MACRO_PROPERTY_KEYS[goal.propertyKey]);
       const name = this.config.getDisplayName(`note.${key}`);
       return { ...goal, label: name && name !== key ? name : goal.label };
@@ -90,19 +91,20 @@ export class MacrosBaseView extends BasesView {
           nutrientRows: nutrients === 'hidden' || nutrients === 'expanded' || nutrients === 'collapsed' ? nutrients : this.plugin.settings.macroNutrientRows,
           foodList: foodList === 'expanded' ? 'expanded' : 'collapsed',
           showCalories: goals.some(goal => goal.propertyKey === 'consumedCalories' || goal.propertyKey === 'cal'),
-        }, state);
+        }, state, includeRecordedNutrients);
       }
     }
     for (const key of this.disclosures.keys()) if (!activeKeys.has(key)) this.disclosures.delete(key);
     if (!this.chosenDate) this.dateInput.value = allDays.size === 1 ? [...allDays][0] : this.today();
     if (!count) this.body.createDiv({ cls: 'tps-health-macros-base-empty', text: 'No food logs match these filters.' });
-    else if (!goals.length) this.body.createDiv({ text: 'Choose nutrient properties from the Properties menu.' });
+    else if (!goals.length && !includeRecordedNutrients) this.body.createDiv({ text: 'Choose nutrient properties from the Properties menu, or show recorded nutrients in view options.' });
     this.container.scrollTop = scroll;
   }
   static options(_config: BasesViewConfig): BasesAllOptions[] {
     return [
       { type: 'dropdown', key: 'macroStyle', displayName: 'Macros', default: 'default', options: { default: 'Health default', rings: 'Rings', table: 'Rows' } },
       { type: 'dropdown', key: 'nutrients', displayName: 'Nutrient rows', default: 'default', options: { default: 'Health default', collapsed: 'Collapsed', expanded: 'Expanded', hidden: 'Hidden' } },
+      { type: 'dropdown', key: 'nutrientSelection', displayName: 'Show nutrients', default: 'recorded', options: { recorded: 'Recorded nutrients', properties: 'Selected properties only' } },
       { type: 'dropdown', key: 'foods', displayName: 'Food logs', default: 'collapsed', options: { collapsed: 'Collapsed', expanded: 'Expanded' } },
     ];
   }
