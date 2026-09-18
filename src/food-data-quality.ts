@@ -1,5 +1,5 @@
 import type { FoodItem, FoodNutritionProvenance } from "./types";
-import { NUTRIENT_KEYS, nutritionNumber } from "./nutrients";
+import { EXTRA_NUTRIENTS, NUTRIENT_KEYS, nutritionNumber } from "./nutrients";
 
 export { nutritionNumber } from "./nutrients";
 
@@ -37,15 +37,25 @@ export function assessFoodData(item: FoodItem): { coreKnown: number; nutrientsKn
   return { coreKnown, nutrientsKnown, issues: Array.from(new Set(issues)) };
 }
 
-export function foodDataDetail(item: FoodItem): string {
-  const quality = assessFoodData(item), receipt = item.nutritionProvenance;
+/** Values share the item's base serving; never substitute missing data with zero. */
+export function foodDataDetail(item: FoodItem, servingLabel = ""): string {
+  const core = [
+    { key: "calories", label: "Calories", unit: "kcal" },
+    { key: "proteinG", label: "Protein", unit: "g" },
+    { key: "carbsG", label: "Carbohydrates", unit: "g" },
+    { key: "fatG", label: "Fat", unit: "g" },
+    { key: "fiberG", label: "Fiber", unit: "g" },
+    { key: "sugarG", label: "Sugar", unit: "g" },
+    { key: "sugarAlcoholG", label: "Sugar alcohol", unit: "g" },
+    { key: "alcoholG", label: "Alcohol", unit: "g" },
+    { key: "sodiumMg", label: "Sodium", unit: "mg" },
+  ] as const;
+  const rows = [...core, ...EXTRA_NUTRIENTS.filter(spec => nutritionNumber(item.nutrition?.[spec.key]) != null)];
   return [
-    `${quality.nutrientsKnown}/${NUTRIENT_KEYS.length} tracked nutrients reported. Missing values are unknown; completeness does not certify accuracy.`,
-    `Calories: ${item.nutrition?.calories ?? "unknown"} kcal; protein: ${item.nutrition?.proteinG ?? "unknown"} g; carbs: ${item.nutrition?.carbsG ?? "unknown"} g; fat: ${item.nutrition?.fatG ?? "unknown"} g.`,
-    ...quality.issues,
-    receipt ? `Imported from ${receipt.provider}${receipt.dataset ? ` (${receipt.dataset})` : ""}${receipt.recordId ? `, record ${receipt.recordId}` : ""}.` : "",
-    receipt?.updatedAt ? `Source updated: ${receipt.updatedAt}` : "",
-    receipt?.retrievedAt ? `Retrieved: ${receipt.retrievedAt}` : "",
-    receipt?.url || "",
+    servingLabel ? `Base serving: ${servingLabel.replace(/^per /, "")}` : "",
+    ...rows.map(spec => {
+      const value = nutritionNumber(item.nutrition?.[spec.key]);
+      return `${spec.label}: ${value == null ? "—" : `${value > 0 && value < 0.05 ? "<0.1" : Number(value.toFixed(1))} ${spec.unit}`}`;
+    }),
   ].filter(Boolean).join("\n");
 }

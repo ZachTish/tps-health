@@ -421,6 +421,9 @@ const OPEN_FOOD_FACTS_SEARCH_FIELDS = [
   "serving_quantity",
   "serving_quantity_unit",
   "serving_size",
+  "nutrition_data_per",
+  "quantity",
+  "product_quantity_unit",
   "nutriments",
   "last_modified_t",
   "data_quality_errors_tags",
@@ -5794,12 +5797,34 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.assertOpenFoodFactsSearchResponse(response, "search");
     const hits = Array.isArray(response.json?.hits) ? response.json.hits : [];
-    return hits
+    // The search index is discovery only: serving fields and nutrients can be
+    // missing or stale even when the current product has a complete label.
+    const candidates = hits
+      .filter((product: any) => /^\d{8,14}$/.test(String(product.code || "")))
       .filter((product: any) => foodFactsProductName(product, matchQuery))
-      .filter((product: any) => hasMacroData(product.nutriments))
       .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
-      .map((product: any) => this.foodFactsSearchProductToItem(product, matchQuery))
-      .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
+      .slice(0, OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE);
+    if (!candidates.length) return [];
+    const codes = Array.from(new Set<string>(candidates.map((product: any) => String(product.code))));
+    const detailParams = new URLSearchParams({ code: codes.join(","), page_size: String(codes.length), fields: OPEN_FOOD_FACTS_SEARCH_FIELDS });
+    const details = await requestUrl({
+      url: `https://world.openfoodfacts.org/api/v2/search?${detailParams.toString()}`,
+      headers: this.foodFactsHeaders(), throw: false,
+    });
+    this.assertOpenFoodFactsSearchResponse(details, "products");
+    if (!Array.isArray(details.json?.products)) throw new Error("Open Food Facts returned invalid product records");
+    const byCode = new Map<string, any>(details.json.products.map((product: any) => [openFoodFactsBarcodeCacheKey(String(product.code || "")), product]));
+    const items: FoodItem[] = [];
+    for (const hit of candidates) {
+      const product = byCode.get(openFoodFactsBarcodeCacheKey(String(hit.code)));
+      if (!product) continue; // A deleted/missing record must not resurrect index nutrition.
+      const item = this.foodFactsSearchProductToItem({ ...product, product_name: product.product_name || foodFactsProductName(hit, matchQuery) }, matchQuery);
+      if (!hasSearchableMacroData(item.nutrition) || !isRelevantFoodResult(matchQuery, foodSearchFields(item))) continue;
+      items.push(item);
+      this.writeBarcodeResultCache(openFoodFactsBarcodeCacheKey(item.barcode!), item, BARCODE_RESULT_CACHE_TTL_MS);
+    }
+    logger.flow("FoodSearch", "open-food-facts:products", { requested: codes.length, returned: items.length });
+    return items;
   }
 
   private async searchOpenFoodFactsLegacySearch(query: string, matchQuery = query): Promise<FoodItem[]> {
@@ -5826,7 +5851,7 @@ export default class TPSHealthPlugin extends Plugin {
       .filter((item: FoodItem) => hasSearchableMacroData(item.nutrition));
   }
 
-  private assertOpenFoodFactsSearchResponse(response: { status: number; headers?: Record<string, string> }, route: "search" | "legacy"): void {
+  private assertOpenFoodFactsSearchResponse(response: { status: number; headers?: Record<string, string> }, route: "search" | "legacy" | "products"): void {
     if (response.status === 429) {
       const delayMs = boundedRetryAfterMs(response.headers, OPEN_FOOD_FACTS_RATE_LIMIT_FALLBACK_MS, OPEN_FOOD_FACTS_RATE_LIMIT_MAX_MS);
       this.openFoodFactsRateLimitedUntil = Date.now() + delayMs;
@@ -11222,7 +11247,7 @@ class FoodSearchModal extends FoodInputModal {
     row.createDiv({ cls: "tps-health-result-meta", text: foodResultMeta(item) });
     const dataDetails = row.createEl("details", { cls: "tps-health-food-data-details" });
     dataDetails.createEl("summary", { text: "Nutrition data details" });
-    dataDetails.createDiv({ text: foodDataDetail(item) });
+    dataDetails.createDiv({ text: foodDataDetail(item, foodServingLabel(item)) });
     dataDetails.addEventListener("click", event => event.stopPropagation());
 
     let adding = false;
@@ -20837,7 +20862,7 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
       score: foodSearchScore(item, normalizedQuery, usageStats),
       tokenMatch: foodSearchItemTokenMatch(item, tokens),
     }))
-    .sort((a, b) => Number(b.item.source === "custom-note") - Number(a.item.source === "custom-note") || closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats) || b.score - a.score)
+    .sort((a, b) => Number(b.item.source === "custom-note") - Number(a.item.source === "custom-note") || closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats, normalizedQuery) || b.score - a.score)
     .map(({ item }) => item);
 }
 
@@ -20853,10 +20878,22 @@ function closeProviderServingPreference(
   leftMatch: FoodSearchTokenMatch,
   rightMatch: FoodSearchTokenMatch,
   usageStats: Map<string, FoodUsageStats>,
+  normalizedQuery: string,
 ): number {
   if (!isExternalFoodProviderResult(left) || !isExternalFoodProviderResult(right)) return 0;
   if (foodUsageForItem(left, usageStats).count || foodUsageForItem(right, usageStats).count) return 0;
   if (leftMatch.exact !== rightMatch.exact || leftMatch.fuzzy !== rightMatch.fuzzy || leftMatch.total !== rightMatch.total) return 0;
+  const closeIdentity = providerFoodsAreIdentityClose(left, right);
+  const sharedQueryPhrase = normalizedQuery && [left, right].every(item =>
+    [item.name, item.brand].some(value => normalizeLookup(value || "").includes(normalizedQuery)));
+  if (closeIdentity || sharedQueryPhrase) {
+    const dataTier = (item: FoodItem) => {
+      const core = assessFoodData(item).coreKnown;
+      return core === 4 && item.nutritionBasis === "labeled-serving" && metricServingForFood(item) ? 2 : core > 0 ? 1 : 0;
+    };
+    const difference = dataTier(right) - dataTier(left);
+    if (difference) return difference;
+  }
   if (!providerFoodsAreIdentityClose(left, right)) return 0;
   const leftHasLabeledMetricServing = left.nutritionBasis === "labeled-serving" && Boolean(metricServingForFood(left));
   const rightHasLabeledMetricServing = right.nutritionBasis === "labeled-serving" && Boolean(metricServingForFood(right));
@@ -21018,7 +21055,12 @@ function foodFactsServing(product: any): FoodFactsServing {
   const servingQuantityMetric = servingQuantityMetricUnit
     ? saneMetricServingAmount(product?.serving_quantity, servingQuantityMetricUnit)
     : undefined;
-  const textMetric = parseMetricServing(1, servingSize);
+  // Prefer the explicit metric equivalent in a dual-unit label (12 fl oz
+  // (355 ml)), rather than rounding a conversion to 354.9 ml.
+  const explicitMetric = servingSize.match(/(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:[.,]\d+)?)\s*(ml|g)\b/i);
+  const textMetric = explicitMetric
+    ? saneMetricServing(parseFractionNumber(explicitMetric[1].replace(",", ".")), explicitMetric[2].toLowerCase() as "g" | "ml")
+    : parseMetricServing(1, servingSize);
   const metric = servingQuantityMetric && servingQuantityMetricUnit
     ? { amount: servingQuantityMetric, unit: servingQuantityMetricUnit }
     : textMetric;
@@ -21060,7 +21102,10 @@ function householdServingFromText(value: string): { amount: number; unit: string
 
 function foodFactsNutritionBasis(product: any, serving: FoodFactsServing): NonNullable<FoodItem["nutritionBasis"]> {
   if (serving.labeled && (serving.grams || serving.ml || foodFactsHasServingNutrition(product?.nutriments))) return "labeled-serving";
-  return "per-100g";
+  const volume = /^(?:100\s*ml)$/i.test(String(product?.nutrition_data_per || ""))
+    || /^(?:ml|l)$/i.test(String(product?.product_quantity_unit || ""))
+    || parseMetricServing(1, String(product?.quantity || ""))?.unit === "ml";
+  return volume ? "per-100ml" : "per-100g";
 }
 
 function foodFactsHasServingNutrition(nutrients: any): boolean {
@@ -21077,7 +21122,9 @@ function foodFactsItemServing(serving: FoodFactsServing, basis: NonNullable<Food
       servingMl: serving.ml,
     };
   }
-  return { servingAmount: 100, servingUnit: "g", servingGrams: 100 };
+  return basis === "per-100ml"
+    ? { servingAmount: 100, servingUnit: "ml", servingMl: 100 }
+    : { servingAmount: 100, servingUnit: "g", servingGrams: 100 };
 }
 
 function kjToKcal(kj: number | undefined): number | undefined {
@@ -21113,7 +21160,7 @@ function openFoodFactsProvenance(product: any): NonNullable<FoodItem["nutritionP
       warnings.push("Invalid source nutrient values were omitted"); break;
     }
   }
-  if ((nutritionNumber(n.alcohol_100g) ?? nutritionNumber(n.alcohol_serving) ?? 0) > 0 && !serving.ml) warnings.push("Alcohol grams unknown: the source reports ABV without a volume serving");
+  if ((nutritionNumber(n.alcohol_100g) ?? nutritionNumber(n.alcohol_serving) ?? 0) > 0 && !serving.ml && foodFactsNutritionBasis(product, serving) !== "per-100ml") warnings.push("Alcohol grams unknown: the source reports ABV without a volume serving");
   const metricAmount = serving.grams || serving.ml;
   if (metricAmount) {
     for (const key of ["energy-kcal", "proteins", "carbohydrates", "fat"]) {
@@ -21149,7 +21196,7 @@ function foodFactsNutrition(product: any, serving: FoodFactsServing, basis: NonN
     fiberG: foodFactsServingValue(n, "fiber", multiplier, useLabeledServingValues, hasMetricServing),
     sugarG: foodFactsServingValue(n, "sugars", multiplier, useLabeledServingValues, hasMetricServing),
     sugarAlcoholG: foodFactsSugarAlcoholG(n, product, multiplier, useLabeledServingValues, hasMetricServing),
-    alcoholG: foodFactsAlcoholG(n, useLabeledServingValues ? serving.ml : undefined),
+    alcoholG: foodFactsAlcoholG(n, useLabeledServingValues ? serving.ml : basis === "per-100ml" ? 100 : undefined),
     sodiumMg: foodFactsSodiumMg(n, multiplier, useLabeledServingValues, hasMetricServing),
   };
   for (const spec of EXTRA_NUTRIENTS) {

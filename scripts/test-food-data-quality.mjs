@@ -95,7 +95,9 @@ test('quality distinguishes completeness from plausibility without rewriting ene
 test('source receipt exposes dated provider flags and serving disagreements', () => {
   const food = off({code:'123', product_name:'Soup', last_modified_t:1700000000, serving_size:'50 g', data_quality_errors_tags:['en:nutrition-value-over-100'], nutriments: {'energy-kcal_serving':300,'energy-kcal_100g':100,proteins_serving:0}});
   assert.equal(food.nutrition.calories, 300); assert.equal(food.nutritionProvenance.recordId, '123');
-  const details = foodDataDetail(food); assert.match(details, /2023-11-14/); assert.match(details, /Provider flag/); assert.match(details, /disagree/); assert.match(details, /completeness does not certify accuracy/);
+  assert.match(food.nutritionProvenance.updatedAt, /2023-11-14/);
+  assert.ok(assessFoodData(food).issues.some(v => v.includes("Provider flag")));
+  assert.ok(assessFoodData(food).issues.some(v => v.includes("disagree")));
   assert.equal(foodNutritionProvenance({provider:'unknown'}), undefined);
   assert.equal(foodNutritionProvenance({provider:'usda',url:'https://evil.test/'}).url, undefined);
 });
@@ -114,7 +116,7 @@ test('food note writes and reads preserve unknown versus explicit zero and impor
 test('built-in catalogue inventory remains explicit about unsupported provenance', () => {
   assert.equal(m.CURATED_COMMON_FOODS.length,42);
   for (const food of m.searchCuratedFoods('milk')) {
-    assert.match(m.foodResultMeta(food), /Unverified/); assert.match(foodDataDetail(food), /source evidence is not recorded/);
+    assert.match(m.foodResultMeta(food), /Unverified/); assert.ok(assessFoodData(food).issues.some(v => v.includes("source evidence is not recorded")));
   }
 });
 test('explicit total polyols and carbohydrate beat conflicting component fields', () => {
@@ -130,4 +132,88 @@ test('unit conversion overflow cannot introduce infinite nutrient amounts', () =
   const food = off({product_name:'Invalid scale',serving_size:'1000 ml',nutriments:{proteins_100g:Number.MAX_VALUE,sodium_100g:Number.MAX_VALUE}});
   assert.equal(food.nutrition.proteinG,undefined); assert.equal(food.nutrition.sodiumMg,undefined);
   assert.equal(m.usdaFoodNutrition({foodNutrients:[{nutrientId:1093,value:Number.MAX_VALUE,unitName:'g'}]}).sodiumMg,undefined);
+});
+
+const whiteClawProducts = JSON.parse(readFileSync(new URL('./fixtures/open-food-facts-white-claw.json', import.meta.url), 'utf8')).products;
+const whiteClaw = code => whiteClawProducts.find(p => p.code === code);
+test('live White Claw product fixtures retain 355 ml and 568 ml labels with matching nutrition', () => {
+  const regular = off(whiteClaw('0635985500018'));
+  assert.equal(regular.servingMl,355); assert.equal(regular.servingGrams,undefined);
+  assert.equal(regular.nutrition.calories,100); assert.equal(regular.nutrition.carbsG,2);
+  assert.equal(m.resolveFoodLogServing(regular,355,'ml').servings,1);
+  const zero = off(whiteClaw('0635985802761'));
+  assert.equal(zero.servingUnit,'can'); assert.equal(zero.servingMl,355); assert.equal(zero.nutrition.calories,15); assert.equal(zero.nutrition.carbsG,5);
+  const large = off(whiteClaw('0635985801986'));
+  assert.equal(large.servingMl,568); assert.equal(large.nutrition.calories,170);
+  const unknown = off(whiteClaw('0635985800088'));
+  assert.equal(unknown.servingMl,undefined); assert.equal(unknown.nutritionBasis,'per-100g');
+});
+test('search fetches current complete records in one bounded batch, including hits without indexed macros', async () => {
+  const plugin = new m.default(createFakeHealthApp().app), calls=[];
+  plugin.settings={...plugin.settings,openFoodFactsUserAgent:'TPSHealth/test'};
+  const full = whiteClaw('0635985500018');
+  globalThis.__TPSHealthTestRequestUrl = async options => {
+    const url = new URL(options.url); calls.push(url);
+    if (url.hostname === 'search.openfoodfacts.org') return {status:200,json:{hits:[
+      {code:full.code,product_name:'White Claw',nutriments:{'energy-kcal_100g':1}},
+      {code:'0635985802761',product_name:'White Claw Zero Proof'},
+      {code:'0635985800999',product_name:'White Claw Deleted',nutriments:{'energy-kcal_100g':999}},
+    ]}};
+    assert.equal(url.pathname,'/api/v2/search'); assert.equal(url.searchParams.get('page_size'),'3');
+    return {status:200,json:{products:[full,whiteClaw('0635985802761'),{code:'1234567890123',product_name:'Unrequested food',nutriments:{'energy-kcal_100g':500}}]}};
+  };
+  try {
+    const result = await plugin.searchOpenFoodFacts('white claw');
+    assert.equal(calls.length,2); assert.equal(result.length,2);
+    assert.equal(result[0].servingMl,355); assert.equal(result[0].nutrition.calories,100);
+    assert.equal(result[1].nutrition.calories,15);
+    assert.equal((await plugin.enrichFoodSearchItem(result[0])).nutrition.calories,100);
+    await plugin.searchOpenFoodFacts('white claw'); assert.equal(calls.length,2);
+  } finally { delete globalThis.__TPSHealthTestRequestUrl; }
+});
+test('bulk product failure never exposes stale index nutrition and honors rate limiting', async () => {
+  const plugin = new m.default(createFakeHealthApp().app); let calls=0;
+  plugin.settings={...plugin.settings,openFoodFactsUserAgent:"TPSHealth/test"};
+  globalThis.__TPSHealthTestRequestUrl = async options => {
+    calls++;
+    return options.url.includes('search.openfoodfacts.org')
+      ? {status:200,json:{hits:[{code:'0635985500018',product_name:'White Claw',nutriments:{'energy-kcal_100g':999}}]}}
+      : {status:429,headers:{'Retry-After':'120'},json:{}};
+  };
+  try {
+    assert.deepEqual(await plugin.searchOpenFoodFacts('white claw'),[]); assert.equal(calls,2);
+    assert.deepEqual(await plugin.searchOpenFoodFacts('white claw'),[]); assert.equal(calls,2);
+  } finally { delete globalThis.__TPSHealthTestRequestUrl; }
+});
+test('volume evidence keeps unlabelled liquid bases in ml without inventing a can or package serving', () => {
+  for (const extra of [{nutrition_data_per:'100ml'}, {quantity:'12 x 355 ml'}, {product_quantity_unit:'ml'}]) {
+    const food = off({product_name:'Drink',...extra,nutriments:{'energy-kcal_100g':30,alcohol_100g:5}});
+    assert.equal(food.nutritionBasis,'per-100ml'); assert.equal(food.servingMl,100);
+    assert.equal(food.servingGrams,undefined); assert.equal(food.nutrition.calories,30);
+    assert.equal(food.nutrition.alcoholG,3.9);
+  }
+  const label = off({product_name:'Drink',serving_size:'12 fl oz (355 ml)',nutriments:{'energy-kcal_100g':100/3.55}});
+  assert.equal(off({serving_size:'1/2 g',nutriments:{proteins_serving:0.1}}).servingGrams,0.5);
+  assert.equal(label.servingMl,355); assert.ok(Math.abs(label.nutrition.calories-100)<1e-8);
+  assert.equal(off({product_name:'Drink',serving_size:'355 g',nutriments:{'energy-kcal_serving':100}}).servingMl,undefined);
+});
+test('equally relevant complete labels rank above incomplete generic matches while saved notes stay first', () => {
+  const full = off(whiteClaw('0635985500018'));
+  const partial = item('open-food-facts','White Claw',{nutritionBasis:'per-100g',nutrition:{calories:100},brand:'White Claw'});
+  const local = item('custom-note','White Claw saved',{sourcePath:'Inbox/Claw.md',nutrition:{calories:101}});
+  assert.deepEqual(m.rankFoodSearchResults('white claw',[partial,full,local]),[local,full,partial]);
+  const unrelated = item('open-food-facts','Lobster claw with white shrimp pasta',{nutritionBasis:'labeled-serving'});
+  assert.equal(m.rankFoodSearchResults('white claw',[unrelated,partial])[0],partial);
+  const noCore = {...partial,id:'no-core',nutrition:{sugarG:0}};
+  assert.deepEqual(m.rankFoodSearchResults('white claw',[noCore,partial,full]),[full,partial,noCore]);
+});
+test('nutrition details list all base macros and reported extras without audit prose', () => {
+  const food = off(whiteClaw('0635985802761'));
+  food.nutrition.vitaminCMg=1.234;
+  const details=foodDataDetail(food,m.foodServingLabel(food));
+  assert.match(details,/Base serving: 1 can \/ 355 ml/);
+  for (const line of ['Calories: 15 kcal','Protein: 0 g','Carbohydrates: 5 g','Fat: 0 g','Fiber: —','Sugar: 2 g','Sugar alcohol: —','Alcohol: —','Sodium: 65 mg','Vitamin C: 1.2 mg']) assert.ok(details.includes(line),details);
+  assert.doesNotMatch(details,/tracked|completeness|Imported|Provider flag|Retrieved|http/);
+  assert.equal(food.nutrition.vitaminCMg,1.234);
+  food.nutrition.vitaminCMg=0.001; assert.match(foodDataDetail(food),/Vitamin C: <0.1 mg/);
 });
