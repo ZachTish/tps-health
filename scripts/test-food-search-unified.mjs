@@ -540,3 +540,19 @@ for (const action of ['log','remove','clear']) test(`successfully ${action === '
   assert.deepEqual(plugin.settings.pendingFoodLogDraft?.selectionItems.map(entry=>entry.item.name)||[],expectedRemaining);
   assert.equal(plugin.readPendingFoodDescribeWorkflow(),null);
 });
+
+test('macro rings, rows, nutrient contributions and food summaries display one decimal', async () => {
+  const {renderNativeDailyMacrosBlock} = await importPluginWithObsidianStub();
+  const metric = {propertyKey:'protein',label:'Protein',value:12.345,unit:'g',targetLabel:'up to 20 g',progress:.61725,state:'within'};
+  const food = {title:'Precision fixture',path:'Inbox/Precision.md',calories:123.456,proteinG:12.345,carbsG:23.456,fatG:3.678,quantity:.025,unit:'serving'};
+  for (const macroStyle of ['rings','table']) {
+    const root=nativeTrayTestElement(), actions={disclosures:new Map(),components(){},addFood(){},openFoodEntry(){},editFoodEntry(){},removeFoodEntry(){}};
+    renderNativeDailyMacrosBlock(root,{metrics:[metric],calories:123.456,entryCount:1},[food],{macroStyle,foodList:'expanded',nutrientRows:'expanded'},actions);
+    const ring=walk(root).find(n=>n.className==='tps-health-native-ring-button');
+    if(ring){ assert.match(ring.attributes['aria-label'],/Protein: 12\.3 g/); ring.listeners.get('click')(); }
+    const text=walk(root).map(n=>n.text).join(' ');
+    assert.match(text,/123\.5 kcal/); assert.match(text,/12\.3 g/); assert.match(text,/P 12\.3g · C 23\.5g · F 3\.7g/);
+    assert.match(text,/0\.025 serving/); assert.doesNotMatch(text,/12\.345|123\.456/);
+  }
+  assert.equal(food.proteinG,12.345); assert.equal(metric.value,12.345);
+});

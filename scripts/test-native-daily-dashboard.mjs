@@ -29,7 +29,7 @@ async function loadDateFilterModule() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 
-const { splitNativeDailyMetrics, nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
+const { splitNativeDailyMetrics, nativeDailyNutrientContributors, buildNativeDailyActivityModel, buildNativeDailyDashboardModel, formatNativeDailyMacroValue, formatNativeDailyMetricValue, parseNativeDailyDisplayOptions } = await loadModule();
 const { resolveNativeDailyDateFilter } = await loadDateFilterModule();
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
@@ -293,4 +293,13 @@ test('recorded micronutrients show compact contribution rows without fabricated 
  assert.equal(buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [], undefined, false).metrics.length, 0, 'Base property visibility is respected');
  const custom = buildNativeDailyDashboardModel({ ...totals, creatineG: 5 }, [{propertyKey:'creatineG',label:'My creatine',unit:'g',kind:'max',max:6}]);
  assert.equal(custom.metrics.length, 1); assert.equal(custom.metrics[0].targetLabel, 'up to 6 g');
+});
+
+test('macros round display to one decimal without changing totals, goal comparisons or other surfaces', () => {
+  for (const [value, expected] of [[12.345, '12.3'], [12.36, '12.4'], [2.55, '2.6'], [0.025, '0'], [12, '12'], [NaN, '0'], [Infinity, '0']]) assert.equal(formatNativeDailyMacroValue(value), expected);
+  const model = buildNativeDailyDashboardModel({...totals, proteinG:12.345}, [{propertyKey:'protein',label:'Protein',unit:'g',kind:'max',max:12.34}]);
+  assert.equal(model.metrics[0].value,12.345);
+  assert.equal(model.metrics[0].targetLabel,'up to 12.3 g');
+  assert.equal(model.metrics[0].state,'above');
+  assert.equal(formatNativeDailyMetricValue(.025),'0.025');
 });

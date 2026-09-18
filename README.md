@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.47.0](https://github.com/ZachTish/tps-health/releases/tag/0.47.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [0.47.1](https://github.com/ZachTish/tps-health/releases/tag/0.47.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -144,3 +144,11 @@ See [the complete data audit](FOOD-DATA-AUDIT.md) for the source inventory, comp
 Validation: 419 automated tests passed with zero failures; one optional live USDA test was skipped because no test key was configured. The full declared suite, TypeScript, separate final production-mode build and shared test-vault deployment passed. Reload used `plugin:reload id=tps-health`. Desktop and mobile emulation at a 390 px viewport verified two saved fixtures above an exact database match, a searchable zero-calorie fixture, source dates/coverage, provider and implausible-serving warnings, keyboard disclosure toggling and visible focus, with no horizontal overflow or accidental Add. QA used synthetic provider responses; the suite separately exercised public Open Food Facts. Physical iPhone behavior and live USDA data remain unverified.
 
 Synthetic food notes were created in Inbox and moved directly to `_archive` after QA. Provider methods and the pending tray were restored; Health runtime `data.json` remained byte-identical through deployment/reload and QA. Desktop mode was restored. The dirty canonical stable checkout was preserved by working from released `origin/main` in a clean contained feature worktree. This backward-compatible minor release adds data-quality/provenance behavior without a settings migration. It is ready for the user's BRAT pull; no production installation is claimed.
+
+## 0.47.1 — One decimal in the macros block
+
+Macros blocks and Macros Base summaries display nutrient values and goal labels with at most one decimal place (12.345 → 12.3, 12.36 → 12.4). Whole numbers stay compact. This includes the calorie header, ring/table values, accessible ring labels, nutrient contributions, food summaries, and recipe-component nutrient pills. Stored nutrition, aggregation, comparisons, progress and serving quantities retain their existing precision; workout/activity and food-editor displays keep their previous formatting. Small nutrient amounts can display as 0 after rounding; the stored value remains available in the food note. No settings, commands or schema migration.
+
+Focused model and rendered-block tests cover rounding, ring/table/contribution consistency and preservation of precise quantities and calculations. Full test/build and reloaded test-vault verification are recorded in the release notes. Minimum Obsidian remains 1.12.0; this is a backward-compatible display fix.
+
+0.47.1 validation: 421 tests passed, zero failed, one optional live USDA test skipped without a test key. The declared suite and TypeScript build passed. The reloaded 0.47.1 test runtime rendered the real shared macros renderer with an in-memory fixture: 123.456 kcal became 123.5, protein 12.345 became 12.3 in table/ring/contribution/food-summary/accessibility text, and a 20.456 g goal became 20.5. The fixture's original protein 12.345 and serving quantity 0.025 remained intact. No notes or settings were changed; the temporary preview was removed. The mandatory separate final build deploys through the test-vault helper, followed by a plugin reload. Production handoff is the public BRAT release.

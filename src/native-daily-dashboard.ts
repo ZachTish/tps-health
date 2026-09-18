@@ -146,15 +146,15 @@ const finite = (value: unknown): number | null => {
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
-const targetLabel = (metric: HealthMetricRenderConfig): string => {
+const targetLabel = (metric: HealthMetricRenderConfig, format: (value: number) => string = String): string => {
   const min = finite(metric.min);
   const max = finite(metric.max);
   if (isExtraNutrientKey(metric.propertyKey) && min == null && max == null && finite(metric.goal) == null) return "";
-  if (metric.kind === "range" && min != null && max != null) return `${min}–${max} ${metric.unit}`;
-  if (metric.kind === "min" && min != null) return `at least ${min} ${metric.unit}`;
-  if (metric.kind === "max" && max != null) return `up to ${max} ${metric.unit}`;
+  if (metric.kind === "range" && min != null && max != null) return `${format(min)}–${format(max)} ${metric.unit}`;
+  if (metric.kind === "min" && min != null) return `at least ${format(min)} ${metric.unit}`;
+  if (metric.kind === "max" && max != null) return `up to ${format(max)} ${metric.unit}`;
   const goal = finite(metric.goal);
-  return goal == null ? "No target" : `${goal} ${metric.unit}`;
+  return goal == null ? "No target" : `${format(goal)} ${metric.unit}`;
 };
 
 const metricState = (value: number, metric: HealthMetricRenderConfig): NativeDailyMetricState => {
@@ -194,7 +194,7 @@ export function buildNativeDailyDashboardModel(
       label: config.label,
       value,
       unit: config.unit,
-      targetLabel: targetLabel(config),
+      targetLabel: targetLabel(config, formatNativeDailyMacroValue),
       progress: metricProgress(value, config),
       state: metricState(value, config),
       color: config.color,
@@ -212,6 +212,13 @@ export function buildNativeDailyDashboardModel(
     metrics,
     activity: buildNativeDailyActivityModel(activityTotals, configs),
   };
+}
+
+/** Display only: stored amounts, totals and progress retain their precision. */
+export function formatNativeDailyMacroValue(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const rounded = Math.round(value * 10) / 10;
+  return String(Number.isFinite(rounded) ? rounded : value);
 }
 
 export function formatNativeDailyMetricValue(value: number): string {

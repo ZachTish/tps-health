@@ -31,6 +31,7 @@ import {
   buildNativeDailyActivityModel,
   buildNativeDailyDashboardModel,
   formatNativeDailyMetricValue,
+  formatNativeDailyMacroValue,
   parseNativeDailyDisplayOptions,
   type NativeDailyActivityModel,
   type NativeDailyDashboardModel,
@@ -12826,7 +12827,7 @@ function renderNativeDailyMacrosBlock(
   });
   if (display.showCalories !== false) header.createSpan({
     cls: "tps-health-native-daily-calories",
-    text: `${formatNativeDailyMetricValue(model.calories)} kcal`,
+    text: `${formatNativeDailyMacroValue(model.calories)} kcal`,
   });
 
   const actionBar = header.createDiv({
@@ -12914,7 +12915,7 @@ function renderNativeDailyContributors(
     const row = list.createDiv({ cls: "tps-health-native-daily-breakdown-item", attr: { role: "listitem" } });
     const button = row.createEl("button", { text: entry.title, attr: { type: "button", "aria-label": `Open food entry ${entry.title}` } });
     button.addEventListener("click", () => actions.openFoodEntry(entry.path));
-    row.createSpan({ text: ` ${formatNativeDailyMetricValue(value)} ${metric.unit}` });
+    row.createSpan({ text: ` ${formatNativeDailyMacroValue(value)} ${metric.unit}` });
     actions.components(row, entry);
   }
   if (!contributors.length) list.createDiv({ attr: { role: "listitem" }, text: "No recorded contributions." });
@@ -12968,7 +12969,7 @@ function renderNativeDailyComponents(
           row.createDiv({ text: "Nutrition unavailable for this ingredient." });
           continue;
         }
-        renderMacroPills(row.createDiv({ cls: "tps-health-selection-macros" }), multiplyNutrition(child.nutrition, resolved.servings));
+        renderMacroPills(row.createDiv({ cls: "tps-health-selection-macros" }), multiplyNutrition(child.nutrition, resolved.servings), formatNativeDailyMacroValue);
         const childFile = target instanceof TFile ? target : child.sourcePath ? plugin.app.vault.getAbstractFileByPath(child.sourcePath) : null;
         if (childFile instanceof TFile) renderNativeDailyComponents(row, plugin,
           { ...entry, title: parsed.foodName, quantity, unit: parsed.unit }, state,
@@ -13012,12 +13013,12 @@ function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDai
     item.style.setProperty("--tps-health-native-ring-progress", `${Math.round(metric.progress * 100)}%`);
     const button = item.createEl("button", { cls: "tps-health-native-ring-button", attr: {
       type: "button", "aria-expanded": "false",
-      "aria-label": `${metric.label}: ${formatNativeDailyMetricValue(metric.value)} ${metric.unit}; ${metric.targetLabel}. Show contributing foods`,
+      "aria-label": `${metric.label}: ${formatNativeDailyMacroValue(metric.value)} ${metric.unit}; ${metric.targetLabel}. Show contributing foods`,
     } });
     buttons.set(metric.propertyKey, button);
     const ring = button.createDiv({ cls: "tps-health-native-daily-ring", attr: { "aria-hidden": "true" } });
     const value = ring.createDiv({ cls: "tps-health-native-daily-ring-value" });
-    value.createSpan({ text: formatNativeDailyMetricValue(metric.value) });
+    value.createSpan({ text: formatNativeDailyMacroValue(metric.value) });
     value.createEl("small", { text: metric.unit });
     button.createDiv({ cls: "tps-health-native-daily-ring-label", text: metric.label });
     button.createDiv({ cls: "tps-health-native-daily-ring-target", text: metric.targetLabel.replace("at least ", "≥ ").replace("up to ", "≤ ") });
@@ -13048,14 +13049,14 @@ function renderNativeDailyFoodEntries(
       attr: { type: "button", title: `Open ${entry.title}`, "aria-label": `Open food entry ${entry.title}` },
     });
     title.addEventListener("click", () => actions.openFoodEntry(entry.path));
-    row.createSpan({ cls: "tps-health-native-daily-food-calories", text: `${formatNativeDailyMetricValue(entry.calories)} kcal` });
+    row.createSpan({ cls: "tps-health-native-daily-food-calories", text: `${formatNativeDailyMacroValue(entry.calories)} kcal` });
     row.createSpan({
       cls: "tps-health-native-daily-food-serving",
       text: `${formatNativeDailyMetricValue(entry.quantity)} ${entry.unit}`,
     });
     row.createSpan({
       cls: "tps-health-native-daily-food-macros",
-      text: `P ${formatNativeDailyMetricValue(entry.proteinG)}g · C ${formatNativeDailyMetricValue(entry.carbsG)}g · F ${formatNativeDailyMetricValue(entry.fatG)}g`,
+      text: `P ${formatNativeDailyMacroValue(entry.proteinG)}g · C ${formatNativeDailyMacroValue(entry.carbsG)}g · F ${formatNativeDailyMacroValue(entry.fatG)}g`,
     });
     actions.components(row, entry);
     const rowActions = row.createDiv({ cls: "tps-health-native-daily-row-actions", attr: { role: "group", "aria-label": `${entry.title} actions` } });
@@ -13205,6 +13206,7 @@ function nativeDailyEntryTimeLabel(value: string): string {
 }
 
 function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], ariaLabel: string, entries?: NativeDailyFoodEntrySnapshot[], actions?: NativeDailyDashboardActions): void {
+  const formatValue = entries && actions ? formatNativeDailyMacroValue : formatNativeDailyMetricValue;
   const metrics = root.createDiv({ cls: "tps-health-native-daily-metrics" });
   metrics.setAttr("role", "table");
   metrics.setAttr("aria-label", ariaLabel);
@@ -13223,7 +13225,7 @@ function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDa
     else label.setText(metric.label);
     row.createSpan({
       cls: "tps-health-native-daily-metric-value",
-      text: `${formatNativeDailyMetricValue(metric.value)} ${metric.unit}`,
+      text: `${formatValue(metric.value)} ${metric.unit}`,
       attr: { role: "cell" },
     });
     row.createSpan({ cls: "tps-health-native-daily-target", text: metric.targetLabel, attr: { role: "cell" } });
@@ -22846,10 +22848,10 @@ function formatNutritionPreview(nutrition: Nutrition): string {
   return parts.length ? parts.join(" • ") : "No macro data";
 }
 
-function compactMacroParts(nutrition: Nutrition): string[] {
+function compactMacroParts(nutrition: Nutrition, formatExtra = formatNativeDailyMetricValue): string[] {
   const hasAnyValue = [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.sugarAlcoholG, nutrition.alcoholG]
     .some((value) => nutritionNumber(value) != null);
-  if (!hasAnyValue) return EXTRA_NUTRIENTS.filter(n => (nutrition[n.key] ?? 0) > 0).slice(0, 3).map(n => `${formatNativeDailyMetricValue(nutrition[n.key]!)} ${n.unit} ${n.label}`);
+  if (!hasAnyValue) return EXTRA_NUTRIENTS.filter(n => (nutrition[n.key] ?? 0) > 0).slice(0, 3).map(n => `${formatExtra(nutrition[n.key]!)} ${n.unit} ${n.label}`);
   const parts = [
     nutrition.calories != null ? `${round(nutrition.calories)} kcal` : "",
     nutrition.proteinG != null ? `P ${round(nutrition.proteinG)}g` : "",
@@ -22868,9 +22870,9 @@ function renderCompactFoodMacros(container: HTMLElement, nutrition: Nutrition): 
   }
 }
 
-function renderMacroPills(container: HTMLElement, nutrition: Nutrition): void {
+function renderMacroPills(container: HTMLElement, nutrition: Nutrition, formatExtra = formatNativeDailyMetricValue): void {
   container.empty();
-  const parts = compactMacroParts(nutrition);
+  const parts = compactMacroParts(nutrition, formatExtra);
   if (!parts.length) {
     container.createSpan({ cls: "tps-health-macro-empty", text: "No macro data" });
     return;
