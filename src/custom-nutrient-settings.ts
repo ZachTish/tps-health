@@ -32,9 +32,9 @@ export function renderCustomNutrientSettings(container: HTMLElement, plugin: TPS
     const save = async (patch: {label?:string;archived?:boolean}) => {
       try {
         await plugin.updateCustomNutrients(definitions.map(n => n.key === definition.key ? {...n,...patch} : n));
-        message.setText('Nutrient updated.'); renderList();
-        list.querySelector<HTMLSelectElement>('select')?.focus();
+        message.setText('Nutrient updated.');
       } catch (error) { message.setText(String((error as Error).message)); }
+      finally { renderList(); list.querySelector<HTMLSelectElement>('select')?.focus(); }
     };
     new Setting(list).setName('Display name').addText(text => text.setValue(label).onChange(value => label = value))
       .addButton(button => button.setButtonText('Save name').onClick(() => void save({label})));
