@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [0.48.0](https://github.com/ZachTish/tps-health/releases/tag/0.48.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.1.0](https://github.com/ZachTish/tps-health/releases/tag/1.1.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -12,7 +12,7 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 
 **Log food** searches saved foods and databases together; scanning sits beside search, with Describe and quick-add routes available. The persistent tray keeps unlogged items, and the logger closes through its explicit close button. Categorize food logs with tags instead of a section selector.
 
-Macros can be shown in inline blocks or a dedicated **Macros Base** with native date-range filters. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
+Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 
 **Start workout** or **Start blank workout** opens the workout flow. Set deletion and separate dropset boundaries are supported. Workout controls appear for an open active workout; rendered content belongs in Live Preview and Reading mode, while Source mode stays literal. Atomic note workouts have their own notes. Atomic line workouts retain a real level-2 heading in the Daily Note for their legacy inline blocks.
 
@@ -32,7 +32,7 @@ The reference's old `Default food log section` and Apple Shortcut instructions d
 
 ## Atomic line compatibility and API
 
-Health no longer registers the retired `tps-health-food-log` Base view. GCM's generic `tps-table` remains available for legacy log tables: `lineFilterKey: food`, `totalsRow: top`, and `createCommandId: tps-health:log-food`. GCM TPS Table scans matching Markdown inline-property lines. The dedicated Macros Base is a separate nutrition summary surface.
+Health no longer registers the retired `tps-health-food-log` Base view. GCM's generic `tps-table` remains available for legacy log tables: `lineFilterKey: food`, `totalsRow: top`, and `createCommandId: tps-health:log-food`. GCM TPS Table scans matching Markdown inline-property lines. Nutrition summaries use the `tps-health-macros` block; existing Macros Base configurations are retained as files but their retired layout no longer renders.
 
 The enabled plugin exposes `app.tpsHealth`/`api` for food lookup, exact-food logging, activities, workout plans, and sessions. Prefer a barcode or exact food-note path for deterministic logging. See [the detailed reference](REFERENCE.md) and [src/main.ts](src/main.ts) for API and record contracts; the reference preserves release-specific validation and retired workflows as history.
 
@@ -58,6 +58,27 @@ Documentation-only maintenance does not create a new plugin version. Published r
 
 For prior feature details and release-specific evidence, see [REFERENCE.md](REFERENCE.md) and [GitHub releases](https://github.com/ZachTish/tps-health/releases). The September 16 cleanup changes documentation and repository metadata, not shipped behavior.
 
+
+## 1.0.0 — Macros stays a block
+
+Removes the custom Macros Bases layout, **Open Macros Base** command, **Daily logging → Appearance → Macros Base → Open**, and their unused model, toolbar interception, rendering bridge and CSS. Health no longer registers a Bases view. The existing Food Log and Activity Log table commands remain; they are separate record lists. Settings navigation still has the same five destinations and Daily logging default, with no new controls, disclosures or persisted fields. **Macros block** and **Nutrient rows** appearance preferences remain.
+
+Use a macro block in a Daily Note, or put it on an ordinary Markdown dashboard page with an explicit date selector:
+
+````markdown
+```tps-health-macros
+style: rings
+nutrients: collapsed
+foods: collapsed
+date(note.date) == today()
+```
+````
+
+The existing block retains recorded nutrients, configured goals, food/recipe contribution expansion and date-aware **Add food**. It renders in Reading and Live Preview; Source stays literal. An empty block uses its containing Daily Note's date. Rings/rows, hidden/collapsed/expanded nutrients and narrow-layout wrapping are unchanged. No new dedicated workspace page is introduced.
+
+This is a major release because saved Macros Base layouts and their command/hotkeys are intentionally retired. Existing `.base` files, embeds, settings, food logs and nutrient values are not deleted, rewritten or migrated. Replace Macros Base embeds manually with the block above, or select a supported layout to keep using the file as a record list. The block selects one day, not a multi-day aggregate. Minimum Obsidian remains 1.12.0.
+
+Focused regression coverage verifies real plugin startup registers all three Health blocks without any Bases view or Macros Base command, remaining record-list commands, settings/control preservation, recorded nutrients and existing block rendering. Validation: 429 tests passed, zero failed, with one optional live USDA test skipped without its credential. TypeScript and the full declared suite passed. Test-vault UI verification showed the retained Rings and Nutrient rows settings with no Macros Base action, and a real `tps-health-macros` Reading-mode block displayed synthetic calories/protein/carbs/fat rings plus fiber, sodium, vitamin C and creatine. Runtime checks confirmed the Macros Base registration and command were absent. Model/render tests retain contribution expansion, display styles, recorded nutrients, and configured goals. The synthetic block note was moved directly from Inbox to `_archive/Health Macros Block QA 1.0.0.md`; temporary in-memory data overrides were restored and Health `data.json` remained byte-identical. No providers were called during UI QA and no real food logs were written. The separate final build deploys through the shared test-vault helper, followed by the named Health reload. Physical iOS QA is not claimed. Historical sections below describe the versions when they shipped; Macros Base references there are superseded by this removal. Production installation remains the user's BRAT pull.
 
 ## 0.46.0 — Supplement nutrients and serving stability
 
@@ -191,14 +212,14 @@ Patch release for incomplete display of already-supported nutrition tracking. Mi
 Validation (2026-09-18): all 435 tests passed, one optional live USDA test skipped without its credential. TypeScript and the separate final production build passed; shared deployment reported `target=test`, followed by `plugin:reload id=tps-health` in the named test vault. The real Macros Base day renderer displayed synthetic fiber 3.5 g, alcohol 14 g, vitamin C 90 mg, magnesium 125 mg, creatine 2.5 g and known iron 0 mg with an empty goal/property selection. Expanding Creatine showed its contributing food and exact amount. A 388 px container had no horizontal overflow. In-memory UI fixtures were removed; no notes, settings or outbound provider calls were created, and Health runtime `data.json` stayed byte-identical. No physical iOS run or production installation is claimed.
 
 
-## 0.48.0 — User-defined nutrients
+## 1.1.0 — User-defined nutrients
 
 The supported nutrients are now extensible, rather than limited to the built-in vitamins, minerals and supplements. In **Health → Food & goals → Custom nutrients**, enter any nutrient/measurement name and its unit, then choose **Add nutrient**. In a food’s editor, open **Vitamins, minerals & custom nutrients** and enter its amount per labeled serving. Log the food normally; serving conversion, recipes, atomic lines/notes, daily totals, nutrient details and macro contribution rows all use the same registered definition. No GCM property-menu definition or Health goal is required. The standard nutrients remain presets with their existing provider conversions.
 
 Custom amounts are nonnegative additive quantities. Units are user-authored text (for example mg, ml or billion CFU); Health scales by food portions, never guesses conversions between custom units or assigns a custom amount a calorie contribution. Unknown amounts remain absent and known zero remains known. Custom nutrient definitions do not imply that a provider reports them; enter known label amounts manually. Existing rounding behavior remains display-only.
 
-Definitions persist in Health’s new optional `customNutrients` array (empty by default), with a stable generated `healthNutrient_*` key, label, unit and optional archived flag. Numeric amounts use that key in existing food/log storage. Names can change without changing keys or values. Units are immutable to protect historical meaning; create a separate definition for another unit. Archive instead of deleting: archived definitions remain readable in totals and editable on foods already containing them, while being omitted from blank food editors. Settings synchronization/backup must include the definitions so other devices know their labels and units. Use 0.48.0+ on devices logging custom amounts. No existing nutrient keys, notes, defaults or GCM registrations are migrated.
+Definitions persist in Health’s new optional `customNutrients` array (empty by default), with a stable generated `healthNutrient_*` key, label, unit and optional archived flag. Numeric amounts use that key in existing food/log storage. Names can change without changing keys or values. Units are immutable to protect historical meaning; create a separate definition for another unit. Archive instead of deleting: archived definitions remain readable in totals and editable on foods already containing them, while being omitted from blank food editors. Settings synchronization/backup must include the definitions so other devices know their labels and units. Use 1.1.0+ on devices logging custom amounts. No existing nutrient keys, notes, defaults or GCM registrations are migrated.
 
-The existing five settings destinations and default **Daily logging** route remain; the new controls extend **Food & goals** with direct name/unit inputs, an add action before the collection, and one selected editor. Selection/focus are transient; only definitions persist. Existing settings/mobile layout and the food editor’s single disclosure are reused. Macro rows still follow the existing collapsed/expanded/hidden preference and Base recorded-versus-selected mode. Atomic note storage still requires GCM’s record bridge; custom nutrient-menu configuration does not.
+The existing five settings destinations and default **Daily logging** route remain; the new controls extend **Food & goals** with direct name/unit inputs, an add action before the collection, and one selected editor. Selection/focus are transient; only definitions persist. Existing settings/mobile layout and the food editor’s single disclosure are reused. Macro rows still follow the existing collapsed/expanded/hidden preference. Atomic note storage still requires GCM’s record bridge; custom nutrient-menu configuration does not.
 
-This is a backward-compatible feature release. Regression coverage uses arbitrary definitions created after module loading, including a unit outside the built-in mass units, and checks save/reload, serving scaling, native projections, atomic lines, deletion of a food’s amount, archive, stable units, unknown versus zero, Base selection, contributor totals and unchanged GCM catalogs. Minimum Obsidian remains 1.12.0.
+This is a backward-compatible feature release. Regression coverage uses arbitrary definitions created after module loading, including a unit outside the built-in mass units, and checks save/reload, serving scaling, native projections, atomic lines, deletion of a food’s amount, archive, stable units, unknown versus zero, contributor totals and unchanged GCM catalogs. Minimum Obsidian remains 1.12.0.

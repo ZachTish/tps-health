@@ -1,6 +1,6 @@
 # Historical documentation reference
 
-Preserved from the README at 0.45.3, during the 2026-09-16 documentation cleanup. This includes earlier release notes, detailed contracts, and historical validation claims. Earlier setup steps or limitations may have been superseded. Start with [the current README](README.md), current source, and the tagged release. Relative source links remain rooted in this repository.
+Preserved from the README at 0.45.3, during the 2026-09-16 documentation cleanup. This includes earlier release notes, detailed contracts, and historical validation claims. Earlier setup steps or limitations may have been superseded. The Macros Base was retired in 1.0.0; use the current README’s inline block instructions. Start with [the current README](README.md), current source, and the tagged release. Relative source links remain rooted in this repository.
 
 ---
 

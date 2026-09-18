@@ -260,3 +260,13 @@ test('supplement fields use one transient selector and bounded narrow-editor con
  assert.match(stylesSource, /\.tps-health-food-editor-grid \.tps-health-nutrient-editor \.setting-item\s*\{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) 110px;/);
  assert.match(stylesSource, /\.tps-health-nutrient-editor \.setting-item\[hidden\]/);
 });
+
+
+test("Daily logging keeps block appearance controls and removes the retired Macros Base action", () => {
+  assert.doesNotMatch(settingsSource, /setName\("Macros Base"\)|openMacrosBase/);
+  assert.match(settingsSource, /setName\("Macros block"\)/);
+  assert.match(settingsSource, /setName\("Nutrient rows"\)/);
+  assert.match(settingsSource, /this\.plugin\.settings\.macroBlockStyle/);
+  assert.match(settingsSource, /this\.plugin\.settings\.macroNutrientRows/);
+  assert.doesNotMatch(stylesSource, /\.tps-health-macros-base/);
+});

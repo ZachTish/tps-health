@@ -197,7 +197,6 @@ export function buildNativeDailyDashboardModel(
     caloriesBurned: 0,
     steps: 0,
   },
-  includeRecordedNutrients = true,
 ): NativeDailyDashboardModel {
   const metrics = configs.flatMap((config) => {
     const value = metricValue(totals, config.propertyKey);
@@ -218,7 +217,7 @@ export function buildNativeDailyDashboardModel(
     const value = metricValue(totals, nutrient.propertyKey);
     // Core totals historically use zero for missing data. Do not fill the UI with
     // unknown zeroes; optional extended totals retain explicit known zeroes.
-    if (includeRecordedNutrients && value != null && (value > 0 || isExtraNutrientKey(nutrient.propertyKey))
+    if (value != null && (value > 0 || isExtraNutrientKey(nutrient.propertyKey))
       && !metrics.some(metric => metric.propertyKey === nutrient.propertyKey)) {
       metrics.push({ propertyKey: nutrient.propertyKey, label: nutrient.label, unit: nutrient.unit, value, targetLabel: "", progress: 0, state: "neutral" });
     }
