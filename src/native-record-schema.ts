@@ -85,29 +85,20 @@ export function configuredNativeKind(
 }
 
 export function readableNativeKinds(
-  settings: Pick<TPSHealthSettings, "nativeRecordKinds" | "nativeRecordKindAliases">,
+  settings: Pick<TPSHealthSettings, "nativeRecordKinds">,
   canonical: CanonicalHealthNativeKind,
 ): string[] {
-  const settingKey = HEALTH_NATIVE_RECORD_KIND_KEYS.find((key) => CANONICAL_KIND_BY_SETTING[key] === canonical)!;
-  return Array.from(new Set([
-    configuredNativeKind(settings, canonical),
-    DEFAULT_HEALTH_NATIVE_RECORD_KINDS[settingKey],
-    ...(settings.nativeRecordKindAliases?.[settingKey] || []),
-  ].map((value) => String(value || "").trim()).filter(isValidNativeRecordKindValue)));
+  return [configuredNativeKind(settings, canonical)];
 }
 
 export function canonicalNativeKind(
-  settings: Pick<TPSHealthSettings, "nativeRecordKinds" | "nativeRecordKindAliases">,
+  settings: Pick<TPSHealthSettings, "nativeRecordKinds">,
   value: unknown,
 ): CanonicalHealthNativeKind | null {
   const raw = String(value || "").trim().toLocaleLowerCase();
   if (!raw) return null;
   for (const key of HEALTH_NATIVE_RECORD_KIND_KEYS) {
-    const candidates = [
-      settings.nativeRecordKinds?.[key],
-      DEFAULT_HEALTH_NATIVE_RECORD_KINDS[key],
-      ...(settings.nativeRecordKindAliases?.[key] || []),
-    ].map((candidate) => String(candidate || "").trim().toLocaleLowerCase()).filter(Boolean);
+    const candidates = [configuredNativeKind(settings, CANONICAL_KIND_BY_SETTING[key]).toLocaleLowerCase()];
     if (candidates.includes(raw)) return CANONICAL_KIND_BY_SETTING[key];
   }
   return null;
@@ -124,9 +115,8 @@ export function configuredNativePropertyKey(
 }
 
 export function encodeNativeRecordProperties(
-  settings: Pick<TPSHealthSettings, "nativeRecordProperties" | "nativeRecordPropertyAliases">,
+  settings: Pick<TPSHealthSettings, "nativeRecordProperties">,
   properties: Record<string, unknown>,
-  clearAliases = false,
 ): Record<string, unknown> {
   const mapped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(properties)) {
@@ -137,30 +127,19 @@ export function encodeNativeRecordProperties(
     }
     const configuredKey = configuredNativePropertyKey(settings, canonicalKey);
     mapped[configuredKey] = value;
-    if (!clearAliases) continue;
-    for (const alias of [
-      DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[canonicalKey],
-      ...(settings.nativeRecordPropertyAliases?.[canonicalKey] || []),
-    ]) {
-      if (alias.toLocaleLowerCase() !== configuredKey.toLocaleLowerCase()) mapped[alias] = null;
-    }
   }
   return mapped;
 }
 
 export function decodeNativeRecordFrontmatter(
-  settings: Pick<TPSHealthSettings, "nativeRecordProperties" | "nativeRecordPropertyAliases">,
+  settings: Pick<TPSHealthSettings, "nativeRecordProperties">,
   frontmatter: Record<string, unknown>,
 ): Record<string, unknown> {
   const decoded = { ...frontmatter };
   for (const canonicalKey of HEALTH_NATIVE_RECORD_PROPERTY_KEYS) {
-    const candidates = [
-      configuredNativePropertyKey(settings, canonicalKey),
-      DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[canonicalKey],
-      ...(settings.nativeRecordPropertyAliases?.[canonicalKey] || []),
-    ];
-    const sourceKey = candidates.find((key) => Object.prototype.hasOwnProperty.call(frontmatter, key));
-    if (sourceKey) decoded[canonicalKey] = frontmatter[sourceKey];
+    const sourceKey = configuredNativePropertyKey(settings, canonicalKey);
+    if (Object.prototype.hasOwnProperty.call(frontmatter, sourceKey)) decoded[canonicalKey] = frontmatter[sourceKey];
+    else delete decoded[canonicalKey];
   }
   return decoded;
 }

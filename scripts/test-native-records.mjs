@@ -1962,3 +1962,19 @@ test('custom nutrients persist through native creation, food serving edits and r
   assert.equal(service.getDailyFoodTotals('2026-08-25')[key],undefined);
  } finally {configureCustomNutrients([]);}
 });
+
+
+test('custom workout kind and session property survive source refresh with all sets intact', async () => {
+  const h = createHarness({customKinds:true,settings:{nativeRecordKinds:{workoutSession:'training'},nativeRecordProperties:{session:'trainingData'}}});
+  const record = await h.service.createWorkoutSession({title:'Mapped session'},'mapped-session');
+  await h.service.appendWorkoutSet(record.file,{id:'mapped-set-1',exercise:'Press',exercisePath:'Inbox/Press.md',reps:8,weight:80,weightUnit:'lb',createdDate:'2026-09-20T12:00:00Z',endedAt:'2026-09-20T12:01:00Z'});
+  await h.service.refreshFile(record.file);
+  await h.service.appendWorkoutSet(record.file,{id:'mapped-set-2',exercise:'Press',exercisePath:'Inbox/Press.md',reps:6,weight:85,weightUnit:'lb'});
+  await h.service.refreshFile(record.file);
+  const snapshot = h.service.getWorkoutSnapshot(record.path);
+  assert.deepEqual(snapshot.exercises[0].sets.map(set=>set.reps),[8,6]);
+  assert.equal(h.frontmatters.get(record.file).kind,'training');
+  assert.ok(h.frontmatters.get(record.file).trainingData);
+  assert.equal(h.frontmatters.get(record.file).session,undefined);
+  h.service.dispose();
+});

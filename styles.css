@@ -5253,3 +5253,7 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
 .tps-health-energy-overview p { font-size: var(--font-ui-small); margin-bottom: 0; }
 .tps-health-energy-note { color: var(--text-muted); }
 @container (max-width: 520px) { .tps-health-energy-cards { grid-template-columns: 1fr; } }
+
+.tps-health-mapping-preview { max-height: 35vh; overflow-y: auto; overflow-wrap: anywhere; }
+.tps-health-settings-group [data-tps-health-mapping] .setting-item-control { flex-wrap: wrap; }
+.tps-health-settings-group [data-tps-health-mapping] button { height: auto; min-height: 32px; }

@@ -55,6 +55,9 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   settings.exerciseTag = optionalStringSetting(settings.exerciseTag);
   settings.customFoodTag = optionalStringSetting(settings.customFoodTag);
   settings.recipeTag = optionalStringSetting(settings.recipeTag);
+  settings.workoutFrontmatterKey = frontmatterPropertyKeySetting(settings.workoutFrontmatterKey, DEFAULT_SETTINGS.workoutFrontmatterKey);
+  settings.workoutPlanFrontmatterValue = stringSetting(settings.workoutPlanFrontmatterValue, DEFAULT_SETTINGS.workoutPlanFrontmatterValue);
+  settings.exerciseFrontmatterValue = stringSetting(settings.exerciseFrontmatterValue, DEFAULT_SETTINGS.exerciseFrontmatterValue);
   settings.foodFrontmatterKey = frontmatterPropertyKeySetting(settings.foodFrontmatterKey, DEFAULT_SETTINGS.foodFrontmatterKey);
   settings.foodFrontmatterFoodValue = stringSetting(settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue);
   settings.foodFrontmatterRecipeValue = stringSetting(settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue);

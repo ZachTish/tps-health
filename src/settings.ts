@@ -1,12 +1,13 @@
+import { changeHealthMapping } from "./health-mapping-migration";
 import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
-import { App, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
+import { App, Notice, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 import {
   DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
@@ -585,46 +586,34 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       });
 
     if (this.plugin.settings.foodIdentificationMode === "metadata" || this.plugin.settings.foodIdentificationMode === "metadata-folder-tag") {
-      new Setting(identification)
-        .setName("Food frontmatter key")
-        .setDesc("Property used to identify foods, recipes, and meals. Letters, numbers, underscores, and hyphens are supported.")
-        .addText((text) => text
-          .setPlaceholder(DEFAULT_SETTINGS.foodFrontmatterKey)
-          .setValue(this.plugin.settings.foodFrontmatterKey)
-          .onChange(async (value) => {
-            const key = value.trim();
-            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return;
-            this.plugin.settings.foodFrontmatterKey = key;
-            await this.plugin.saveSettings();
-          }));
-
-      const addIdentifierValue = (
-        label: string,
-        currentValue: string,
-        fallback: string,
-        save: (value: string) => Promise<void>,
-      ) => {
-        new Setting(identification)
-          .setName(label)
-          .setDesc(`Value written to ${this.plugin.settings.foodFrontmatterKey} for ${label.replace(" value", "").toLowerCase()} notes.`)
-          .addText((text) => text
-            .setPlaceholder(fallback)
-            .setValue(currentValue)
-            .onChange((value) => save(value.trim() || fallback)));
-      };
-      addIdentifierValue("Food value", this.plugin.settings.foodFrontmatterFoodValue, DEFAULT_SETTINGS.foodFrontmatterFoodValue, async (value) => {
-        this.plugin.settings.foodFrontmatterFoodValue = value;
-        await this.plugin.saveSettings();
-      });
-      addIdentifierValue("Recipe value", this.plugin.settings.foodFrontmatterRecipeValue, DEFAULT_SETTINGS.foodFrontmatterRecipeValue, async (value) => {
-        this.plugin.settings.foodFrontmatterRecipeValue = value;
-        await this.plugin.saveSettings();
-      });
-      addIdentifierValue("Meal value", this.plugin.settings.foodFrontmatterMealValue, DEFAULT_SETTINGS.foodFrontmatterMealValue, async (value) => {
-        this.plugin.settings.foodFrontmatterMealValue = value;
-        await this.plugin.saveSettings();
-      });
+      this.addMappingSetting(identification, "Food frontmatter key", "Property used to identify foods, recipes, and meals.",
+        settings => settings.foodFrontmatterKey, (settings, value) => { settings.foodFrontmatterKey = value; }, true);
+      for (const [label, key] of [["Food value", "foodFrontmatterFoodValue"], ["Recipe value", "foodFrontmatterRecipeValue"], ["Meal value", "foodFrontmatterMealValue"]] as const) {
+        this.addMappingSetting(identification, label, `Value written to ${this.plugin.settings.foodFrontmatterKey}.`,
+          settings => settings[key], (settings, value) => { settings[key] = value; });
+      }
     }
+
+    const workoutIdentity = createSettingsGroup(page, "Workout plans and exercises", "Identify reusable workout templates and exercise definitions. Apply previews and updates existing notes before saving a mapping.");
+    this.addMappingSetting(workoutIdentity, "Workout frontmatter key", "Property used for reusable workout plans and exercises.",
+      settings => settings.workoutFrontmatterKey, (settings, value) => { settings.workoutFrontmatterKey = value; }, true);
+    this.addMappingSetting(workoutIdentity, "Workout plan value", `Value written to ${this.plugin.settings.workoutFrontmatterKey} for reusable workout templates.`,
+      settings => settings.workoutPlanFrontmatterValue, (settings, value) => { settings.workoutPlanFrontmatterValue = value; });
+    this.addMappingSetting(workoutIdentity, "Exercise value", `Value written to ${this.plugin.settings.workoutFrontmatterKey} for exercise definitions.`,
+      settings => settings.exerciseFrontmatterValue, (settings, value) => { settings.exerciseFrontmatterValue = value; });
+
+    const records = createSettingsGroup(page, "Logged entries and workout sessions", "These records use GCM’s shared record key. Their values are configured here.");
+    const profile = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.();
+    new Setting(records).setName("Entry and session frontmatter key")
+      .setDesc(`Current key: ${profile?.kindPropertyKey || "kind"}. GCM owns this shared key for all native records; change and migrate it in GCM settings.`)
+      .addButton(button => button.setButtonText("Open GCM settings").onClick(() => this.openPluginSettings("tps-global-context-menu")));
+    this.renderNativeKindSettings(records);
+    new Setting(records).setName("Migrate previous mappings")
+      .setDesc("Review notes using old default identifiers or previously saved aliases, then update them to your current mappings. Aliases are removed after confirmation.")
+      .addButton(button => button.setButtonText("Review existing notes").onClick(async () => {
+        try { await changeHealthMapping(this.plugin, structuredClone(this.plugin.settings), "Update previous mappings to the current Health configuration."); }
+        catch (error) { new Notice(String(error), 15000); }
+      }));
 
     new Setting(identification)
       .setName("Workout note identification")
@@ -790,7 +779,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(gcm)
       .setName("Shared record envelope")
-      .setDesc("GCM owns the fixed shared identity, kind, title, created, and modified envelope used by every TPS plugin. Health controls its kind values and Health-specific fields below.")
+      .setDesc("GCM owns the shared identity, kind, title, created, and modified keys used by every TPS plugin. Configure Health record values in Note library and Health-specific fields below.")
       .addButton((button) => button
         .setButtonText("Open GCM settings")
         .onClick(() => this.openPluginSettings("tps-global-context-menu")));
@@ -799,7 +788,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       page,
       "native-frontmatter",
       "Health record frontmatter",
-      "Configure every Health-owned property key and the kind values used by new food, activity, and workout records. Existing default keys remain readable; changing a key never rewrites old notes automatically.",
+      "Configure Health-owned property keys. Apply previews existing records and asks for confirmation before migrating notes and saving the mapping. Record kind values are in Note library.",
     );
     this.renderNativeFrontmatterSettings(nativeFrontmatter);
 
@@ -837,7 +826,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         }));
   }
 
-  private renderNativeFrontmatterSettings(section: HTMLElement): void {
+  private renderNativeKindSettings(section: HTMLElement): void {
     const kindFields: Array<[HealthNativeRecordKindKey, string]> = [
       ["foodEntry", "Food entry kind value"],
       ["activityEntry", "Activity entry kind value"],
@@ -845,44 +834,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       ["workoutExercise", "Legacy workout exercise kind value"],
     ];
     for (const [key, label] of kindFields) {
-      new Setting(section)
-        .setName(label)
-        .setDesc("Lowercase words separated by hyphens. Prior values remain readable as aliases.")
-        .addText((text) => {
-          let committedValue = this.plugin.settings.nativeRecordKinds[key];
-          const commit = async (): Promise<void> => {
-            const candidate = text.getValue().trim();
-            if (!isValidNativeRecordKindValue(candidate)) {
-              text.setValue(committedValue);
-              return;
-            }
-            const duplicate = Object.entries(this.plugin.settings.nativeRecordKinds)
-              .some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLocaleLowerCase() === candidate.toLocaleLowerCase());
-            if (duplicate) {
-              text.setValue(committedValue);
-              return;
-            }
-            const previous = committedValue;
-            if (previous === candidate) return;
-            this.plugin.settings.nativeRecordKindAliases[key] = [
-              ...new Set([...(this.plugin.settings.nativeRecordKindAliases[key] || []), previous]),
-            ];
-            this.plugin.settings.nativeRecordKinds[key] = candidate;
-            await this.plugin.saveSettings();
-            committedValue = this.plugin.settings.nativeRecordKinds[key];
-            text.setValue(committedValue);
-            this.plugin.nativeRecordService?.refreshConfiguration();
-          };
-          text.setPlaceholder(DEFAULT_HEALTH_NATIVE_RECORD_KINDS[key]).setValue(committedValue);
-          text.inputEl.addEventListener("change", () => void commit());
-          text.inputEl.addEventListener("keydown", (event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            void commit();
-            text.inputEl.blur();
-          });
-        });
+      this.addMappingSetting(section, label, "Apply previews and migrates existing records. Lowercase words separated by hyphens.",
+        settings => settings.nativeRecordKinds[key], (settings, value) => { settings.nativeRecordKinds[key] = value; }, false, isValidNativeRecordKindValue);
     }
+  }
+
+  private renderNativeFrontmatterSettings(section: HTMLElement): void {
 
     section.createEl("h5", { cls: "tps-health-settings-subheading", text: "Food and nutrition fields" });
     const propertyGroups: Array<[string, Array<[HealthNativeRecordPropertyKey, string]>]> = [
@@ -929,43 +886,58 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     key: HealthNativeRecordPropertyKey,
     label: string,
   ): void {
-    new Setting(section)
-      .setName(label)
-      .setDesc(`Default: ${DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]}. Prior values remain readable as aliases; shared TPS envelope keys are reserved.`)
-      .addText((text) => {
-        let committedValue = this.plugin.settings.nativeRecordProperties[key];
-        const commit = async (): Promise<void> => {
-          const candidate = text.getValue().trim();
-          if (!isValidFrontmatterPropertyKey(candidate)) {
-            text.setValue(committedValue);
-            return;
-          }
-          const duplicate = Object.entries(this.plugin.settings.nativeRecordProperties)
-            .some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLocaleLowerCase() === candidate.toLocaleLowerCase());
-          if (duplicate) {
-            text.setValue(committedValue);
-            return;
-          }
-          const previous = committedValue;
-          if (previous === candidate) return;
-          this.plugin.settings.nativeRecordPropertyAliases[key] = [
-            ...new Set([...(this.plugin.settings.nativeRecordPropertyAliases[key] || []), previous]),
-          ];
-          this.plugin.settings.nativeRecordProperties[key] = candidate;
-          await this.plugin.saveSettings();
-          committedValue = this.plugin.settings.nativeRecordProperties[key];
-          text.setValue(committedValue);
-          this.plugin.nativeRecordService?.refreshConfiguration();
-        };
-        text.setPlaceholder(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]).setValue(committedValue);
-        text.inputEl.addEventListener("change", () => void commit());
-        text.inputEl.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          void commit();
-          text.inputEl.blur();
-        });
-      });
+    this.addMappingSetting(section, label, `Default: ${DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]}. Apply previews and migrates existing records. Shared TPS envelope keys are reserved.`,
+      settings => settings.nativeRecordProperties[key], (settings, value) => { settings.nativeRecordProperties[key] = value; }, true, isValidFrontmatterPropertyKey);
+  }
+
+  private addMappingSetting(
+    section: HTMLElement, label: string, description: string,
+    read: (settings: TPSHealthSettings) => string,
+    write: (settings: TPSHealthSettings, value: string) => void,
+    propertyKey = false, validate: (value: string) => boolean = value => Boolean(value),
+  ): void {
+    let input: TextComponent;
+    const setting = new Setting(section).setName(label).setDesc(description);
+    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    setting.settingEl.dataset.tpsHealthMapping = id;
+    const apply = async () => {
+      const value = input.getValue().trim();
+      if (value === read(this.plugin.settings)) return;
+      if (!validate(value) || (propertyKey && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value))) {
+        new Notice("Enter a valid mapping before applying it."); return;
+      }
+      const next = structuredClone(this.plugin.settings);
+      write(next, value);
+      const groups = [Object.values(next.nativeRecordKinds), Object.values(next.nativeRecordProperties),
+        [next.foodFrontmatterFoodValue, next.foodFrontmatterRecipeValue, next.foodFrontmatterMealValue],
+        [next.workoutPlanFrontmatterValue, next.exerciseFrontmatterValue]];
+      const profile = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.();
+      const reserved = ["tpsId", "tpsSchemaVersion", "title", "createdDate", "modifiedDate", "tags", "cssclasses",
+        ...Object.values(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES), "brand", "aliases", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "ingredients", "ingredientStatement", "name", "notes", "cooldownDays", "defaultRestSeconds", "category", "primaryMuscles", "secondaryMuscles", "equipment",
+        ...[profile?.identityPropertyKey, profile?.schemaPropertyKey, profile?.titlePropertyKey, profile?.createdPropertyKey, profile?.modifiedPropertyKey].filter(Boolean)].map(key => String(key).toLowerCase());
+      const sharedKindKey = profile?.kindPropertyKey || "kind";
+      const nativeValues = Object.values(next.nativeRecordKinds);
+      const envelopeKeys = [sharedKindKey, profile?.identityPropertyKey, profile?.schemaPropertyKey, profile?.titlePropertyKey, profile?.createdPropertyKey, profile?.modifiedPropertyKey].filter(Boolean).map(key => String(key).toLowerCase());
+      const reusesAnotherDefault = Object.entries(next.nativeRecordProperties).some(([key, value]) => Object.entries(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES).some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLowerCase() === String(value).toLowerCase()))
+        || Object.entries(next.nativeRecordKinds).some(([key, value]) => Object.entries(DEFAULT_HEALTH_NATIVE_RECORD_KINDS).some(([otherKey, otherValue]) => otherKey !== key && otherValue === value));
+      if (reusesAnotherDefault || Object.values(next.nativeRecordProperties).some(key => envelopeKeys.includes(String(key).toLowerCase()))
+        || (next.foodFrontmatterKey === sharedKindKey && [next.foodFrontmatterFoodValue, next.foodFrontmatterRecipeValue, next.foodFrontmatterMealValue].some(value => nativeValues.includes(value)))
+        || (next.workoutFrontmatterKey === sharedKindKey && [next.workoutPlanFrontmatterValue, next.exerciseFrontmatterValue].some(value => nativeValues.includes(value)))
+        || groups.some(group => new Set(group.map(item => String(item).toLowerCase())).size !== group.length)
+        || [next.foodFrontmatterKey, next.workoutFrontmatterKey].some(key => reserved.includes(key.toLowerCase()))
+        || (next.foodFrontmatterKey === next.workoutFrontmatterKey && [next.workoutPlanFrontmatterValue, next.exerciseFrontmatterValue].some(value => [next.foodFrontmatterFoodValue, next.foodFrontmatterRecipeValue, next.foodFrontmatterMealValue].includes(value)))) {
+        new Notice("Mappings must be distinct and cannot overwrite shared record fields."); return;
+      }
+      try {
+        await changeHealthMapping(this.plugin, next, `${label}: “${read(this.plugin.settings)}” → “${value}”`);
+      } catch (error) { new Notice(error instanceof Error ? error.message : String(error), 15000); }
+      this.redisplayPreservingContext(`[data-tps-health-mapping="${id}"] input`);
+    };
+    setting.addText(text => {
+      input = text.setValue(read(this.plugin.settings));
+      text.inputEl.setAttribute("aria-label", label);
+      text.inputEl.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); void apply(); } });
+    }).addButton(button => button.setButtonText("Apply").setTooltip(`Review ${label.toLowerCase()} change`).onClick(apply));
   }
 
   private renderProviderCredentials(section: HTMLElement): void {

@@ -20,7 +20,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 7;
+export const TPS_HEALTH_SCHEMA_VERSION = 8;
 
 export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workoutSession" | "workoutExercise";
 export type HealthNativeRecordPropertyKey = ExtraNutrientKey
@@ -66,6 +66,9 @@ export interface TPSHealthSettings {
   workoutDailyNotePlacement: WorkoutDailyNotePlacement;
   foodIdentificationMode: HealthEntityIdentificationMode;
   workoutIdentificationMode: HealthEntityIdentificationMode;
+  workoutFrontmatterKey: string;
+  workoutPlanFrontmatterValue: string;
+  exerciseFrontmatterValue: string;
   foodFrontmatterKey: string;
   foodFrontmatterFoodValue: string;
   foodFrontmatterRecipeValue: string;
@@ -329,6 +332,9 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   workoutDailyNotePlacement: "after-frontmatter",
   foodIdentificationMode: "metadata-folder-tag",
   workoutIdentificationMode: "metadata-folder-tag",
+  workoutFrontmatterKey: "kind",
+  workoutPlanFrontmatterValue: "workout-plan",
+  exerciseFrontmatterValue: "exercise",
   foodFrontmatterKey: "kind",
   foodFrontmatterFoodValue: "food",
   foodFrontmatterRecipeValue: "recipe",

@@ -1107,7 +1107,7 @@ export class HealthNativeRecordService {
   ): Promise<NativeRecordHandle | null> {
     return this.canonicalHandle(await this.requireApi().update(
       reference,
-      encodeNativeRecordProperties(this.plugin.settings, updates, true),
+      encodeNativeRecordProperties(this.plugin.settings, updates),
       cause,
     ));
   }
@@ -1526,7 +1526,6 @@ export class HealthNativeRecordService {
     const nextValues = encodeNativeRecordProperties(
       this.plugin.settings,
       workoutSessionDataUpdates(exercises, updates, session.frontmatter, this.plugin.settings),
-      true,
     );
     let conflict = false;
     let committedFrontmatter: Record<string, unknown> | null = null;
@@ -2514,7 +2513,7 @@ export class HealthNativeRecordService {
     markerState: string | null;
   }> {
     const content = await this.plugin.app.vault.read(session.file);
-    const frontmatter = workoutFrontmatterFromContent(content);
+    const frontmatter = decodeNativeRecordFrontmatter(this.plugin.settings, workoutFrontmatterFromContent(content));
     const hasSession = Object.prototype.hasOwnProperty.call(frontmatter, 'session');
     const nested = hasSession ? storedWorkoutExercises(frontmatter.session) : null;
     if (hasSession && !nested) {
@@ -2754,8 +2753,8 @@ export class HealthNativeRecordService {
       const resolvedFrontmatter = parsed && typeof parsed === 'object'
         ? parsed as Record<string, unknown>
         : null;
-      if (String(resolvedFrontmatter?.kind || '') === 'workout-session') {
-        const workoutFrontmatter = resolvedFrontmatter as Record<string, unknown>;
+      if (canonicalNativeKind(this.plugin.settings, this.plugin.getGcmNativeRecordsApi()?.inspect?.(resolvedFrontmatter)?.kind) === 'workout-session') {
+        const workoutFrontmatter = decodeNativeRecordFrontmatter(this.plugin.settings, resolvedFrontmatter as Record<string, unknown>);
         const nested = Object.prototype.hasOwnProperty.call(workoutFrontmatter, 'session')
           ? storedWorkoutExercises(workoutFrontmatter.session)
           : null;

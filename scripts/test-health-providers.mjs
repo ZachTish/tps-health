@@ -4931,7 +4931,7 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.workoutIntervalMode, "duration");
   assert.equal(normalized.workoutIntervalPropertyKey, "timeEstimate");
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
-  assert.equal(normalized.settingsVersion, 7);
+  assert.equal(normalized.settingsVersion, 8);
   assert.equal(normalized.workoutControlPlacement, "inline");
   assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "floating" }).workoutControlPlacement, "floating");
   assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "sideways" }).workoutControlPlacement, "inline");
@@ -5039,12 +5039,12 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
   assert.equal(Object.hasOwn(preservedUnknown, "dailyNoteFolder"), false);
   const futureSettings = normalizeTPSHealthSettings({
-    settingsVersion: 8,
+    settingsVersion: 9,
     dailyNoteFolder: "Future Dailynotes",
     futureOnlySetting: { mode: "new" },
   });
   assert.equal(isFutureTPSHealthSettings(futureSettings), true);
-  assert.equal(futureSettings.settingsVersion, 8, "normalization must never downgrade a future schema");
+  assert.equal(futureSettings.settingsVersion, 9, "normalization must never downgrade a future schema");
   assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
   assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
@@ -7729,7 +7729,7 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(mainSource, /resolveWorkoutSession\(\{ id: active\.id, path: active\.path \}\)/);
   assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:unresolved"/);
   assert.match(mainSource, /if \(resolution\.state !== "active"\)/);
-  assert.match(mainSource, /fm\.kind === "workout-session"/);
+  assert.match(mainSource, /isNativeWorkoutSessionFrontmatter\(fm, "", plugin\)/);
   assert.match(mainSource, /getWorkoutProgress\(workoutId\)/);
   assert.match(mainSource, /applyWorkoutPlanToNativeSession\(record\.file, context\.plan\.sourcePath\)/);
   assert.match(mainSource, /logger\.flowWarn\("Workout", "active-file:missing"/);
@@ -7972,7 +7972,7 @@ test("blank active workouts can log sets with rest and save repeated planned set
   });
   assert.equal(layoutPath, "Health/Workout Plans/Blank Push Layout.md");
   const layout = fake.files.get(layoutPath);
-  assert.match(layout, /kind: workout-plan/);
+  assert.match(layout, /kind: "?workout-plan"?/);
   assert.match(layout, /cooldownDays: 3/);
   assert.match(layout, /defaultRestSeconds: 120/);
   assert.equal((layout.match(/- \[\[Health\/Exercises\/Bench press\|Bench press\]\] - 185 lb x 8 \[rest:: 120\]/g) || []).length, 2);
@@ -8950,7 +8950,7 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
       search: (query) => plugin.searchExercises(query),
       cases: [
         { path: "Health/Exercises/Zulu Needle.md", cache: { frontmatter: { name: "Zulu Needle", category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 } }, expected: exerciseResult("Health/Exercises/Zulu Needle.md", "Zulu Needle", { category: "cardio", primaryMuscles: ["heart"], defaultRestSeconds: 12 }) },
-        { path: "Elsewhere/Type Needle.md", cache: { frontmatter: { name: "Type Needle", tpsType: "health-exercise", equipment: ["band"] } }, expected: exerciseResult("Elsewhere/Type Needle.md", "Type Needle", { equipment: ["band"] }) },
+        { path: "Elsewhere/Type Needle.md", cache: { frontmatter: { name: "Type Needle", kind: "exercise", equipment: ["band"] } }, expected: exerciseResult("Elsewhere/Type Needle.md", "Type Needle", { equipment: ["band"] }) },
         { path: "Elsewhere/Tagged Needle.md", cache: { frontmatter: { name: "Tagged Needle", recommendedRestDays: 2 }, tags: [{ tag: plugin.settings.exerciseTag }] }, expected: exerciseResult("Elsewhere/Tagged Needle.md", "Tagged Needle", { recommendedRestDays: 2 }) },
         { path: "Elsewhere/Kind Needle.md", cache: { frontmatter: { name: "Kind Needle", kind: "exercise", defaultSetType: "warmup" } }, expected: exerciseResult("Elsewhere/Kind Needle.md", "Kind Needle", { defaultSetType: "warmup" }) },
         { path: "Elsewhere/Exercise Miss.md", cache: { frontmatter: { name: "No Match", kind: "exercise" } } },
@@ -8966,8 +8966,8 @@ test("exercise and workout-plan searches preserve legacy order, counters, and on
       search: (query) => plugin.searchWorkoutPlans(query),
       cases: [
         { path: "Health/Workout Plans/Zulu Needle Plan.md", cache: { frontmatter: { title: "Zulu Needle Plan", cooldownDays: 3 } }, expected: workoutPlanResult("Health/Workout Plans/Zulu Needle Plan.md", "Zulu Needle Plan", { cooldownDays: 3 }) },
-        { path: "Elsewhere/Routine Needle.md", cache: { frontmatter: { name: "Routine Needle", tpsType: "health-routine", targetGapDays: 4 } }, expected: workoutPlanResult("Elsewhere/Routine Needle.md", "Routine Needle", { targetGapDays: 4 }) },
-        { path: "Elsewhere/Type Needle Plan.md", cache: { frontmatter: { name: "Type Needle Plan", tpsType: "health-workout-plan", defaultRestSeconds: 90 } }, expected: workoutPlanResult("Elsewhere/Type Needle Plan.md", "Type Needle Plan", { defaultRestSeconds: 90 }) },
+        { path: "Elsewhere/Routine Needle.md", cache: { frontmatter: { name: "Routine Needle", kind: "workout-plan", targetGapDays: 4 } }, expected: workoutPlanResult("Elsewhere/Routine Needle.md", "Routine Needle", { targetGapDays: 4 }) },
+        { path: "Elsewhere/Type Needle Plan.md", cache: { frontmatter: { name: "Type Needle Plan", kind: "workout-plan", defaultRestSeconds: 90 } }, expected: workoutPlanResult("Elsewhere/Type Needle Plan.md", "Type Needle Plan", { defaultRestSeconds: 90 }) },
         { path: "Elsewhere/Kind Needle Plan.md", cache: { frontmatter: { name: "Kind Needle Plan", kind: "workout-plan", notes: "Keep order" } }, expected: workoutPlanResult("Elsewhere/Kind Needle Plan.md", "Kind Needle Plan", { notes: "Keep order" }) },
         { path: "Elsewhere/Workout Miss.md", cache: { frontmatter: { name: "No Match", kind: "workout-plan" } } },
         { path: "Elsewhere/Unrecognized Needle Plan.md", cache: { frontmatter: { name: "Unrecognized Needle Plan" } } },
@@ -9843,7 +9843,7 @@ test("exact exercise lookup reuses one coherent metadata snapshot per scanned fi
   const orderedCases = [
     {
       path: "_archive/Archived Needle.md",
-      cache: { frontmatter: { name: "Needle Target", tpsType: "health-exercise" } },
+      cache: { frontmatter: { name: "Needle Target", kind: "exercise" } },
     },
     {
       path: "Health/Exercises/Food Needle.md",
@@ -9899,7 +9899,7 @@ test("exact exercise lookup reuses one coherent metadata snapshot per scanned fi
     },
     {
       path: "Elsewhere/Type Match.md",
-      cache: { frontmatter: { name: "Type Match", tpsType: "health-exercise" } },
+      cache: { frontmatter: { name: "Type Match", kind: "exercise" } },
       name: "Type Match",
       expected: exerciseResult("Elsewhere/Type Match.md", "Type Match"),
     },
@@ -9913,7 +9913,7 @@ test("exact exercise lookup reuses one coherent metadata snapshot per scanned fi
       path: "Elsewhere/Kind Only.md",
       cache: { frontmatter: { name: "Kind Only", kind: "exercise" } },
       name: "Kind Only",
-      expected: null,
+      expected: exerciseResult("Elsewhere/Kind Only.md", "Kind Only"),
     },
   ];
   for (const scenario of recognitionCases) {
@@ -9924,9 +9924,9 @@ test("exact exercise lookup reuses one coherent metadata snapshot per scanned fi
 
   const rotatingFile = new TFile("Elsewhere/Rotating Snapshot.md");
   const rotatingCaches = [
-    { frontmatter: { name: "Rotating Snapshot", tpsType: "health-exercise", category: "mobility" } },
+    { frontmatter: { name: "Rotating Snapshot", kind: "exercise", category: "mobility" } },
     {
-      frontmatter: { name: "Rotating Snapshot", tpsType: "health-exercise", category: "cardio" },
+      frontmatter: { name: "Rotating Snapshot", kind: "exercise", category: "cardio" },
       tags: [{ tag: plugin.settings.customFoodTag }],
     },
   ];
@@ -10110,7 +10110,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 10, carbsG: 8, fatG: 2 },
   });
   const taggedFoodContent = fake.files.get(taggedFood.sourcePath);
-  assert.equal(parseFrontmatter(taggedFoodContent).kind, "food", "kind remains the stable user-filterable classification");
+  assert.equal(parseFrontmatter(taggedFoodContent).kind, undefined, "tag-only food has no hidden metadata identity");
   assert.deepEqual(parseFrontmatter(taggedFoodContent).tags, ["user/pantry", "tps/food"]);
   assert.doesNotMatch(stripFrontmatter(taggedFoodContent), /^#tps\/food\s*$/m);
 
@@ -10123,7 +10123,7 @@ test("food note creation and updates write only the selected identification sign
   });
   const taggedMealContent = fake.files.get(taggedMeal.sourcePath);
   const taggedMealFrontmatter = parseFrontmatter(taggedMealContent);
-  assert.equal(taggedMealFrontmatter.kind, "meal");
+  assert.equal(taggedMealFrontmatter.kind, undefined);
   assert.deepEqual(taggedMealFrontmatter.tags, ["tps/recipe"]);
   assert.equal(taggedMealFrontmatter.servingUnit, "meal");
   assert.equal(
@@ -10153,7 +10153,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 7, carbsG: 4, fatG: 1 },
   });
   let changingFrontmatter = parseFrontmatter(fake.files.get(changing.sourcePath));
-  assert.equal(changingFrontmatter.kind, "food", "tag-only updates retain the stable kind classification");
+  assert.equal(changingFrontmatter.kind, undefined, "tag-only updates remove the metadata identity");
   assert.deepEqual(changingFrontmatter.tags, ["tps/food", "user/pantry"]);
   assert.equal(changingFrontmatter.quantity, undefined, "updating a permanent food removes leaked consumption facts");
   assert.equal(changingFrontmatter.unit, undefined);
@@ -10181,7 +10181,7 @@ test("food note creation and updates write only the selected identification sign
     nutrition: { proteinG: 5, carbsG: 5, fatG: 1 },
   });
   const folderFrontmatter = parseFrontmatter(fake.files.get(folderFood.sourcePath));
-  assert.equal(folderFrontmatter.kind, "food");
+  assert.equal(folderFrontmatter.kind, undefined);
   assert.equal(folderFrontmatter.tags, undefined);
 });
 
@@ -10213,7 +10213,7 @@ test("custom frontmatter identifiers create, recognize, and update each reusable
     const content = fake.files.get(created.sourcePath);
     const frontmatter = parseFrontmatter(content);
     assert.equal(frontmatter.healthEntity, value);
-    assert.equal(frontmatter.kind, type, `${type} keeps its filterable kind alongside the configured identifier`);
+    assert.equal(frontmatter.kind, undefined, `${type} has only its configured identifier`);
     assert.equal(
       foodNoteTypeFromFrontmatter(frontmatter, fake.app.vault.getAbstractFileByPath(created.sourcePath), plugin.settings),
       type,
@@ -10231,7 +10231,7 @@ test("custom frontmatter identifiers create, recognize, and update each reusable
   });
   const updated = parseFrontmatter(fake.files.get(legacyPath));
   assert.equal(updated.healthEntity, "pantry-item");
-  assert.equal(updated.kind, "food", "a touched legacy note keeps the canonical kind as well as the configured identifier");
+  assert.equal(updated.kind, undefined, "a touched legacy note uses only its configured identifier");
 });
 
 test("identity tag migration preserves YAML comments and only removes actual body hashtags", async () => {
@@ -12019,4 +12019,35 @@ test('energy settings save atomically, preserve intake goals, notify views and r
  assert.equal(plugin.__pluginData.energyBmrKcal,null);
  plugin.settingsPersistenceBlockedByFutureSchema=true;
  await assert.rejects(plugin.saveEnergySettings('1650','1.6'),/Update Health/);
+});
+
+
+test("configured workout library identity governs creation, templates, lookup, and updates", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = JSON.parse(JSON.stringify(plugin.settings));
+  Object.assign(plugin.settings, { workoutFrontmatterKey: "entityKind", workoutPlanFrontmatterValue: "routine", exerciseFrontmatterValue: "movement", exercisesFolder: "Inbox", workoutPlansFolder: "Inbox", exerciseTag: "" });
+  const plan = await plugin.createWorkoutPlan({name:"Mapping upper"});
+  const exercise = await plugin.createExercise({name:"Mapping press"});
+  for (const [item,value] of [[plan,"routine"],[exercise,"movement"]]) {
+    const fm = parseFrontmatter(fake.files.get(item.sourcePath));
+    assert.equal(fm.entityKind,value); assert.equal(fm.kind,undefined);
+  }
+  // Move recognition away from folder identity so only configured metadata can match.
+  plugin.settings.exercisesFolder = "Elsewhere"; plugin.settings.workoutPlansFolder = "Elsewhere";
+  assert.equal((await plugin.searchWorkoutPlans("Mapping upper"))[0].sourcePath,plan.sourcePath);
+  assert.equal((await plugin.searchExercises("Mapping press"))[0].sourcePath,exercise.sourcePath);
+  assert.equal((await plugin.findOrCreateWorkoutPlan({name:"Mapping upper"})).sourcePath,plan.sourcePath);
+  await plugin.upsertExercise({path:exercise.sourcePath,name:"Mapping press",defaultRestSeconds:75});
+  await plugin.upsertWorkoutPlan({path:plan.sourcePath,name:"Mapping upper",cooldownDays:2});
+  assert.equal(parseFrontmatter(fake.files.get(exercise.sourcePath)).kind,undefined);
+  assert.equal(parseFrontmatter(fake.files.get(plan.sourcePath)).kind,undefined);
+  fake.files.set("Templates/mapping.md", "---\nkind: workout-plan\n---\nCustom content");
+  plugin.settings.workoutPlanTemplatePath = "Templates/mapping.md";
+  const templated = await plugin.createWorkoutPlan({name:"Mapping custom"});
+  const fm = parseFrontmatter(fake.files.get(templated.sourcePath));
+  assert.equal(fm.entityKind,"routine"); assert.equal(fm.kind,undefined);
+  assert.match(fake.files.get(templated.sourcePath),/Custom content/);
 });

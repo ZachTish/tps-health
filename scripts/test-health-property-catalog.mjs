@@ -105,11 +105,11 @@ test('catalog scopes configurable Health fields to configurable native kind valu
   const calories = catalog.nativeRecords.find((property) => property.id === 'record-calories');
   const status = catalog.nativeRecords.find((property) => property.id === 'record-status');
   assert.equal(food.key, 'foodRef');
-  assert.deepEqual(food.scope.kinds, ['nutrition-log', 'food-entry', 'meal-log']);
+  assert.deepEqual(food.scope.kinds, ['nutrition-log']);
   assert.equal(calories.key, 'energyKcal');
-  assert.deepEqual(calories.scope.kinds, ['nutrition-log', 'food-entry', 'meal-log']);
+  assert.deepEqual(calories.scope.kinds, ['nutrition-log']);
   assert.equal(status.key, 'trainingStatus');
-  assert.deepEqual(status.scope.kinds, ['training-session', 'workout-session']);
+  assert.deepEqual(status.scope.kinds, ['training-session']);
 });
 
 test('daily rollup properties are generated from configured goals and require their own rollup key', () => {

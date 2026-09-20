@@ -25,12 +25,12 @@ test('every Health-owned native property can be remapped and decoded without dup
   const canonical = Object.fromEntries(
     schema.HEALTH_NATIVE_RECORD_PROPERTY_KEYS.map((key, index) => [key, index + 1]),
   );
-  const encoded = schema.encodeNativeRecordProperties(settings, canonical, true);
+  const encoded = schema.encodeNativeRecordProperties(settings, canonical);
   for (const key of schema.HEALTH_NATIVE_RECORD_PROPERTY_KEYS) {
     assert.equal(encoded[`health_${key}`], canonical[key]);
-    assert.equal(encoded[schema.DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]], null);
+    assert.equal(encoded[schema.DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]], undefined);
   }
-  assert.equal(encoded.oldEnergy, null);
+  assert.equal(encoded.oldEnergy, undefined);
   const stored = Object.fromEntries(
     schema.HEALTH_NATIVE_RECORD_PROPERTY_KEYS.map((key) => [`health_${key}`, encoded[`health_${key}`]]),
   );
@@ -52,11 +52,17 @@ test('custom kind values stay canonical internally and invalid or reserved field
   };
   assert.equal(schema.configuredNativeKind(settings, 'food-entry'), 'nutrition-log');
   assert.equal(schema.canonicalNativeKind(settings, 'nutrition-log'), 'food-entry');
-  assert.equal(schema.canonicalNativeKind(settings, 'meal-consumption'), 'food-entry');
-  assert.equal(schema.canonicalNativeKind(settings, 'food-entry'), 'food-entry');
+  assert.equal(schema.canonicalNativeKind(settings, 'meal-consumption'), null);
+  assert.equal(schema.canonicalNativeKind(settings, 'food-entry'), null);
   assert.equal(schema.isValidNativeRecordKindValue('Food Entry'), false);
   assert.equal(schema.isValidFrontmatterPropertyKey('energy_kcal'), true);
   for (const reserved of ['tpsId', 'kind', 'title', 'createdDate', 'modifiedDate', 'tags']) {
     assert.equal(schema.isValidFrontmatterPropertyKey(reserved), false);
   }
+});
+
+test('remapped fields do not silently read old defaults or aliases', () => {
+  const settings = { nativeRecordProperties: { calories: 'energy' }, nativeRecordPropertyAliases: { calories: ['oldEnergy'] } };
+  assert.equal(schema.decodeNativeRecordFrontmatter(settings, { calories: 100, oldEnergy: 200 }).calories, undefined);
+  assert.equal(schema.decodeNativeRecordFrontmatter(settings, { energy: 300, calories: 100 }).calories, 300);
 });

@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [1.3.0](https://github.com/ZachTish/tps-health/releases/tag/1.3.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [2.0.0](https://github.com/ZachTish/tps-health/releases/tag/2.0.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -58,6 +58,19 @@ Documentation-only maintenance does not create a new plugin version. Published r
 
 For prior feature details and release-specific evidence, see [REFERENCE.md](REFERENCE.md) and [GitHub releases](https://github.com/ZachTish/tps-health/releases). The September 16 cleanup changes documentation and repository metadata, not shipped behavior.
 
+
+
+## 2.0.0 — Explicit Health identity mappings
+
+**Note library** now groups reusable workout-plan/exercise identity beside food identity, and exposes food-entry, activity-entry, workout-session and legacy workout-exercise values directly. `workoutFrontmatterKey` defaults to `kind`; `workoutPlanFrontmatterValue` and `exerciseFrontmatterValue` default to `workout-plan` and `exercise`. Creation, custom templates (`{{kindKey}}`/`{{kind}}`), plan-from-session creation, updates, search and exact lookup use these settings. Food updates no longer reintroduce a second hardcoded `kind` beside a configured identifier. Tag-only/folder-only foods do not acquire a hidden metadata identity.
+
+Native logged entries and sessions use **GCM's shared kind property**, displayed with a direct GCM settings handoff. Health does not duplicate or silently change a key shared by other plugins. Their values are Health-owned. Health-owned nutrition/activity/session property keys remain under **Integrations & advanced → Health record frontmatter**; kind-value controls have moved to Note library. The five destinations, Daily logging default, four intentional optional disclosures, commands and existing settings remain. New mapping controls are plain labeled inputs with **Apply**, keyboard Enter, restored focus/scroll and wrapping mobile controls; there is no additional disclosure or persisted navigation state.
+
+Changing a food/workout-library identifier or native Health kind/property mapping requires **Apply → preview → Update notes and mapping**. The preview lists every affected Markdown note, including archived notes. No notes/settings are written before confirmation. It rejects conflicting destination properties, ambiguous prior identities, changed/moved/deleted notes, newly matching notes, concurrent mapping edits and newer-schema settings. Finish an active workout first. Notes are updated before settings; ordinary write/save failures attempt guarded rollback without overwriting concurrent edits. Cancel leaves the old mapping intact. Frontmatter is serialized by Obsidian's standard frontmatter API; note bodies remain intact. A process crash cannot provide a vault-wide atomic transaction, and a concurrent edit that prevents rollback is reported with its path.
+
+**Breaking compatibility:** normal identity/record-field readers and the GCM property catalog accept only configured mappings, with no old-default or saved-alias fallback. Existing alias settings are retained solely as migration input until an explicitly confirmed migration clears them. On upgrading a vault that previously used custom mappings or old `tpsType` identifiers, use **Note library → Migrate previous mappings → Review existing notes** to consolidate those notes before relying on their totals/search. Settings schema is 8 so older builds cannot overwrite this configuration. Explicit legacy log import and workout timing-format compatibility remain separate from identifier aliases. No notes migrate automatically during upgrade. Existing imported GCM property definitions are not silently rewritten; re-import their scopes after changing native kind values.
+
+Validation: 457 tests passed, zero failed, one optional live USDA test skipped without its credential. TypeScript and the mandatory separate production build passed with test-vault deployment and a named Health reload. Regression coverage includes cancellation, full-vault/archived-note migration planning, collision checks, stale previews, rollback on write/save failure, current-only reads/catalog scopes, custom library creation/search/upserts/templates, and custom-kind/session-property hydration retaining all sets. Test-vault UI verification used five synthetic Inbox notes plus a layout created with the real **Save workout layout** action and a temporary synthetic active-session getter. Cancel preserved notes/settings; confirmed food/workout-key, plan/activity/session-value and activity-duration-property changes moved the data, removed old fields, and restored input focus. Reverse migrations restored all original mapping values and folders. A temporary Health-only vault enumeration restricted QA migrations to those fixtures; other plugins and real records were not rewritten. All five routes were inspected. At 390 px outer width with the desktop sidebar temporarily hidden, the 375 px settings surface and every mapping row had no horizontal overflow. Original settings, app reference, getter, window size/sidebar and enumeration were restored; six fixtures moved directly to `_archive/Health Mapping QA 2.0.0`. Physical iOS QA is not claimed. No outbound services were enabled or called. Minimum Obsidian remains 1.12.0. The major version reflects removal of fallback mapping compatibility. Production stays on the user's BRAT pull.
 
 ## 1.0.0 — Macros stays a block
 

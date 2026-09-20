@@ -1,3 +1,5 @@
+import { canonicalNativeKind } from "./native-record-schema";
+import { libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
 import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange } from "./nutrient-goals";
@@ -1365,6 +1367,17 @@ export default class TPSHealthPlugin extends Plugin {
     if (this.settingsPersistenceBlockedNoticeShown) return;
     this.settingsPersistenceBlockedNoticeShown = true;
     new Notice("TPS Health did not save settings because this vault contains settings from a newer TPS Health version. Update this device first.", 12000);
+  }
+
+  async assertHealthMappingWritable(expected?: TPSHealthSettings): Promise<void> {
+    const stored = await this.loadData();
+    if (this.settingsPersistenceBlockedByFutureSchema || isFutureTPSHealthSettings(stored)) {
+      throw new Error("Update Health before changing its mappings.");
+    }
+    if (this.settings.activeWorkoutId) throw new Error("Finish the active workout before migrating Health mappings.");
+    if (expected && stored && mappingSnapshot(normalizeTPSHealthSettings(stored)) !== mappingSnapshot(expected)) {
+      throw new Error("Saved mappings changed on another device. Reload Health and review the change again.");
+    }
   }
 
   async saveEnergySettings(bmr: string, factor: string): Promise<void> {
@@ -3831,7 +3844,7 @@ export default class TPSHealthPlugin extends Plugin {
       const matches = candidates.filter((file) => {
         const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
         return this.nativeRecordService?.isEnabled()
-          ? isNativeWorkoutSessionFrontmatter(fm, workoutId)
+          ? isNativeWorkoutSessionFrontmatter(fm, workoutId, this)
             || this.nativeRecordService.isWorkoutSession(file.path, workoutId)
           : typeof fm.workoutId === "string" && fm.workoutId === workoutId;
       });
@@ -5306,9 +5319,7 @@ export default class TPSHealthPlugin extends Plugin {
       const fm = cache?.frontmatter || {};
       const tags = cache?.tags?.map((tag) => tag.tag) || [];
       if (isArchivedHealthPath(file.path) || hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
-      const isExercise = tags.includes(this.settings.exerciseTag) ||
-        fm.kind === "exercise" ||
-        fm.tpsType === "health-exercise" ||
+      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
       recognized++;
@@ -5335,6 +5346,7 @@ export default class TPSHealthPlugin extends Plugin {
       normalizePath(this.settings.exercisesFolder || "").replace(/^\/+|\/+$/g, ""),
       normalizeHealthTag(this.settings.exerciseTag || ""),
       this.foodIndexSettingsSignature(),
+      this.settings.workoutFrontmatterKey, this.settings.exerciseFrontmatterValue,
     ]);
   }
 
@@ -5384,10 +5396,8 @@ export default class TPSHealthPlugin extends Plugin {
           foodLike++;
           continue;
         }
-        const isExercise = tags.includes(this.settings.exerciseTag) ||
-          fm.kind === "exercise" ||
-          fm.tpsType === "health-exercise" ||
-          fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
         if (!isExercise) continue;
         recognized++;
         const item = this.exerciseFromFrontmatter(file, fm);
@@ -5478,8 +5488,7 @@ export default class TPSHealthPlugin extends Plugin {
     const tags = cache?.tags?.map((tag) => tag.tag) || [];
     if (hasFoodIdentitySignal(this.settings, file, fm, tags)) return null;
     const recognized = tags.includes(this.settings.exerciseTag) ||
-      fm.kind === "exercise" ||
-      fm.tpsType === "health-exercise" ||
+      matchesLibraryIdentity(this.settings, fm, "exercise") ||
       fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
     if (!recognized) return null;
     const item = this.exerciseFromFrontmatter(file, fm);
@@ -5515,10 +5524,8 @@ export default class TPSHealthPlugin extends Plugin {
         const cache = this.app.metadataCache.getFileCache(file);
         const fm = cache?.frontmatter || {};
         const tags = cache?.tags?.map((tag) => tag.tag) || [];
-        const isExercise = tags.includes(this.settings.exerciseTag) ||
-          fm.kind === "exercise" ||
-          fm.tpsType === "health-exercise" ||
-          fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
+        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+        fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
         if (isExercise) return this.exerciseFromFrontmatter(file, fm);
       }
     }
@@ -5580,9 +5587,7 @@ export default class TPSHealthPlugin extends Plugin {
     for (const file of files) {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter || {};
-      const recognized = fm.tpsType === "health-workout-plan" ||
-        fm.tpsType === "health-routine" ||
-        fm.kind === "workout-plan" ||
+      const recognized = matchesLibraryIdentity(this.settings, fm, "workout-plan") ||
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!recognized) continue;
       stats.recognized++;
@@ -7715,7 +7720,10 @@ export default class TPSHealthPlugin extends Plugin {
     }
     const existingKindKey = this.findHealthFrontmatterKey(frontmatter, "kind");
     const existingKind = existingKindKey ? String(frontmatter[existingKindKey] || "").trim() : "";
-    this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
+    if (normalizedKind === "workout-plan" || normalizedKind === "exercise") applyLibraryIdentity(this.settings, frontmatter, normalizedKind);
+    else if (normalizedKind === "food" || normalizedKind === "recipe" || normalizedKind === "meal") {
+      applyFoodIdentityFrontmatterMode(frontmatter, normalizedKind === "food" ? this.settings.customFoodTag : this.settings.recipeTag, normalizedKind, this.settings);
+    } else this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
     const titleKey = this.findHealthFrontmatterKey(frontmatter, "title");
     const nameKey = this.findHealthFrontmatterKey(frontmatter, "name");
     const existingTitle = String(
@@ -8885,7 +8893,7 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      frontmatter.kind = frontmatter.kind || "workout-plan";
+      applyLibraryIdentity(this.settings, frontmatter, "workout-plan");
       frontmatter.workflowKind = frontmatter.workflowKind || "workflow";
       frontmatter.workflowType = frontmatter.workflowType || "workout";
       frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
@@ -8903,9 +8911,7 @@ export default class TPSHealthPlugin extends Plugin {
     const normalized = normalizeLookup(name);
     for (const file of this.app.vault.getMarkdownFiles()) {
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      const isWorkoutPlan = fm.tpsType === "health-workout-plan" ||
-        fm.tpsType === "health-routine" ||
-        fm.kind === "workout-plan" ||
+      const isWorkoutPlan = matchesLibraryIdentity(this.settings, fm, "workout-plan") ||
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!isWorkoutPlan) continue;
       if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) return this.workoutPlanFromFrontmatter(file, fm);
@@ -9101,7 +9107,7 @@ export default class TPSHealthPlugin extends Plugin {
   ): string {
     return [
 	      "---",
-	      "kind: workout-plan",
+	      yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
 	      `title: \"${escapeYamlString(name)}\"`,
 	      `cooldownDays: ${cooldownDays}`,
 	      `defaultRestSeconds: ${defaultRestSeconds}`,
@@ -9291,7 +9297,7 @@ export default class TPSHealthPlugin extends Plugin {
   private defaultWorkoutPlanTemplate(input: CreateWorkoutPlanInput): string {
     return [
 	      "---",
-	      "kind: workout-plan",
+	      yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
 	      `title: "${escapeYamlString(input.name)}"`,
 	      input.cooldownDays != null ? `cooldownDays: ${input.cooldownDays}` : "",
 	      input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
@@ -9310,7 +9316,8 @@ export default class TPSHealthPlugin extends Plugin {
   private renderWorkoutPlanTemplate(template: string, input: CreateWorkoutPlanInput): string {
     return replacePlaceholders(template, {
       name: input.name,
-      kind: "workout-plan",
+      kind: libraryIdentity(this.settings, "workout-plan").value,
+      kindKey: libraryIdentity(this.settings, "workout-plan").key,
       workflowKind: "workflow",
       workflowType: "workout",
       recurrenceMode: "completion-triggered",
@@ -9325,7 +9332,7 @@ export default class TPSHealthPlugin extends Plugin {
     const configuredTag = normalizeHealthTag(this.settings.exerciseTag);
     return [
       "---",
-      "kind: exercise",
+      yamlScalarLine(libraryIdentity(this.settings, "exercise").key, libraryIdentity(this.settings, "exercise").value),
       `title: "${escapeYamlString(input.name)}"`,
       input.category ? `category: ${input.category}` : "",
       input.primaryMuscles?.length ? `primaryMuscles: [${input.primaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
@@ -9344,7 +9351,8 @@ export default class TPSHealthPlugin extends Plugin {
   private renderExerciseTemplate(template: string, input: CreateExerciseInput): string {
     return replacePlaceholders(template, {
       name: input.name,
-      kind: "exercise",
+      kind: libraryIdentity(this.settings, "exercise").value,
+      kindKey: libraryIdentity(this.settings, "exercise").key,
       tag: this.settings.exerciseTag,
       category: input.category || "strength",
       primaryMuscles: (input.primaryMuscles || []).join(", "),
@@ -10243,8 +10251,7 @@ export default class TPSHealthPlugin extends Plugin {
       const tags = cache?.tags?.map((tag) => tag.tag) || [];
       if (isArchivedHealthPath(file.path)) continue;
       if (hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
-      const isExercise = tags.includes(this.settings.exerciseTag) ||
-        fm.tpsType === "health-exercise" ||
+      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
       if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) {
@@ -19483,10 +19490,6 @@ function configuredFoodFrontmatterType(fm: any, settings: TPSHealthSettings): Fo
   for (const type of ["food", "recipe", "meal"] as FoodNoteType[]) {
     if (configuredValue === foodFrontmatterValue(settings, type)) return type;
   }
-  if (isFoodFrontmatterKind(fm?.kind)) return fm.kind;
-  if (fm?.tpsType === "health-recipe") return "recipe";
-  if (fm?.tpsType === "health-meal") return "meal";
-  if (fm?.tpsType === "health-food") return "food";
   return null;
 }
 
@@ -19542,12 +19545,12 @@ function isWorkoutLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?:
   if (file.path === plugin.settings.activeWorkoutPath) {
     if (plugin.settings.storageMode !== "native-records") return true;
     if (
-      isNativeWorkoutSessionFrontmatter(fm, plugin.settings.activeWorkoutId)
+      isNativeWorkoutSessionFrontmatter(fm, plugin.settings.activeWorkoutId, plugin)
       || plugin.nativeRecordService?.isWorkoutSession(file.path, plugin.settings.activeWorkoutId)
     ) return true;
   }
   const explicitWorkoutMetadata = fm.kind === "workout" ||
-    fm.kind === "workout-session" ||
+    isNativeWorkoutSessionFrontmatter(fm, "", plugin) ||
     fm.tpsType === "health-workout" ||
     hasCssClass(fm.cssclasses, "tps-health-workout");
   if (explicitWorkoutMetadata) return true;
@@ -19558,8 +19561,9 @@ function isWorkoutLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?:
   });
 }
 
-function isNativeWorkoutSessionFrontmatter(frontmatter: any, workoutId = ""): boolean {
-  if (frontmatter?.kind !== "workout-session") return false;
+function isNativeWorkoutSessionFrontmatter(frontmatter: any, workoutId = "", plugin?: TPSHealthPlugin): boolean {
+  const inspected = plugin?.getGcmNativeRecordsApi()?.inspect?.(frontmatter);
+  if (plugin ? canonicalNativeKind(plugin.settings, inspected?.kind || frontmatter?.kind) !== "workout-session" : frontmatter?.kind !== "workout-session") return false;
   const expectedId = String(workoutId || "").trim();
   return !expectedId || String(frontmatter?.workoutId || "").trim() === expectedId;
 }

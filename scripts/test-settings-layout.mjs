@@ -80,8 +80,6 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "foodFrontmatterMealValue",
     "nativeRecordKinds",
     "nativeRecordProperties",
-    "nativeRecordKindAliases",
-    "nativeRecordPropertyAliases",
     "workoutIdentificationMode",
     "workoutTag",
     "exerciseTag",
@@ -101,17 +99,17 @@ test("Every active user preference remains bound and exerciseTag is editable", (
       ? new RegExp(`addLibraryFolderSetting\\(folders, "${key}"`)
       : null;
     assert.match(
-      ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : settingsSource,
-      folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
+      ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : settingsSource.replaceAll("settings => settings", "settings => this.plugin.settings").replaceAll("settings.nativeRecord", "this.plugin.settings.nativeRecord"),
+      ["foodFrontmatterFoodValue", "foodFrontmatterRecipeValue", "foodFrontmatterMealValue"].includes(key) ? new RegExp(`"${key}"`) : folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
       `${key} must remain connected to the settings UI`,
     );
   }
   assert.match(settingsSource, /\.setName\("Exercise tag"\)[\s\S]+?this\.plugin\.settings\.exerciseTag = value\.trim\(\)/);
   assert.match(settingsSource, /\.setName\("Food tag"\)[\s\S]+?Blank disables this identity signal/);
-  assert.match(settingsSource, /\.setName\("Food frontmatter key"\)/);
-  assert.match(settingsSource, /addIdentifierValue\("Food value"/);
-  assert.match(settingsSource, /addIdentifierValue\("Recipe value"/);
-  assert.match(settingsSource, /addIdentifierValue\("Meal value"/);
+  assert.match(settingsSource, /addMappingSetting\(identification, "Food frontmatter key"/);
+  assert.match(settingsSource, /"Food value"/);
+  assert.match(settingsSource, /"Recipe value"/);
+  assert.match(settingsSource, /"Meal value"/);
   assert.match(settingsSource, /"Food entry kind value"/);
   assert.match(settingsSource, /"Activity entry kind value"/);
   assert.match(settingsSource, /renderNativeFrontmatterSettings/);
@@ -281,4 +279,15 @@ test("Nutrient settings provide one searchable editor, accessible controls and m
  assert.doesNotMatch(nutrientGoalSource,/createEl\(['"]details/);
  assert.match(stylesSource,/@container \(max-width: 520px\)/);
  assert.ok(stylesSource.includes('.tps-health-settings-nutrient-summary button'));
+});
+
+
+test("Note library exposes workout and native identities with explicit confirmed migration", () => {
+  const library=settingsSource.slice(settingsSource.indexOf('private renderNoteLibraryPage'),settingsSource.indexOf('private renderIntegrationsPage'));
+  for(const label of ['Workout frontmatter key','Workout plan value','Exercise value','Entry and session frontmatter key','Migrate previous mappings']) assert.ok(library.includes(label));
+  assert.match(library,/this\.renderNativeKindSettings\(records\)/);
+  assert.match(settingsSource,/setButtonText\("Apply"\)/);
+  assert.match(settingsSource,/changeHealthMapping\(this\.plugin, next/);
+  assert.match(settingsSource,/redisplayPreservingContext\(`\[data-tps-health-mapping/);
+  assert.doesNotMatch(settingsSource,/nativeRecordKindAliases\[key\] =|nativeRecordPropertyAliases\[key\] =/);
 });
