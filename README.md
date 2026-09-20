@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [2.0.0](https://github.com/ZachTish/tps-health/releases/tag/2.0.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.0.0](https://github.com/ZachTish/tps-health/releases/tag/3.0.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -281,3 +281,18 @@ Settings remain on the same five routes with **Daily logging** the default. **Fo
 Backward-compatible feature release, minimum Obsidian 1.12.0. Tests cover formula/sign, precision, missing BMR, empty days versus known zero, double-count prevention, validation, normalization/reload, save rollback, unchanged intake goals, processor registration and responsive layout. Final test-vault validation and artifact hashes are recorded in the release notes.
 
 Validation (2026-09-18): all 444 tests passed, zero failed, one optional live USDA test skipped without its test credential. TypeScript and the separate final production build passed and deployed to the test vault. Reloaded Health; through real settings saved BMR 1600 and factor 1.5, rejected factor 0.5 without overwriting the saved profile, and confirmed persistence after another reload. A synthetic Inbox overview with temporary in-memory food/activity snapshots showed 2400 kcal estimated burn, 2000 kcal intake and 400 kcal below estimate despite 900 separately recorded activity calories. Empty-day, live profile update/equal-balance and disabled-BMR states rendered correctly. At 388 px outer width, the energy cards stacked into one column with no horizontal overflow. All five settings routes were inspected; save restored button focus. Temporary methods, profile values and the prior view were restored, and the QA note moved directly to _archive/Health Energy QA 1.3.0. No food/activity records, GCM definitions or outbound calls were created. Physical iOS acceptance remains user testing. Production installation remains the user's BRAT pull.
+
+
+## 3.0.0 — Confirmed current mappings
+
+Workout start and interval mappings now use Apply, preview, and confirmation before migrating every recognized session, including archived sessions and legacy dedicated workout notes. Duration/end changes convert existing intervals with conflict checks. Normal workout readers use only the configured fields; historical timing names are consulted only by explicit migration/import. Note-library identities and native nutrient mappings retain their existing confirmed workflow.
+
+Major: removes remaining workout timing fallback compatibility. Existing navigation destinations, default routes, disclosures, commands, and persisted UI-state contract are unchanged. Mapping controls are plain inputs with an explicit Apply action and wrapping layouts; no alias editor is added. Cancel preserves the current mapping and notes.
+
+Shared migrations change Markdown frontmatter only, preserve note bodies, reject occupied destinations and stale previews, and keep a local recovery copy until success. Inline fields, Base formulas, per-view configuration, and disabled plugins are not automatically rewritten; enable participating TPS plugins before a shared rename. Review historical records before relying on totals after upgrading. Health timing migration uses its existing guarded rollback flow; a process crash cannot provide a vault-wide atomic transaction. No migration or outbound service runs merely because the plugin is upgraded.
+
+Validation covers current-only reads, migration-only historical inputs, cancellation, archived notes, conflicts, stale previews, save/write rollback, cross-plugin setting changes and identity protection. Required final validation: full declared suite, separate production build to the test vault, named plugin reload and settings confirmation checks. UI and final test results are recorded in the release notes. Minimum Obsidian compatibility is unchanged. Update GCM before applying Controller or Calendar mapping changes. The release is a BRAT handoff; production installation remains user-controlled.
+
+Full declared suite: 461 checks passed, 1 optional/existing checks skipped, zero failed. TypeScript and separate final production builds pass and deploy only shipped artifacts to the test vault; targeted plugin reloads verify the installed versions. Test-vault validation (2026-09-20): Controller’s real Apply dialog previewed one synthetic Markdown note and two plugin mappings. Cancel preserved both mappings and the original file; confirming renamed the property and updated Controller and Calendar together, preserved the body, restored input focus, and removed temporary recovery. Original settings were restored and the fixture archived. GCM’s current kind key and migration controls were inspected. Calendar’s five rendered key inputs and Apply actions were verified. Health’s timing inputs were checked; an existing archived QA note with potentially relevant malformed frontmatter correctly blocked migration with a path-specific error and no changes. Successful Health confirmation, timing conversion, cancellation and rollback are covered by regression tests. No outbound automation was enabled. Existing mobile CSS/layout is retained; physical iOS testing remains user acceptance.
+
+Unrelated malformed frontmatter without possible Health identities does not block a mapping change. Potentially relevant malformed notes must be repaired first. Configured timing names are respected even when they reuse a historical name from another timing role.

@@ -75,3 +75,35 @@ test('new matching notes during the batch roll back the old notes before switchi
   await assert.rejects(changeHealthMapping(h.plugin,next,'Food key'),/Notes changed during migration/);
   assert.deepEqual(h.fm['Inbox/a.md'],{kind:'food'});assert.equal(h.saves,0);assert.equal(h.plugin.settings.foodFrontmatterKey,'kind');
 });
+
+test('workout timing migration moves custom keys and converts the existing interval after confirmation',()=>{
+ const before=defaults(),after=defaults();before.workoutStartPropertyKey='began';before.workoutIntervalPropertyKey='minutes';after.workoutStartPropertyKey='starts';after.workoutIntervalPropertyKey='finishes';after.workoutIntervalMode='end';
+ const source={kind:'workout-session',began:'2026-09-20T12:00:00.000Z',minutes:45,status:'complete'};
+ assert.deepEqual(migrateHealthFrontmatter(source,before,after,{kind:'workout-session',kindKey:'kind'}),{kind:'workout-session',status:'complete',starts:'2026-09-20T12:00:00.000Z',finishes:'2026-09-20T12:45:00.000Z'});
+ assert.throws(()=>migrateHealthFrontmatter({...source,finishes:'unrelated'},before,after,{kind:'workout-session',kindKey:'kind'}),/different value/);
+ assert.throws(()=>migrateHealthFrontmatter({...source,durationMinutes:60},before,after,{kind:'workout-session',kindKey:'kind'}),/Conflicting workout/);
+});
+test('timing changes use the same cancel, archived-note migration and settings-last transaction',async()=>{
+ const source={'_archive/session.md':{id:'test',entityKind:'workout-session',scheduled:'2026-09-20T12:00:00.000Z',timeEstimate:45}};
+ const h=harness(source);const next=defaults();next.workoutStartPropertyKey='starts';next.workoutIntervalPropertyKey='minutes';
+ globalThis.confirmMapping=modal=>modal.resolve(false);assert.equal(await changeHealthMapping(h.plugin,next,'Timing'),false);assert.deepEqual(h.fm,source);
+ globalThis.confirmMapping=modal=>modal.resolve(true);assert.equal(await changeHealthMapping(h.plugin,next,'Timing'),true);
+ assert.equal(h.fm['_archive/session.md'].starts,source['_archive/session.md'].scheduled);assert.equal(h.fm['_archive/session.md'].minutes,45);assert.equal(h.fm['_archive/session.md'].scheduled,undefined);assert.equal(h.plugin.settings.workoutStartPropertyKey,'starts');
+});
+
+test('a current timing key can reuse a historical name from another role without fallback reinterpretation',()=>{
+ const before=defaults(),after=defaults();before.workoutStartPropertyKey='durationMinutes';before.workoutIntervalPropertyKey='startedAt';after.workoutStartPropertyKey='began';after.workoutIntervalPropertyKey='minutes';
+ assert.deepEqual(migrateHealthFrontmatter({kind:'workout-session',durationMinutes:'2026-09-20T12:00:00.000Z',startedAt:45},before,after,{kind:'workout-session',kindKey:'kind'}),{kind:'workout-session',began:'2026-09-20T12:00:00.000Z',minutes:45});
+});
+
+
+test('unrelated malformed YAML is ignored while potentially matching malformed notes block migration',async()=>{
+ for (const relevant of [false,true]) {
+  const h=harness({'Inbox/a.md':{kind:'food'},'Inbox/broken.md':{}});
+  const read=h.plugin.app.vault.read;
+  h.plugin.app.vault.read=file=>file.path==='Inbox/broken.md'?Promise.resolve(relevant?'kind: food\n- broken':'test: test1\n- broken'):read(file);
+  const next=defaults();next.foodFrontmatterKey='entityKind';globalThis.confirmMapping=modal=>modal.resolve(true);
+  if(relevant){await assert.rejects(changeHealthMapping(h.plugin,next,'Food key'),/Repair invalid frontmatter.*Inbox\/broken.md/);assert.equal(h.writes,0);}
+  else {assert.equal(await changeHealthMapping(h.plugin,next,'Food key'),true);assert.deepEqual(h.fm['Inbox/a.md'],{entityKind:'food'});}
+ }
+});

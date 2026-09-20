@@ -63,17 +63,14 @@ export function isValidWorkoutPropertyKey(value: unknown): boolean {
 }
 
 export function workoutStartedAt(frontmatter: Record<string, unknown>, settings: Partial<TPSHealthSettings>): string {
-  return firstString(frontmatter, [workoutStartPropertyKey(settings), "scheduled", "startedAt"]);
+  return firstString(frontmatter, [workoutStartPropertyKey(settings)]);
 }
 
 export function workoutDurationMinutes(frontmatter: Record<string, unknown>, settings: Partial<TPSHealthSettings>): number {
   const configured = workoutIntervalMode(settings) === "duration"
     ? positiveNumber(frontmatter[workoutIntervalPropertyKey(settings)])
     : 0;
-  const stored = configured
-    || positiveNumber(frontmatter.durationMinutes)
-    || positiveNumber(frontmatter.timeEstimate)
-    || positiveNumber(frontmatter.durationSeconds) / 60;
+  const stored = configured;
   if (stored > 0) return stored;
   const started = Date.parse(workoutStartedAt(frontmatter, settings));
   const ended = Date.parse(workoutEndedAt(frontmatter, settings, false));
@@ -90,7 +87,7 @@ export function workoutEndedAt(
   const configured = workoutIntervalMode(settings) === "end"
     ? firstString(frontmatter, [workoutIntervalPropertyKey(settings)])
     : "";
-  const explicit = configured || firstString(frontmatter, ["end", "endedAt", "completedDate"]);
+  const explicit = configured;
   if (explicit || !deriveFromDuration) return explicit;
   const started = Date.parse(workoutStartedAt(frontmatter, settings));
   const duration = workoutDurationMinutes(frontmatter, settings);
@@ -118,9 +115,7 @@ export function workoutTemporalPropertyUpdates(
     const elapsed = Date.parse(endedAt) - Date.parse(startedAt);
     if (Number.isFinite(elapsed) && elapsed >= 0) durationMinutes = elapsed / 60_000;
   }
-  const updates: Record<string, unknown> = Object.fromEntries(
-    WORKOUT_TEMPORAL_COMPATIBILITY_KEYS.map((key) => [key, null]),
-  );
+  const updates: Record<string, unknown> = {};
   if (startedAt) updates[startKey] = startedAt;
   if (values.terminal) {
     if (mode === "end" && endedAt) updates[intervalKey] = endedAt;

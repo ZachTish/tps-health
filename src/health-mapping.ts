@@ -1,3 +1,4 @@
+import { migrateWorkoutTiming } from './workout-timing-migration';
 import type { TPSHealthSettings } from './types';
 import { DEFAULT_HEALTH_NATIVE_RECORD_KINDS, DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES, configuredNativePropertyKey, HEALTH_NATIVE_RECORD_KIND_KEYS, HEALTH_NATIVE_RECORD_PROPERTY_KEYS } from './native-record-schema';
 
@@ -17,7 +18,7 @@ export function applyLibraryIdentity(settings: TPSHealthSettings, fm: Record<str
   fm[identity.key] = identity.value;
 }
 
-export const HEALTH_MAPPING_KEYS = ['foodFrontmatterKey', 'foodFrontmatterFoodValue', 'foodFrontmatterRecipeValue', 'foodFrontmatterMealValue', 'workoutFrontmatterKey', 'workoutPlanFrontmatterValue', 'exerciseFrontmatterValue', 'nativeRecordKinds', 'nativeRecordProperties', 'nativeRecordKindAliases', 'nativeRecordPropertyAliases'] as const;
+export const HEALTH_MAPPING_KEYS = ['workoutStartPropertyKey', 'workoutIntervalPropertyKey', 'workoutIntervalMode', 'foodFrontmatterKey', 'foodFrontmatterFoodValue', 'foodFrontmatterRecipeValue', 'foodFrontmatterMealValue', 'workoutFrontmatterKey', 'workoutPlanFrontmatterValue', 'exerciseFrontmatterValue', 'nativeRecordKinds', 'nativeRecordProperties', 'nativeRecordKindAliases', 'nativeRecordPropertyAliases'] as const;
 export function mappingSnapshot(settings: TPSHealthSettings): string {
   return JSON.stringify(HEALTH_MAPPING_KEYS.map(key => settings[key]));
 }
@@ -44,8 +45,14 @@ export function migrateHealthFrontmatter(
       const physicalKindKey = Object.keys(fm).find(key => key.toLowerCase() === native.kindKey.toLowerCase());
       if (!physicalKindKey) throw new Error('Migrate the shared record key in GCM before changing Health mappings.');
       move(fm, physicalKindKey, native.kindKey, after.nativeRecordKinds[kind]);
+      if (kind === 'workoutSession') {
+        const timed = migrateWorkoutTiming(fm, before, after);
+        for (const key of Object.keys(fm)) delete fm[key];
+        Object.assign(fm, timed);
+      }
       // Read all sources from the original so remaps cannot cascade into another field.
       for (const key of HEALTH_NATIVE_RECORD_PROPERTY_KEYS) {
+        if (kind === 'workoutSession' && ['startedAt', 'durationMinutes', 'completedDate'].includes(key)) continue;
         const sources = [...new Set([configuredNativePropertyKey(before, key), DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key], ...(before.nativeRecordPropertyAliases[key] || [])])].filter(source => Object.prototype.hasOwnProperty.call(frontmatter, source));
         if (!sources.length) continue;
         const value = frontmatter[sources[0]];
@@ -56,6 +63,7 @@ export function migrateHealthFrontmatter(
       return fm;
     }
   }
+  if (!native && frontmatter.runKind === 'run' && frontmatter.runType === 'workout') return migrateWorkoutTiming(fm, before, after);
   const identities: Array<{ sources: Array<[string, string]>; target: { key: string; value: string } }> = [];
   for (const [kind, setting] of [['food', 'foodFrontmatterFoodValue'], ['recipe', 'foodFrontmatterRecipeValue'], ['meal', 'foodFrontmatterMealValue']] as const) {
     identities.push({ sources: [[before.foodFrontmatterKey, before[setting]], ['kind', kind], ['tpsType', `health-${kind}`]], target: { key: after.foodFrontmatterKey, value: after[setting] } });

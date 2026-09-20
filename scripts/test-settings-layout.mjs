@@ -100,7 +100,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
       : null;
     assert.match(
       ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : settingsSource.replaceAll("settings => settings", "settings => this.plugin.settings").replaceAll("settings.nativeRecord", "this.plugin.settings.nativeRecord"),
-      ["foodFrontmatterFoodValue", "foodFrontmatterRecipeValue", "foodFrontmatterMealValue"].includes(key) ? new RegExp(`"${key}"`) : folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
+      ["workoutStartPropertyKey", "workoutIntervalPropertyKey", "foodFrontmatterFoodValue", "foodFrontmatterRecipeValue", "foodFrontmatterMealValue"].includes(key) ? new RegExp(`"${key}"`) : folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
       `${key} must remain connected to the settings UI`,
     );
   }
@@ -136,7 +136,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /\.addOption\("inline", "Inline with workout"\)/);
   assert.match(settingsSource, /\.addOption\("floating", "Floating over note"\)/);
   assert.match(settingsSource, /workout-controls:changed/);
-  assert.match(settingsSource, /dataset\.tpsHealthWorkoutProperty = settingKey/);
+  assert.match(settingsSource, /this\.addMappingSetting\(calendarProperties/);
   assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);

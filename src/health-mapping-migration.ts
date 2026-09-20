@@ -6,11 +6,19 @@ import * as logger from './logger';
 
 type Change = { file: TFile; before: Record<string, unknown>; after: Record<string, unknown> };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-async function readFrontmatter(app: App, file: TFile): Promise<Record<string, unknown>> {
+async function readFrontmatter(app: App, file: TFile, identityKeys: string[]): Promise<Record<string, unknown>> {
   const info = getFrontMatterInfo(await app.vault.read(file));
-  const value = (info.exists ? parseYaml(info.frontmatter) : {}) ?? {};
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid frontmatter: ${file.path}`);
-  return value;
+  try {
+    const value = (info.exists ? parseYaml(info.frontmatter) : {}) ?? {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected a property map.');
+    return value;
+  } catch {
+    // An unrelated malformed note must not prevent a Health mapping change.
+    // Be conservative for possible identities, escaped keys, anchors or aliases.
+    const source = info.frontmatter || '';
+    if (!identityKeys.some(key => source.toLowerCase().includes(key.toLowerCase())) && !/[\\&*!]|<</.test(source)) return {};
+    throw new Error(`Repair invalid frontmatter before changing Health mappings: ${file.path}`);
+  }
 }
 
 class ConfirmMappingMigration extends Modal {
@@ -43,8 +51,9 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     const api = plugin.getGcmNativeRecordsApi();
     const profile = api?.getStorageProfile?.();
     const kindKey = profile ? profile.kindPropertyKey : 'kind';
+    const identityKeys = [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
     for (const file of plugin.app.vault.getMarkdownFiles()) {
-      const fm = await readFrontmatter(plugin.app, file);
+      const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
       // Never reinterpret an uninspectable native record as a reusable definition.
       if (!inspected && (fm.tpsSchemaVersion != null || fm.tpsId != null) && !api?.inspect) {
@@ -66,7 +75,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     const currentFiles = plugin.app.vault.getMarkdownFiles();
     const planned = new Map(changes.map(change => [change.file.path, change]));
     for (const file of currentFiles) {
-      const fm = await readFrontmatter(plugin.app, file);
+      const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
       const updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null);
       const expected = planned.get(file.path);
@@ -86,11 +95,15 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     // Do not switch readers until every matching note still has the reviewed result.
     const completed = new Map(changes.map(change => [change.file.path, change]));
     for (const file of plugin.app.vault.getMarkdownFiles()) {
-      const fm = await readFrontmatter(plugin.app, file);
+      const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const expected = completed.get(file.path);
-      const inspected = api?.inspect?.(fm);
-      const updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null);
-      if (expected ? !same(fm, expected.after) : !same(fm, updated)) throw new Error('Notes changed during migration. Review the change again.');
+      if (expected) {
+        if (!same(fm, expected.after)) throw new Error('Notes changed during migration. Review the change again.');
+      } else {
+        const inspected = api?.inspect?.(fm);
+        const updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null);
+        if (!same(fm, updated)) throw new Error('Notes changed during migration. Review the change again.');
+      }
       completed.delete(file.path);
     }
     if (completed.size) throw new Error('A note moved during migration. Review the change again.');

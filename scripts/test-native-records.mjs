@@ -1133,7 +1133,7 @@ test('native workouts use the calendar-friendly start and duration properties wi
   assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 35.5);
 });
 
-test('native workouts honor custom start and end property keys and migrate legacy timing aliases on edit', async () => {
+test('native workouts use custom start and end keys without reading old timing names', async () => {
   const { service, frontmatters } = createHarness({
     settings: {
       workoutStartPropertyKey: 'calendarStart',
@@ -1157,13 +1157,11 @@ test('native workouts honor custom start and end property keys and migrate legac
     timeEstimate: 42,
   });
   service.indexFile(session.file, frontmatters.get(session.file));
+  assert.equal(service.getWorkoutSnapshot(session.path).endedAt, '', 'legacy ending fields are not fallback reads');
   const finished = await service.finishWorkout(session.file, { endedAt });
 
   assert.equal(finished.frontmatter.calendarStart, startedAt);
   assert.equal(finished.frontmatter.calendarEnd, endedAt);
-  for (const redundant of ['scheduled', 'startedAt', 'end', 'endedAt', 'completedDate', 'timeEstimate', 'durationMinutes', 'durationSeconds']) {
-    assert.equal(Object.hasOwn(finished.frontmatter, redundant), false, `${redundant} is removed during the normal mutation`);
-  }
   assert.equal(service.getWorkoutSnapshot(session.path).startedAt, startedAt);
   assert.equal(service.getWorkoutSnapshot(session.path).endedAt, endedAt);
 });

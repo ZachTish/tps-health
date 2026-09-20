@@ -1,3 +1,4 @@
+import { migrateWorkoutTiming } from './workout-timing-migration';
 import { authoredMetricServing } from "./food-serving";
 import type { ExtraNutrition } from "./nutrients";
 import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
@@ -452,8 +453,8 @@ const optionalNonNegativeNumber = (value: unknown): number | null => {
 };
 
 function nativeActivityDurationMinutes(frontmatter: Record<string, unknown>, settings?: Partial<TPSHealthSettings>): number {
-  return (settings ? workoutDurationMinutes(frontmatter, settings) : 0)
-    || numberValue(frontmatter.durationMinutes)
+  if (settings) return workoutDurationMinutes(frontmatter, settings);
+  return numberValue(frontmatter.durationMinutes)
     || numberValue(frontmatter.timeEstimate)
     || numberValue(frontmatter.durationSeconds) / 60
     || (() => {
@@ -2139,7 +2140,7 @@ export class HealthNativeRecordService {
           || workoutStartedAt(session[0].frontmatter, this.plugin.settings)
         : undefined;
       const projectedFrontmatter = record.kind === 'workout-session'
-        ? { ...record.frontmatter, startedAt: workoutStartedAt(record.frontmatter, this.plugin.settings) }
+        ? { ...record.frontmatter, startedAt: workoutStartedAt(migrateWorkoutTiming(record.frontmatter, this.plugin.settings, this.plugin.settings), this.plugin.settings) }
         : record.frontmatter;
       const projectedRecord = { ...record, frontmatter: projectedFrontmatter };
       return {
@@ -2240,7 +2241,9 @@ export class HealthNativeRecordService {
         continue;
       }
       try {
-        const properties = { ...candidate.properties };
+        const properties = candidate.kind === 'workout-session'
+          ? migrateWorkoutTiming(candidate.properties, this.plugin.settings, this.plugin.settings)
+          : { ...candidate.properties };
         let importedWorkoutExercises: StoredWorkoutExercise[] | null = null;
         if (candidate.kind === 'workout-session') {
           const exercises = exerciseGroups

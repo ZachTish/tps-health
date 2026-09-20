@@ -5732,7 +5732,7 @@ test("workout completion sends the configured calendar interval through the GCM 
   assert.equal(capturedFrontmatter.timeEstimate, 60);
   assert.equal(Object.hasOwn(capturedFrontmatter, "completedDate"), false);
   assert.equal(Object.hasOwn(capturedFrontmatter, "endedAt"), false);
-  assert.equal(Object.hasOwn(capturedFrontmatter, "startedAt"), false);
+  assert.equal(Object.hasOwn(capturedFrontmatter, "startedAt"), true, "older timing names are changed only by confirmed migration");
 });
 
 test("all Health-owned Markdown frontmatter writes share the explicit routing helper", () => {

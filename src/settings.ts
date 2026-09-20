@@ -443,37 +443,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const calendarProperties = createSettingsGroup(
       page,
       "Calendar properties",
-      "Choose the two frontmatter properties that represent a workout on a calendar. New sessions use this mapping; the next edit to a session with standard legacy timing aliases migrates them without keeping duplicate temporal fields.",
+      "Choose the two frontmatter properties that represent a workout on a calendar. Apply previews existing sessions and asks for confirmation before updating their properties.",
     );
-    const addWorkoutPropertyKey = (
-      name: string,
-      description: string,
-      settingKey: "workoutStartPropertyKey" | "workoutIntervalPropertyKey",
-    ) => {
-      const setting = new Setting(calendarProperties).setName(name).setDesc(description);
-      setting.addText((text) => {
-        const commit = async () => {
-          const value = text.getValue().trim();
-          const other = settingKey === "workoutStartPropertyKey"
-            ? this.plugin.settings.workoutIntervalPropertyKey
-            : this.plugin.settings.workoutStartPropertyKey;
-          if (!isValidWorkoutPropertyKey(value) || value.toLocaleLowerCase() === other.toLocaleLowerCase()) {
-            text.setValue(this.plugin.settings[settingKey]);
-            return;
-          }
-          this.plugin.settings[settingKey] = value;
-          await this.plugin.saveSettings();
-          logger.flow("Settings", "workout-calendar-property:changed", { settingKey, propertyKey: value });
-        };
-        text.setValue(this.plugin.settings[settingKey]);
-        text.inputEl.dataset.tpsHealthWorkoutProperty = settingKey;
-        text.inputEl.addEventListener("change", () => void commit());
-        text.inputEl.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          text.inputEl.blur();
-        });
-      });
+    const addWorkoutPropertyKey = (name: string, description: string, settingKey: "workoutStartPropertyKey" | "workoutIntervalPropertyKey") => {
+      this.addMappingSetting(calendarProperties, name, description,
+        settings => settings[settingKey], (settings, value) => { settings[settingKey] = value; }, true,
+        value => isValidWorkoutPropertyKey(value) && value.toLowerCase() !== this.plugin.settings[settingKey === "workoutStartPropertyKey" ? "workoutIntervalPropertyKey" : "workoutStartPropertyKey"].toLowerCase());
     };
     addWorkoutPropertyKey(
       "Workout start property",
@@ -488,9 +463,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         .addOption("end", "Ending datetime")
         .setValue(this.plugin.settings.workoutIntervalMode)
         .onChange(async (value) => {
-          this.plugin.settings.workoutIntervalMode = value as WorkoutIntervalMode;
-          await this.plugin.saveSettings();
-          logger.flow("Settings", "workout-calendar-interval:changed", { mode: value });
+          const next = structuredClone(this.plugin.settings);
+          next.workoutIntervalMode = value as WorkoutIntervalMode;
+          dropdown.setValue(this.plugin.settings.workoutIntervalMode);
+          try { await changeHealthMapping(this.plugin, next, `Workout interval style: ${value}`); }
+          catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
+          this.redisplayPreservingContext();
         }));
     addWorkoutPropertyKey(
       "Workout interval property",
