@@ -39,5 +39,10 @@ export function migrateWorkoutTiming(source: Record<string, unknown>, before: TP
   for (const key of sources) delete next[key];
   put(newStart, start);
   put(newInterval, workoutIntervalMode(after) === 'duration' ? duration : end);
+  // Already-current notes must not become writes merely because deleting and
+  // re-adding timing keys changed their insertion order.
+  if (Object.keys(source).length === Object.keys(next).length
+    && Object.keys(source).every(key => Object.prototype.hasOwnProperty.call(next, key)
+      && JSON.stringify(source[key]) === JSON.stringify(next[key]))) return { ...source };
   return next;
 }

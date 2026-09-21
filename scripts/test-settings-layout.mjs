@@ -300,3 +300,11 @@ test("Health entry key editor is direct, labeled, confirmed and restores focus",
  assert.match(settingsSource,/redisplayPreservingContext\('\[data-tps-health-entry-key\]'/);
  assert.match(settingsSource,/event\.key === "Enter"/);
 });
+
+test('workout calendar Apply repairs the current key and scopes key/style changes to timing',()=>{
+  assert.match(settingsSource,/value === read\(this\.plugin\.settings\) && scope !== "workout-timing"/);
+  assert.match(settingsSource,/Apply the current key again to repair older workout notes/);
+  const calendar=settingsSource.slice(settingsSource.indexOf('const addWorkoutPropertyKey'),settingsSource.indexOf('const sessionDefaults'));
+  assert.match(calendar,/toLowerCase\(\), "workout-timing"\)/);
+  assert.match(calendar,/Workout interval style: \$\{value\}`,[\s]*"workout-timing"/);
+});

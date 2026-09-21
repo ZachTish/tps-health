@@ -127,3 +127,71 @@ test('entities and records may share a key or use different keys without changin
  assert.deepEqual(migrateHealthFrontmatter({entryKind:'activity-entry',steps:4},before,after,{kind:'activity-entry',kindKey:'entryKind'}),{entryKind:'activity-entry',steps:4});
  after.workoutFrontmatterKey='entryKind';assert.deepEqual(migrateHealthFrontmatter({kind:'workout-plan'},before,after,null),{entryKind:'workout-plan'});
 });
+
+test('same-key workout repair previews legacy and archived sessions without changing other Health data or settings', async()=>{
+  const start='2026-09-21T12:00:00.000Z';
+  const data={
+    'Health/Workouts/old.md':{runKind:'run',runType:'workout',startedAt:start,status:'active',workoutId:'legacy'},
+    '_archive/session.md':{id:'native',entityKind:'workout-session',startedAt:start,endedAt:'2026-09-21T12:30:00.000Z',status:'complete',energy:250},
+    'Health/activity.md':{id:'activity',entityKind:'activity-entry',startedAt:start,durationMinutes:20},
+    'Health/food.md':{tpsType:'health-food',calories:100},
+    'Health/template.md':{kind:'workout-plan',startedAt:start},
+  };
+  const h=harness(data);h.plugin.settings.nativeRecordPropertyAliases.calories=['energy'];
+  const before=structuredClone(h.plugin.settings);
+  globalThis.confirmMapping=modal=>{assert.equal(modal.changes.length,2);assert.equal(h.writes,0);modal.resolve(false);};
+  assert.equal(await changeHealthMapping(h.plugin,structuredClone(before),'Repair workout timing','workout-timing'),false);
+  assert.deepEqual(h.fm,data);
+  globalThis.confirmMapping=modal=>{assert.equal(modal.changes.length,2);modal.resolve(true);};
+  assert.equal(await changeHealthMapping(h.plugin,structuredClone(before),'Repair workout timing','workout-timing'),true);
+  assert.deepEqual(h.fm['Health/Workouts/old.md'],{runKind:'run',runType:'workout',scheduled:start,status:'active',workoutId:'legacy'});
+  assert.deepEqual(h.fm['_archive/session.md'],{id:'native',entityKind:'workout-session',scheduled:start,timeEstimate:30,status:'complete',energy:250});
+  for(const path of ['Health/activity.md','Health/food.md','Health/template.md'])assert.deepEqual(h.fm[path],data[path]);
+  assert.deepEqual(h.plugin.settings,before);assert.equal(h.saves,0);
+  globalThis.confirmMapping=modal=>{assert.equal(modal.changes.length,0);modal.resolve(true);};
+  await changeHealthMapping(h.plugin,structuredClone(before),'Repair workout timing','workout-timing');
+  assert.equal(h.writes,2);assert.equal(h.saves,0);
+});
+
+test('workout-only migration changes custom timing keys without clearing unrelated aliases or metadata', async()=>{
+  const h=harness({'session.md':{id:'native',entityKind:'workout-session',scheduled:'2026-09-21T12:00:00Z',timeEstimate:45,energy:25}});
+  h.plugin.settings.nativeRecordPropertyAliases.calories=['energy'];
+  const next=structuredClone(h.plugin.settings);next.workoutStartPropertyKey='starts';next.workoutIntervalPropertyKey='ends';next.workoutIntervalMode='end';
+  globalThis.confirmMapping=modal=>modal.resolve(true);
+  await changeHealthMapping(h.plugin,next,'Timing','workout-timing');
+  assert.deepEqual(h.fm['session.md'],{id:'native',entityKind:'workout-session',starts:'2026-09-21T12:00:00Z',ends:'2026-09-21T12:45:00.000Z',energy:25});
+  assert.deepEqual(h.plugin.settings.nativeRecordPropertyAliases.calories,['energy']);assert.equal(h.saves,1);
+  const invalid=structuredClone(h.plugin.settings);invalid.foodFrontmatterKey='foodKind';
+  await assert.rejects(changeHealthMapping(h.plugin,invalid,'Wrong scope','workout-timing'),/cannot change other Health mappings/);
+});
+
+test('workout-only repair ignores malformed unrelated identities but rejects potentially relevant malformed workouts', async()=>{
+  for(const relevant of [false,true]) {
+    const h=harness({'session.md':{runKind:'run',runType:'workout',startedAt:'2026-09-21T12:00:00Z'},'broken.md':{}});
+    const read=h.plugin.app.vault.read;
+    h.plugin.app.vault.read=file=>file.path==='broken.md'?Promise.resolve(relevant?'kind: workout-session\n- malformed':'kind: food\n- malformed'):read(file);
+    globalThis.confirmMapping=modal=>modal.resolve(true);
+    if(relevant){await assert.rejects(changeHealthMapping(h.plugin,defaults(),'Timing','workout-timing'),/Repair invalid frontmatter.*broken.md/);assert.equal(h.writes,0);}
+    else {await changeHealthMapping(h.plugin,defaults(),'Timing','workout-timing');assert.equal(h.fm['session.md'].scheduled,'2026-09-21T12:00:00Z');}
+  }
+});
+
+test('same-key timing repair refuses conflicts and stale previews and rolls back interrupted writes', async()=>{
+  const source={runKind:'run',runType:'workout',startedAt:'2026-09-21T12:00:00Z'};
+  const conflict=harness({'a.md':{...source,scheduled:'2026-09-21T15:00:00Z'}});
+  await assert.rejects(changeHealthMapping(conflict.plugin,defaults(),'Timing','workout-timing'),/Conflicting workout timing/);assert.equal(conflict.writes,0);
+  const stale=harness({'a.md':source});
+  globalThis.confirmMapping=modal=>{stale.fm['a.md'].startedAt='2026-09-21T15:00:00Z';modal.resolve(true);};
+  await assert.rejects(changeHealthMapping(stale.plugin,defaults(),'Timing','workout-timing'),/changed while the preview/);assert.equal(stale.writes,0);
+  const partial=harness({'a.md':source,'b.md':source},(type,count)=>{if(type==='write'&&count===2)throw Error('Injected failure');});
+  globalThis.confirmMapping=modal=>modal.resolve(true);
+  await assert.rejects(changeHealthMapping(partial.plugin,defaults(),'Timing','workout-timing'),/Injected failure/);
+  assert.deepEqual(partial.fm,{'a.md':source,'b.md':source});assert.equal(partial.saves,0);
+});
+
+test('already-current timing is a no-op regardless of frontmatter key order',async()=>{
+ const data={'session.md':{id:'native',entityKind:'workout-session',scheduled:'2026-09-21T12:00:00Z',title:'Current',timeEstimate:30,status:'complete'}};
+ const h=harness(data);globalThis.confirmMapping=modal=>{assert.equal(modal.changes.length,0);modal.resolve(true);};
+ await changeHealthMapping(h.plugin,defaults(),'Timing','workout-timing');
+ assert.deepEqual(h.fm,data);assert.equal(h.writes,0);assert.equal(h.saves,0);
+});

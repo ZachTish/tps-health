@@ -1,3 +1,4 @@
+import type { HealthMappingScope } from "./health-mapping";
 import { changeHealthMapping } from "./health-mapping-migration";
 import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
@@ -443,12 +444,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const calendarProperties = createSettingsGroup(
       page,
       "Calendar properties",
-      "Choose the two frontmatter properties that represent a workout on a calendar. Apply previews existing sessions and asks for confirmation before updating their properties.",
+      "Choose the two frontmatter properties that represent a workout on a calendar. Apply previews existing sessions and asks for confirmation before updating their properties. Apply the current key again to repair older workout notes.",
     );
     const addWorkoutPropertyKey = (name: string, description: string, settingKey: "workoutStartPropertyKey" | "workoutIntervalPropertyKey") => {
       this.addMappingSetting(calendarProperties, name, description,
         settings => settings[settingKey], (settings, value) => { settings[settingKey] = value; }, true,
-        value => isValidWorkoutPropertyKey(value) && value.toLowerCase() !== this.plugin.settings[settingKey === "workoutStartPropertyKey" ? "workoutIntervalPropertyKey" : "workoutStartPropertyKey"].toLowerCase());
+        value => isValidWorkoutPropertyKey(value) && value.toLowerCase() !== this.plugin.settings[settingKey === "workoutStartPropertyKey" ? "workoutIntervalPropertyKey" : "workoutStartPropertyKey"].toLowerCase(), "workout-timing");
     };
     addWorkoutPropertyKey(
       "Workout start property",
@@ -466,7 +467,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           const next = structuredClone(this.plugin.settings);
           next.workoutIntervalMode = value as WorkoutIntervalMode;
           dropdown.setValue(this.plugin.settings.workoutIntervalMode);
-          try { await changeHealthMapping(this.plugin, next, `Workout interval style: ${value}`); }
+          try { await changeHealthMapping(this.plugin, next, `Workout interval style: ${value}`, "workout-timing"); }
           catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
           this.redisplayPreservingContext();
         }));
@@ -889,6 +890,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     read: (settings: TPSHealthSettings) => string,
     write: (settings: TPSHealthSettings, value: string) => void,
     propertyKey = false, validate: (value: string) => boolean = value => Boolean(value),
+    scope: HealthMappingScope = "all",
   ): void {
     let input: TextComponent;
     const setting = new Setting(section).setName(label).setDesc(description);
@@ -896,7 +898,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     setting.settingEl.dataset.tpsHealthMapping = id;
     const apply = async () => {
       const value = input.getValue().trim();
-      if (value === read(this.plugin.settings)) return;
+      if (value === read(this.plugin.settings) && scope !== "workout-timing") return;
       if (!validate(value) || (propertyKey && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value))) {
         new Notice("Enter a valid mapping before applying it."); return;
       }
@@ -923,7 +925,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         new Notice("Mappings must be distinct and cannot overwrite shared record fields."); return;
       }
       try {
-        await changeHealthMapping(this.plugin, next, `${label}: “${read(this.plugin.settings)}” → “${value}”`);
+        await changeHealthMapping(this.plugin, next, `${label}: “${read(this.plugin.settings)}” → “${value}”`, scope);
       } catch (error) { new Notice(error instanceof Error ? error.message : String(error), 15000); }
       this.redisplayPreservingContext(`[data-tps-health-mapping="${id}"] input`);
     };

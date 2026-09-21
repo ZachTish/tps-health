@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting, TFile, getFrontMatterInfo, parseYaml } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import type { TPSHealthSettings, HealthNativeRecordKindKey } from './types';
-import { HEALTH_MAPPING_KEYS, mappingSnapshot, migrateHealthFrontmatter } from './health-mapping';
+import { HEALTH_MAPPING_KEYS, WORKOUT_TIMING_MAPPING_KEYS, type HealthMappingScope, mappingSnapshot, migrateHealthFrontmatter } from './health-mapping';
 import * as logger from './logger';
 
 type Change = { file: TFile; before: Record<string, unknown>; after: Record<string, unknown> };
@@ -39,7 +39,7 @@ class ConfirmMappingMigration extends Modal {
 }
 
 const busy = new WeakSet<TPSHealthPlugin>();
-export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHealthSettings, label: string): Promise<boolean> {
+export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHealthSettings, label: string, scope: HealthMappingScope = "all"): Promise<boolean> {
   if (busy.has(plugin)) throw new Error('Another Health mapping change is already open.');
   busy.add(plugin);
   const before = structuredClone(plugin.settings);
@@ -49,6 +49,10 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
   let restoreKindKeys: (() => Promise<void>) | undefined;
   try {
     await plugin.assertHealthMappingWritable(before);
+    if (scope === 'workout-timing' && HEALTH_MAPPING_KEYS.some(key =>
+      !(WORKOUT_TIMING_MAPPING_KEYS as readonly string[]).includes(key) && !same(before[key], next[key]))) {
+      throw new Error('A workout calendar repair cannot change other Health mappings.');
+    }
     const api = plugin.getGcmNativeRecordsApi();
     const profile = api?.getStorageProfile?.();
     const kindKey = profile ? profile.kindPropertyKey : 'kind';
@@ -62,7 +66,9 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
       }
     }
     const nativeContext = (inspected: any) => inspected ? { kind: inspected.kind, kindKey: inspected.profile?.kindPropertyKey || api?.getStorageProfile?.(inspected.kind)?.kindPropertyKey || kindKey } : null;
-    const identityKeys = [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, ...Object.values(kindKeys) as string[], 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
+    const identityKeys = scope === 'workout-timing'
+      ? [before.nativeRecordKinds.workoutSession, ...(before.nativeRecordKindAliases.workoutSession || []), 'workout-session', 'runType', 'workoutId'].filter(Boolean)
+      : [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, ...Object.values(kindKeys) as string[], 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
     for (const file of plugin.app.vault.getMarkdownFiles()) {
       const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
@@ -72,11 +78,11 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
       }
       if (inspected && !kindKey) throw new Error('Configure a shared record kind property in GCM before migrating Health mappings.');
       let updated: Record<string, unknown>;
-      try { updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected)); }
+      try { updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected), scope); }
       catch (error) { throw new Error(`${file.path}: ${error instanceof Error ? error.message : error}`); }
       if (!same(fm, updated)) changes.push({ file, before: fm, after: updated });
     }
-    logger.flow('Settings', 'mapping:preview', { notes: changes.length });
+    logger.flow('Settings', 'mapping:preview', { notes: changes.length, scope });
     const confirmed = await new Promise<boolean>(resolve => new ConfirmMappingMigration(plugin.app, label, changes, resolve).open());
     if (!confirmed) return false;
     await plugin.assertHealthMappingWritable(before);
@@ -88,7 +94,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     for (const file of currentFiles) {
       const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
-      const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected));
+      const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected), scope);
       const expected = planned.get(file.path);
       if (expected ? !same(fm, expected.before) || !same(updated, expected.after) : !same(fm, updated)) throw new Error('Notes changed while the preview was open. Review the change again.');
       planned.delete(file.path);
@@ -112,7 +118,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
         if (!same(fm, expected.after)) throw new Error('Notes changed during migration. Review the change again.');
       } else {
         const inspected = api?.inspect?.(fm);
-        const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected));
+        const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected), scope);
         if (!same(fm, updated)) throw new Error('Notes changed during migration. Review the change again.');
       }
       completed.delete(file.path);
@@ -125,16 +131,21 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
       await api.configureKindPropertyKeys(nextKindKeys, kindKeys);
       restoreKindKeys = () => api.configureKindPropertyKeys(kindKeys, nextKindKeys);
     }
-    for (const key of HEALTH_MAPPING_KEYS) (plugin.settings as any)[key] = structuredClone(next[key]);
-    plugin.settings.nativeRecordKindAliases = {};
-    plugin.settings.nativeRecordPropertyAliases = {};
-    settingsAttempted = true;
-    await plugin.saveSettings();
+    if (scope === 'all' || mappingSnapshot(before) !== mappingSnapshot(next)) {
+      const keys = scope === 'workout-timing' ? WORKOUT_TIMING_MAPPING_KEYS : HEALTH_MAPPING_KEYS;
+      for (const key of keys) (plugin.settings as any)[key] = structuredClone(next[key]);
+      if (scope === 'all') {
+        plugin.settings.nativeRecordKindAliases = {};
+        plugin.settings.nativeRecordPropertyAliases = {};
+      }
+      settingsAttempted = true;
+      await plugin.saveSettings();
+    }
     await plugin.assertHealthMappingWritable(plugin.settings);
     api?.refreshConfiguration?.();
     plugin.nativeRecordService?.refreshConfiguration();
-    logger.flow('Settings', 'mapping:complete', { notes: changes.length });
-    new Notice(`Updated ${changes.length} Health notes and saved the mapping.`);
+    logger.flow('Settings', 'mapping:complete', { notes: changes.length, scope });
+    new Notice(scope === 'workout-timing' ? `Updated ${changes.length} workout notes${settingsAttempted ? ' and saved the mapping' : ''}.` : `Updated ${changes.length} Health notes and saved the mapping.`);
     return true;
   } catch (error) {
     const failed: string[] = [];

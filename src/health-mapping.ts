@@ -18,6 +18,9 @@ export function applyLibraryIdentity(settings: TPSHealthSettings, fm: Record<str
   fm[identity.key] = identity.value;
 }
 
+export type HealthMappingScope = "all" | "workout-timing";
+export const WORKOUT_TIMING_MAPPING_KEYS = ["workoutStartPropertyKey", "workoutIntervalPropertyKey", "workoutIntervalMode"] as const;
+
 export const HEALTH_MAPPING_KEYS = ['workoutStartPropertyKey', 'workoutIntervalPropertyKey', 'workoutIntervalMode', 'foodFrontmatterKey', 'foodFrontmatterFoodValue', 'foodFrontmatterRecipeValue', 'foodFrontmatterMealValue', 'workoutFrontmatterKey', 'workoutPlanFrontmatterValue', 'exerciseFrontmatterValue', 'nativeRecordKinds', 'nativeRecordProperties', 'nativeRecordKindAliases', 'nativeRecordPropertyAliases'] as const;
 export function mappingSnapshot(settings: TPSHealthSettings): string {
   return JSON.stringify(HEALTH_MAPPING_KEYS.map(key => settings[key]));
@@ -35,6 +38,7 @@ function move(fm: Record<string, unknown>, source: string, target: string, value
 export function migrateHealthFrontmatter(
   frontmatter: Record<string, unknown>, before: TPSHealthSettings, after: TPSHealthSettings,
   native: { kind: string; kindKey: string } | null,
+  scope: HealthMappingScope = "all",
 ): Record<string, unknown> {
   const fm = structuredClone(frontmatter);
   if (native) {
@@ -42,6 +46,7 @@ export function migrateHealthFrontmatter(
     if (kinds.length > 1) throw new Error('The record matches more than one previous Health kind.');
     if (kinds.length) {
       const kind = kinds[0];
+      if (scope === 'workout-timing') return kind === 'workoutSession' ? migrateWorkoutTiming(fm, before, after) : fm;
       const physicalKindKey = Object.keys(fm).find(key => key.toLowerCase() === native.kindKey.toLowerCase());
       if (!physicalKindKey) throw new Error('Migrate the shared record key in GCM before changing Health mappings.');
       move(fm, physicalKindKey, native.kindKey, after.nativeRecordKinds[kind]);
@@ -64,6 +69,7 @@ export function migrateHealthFrontmatter(
     }
   }
   if (!native && frontmatter.runKind === 'run' && frontmatter.runType === 'workout') return migrateWorkoutTiming(fm, before, after);
+  if (scope === 'workout-timing') return fm;
   const identities: Array<{ sources: Array<[string, string]>; target: { key: string; value: string } }> = [];
   for (const [kind, setting] of [['food', 'foodFrontmatterFoodValue'], ['recipe', 'foodFrontmatterRecipeValue'], ['meal', 'foodFrontmatterMealValue']] as const) {
     identities.push({ sources: [[before.foodFrontmatterKey, before[setting]], ['kind', kind], ['tpsType', `health-${kind}`]], target: { key: after.foodFrontmatterKey, value: after[setting] } });
