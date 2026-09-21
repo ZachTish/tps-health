@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.1.0](https://github.com/ZachTish/tps-health/releases/tag/3.1.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.1.1](https://github.com/ZachTish/tps-health/releases/tag/3.1.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -311,3 +311,11 @@ Validation: focused coverage exercises shared/separate keys, strict reads, creat
 Installed test-vault QA (2026-09-20): used the actual Health Note library Apply control to preview two synthetic logged records. Cancel left their keys and the saved map unchanged. Confirm moved only the food entry and workout session; the reusable template and task stayed on their original key. A newly created record used only the separate physical key, and an edit retained it. A second UI confirmation moved all three logs back to the shared key. All four original bodies were preserved, focus returned to the labeled input, and recovery was cleared. Original settings were restored and all five fixtures archived. At a 388 px settings container width, the control row measured 283 px with 283 px scroll width and no overflow. Physical iOS acceptance remains user testing. No outbound automation was enabled.
 
 Full suite: 464 passed, 1 optional skips, zero failed. TypeScript and separate final builds deployed only shipped files to the test vault; targeted reloads verified version 3.1.0.
+
+## 3.1.1 — Incremental indexing after startup
+
+Health no longer clears and rebuilds every native record when Obsidian emits `metadataCache.resolved` after ordinary edits or file creation. Once the initial index is settled, existing changed/create/modify/delete/rename handlers maintain it. Cold metadata resolution still builds the initial index, layout readiness still hydrates workout bodies, and explicit configuration/provider changes still rebuild when required.
+
+No settings, defaults, nutrient totals, record formats, or API contracts change. This is a backward-compatible performance patch. Regressions cover repeated warm resolution, incremental nutrient edits, cold resolution and deferred layout hydration. Full tests, a separate final build, test-vault deployment/reload and navigation/index QA are recorded in the release notes. Minimum Obsidian stays 1.12.0; production remains the user's BRAT pull.
+
+Installed QA: creating a note and opening six notes after startup triggered zero full Health index rebuilds. A synthetic food record appeared at 210 kcal and updated incrementally to 320 kcal with the index settled. Full suite: 466 passed, one optional live USDA test skipped; TypeScript and final build passed. Test deployment and explicit reload used only Obsidian Plugin Test Vault. QA fixtures were archived, temporary runtime probes removed, and original navigation restored. No settings were saved or outbound automation enabled. See release notes for final artifact hashes.

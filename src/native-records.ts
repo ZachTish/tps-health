@@ -972,7 +972,9 @@ export class HealthNativeRecordService {
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, _data, cache) => this.indexFile(file, cache?.frontmatter)));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
-      this.rebuild();
+      // `resolved` also fires after ordinary edits. Once startup is settled,
+      // changed/create/modify/delete/rename already maintain this index.
+      if (!this.workoutIndexReady) this.rebuild();
       this.workoutIndexReady = true;
       this.plugin.scheduleWorkoutActionBars();
     }));

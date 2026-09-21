@@ -1976,3 +1976,37 @@ test('custom workout kind and session property survive source refresh with all s
   assert.equal(h.frontmatters.get(record.file).session,undefined);
   h.service.dispose();
 });
+
+test('warm metadata resolution keeps the incremental Health index without rescanning the vault', async () => {
+  const h = createHarness();
+  const food = await h.service.createFoodEntry({
+    id: 'indexed-food', createdDate: '2026-09-20T12:00:00.000Z', completedDate: '2026-09-20T12:00:00.000Z',
+    item: { id: 'indexed-food', name: 'Indexed food', source: 'manual' }, quantity: 1, unit: 'serving',
+    nutritionOverride: { calories: 210, proteinG: 0, carbsG: 0, fatG: 0 },
+  });
+  let scans = 0;
+  const getFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return getFiles(); };
+  h.emitMetadata('changed', food.file, '', { frontmatter: { ...food.frontmatter, calories: 320 } });
+  for (let i = 0; i < 3; i++) h.emitMetadata('resolved');
+  assert.equal(scans, 0, 'settled metadata batches must not clear and rebuild every record');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-20').calories, 320, 'incremental edits remain authoritative');
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.service.dispose();
+});
+
+test('cold metadata resolution builds once and later batches preserve the settled index', () => {
+  const h = createHarness({ layoutReady: false, metadataInitialized: false });
+  let scans = 0;
+  const getFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return getFiles(); };
+  h.emitMetadata('resolved');
+  h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.finishLayout();
+  assert.equal(scans, 2, 'layout still hydrates startup workout bodies');
+  h.emitMetadata('resolved');
+  assert.equal(scans, 2);
+  h.service.dispose();
+});
