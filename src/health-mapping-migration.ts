@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, TFile, getFrontMatterInfo, parseYaml } from 'obsidian';
 import type TPSHealthPlugin from './main';
-import type { TPSHealthSettings } from './types';
+import type { TPSHealthSettings, HealthNativeRecordKindKey } from './types';
 import { HEALTH_MAPPING_KEYS, mappingSnapshot, migrateHealthFrontmatter } from './health-mapping';
 import * as logger from './logger';
 
@@ -46,12 +46,23 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
   const changes: Change[] = [];
   const applied: Change[] = [];
   let settingsAttempted = false;
+  let restoreKindKeys: (() => Promise<void>) | undefined;
   try {
     await plugin.assertHealthMappingWritable(before);
     const api = plugin.getGcmNativeRecordsApi();
     const profile = api?.getStorageProfile?.();
     const kindKey = profile ? profile.kindPropertyKey : 'kind';
-    const identityKeys = [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
+    const kindKeys = api?.getKindPropertyKeys?.() || {};
+    const nextKindKeys = { ...kindKeys };
+    for (const key of Object.keys(before.nativeRecordKinds) as HealthNativeRecordKindKey[]) {
+      const from = before.nativeRecordKinds[key], to = next.nativeRecordKinds[key];
+      if (from !== to && Object.prototype.hasOwnProperty.call(kindKeys, from)) {
+        if (Object.prototype.hasOwnProperty.call(kindKeys, to)) throw new Error('The new record value already has a key mapping.');
+        delete nextKindKeys[from]; nextKindKeys[to] = kindKeys[from];
+      }
+    }
+    const nativeContext = (inspected: any) => inspected ? { kind: inspected.kind, kindKey: inspected.profile?.kindPropertyKey || api?.getStorageProfile?.(inspected.kind)?.kindPropertyKey || kindKey } : null;
+    const identityKeys = [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, ...Object.values(kindKeys) as string[], 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
     for (const file of plugin.app.vault.getMarkdownFiles()) {
       const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
@@ -61,7 +72,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
       }
       if (inspected && !kindKey) throw new Error('Configure a shared record kind property in GCM before migrating Health mappings.');
       let updated: Record<string, unknown>;
-      try { updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null); }
+      try { updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected)); }
       catch (error) { throw new Error(`${file.path}: ${error instanceof Error ? error.message : error}`); }
       if (!same(fm, updated)) changes.push({ file, before: fm, after: updated });
     }
@@ -69,7 +80,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     const confirmed = await new Promise<boolean>(resolve => new ConfirmMappingMigration(plugin.app, label, changes, resolve).open());
     if (!confirmed) return false;
     await plugin.assertHealthMappingWritable(before);
-    if (!same(api?.getStorageProfile?.(), profile)) throw new Error('GCM record keys changed. Review the change again.');
+    if (!same(api?.getStorageProfile?.(), profile) || !same(api?.getKindPropertyKeys?.() || {}, kindKeys)) throw new Error('GCM record keys changed. Review the change again.');
     if (mappingSnapshot(plugin.settings) !== mappingSnapshot(before)) throw new Error('Mappings changed while the preview was open. Review the change again.');
     // Re-scan the whole vault: newly created matches also require a fresh preview.
     const currentFiles = plugin.app.vault.getMarkdownFiles();
@@ -77,7 +88,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     for (const file of currentFiles) {
       const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
-      const updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null);
+      const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected));
       const expected = planned.get(file.path);
       if (expected ? !same(fm, expected.before) || !same(updated, expected.after) : !same(fm, updated)) throw new Error('Notes changed while the preview was open. Review the change again.');
       planned.delete(file.path);
@@ -101,20 +112,26 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
         if (!same(fm, expected.after)) throw new Error('Notes changed during migration. Review the change again.');
       } else {
         const inspected = api?.inspect?.(fm);
-        const updated = migrateHealthFrontmatter(fm, before, next, inspected ? { kind: inspected.kind, kindKey } : null);
+        const updated = migrateHealthFrontmatter(fm, before, next, nativeContext(inspected));
         if (!same(fm, updated)) throw new Error('Notes changed during migration. Review the change again.');
       }
       completed.delete(file.path);
     }
     if (completed.size) throw new Error('A note moved during migration. Review the change again.');
     await plugin.assertHealthMappingWritable(before);
-    if (mappingSnapshot(plugin.settings) !== mappingSnapshot(before) || !same(api?.getStorageProfile?.(), profile)) throw new Error('Mappings changed during migration. Review the change again.');
+    if (mappingSnapshot(plugin.settings) !== mappingSnapshot(before) || !same(api?.getStorageProfile?.(), profile) || !same(api?.getKindPropertyKeys?.() || {}, kindKeys)) throw new Error('Mappings changed during migration. Review the change again.');
+    if (!same(kindKeys, nextKindKeys)) {
+      if (!api?.configureKindPropertyKeys) throw new Error('Update GCM before changing mapped record values.');
+      await api.configureKindPropertyKeys(nextKindKeys, kindKeys);
+      restoreKindKeys = () => api.configureKindPropertyKeys(kindKeys, nextKindKeys);
+    }
     for (const key of HEALTH_MAPPING_KEYS) (plugin.settings as any)[key] = structuredClone(next[key]);
     plugin.settings.nativeRecordKindAliases = {};
     plugin.settings.nativeRecordPropertyAliases = {};
     settingsAttempted = true;
     await plugin.saveSettings();
     await plugin.assertHealthMappingWritable(plugin.settings);
+    api?.refreshConfiguration?.();
     plugin.nativeRecordService?.refreshConfiguration();
     logger.flow('Settings', 'mapping:complete', { notes: changes.length });
     new Notice(`Updated ${changes.length} Health notes and saved the mapping.`);
@@ -130,6 +147,7 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
         });
       } catch { failed.push(change.file.path); }
     }
+    if (restoreKindKeys) { try { await restoreKindKeys(); } catch { failed.push("GCM record key mappings"); } }
     if (settingsAttempted) {
       for (const key of HEALTH_MAPPING_KEYS) (plugin.settings as any)[key] = structuredClone(before[key]);
       try { await plugin.saveSettings(); } catch { failed.push('Health settings'); }

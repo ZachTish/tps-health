@@ -291,3 +291,12 @@ test("Note library exposes workout and native identities with explicit confirmed
   assert.match(settingsSource,/redisplayPreservingContext\(`\[data-tps-health-mapping/);
   assert.doesNotMatch(settingsSource,/nativeRecordKindAliases\[key\] =|nativeRecordPropertyAliases\[key\] =/);
 });
+
+
+test("Health entry key editor is direct, labeled, confirmed and restores focus",()=>{
+ assert.match(settingsSource,/setName\("Entry and session frontmatter key"\)/);
+ assert.match(settingsSource,/mappings\.changeHealthKindKey\(entryKey\.getValue\(\)\)/);
+ assert.match(settingsSource,/setAttribute\("aria-label", "Entry and session frontmatter key"\)/);
+ assert.match(settingsSource,/redisplayPreservingContext\('\[data-tps-health-entry-key\]'/);
+ assert.match(settingsSource,/event\.key === "Enter"/);
+});

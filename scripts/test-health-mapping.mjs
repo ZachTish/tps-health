@@ -107,3 +107,23 @@ test('unrelated malformed YAML is ignored while potentially matching malformed n
   else {assert.equal(await changeHealthMapping(h.plugin,next,'Food key'),true);assert.deepEqual(h.fm['Inbox/a.md'],{entityKind:'food'});}
  }
 });
+
+
+test('separate entry keys survive Health kind-value migrations and save-failure rollback',async()=>{
+ for(const fail of [false,true]) {
+  const h=harness({'entry.md':{id:'entry-1',entryKind:'activity-entry',caloriesBurned:20},'template.md':{kind:'workout-plan'}} ,(type,count)=>{if(fail&&type==='save'&&count===1)throw Error('Save failed');});
+  let keys={'activity-entry':'entryKind'};
+  h.plugin.getGcmNativeRecordsApi=()=>({getStorageProfile:kind=>({kindPropertyKey:keys[kind]||'kind'}),getKindPropertyKeys:()=>({...keys}),configureKindPropertyKeys:async(next,expected)=>{assert.deepEqual(keys,expected);keys={...next};},inspect:fm=>fm.id?{kind:fm.entryKind,profile:{kindPropertyKey:'entryKind'}}:null});
+  const next=defaults();next.nativeRecordKinds.activityEntry='movement';globalThis.confirmMapping=modal=>modal.resolve(true);
+  if(fail){await assert.rejects(changeHealthMapping(h.plugin,next,'Activity value'),/Save failed/);assert.deepEqual(keys,{'activity-entry':'entryKind'});assert.equal(h.fm['entry.md'].entryKind,'activity-entry');}
+  else{assert.equal(await changeHealthMapping(h.plugin,next,'Activity value'),true);assert.deepEqual(keys,{movement:'entryKind'});assert.equal(h.fm['entry.md'].entryKind,'movement');}
+  assert.deepEqual(h.fm['template.md'],{kind:'workout-plan'});
+ }
+});
+
+test('entities and records may share a key or use different keys without changing the other group',()=>{
+ const before=defaults(),after=defaults();after.workoutFrontmatterKey='entityKind';
+ assert.deepEqual(migrateHealthFrontmatter({kind:'workout-plan'},before,after,null),{entityKind:'workout-plan'});
+ assert.deepEqual(migrateHealthFrontmatter({entryKind:'activity-entry',steps:4},before,after,{kind:'activity-entry',kindKey:'entryKind'}),{entryKind:'activity-entry',steps:4});
+ after.workoutFrontmatterKey='entryKind';assert.deepEqual(migrateHealthFrontmatter({kind:'workout-plan'},before,after,null),{entryKind:'workout-plan'});
+});

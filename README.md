@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.0.0](https://github.com/ZachTish/tps-health/releases/tag/3.0.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.1.0](https://github.com/ZachTish/tps-health/releases/tag/3.1.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -296,3 +296,18 @@ Validation covers current-only reads, migration-only historical inputs, cancella
 Full declared suite: 461 checks passed, 1 optional/existing checks skipped, zero failed. TypeScript and separate final production builds pass and deploy only shipped artifacts to the test vault; targeted plugin reloads verify the installed versions. Test-vault validation (2026-09-20): Controller’s real Apply dialog previewed one synthetic Markdown note and two plugin mappings. Cancel preserved both mappings and the original file; confirming renamed the property and updated Controller and Calendar together, preserved the body, restored input focus, and removed temporary recovery. Original settings were restored and the fixture archived. GCM’s current kind key and migration controls were inspected. Calendar’s five rendered key inputs and Apply actions were verified. Health’s timing inputs were checked; an existing archived QA note with potentially relevant malformed frontmatter correctly blocked migration with a path-specific error and no changes. Successful Health confirmation, timing conversion, cancellation and rollback are covered by regression tests. No outbound automation was enabled. Existing mobile CSS/layout is retained; physical iOS testing remains user acceptance.
 
 Unrelated malformed frontmatter without possible Health identities does not block a mapping change. Potentially relevant malformed notes must be repaired first. Configured timing names are respected even when they reuse a historical name from another timing role.
+
+
+## 3.1.0 — Independent Health entry keys
+
+Health → Note library now offers an editable **Entry and session frontmatter key** beside the entry/session values. Food definitions and reusable workout/exercise templates keep their existing separate key controls. All groups may use the same key (for example `kind`) or different keys (for example `entityKind` for templates and `entryKind` for logged records). Entry-key Apply previews and confirms only Health native food/activity entries, workout sessions and legacy workout exercise records, including archives. Templates and other TPS records are not renamed by this scoped action. Matching values must remain distinct when records share a key.
+
+GCM 3.1.0 stores the current physical key per record kind in `nativeRecordKindPropertyKeys`; the empty default preserves existing storage. The mapping survives Health being disabled. Native creation, reads, updates, identity changes and consolidation use the selected key; old keys are never fallback readers. Its nativeRecords API v6 adds the optional `kindPropertyKeys` capability, kind-aware `getStorageProfile(kind)`, and guarded key-map access/configuration. Health kind-value migrations carry the key binding to the new value and restore it on save failure. The global GCM key rename remains a broader explicitly reviewed operation.
+
+This is a backward-compatible minor feature. Existing settings routes, default Daily logging route, disclosures and mobile wrapping layout remain. The new field is a labeled plain input with Apply/Enter, migration preview and focus restoration; no navigation state is persisted. GCM owns the stored record binding while Health owns the settings surface. Update GCM before configuring this feature. Conflicts, stale previews and active workouts block writes; the existing recovery/rollback limits remain. Inline fields, Base formulas and per-view mappings are not rewritten. Unrelated malformed templates are ignored by the Health-scoped scan; possibly matching malformed records must be repaired.
+
+Validation: focused coverage exercises shared/separate keys, strict reads, creation/edit/reidentification, template/task isolation, cancel/confirm, stale maps, value-change binding retention and rollback. Full suite, separate final build, test-vault reload/UI results and artifact hashes are recorded in this release's notes. Production remains a user-controlled BRAT pull; physical iOS acceptance is pending.
+
+Installed test-vault QA (2026-09-20): used the actual Health Note library Apply control to preview two synthetic logged records. Cancel left their keys and the saved map unchanged. Confirm moved only the food entry and workout session; the reusable template and task stayed on their original key. A newly created record used only the separate physical key, and an edit retained it. A second UI confirmation moved all three logs back to the shared key. All four original bodies were preserved, focus returned to the labeled input, and recovery was cleared. Original settings were restored and all five fixtures archived. At a 388 px settings container width, the control row measured 283 px with 283 px scroll width and no overflow. Physical iOS acceptance remains user testing. No outbound automation was enabled.
+
+Full suite: 464 passed, 1 optional skips, zero failed. TypeScript and separate final builds deployed only shipped files to the test vault; targeted reloads verified version 3.1.0.

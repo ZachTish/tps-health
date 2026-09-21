@@ -580,11 +580,27 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.addMappingSetting(workoutIdentity, "Exercise value", `Value written to ${this.plugin.settings.workoutFrontmatterKey} for exercise definitions.`,
       settings => settings.exerciseFrontmatterValue, (settings, value) => { settings.exerciseFrontmatterValue = value; });
 
-    const records = createSettingsGroup(page, "Logged entries and workout sessions", "These records use GCM’s shared record key. Their values are configured here.");
-    const profile = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.();
+    const records = createSettingsGroup(page, "Logged entries and workout sessions", "Choose the same key as your food and workout templates, or a different key. Only logged Health records move when you change this key.");
+    const api = this.plugin.getGcmNativeRecordsApi();
+    const profile = api?.getStorageProfile?.(this.plugin.settings.nativeRecordKinds.foodEntry);
+    let entryKey: TextComponent;
+    const applyEntryKey = async () => {
+      try {
+        const mappings = (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.propertyMappings;
+        if (!api?.capabilities?.kindPropertyKeys || !mappings?.changeHealthKindKey) throw new Error("Update and enable TPS GCM to configure a separate Health entry key.");
+        await mappings.changeHealthKindKey(entryKey.getValue());
+      } catch (error) { new Notice(error instanceof Error ? error.message : String(error), 15000); }
+      this.redisplayPreservingContext('[data-tps-health-entry-key]');
+    };
     new Setting(records).setName("Entry and session frontmatter key")
-      .setDesc(`Current key: ${profile?.kindPropertyKey || "kind"}. GCM owns this shared key for all native records; change and migrate it in GCM settings.`)
-      .addButton(button => button.setButtonText("Open GCM settings").onClick(() => this.openPluginSettings("tps-global-context-menu")));
+      .setDesc("Used for food entries, activity entries and workout sessions. GCM stores this Health-specific mapping; Apply previews existing records before confirmation.")
+      .addText(text => {
+        entryKey = text.setValue(profile?.kindPropertyKey || "kind");
+        text.inputEl.dataset.tpsHealthEntryKey = "true";
+        text.inputEl.setAttribute("aria-label", "Entry and session frontmatter key");
+        text.inputEl.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); void applyEntryKey(); } });
+      })
+      .addButton(button => button.setButtonText("Apply").onClick(applyEntryKey));
     this.renderNativeKindSettings(records);
     new Setting(records).setName("Migrate previous mappings")
       .setDesc("Review notes using old default identifiers or previously saved aliases, then update them to your current mappings. Aliases are removed after confirmation.")
@@ -893,7 +909,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       const reserved = ["tpsId", "tpsSchemaVersion", "title", "createdDate", "modifiedDate", "tags", "cssclasses",
         ...Object.values(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES), "brand", "aliases", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "ingredients", "ingredientStatement", "name", "notes", "cooldownDays", "defaultRestSeconds", "category", "primaryMuscles", "secondaryMuscles", "equipment",
         ...[profile?.identityPropertyKey, profile?.schemaPropertyKey, profile?.titlePropertyKey, profile?.createdPropertyKey, profile?.modifiedPropertyKey].filter(Boolean)].map(key => String(key).toLowerCase());
-      const sharedKindKey = profile?.kindPropertyKey || "kind";
+      const sharedKindKey = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.(this.plugin.settings.nativeRecordKinds.foodEntry)?.kindPropertyKey || profile?.kindPropertyKey || "kind";
       const nativeValues = Object.values(next.nativeRecordKinds);
       const envelopeKeys = [sharedKindKey, profile?.identityPropertyKey, profile?.schemaPropertyKey, profile?.titlePropertyKey, profile?.createdPropertyKey, profile?.modifiedPropertyKey].filter(Boolean).map(key => String(key).toLowerCase());
       const reusesAnotherDefault = Object.entries(next.nativeRecordProperties).some(([key, value]) => Object.entries(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES).some(([otherKey, otherValue]) => otherKey !== key && otherValue.toLowerCase() === String(value).toLowerCase()))
