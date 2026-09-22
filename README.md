@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.1.2](https://github.com/ZachTish/tps-health/releases/tag/3.1.2) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.1.3](https://github.com/ZachTish/tps-health/releases/tag/3.1.3) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -331,3 +331,10 @@ The existing confirmation, current-source scan, active-workout guard, conflict d
 Regression coverage exercises unchanged Apply, legacy and archived native sessions, custom start/end conversion, unrelated records/aliases, malformed-note scoping, cancellation, idempotence, conflicting timestamps, stale previews and partial-write rollback. Existing default/custom creation tests remain required. Final suite/build, test-vault UI verification, remediation counts and artifact hashes are recorded in the release notes. Production remains a user-controlled BRAT update.
 
 Installed test-vault validation (2026-09-21): 472 checks passed, zero failed, one optional live USDA check skipped; TypeScript and separate production builds passed. The actual Workouts start-property Apply control previewed the unchanged `scheduled` mapping. Cancel preserved all sources and saved settings. Confirm repaired one existing legacy workout and one synthetic native session, preserving both bodies and the original start timestamp; the native end became 30 duration minutes. An unrelated synthetic activity stayed byte-identical. Applying again previewed zero changes. For this remediation, a temporary Health-only vault enumeration limited the operation to the identified current workout and two QA fixtures, leaving historical archived QA conflicts/missing timestamps intact; the adapter was restored and the full index refreshed afterward. Both synthetic fixtures were moved directly from Inbox to `_archive/Health Timing Repair QA 3.1.2`. No Health settings were saved, no outbound automation was enabled, and production was not accessed. Final artifacts were reloaded by manifest ID in Obsidian Plugin Test Vault. Physical iOS acceptance remains user testing.
+
+
+## 3.1.3 — Open and log the food tray
+
+Adding a food from search or barcode expands the review tray immediately, including adding another quantity of an existing food. Keyboard focus moves into the review, while the search query, results and scroll position remain available after closing it. The tray includes its own primary **Log N foods** action beside Create meal and Clear tray. It shares the existing logging method, consumed date, validation, draft ownership, partial-failure handling and duplicate-submit guard with the search-page action. Both buttons reflect the current count and Logging state and disable for empty or submitting trays. Tray actions wrap on narrow screens with at least 44 px height.
+
+No settings, stored draft format or API contract changes. Regression coverage in `test-food-search-unified.mjs` checks opening/reopening a tray, merged quantity, preserved search state, the in-tray action and synchronized button states; the existing suite covers failed/partial writes and concurrent drafts. Full suite, separate final build/deployment, test-vault reload/UI checks and artifact hashes are recorded in [release notes](release-notes/3.1.3.md). Minimum Obsidian remains 1.12.0; production installation and physical iOS acceptance remain the user's BRAT update/test.

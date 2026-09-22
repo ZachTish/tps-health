@@ -11361,8 +11361,10 @@ class FoodSearchModal extends FoodInputModal {
       selected: this.selectionItems.length,
       merged: !!existing,
     });
+    this.selectionExpanded = true;
     this.renderSelection();
     this.resetSearchForNextFood(enriched.name);
+    this.selectionEl?.querySelector<HTMLButtonElement>('[aria-label="Close food review"]')?.focus({ preventScroll: true });
 
     this.persistDraft();
 
@@ -11393,14 +11395,7 @@ class FoodSearchModal extends FoodInputModal {
     const reviewButton = header.createEl("button", { cls: "tps-health-selection-title", text: this.selectionTrayTitle(), attr: { type: "button", "aria-expanded": String(this.selectionExpanded) } });
     reviewButton.disabled = !this.selectionItems.length;
     const headerActions = header.createDiv({ cls: "tps-health-selection-header-actions" });
-    const logButton = headerActions.createEl("button", {
-      text: this.selectionLogButtonText(),
-      cls: "mod-cta tps-health-selection-log",
-      attr: { type: "button" },
-    });
-    logButton.disabled = this.selectionSubmitting || !this.selectionItems.length;
-    logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");
-    logButton.addEventListener("click", () => this.logSelected());
+    this.createSelectionLogButton(headerActions);
     const trayBody = this.selectionEl.createDiv({ cls: "tps-health-selection-body" });
     trayBody.hidden = !this.selectionExpanded;
     const reviewHeading = trayBody.createDiv({ cls: "tps-health-review-heading" });
@@ -11417,6 +11412,7 @@ class FoodSearchModal extends FoodInputModal {
     reviewButton.addEventListener("click", () => setReview(!this.selectionExpanded));
     back.addEventListener("click", () => setReview(false));
     const reviewActions = trayBody.createDiv({ cls: "tps-health-review-actions" });
+    this.createSelectionLogButton(reviewActions);
     const recipeButton = reviewActions.createEl("button", { text: "Create meal", attr: { type: "button" } });
     recipeButton.disabled = this.selectionSubmitting;
     recipeButton.addEventListener("click", () => this.createRecipeFromSelection());
@@ -11538,6 +11534,17 @@ class FoodSearchModal extends FoodInputModal {
     return `Review (${count})`;
   }
 
+  private createSelectionLogButton(container: HTMLElement): void {
+    const button = container.createEl("button", {
+      text: this.selectionLogButtonText(),
+      cls: "mod-cta tps-health-selection-log",
+      attr: { type: "button" },
+    });
+    button.disabled = this.selectionSubmitting || !this.selectionItems.length;
+    button.setAttr("aria-busy", String(this.selectionSubmitting));
+    button.addEventListener("click", () => this.logSelected());
+  }
+
   private selectionLogButtonText(): string {
     if (this.selectionSubmitting) return "Logging…";
     const count = this.selectionItems.length;
@@ -11550,8 +11557,7 @@ class FoodSearchModal extends FoodInputModal {
     if (title) title.setText(this.selectionTrayTitle());
     const macros = this.selectionEl.querySelector(".tps-health-selection-header > .tps-health-selection-macros") as HTMLElement | null;
     if (macros) renderCompactFoodMacros(macros, this.selectedNutrition());
-    const logButton = this.selectionEl.querySelector(".tps-health-selection-log") as HTMLButtonElement | null;
-    if (logButton) {
+    for (const logButton of Array.from(this.selectionEl.querySelectorAll<HTMLButtonElement>(".tps-health-selection-log"))) {
       logButton.setText(this.selectionLogButtonText());
       logButton.disabled = this.selectionSubmitting || !this.selectionItems.length;
       logButton.setAttr("aria-busy", this.selectionSubmitting ? "true" : "false");

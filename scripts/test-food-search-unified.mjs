@@ -152,7 +152,7 @@ test('recipe component disclosure scales half a serving and keeps missing ingred
   assert.equal(fake.writes.length, 0);
 });
 
-test('adding food retains query, result nodes, scroll and a compact review tray', async () => {
+test('adding food opens review while retaining query, result nodes and scroll', async () => {
   const { tray } = await setup();
   tray.searchInput = 'oats'; tray.searchInputEl.value = 'oats';
   tray.contentEl.scrollTop = 120;
@@ -164,10 +164,14 @@ test('adding food retains query, result nodes, scroll and a compact review tray'
   assert.equal(tray.contentEl.scrollTop, 120);
   const body = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body');
   const toggle = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-title');
-  assert.equal(body.hidden, true);
-  toggle.listeners.get('click')();
   assert.equal(body.hidden, false);
   assert.equal(toggle.attributes['aria-expanded'], 'true');
+  toggle.listeners.get('click')();
+  assert.equal(body.hidden, true);
+  await tray.addSelection(food('Oats'), null, { enrich: false });
+  assert.equal(tray.selectionItems.length, 1);
+  assert.equal(tray.selectionItems[0].quantity, 2);
+  assert.equal(walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body').hidden, false);
   assert.equal(tray.contentEl.scrollTop, 120);
 });
 
@@ -601,4 +605,25 @@ test('single-food date banner tracks the picker and Now/selected-day buttons tog
   assert.ok(!time.inputEl.value.startsWith('2099'));
   controls.find(c=>c.label==='Jan 1, 2000').click();
   assert.equal(banner.attributes['data-date-state'],'past'); assert.equal(time.inputEl.value,'2000-01-01T00:00');
+});
+
+
+test('tray and search log actions share submission and stay synchronized', async () => {
+  const {tray}=await setup();
+  await tray.addSelection(food('Oats'),null,{enrich:false});
+  const buttons=()=>walk(tray.selectionEl).filter(n=>n.className.includes('tps-health-selection-log'));
+  assert.equal(buttons().length,2);
+  const review=walk(tray.selectionEl).find(n=>n.className==='tps-health-review-actions');
+  const log=review.children.find(n=>n.className.includes('tps-health-selection-log'));
+  assert.equal(log.text,'Log 1 food');
+  let calls=0;tray.logSelected=async()=>{calls++;};
+  await log.listeners.get('click')();assert.equal(calls,1);
+  tray.selectionEl.querySelectorAll=()=>buttons();
+  tray.selectionItems.push({item:food('Milk'),quantity:1,unit:'serving'});
+  tray.refreshSelectionSummary();
+  assert.ok(buttons().every(b=>b.text==='Log 2 foods'&&!b.disabled));
+  tray.selectionSubmitting=true;tray.refreshSelectionSummary();
+  assert.ok(buttons().every(b=>b.text==='Logging…'&&b.disabled&&b.attributes['aria-busy']==='true'));
+  tray.selectionSubmitting=false;tray.selectionItems=[];tray.refreshSelectionSummary();
+  assert.ok(buttons().every(b=>b.disabled&&b.attributes['aria-busy']==='false'));
 });
