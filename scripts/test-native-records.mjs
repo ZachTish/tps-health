@@ -2010,3 +2010,38 @@ test('cold metadata resolution builds once and later batches preserve the settle
   assert.equal(scans, 2);
   h.service.dispose();
 });
+
+const freshFoodEntry=()=>({id:'uncommitted-food-id',createdDate:'2026-09-23T12:00:00.000Z',completedDate:'2026-09-23T12:00:00.000Z',item:{id:'food',name:'Synthetic food',source:'manual'},quantity:0.5,unit:'serving',servingQuantity:50,servingUnit:'g',nutritionOverride:{calories:100,proteinG:5,fiberG:2},tags:['lunch']});
+
+test('food logging uses fresh identity creation and returns the persisted ID and unchanged nutrients',async()=>{
+ const h=createHarness();let freshCalls=0;const create=h.api.create;
+ h.api.capabilities={freshIdentityCreates:true};
+ h.api.create=async()=>{throw Error('Must not use the scanning create route');};
+ h.api.createFresh=async function(kind,properties,options){
+  freshCalls++;assert.equal(Object.hasOwn(options,'id'),false);
+  assert.equal(options.cause.surface,'health-food-log');
+  return create.call(this,kind,properties,{...options,id:'food-generated-uuid'});
+ };
+ const entry=freshFoodEntry(),record=await h.service.createFoodEntry(entry);
+ assert.equal(freshCalls,1);assert.equal(entry.id,'food-generated-uuid');assert.equal(record.id,entry.id);
+ assert.equal(record.frontmatter.quantity,50);assert.equal(record.frontmatter.unit,'g');
+ assert.equal(record.frontmatter.calories,100);assert.equal(record.frontmatter.fiberG,2);
+ assert.equal(h.service.getDailyFoodTotals('2026-09-23').calories,100);
+});
+
+test('older GCM retains the existing food ID when the optional fresh-create contract is unavailable',async()=>{
+ for(const withCapability of [false,true]){
+  const h=createHarness();h.api.capabilities={freshIdentityCreates:withCapability};
+  const entry=freshFoodEntry();const record=await h.service.createFoodEntry(entry);
+  assert.equal(record.id,'uncommitted-food-id');assert.equal(entry.id,record.id);
+  assert.equal(h.createCalls[0].options.id,entry.id);
+ }
+});
+
+test('fresh-create errors never fall through to a second food write',async()=>{
+ const h=createHarness();let calls=0;
+ h.api.capabilities={freshIdentityCreates:true};h.api.createFresh=async()=>{calls++;throw Error('Storage unavailable');};
+ const entry=freshFoodEntry();
+ await assert.rejects(h.service.createFoodEntry(entry),/Storage unavailable/);
+ assert.equal(calls,1);assert.equal(h.createCalls.length,0);assert.equal(entry.id,'uncommitted-food-id');
+});

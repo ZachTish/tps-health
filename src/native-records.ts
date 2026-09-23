@@ -44,9 +44,10 @@ interface RawNativeRecordHandle extends Omit<NativeRecordHandle, 'kind'> {
 
 interface NativeRecordsApi {
   version: number;
-  capabilities?: { customKinds?: boolean };
+  capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean };
   isEnabled(): boolean;
   create(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
+  createFresh?(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
   resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<RawNativeRecordHandle | null>;
   update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
   rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
@@ -1092,11 +1093,16 @@ export class HealthNativeRecordService {
     kind: NativeHealthKind,
     properties: Record<string, unknown>,
     options?: Record<string, unknown>,
+    freshIdentity = false,
   ): Promise<NativeRecordHandle> {
-    const created = await this.requireApi().create(
+    const api = this.requireApi();
+    const useFreshIdentity = freshIdentity && api.capabilities?.freshIdentityCreates === true && typeof api.createFresh === 'function';
+    const createOptions = { ...options };
+    if (useFreshIdentity) delete createOptions.id;
+    const created = await (useFreshIdentity ? api.createFresh! : api.create).call(api,
       configuredNativeKind(this.plugin.settings, kind),
       encodeNativeRecordProperties(this.plugin.settings, properties),
-      options,
+      createOptions,
     );
     const canonical = this.canonicalHandle(created);
     if (!canonical) throw new Error(`TPS GCM returned an unrecognized Health record kind for ${kind}.`);
@@ -1172,7 +1178,8 @@ export class HealthNativeRecordService {
       now: new Date(entry.createdDate),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('food-entry', properties) : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-food-log' },
-    });
+    }, true);
+    entry.id = record.id;
     this.trackHandle(record);
     return record;
   }

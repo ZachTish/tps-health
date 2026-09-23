@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.2.0](https://github.com/ZachTish/tps-health/releases/tag/3.2.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.2.1](https://github.com/ZachTish/tps-health/releases/tag/3.2.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -15,6 +15,14 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 
 **Start workout** or **Start blank workout** opens the workout flow. Set deletion and separate dropset boundaries are supported. Workout controls appear for an open active workout; rendered content belongs in Live Preview and Reading mode, while Source mode stays literal. Atomic note workouts have their own notes. Atomic line workouts retain a real level-2 heading in the Daily Note for their legacy inline blocks.
+
+## 3.2.1 — Food saves without the global identity scan
+
+With GCM **3.3.0+**, new native food entries use its feature-detected `createFresh` contract. GCM allocates a new cryptographic UUID, creates the record without scanning every Markdown file, and Health returns that persisted ID. This addresses the shared first-save wait affecting all foods on mobile. Serving amounts, nutrients, custom mappings, tags, filenames and consumption dates are unchanged. Tray ownership, persistence ordering, duplicate-click prevention and partial-failure behavior remain intact. A failed fresh write is reported without trying another write through the older API.
+
+Install both **Health 3.2.1 and GCM 3.3.0** through BRAT. Older GCM versions continue using the existing path and retain its scanning cost. Legacy inline logging, existing notes/IDs, workouts, edits and reconciliation are unchanged. No settings or schema migration. Minimum Obsidian remains 1.12.0. The optional timing command below remains available; it is not required to use the fix. See [3.2.1 release notes](release-notes/3.2.1.md) for validation, measured timings and artifact hashes.
+
+Validation on 2026-09-23: GCM passed 101 focused native-record checks, 1,228 full-suite checks and 160 additional checks; Health passed 480 checks with zero failures and one optional live USDA test skipped without its credential. Installed test-vault QA forced the GCM source index cold, logged two synthetic half-servings through Health, and verified 100 calories plus matching returned/persisted UUIDs. The first complete save took 585 ms (107 ms native entry creation), the second 102 ms (41 ms native entry creation), with zero global verification reads. The pre-fix cold save took 6,824 ms and 9,044 source reads. These are desktop measurements; physical iPhone timing is not claimed. Both runtime settings files stayed byte-identical, probes/folder overrides were restored, and fixtures were archived directly to `_archive/QA-food-fresh-final-20260923`. No providers or production vault were accessed. Separate final TypeScript/build deployments and named test-vault reloads validate the release artifacts.
 
 ## 3.2.0 — Food logging timings
 
