@@ -672,6 +672,12 @@ test("a committed food log still resolves when rollup and focus follow-up work f
   assert.equal(inserted, 1, "the durable insertion must happen exactly once");
   assert.equal(rollupAttempts, 1);
   assert.equal(focusAttempts, 1);
+  const timing = JSON.parse(plugin.foodLogTimings.report()).attempts[0];
+  assert.equal(timing.storage, "legacy");
+  assert.deepEqual(timing.stages.map(stage => [stage.stage, stage.status]), [
+    ["food-note", "finished"], ["daily-note", "finished"], ["write-entry", "finished"],
+    ["daily-rollup", "failed"], ["focus-entry", "failed"],
+  ]);
   assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("could not refresh the daily rollup")));
   assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("could not focus the new entry")));
 });
@@ -4824,11 +4830,11 @@ test("health source keeps optional workout notes while making the Daily Note wor
   assert.match(mainSource, /async logActivity\(input: LogActivityInput\)/);
   assert.match(mainSource, /new ActivityLogModal/);
   assert.match(mainSource, /const consumedAt = completedDate \|\| isoNow\(\);/);
-  assert.match(mainSource, /const dailyFile = await this\.getOrCreateDailyNoteForDate\(consumedAt\)/);
+  assert.match(mainSource, /const dailyFile = await timing\.measure\("daily-note", \(\) => this\.getOrCreateDailyNoteForDate\(consumedAt\)\)/);
   assert.match(mainSource, /completedDate: consumedAt/);
-  assert.match(mainSource, /await this\.insertIntoDailyNote\(foodEntryLine\(entry\), section \|\| this\.settings\.defaultFoodLogSection, dailyFile\)/);
+  assert.match(mainSource, /await timing\.measure\("write-entry", \(\) => this\.insertIntoDailyNote\(foodEntryLine\(entry\), section \|\| this\.settings\.defaultFoodLogSection, dailyFile\)\)/);
   assert.match(mainSource, /logger\.flow\("FoodLog", "write:inserted", \{/);
-  assert.match(mainSource, /if \(this\.settings\.automaticDailyRollups\) \{[\s\S]+await this\.updateDailyRollupForFile\(dailyFile\);[\s\S]+rollupUpdated = true;/);
+  assert.match(mainSource, /if \(this\.settings\.automaticDailyRollups\) \{[\s\S]+await timing\.measure\("daily-rollup", \(\) => this\.updateDailyRollupForFile\(dailyFile\)\);[\s\S]+rollupUpdated = true;/);
   assert.match(mainSource, /logger\.flowError\("FoodLog", "post-write:rollup-failed"/);
   assert.match(mainSource, /logger\.flowError\("FoodLog", "post-write:focus-failed"/);
   assert.match(mainSource, /logger\.flow\("FoodLog", "focus:skipped"/);

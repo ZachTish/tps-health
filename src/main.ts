@@ -9,6 +9,7 @@ import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrient
 import type { NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
 import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
+import { FoodLogTimings, type FoodLogTiming } from "./food-log-timings";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
@@ -639,6 +640,7 @@ function invariantMomentIsoDate(date: any): string {
 export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
   nativeRecordService!: HealthNativeRecordService;
+  private readonly foodLogTimings = new FoodLogTimings();
   private dailyNoteSettingsSnapshot: CoreDailyNoteSettings = { format: "YYYY-MM-DD", folder: "" };
   private settingsSavePromise: Promise<void> | null = null;
   private settingsSavePending = false;
@@ -839,6 +841,11 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flow("FoodDateContext", "log-food:active-file", await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext));
         this.openFoodSearchModal(this.getActiveInlineFoodDraft(), dateContext);
       }),
+    });
+    this.addCommand({
+      id: "copy-food-log-timings",
+      name: "Copy recent food log timings",
+      callback: () => this.copyFoodLogTimings(),
     });
     this.addCommand({
       id: "quick-add-food",
@@ -4077,116 +4084,144 @@ export default class TPSHealthPlugin extends Plugin {
     return savedSet;
   }
 
-  async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
-    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
-    const loggedItem = persistFoodNote ? await this.findOrCreateFoodNote(item) : normalizeFoodMetricServing(item);
-    const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
-    if (resolvedServing.unsupportedUnit || resolvedServing.servings <= 0) {
-      logger.flowWarn("FoodLog", "write:unsupported-unit", { unit, servingUnit: loggedItem.servingUnit });
-      throw new Error(`Choose a supported unit for ${loggedItem.name}.`);
+  measureFoodLogging<T>(route: "tray" | "food", selected: number, action: (timing: FoodLogTiming) => Promise<T>): Promise<T> {
+    return this.foodLogTimings.capture({
+      route,
+      platform: Platform.isIosApp ? "ios" : Platform.isAndroidApp ? "android" : Platform.isMobileApp ? "mobile" : "desktop",
+      healthVersion: this.manifest?.version || "unknown",
+      gcmVersion: (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.manifest?.version || "unavailable",
+      storage: this.nativeRecordService?.isEnabled() ? "native-records" : "legacy",
+      markdownFiles: this.app.vault.getMarkdownFiles().length,
+      selected,
+    }, action);
+  }
+
+  async copyFoodLogTimings(): Promise<void> {
+    const report = this.foodLogTimings.report();
+    if (!report) {
+      new Notice("Log a food first, then copy its timings before reloading Health.");
+      return;
     }
-    const consumedAt = completedDate || isoNow();
-    const entry: FoodLogEntry = {
-      id: id("food"),
-      createdDate: isoNow(),
-      completedDate: consumedAt,
-      item: loggedItem,
-      nutritionOverride: multiplyNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
-      quantity: resolvedServing.servings,
-      unit: "serving",
-      servingQuantity: resolvedServing.inputQuantity,
-      servingUnit: resolvedServing.inputUnit,
-      amount: resolvedServing.amount,
-      amountUnit: resolvedServing.amountUnit,
-      section,
-      tags: normalizeFoodLogTags(options.tags),
-    };
-    const target = targetOverride || this.settings.foodLogTarget;
-    if (this.nativeRecordService?.isEnabled()) {
+    try {
+      await navigator.clipboard.writeText(report);
+      new Notice("Copied recent food log timings. Food names and note contents are not included.");
+    } catch {
+      new Notice("Could not access the clipboard. Run Copy recent food log timings again.", 8000);
+    }
+  }
+
+  async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
+    return this.measureFoodLogging("food", 1, async timing => {
+      if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
+      const loggedItem = persistFoodNote ? await timing.measure("food-note", () => this.findOrCreateFoodNote(item)) : normalizeFoodMetricServing(item);
+      const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
+      if (resolvedServing.unsupportedUnit || resolvedServing.servings <= 0) {
+        logger.flowWarn("FoodLog", "write:unsupported-unit", { unit, servingUnit: loggedItem.servingUnit });
+        throw new Error(`Choose a supported unit for ${loggedItem.name}.`);
+      }
+      const consumedAt = completedDate || isoNow();
+      const entry: FoodLogEntry = {
+        id: id("food"),
+        createdDate: isoNow(),
+        completedDate: consumedAt,
+        item: loggedItem,
+        nutritionOverride: multiplyNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
+        quantity: resolvedServing.servings,
+        unit: "serving",
+        servingQuantity: resolvedServing.inputQuantity,
+        servingUnit: resolvedServing.inputUnit,
+        amount: resolvedServing.amount,
+        amountUnit: resolvedServing.amountUnit,
+        section,
+        tags: normalizeFoodLogTags(options.tags),
+      };
+      const target = targetOverride || this.settings.foodLogTarget;
+      if (this.nativeRecordService?.isEnabled()) {
+        logger.flow("FoodLog", "write:resolved", {
+          food: loggedItem.name,
+          source: loggedItem.source,
+          sourcePath: loggedItem.sourcePath || "",
+          target: "native-records",
+          requestedQuantity: quantity,
+          requestedUnit: unit,
+          servings: resolvedServing.servings,
+          amount: resolvedServing.amount ?? "",
+          amountUnit: resolvedServing.amountUnit || "",
+        });
+        const record = await timing.measure("native-entry", () => this.nativeRecordService.createFoodEntry(entry));
+        this.markFoodUsageIndexDirty();
+        logger.flow("FoodLog", "write:done", {
+          foodId: entry.id,
+          food: loggedItem.name,
+          recordPath: record.path,
+          storage: "native-records",
+        });
+        new Notice("Logged food");
+        return entry;
+      }
+      const dailyFile = await timing.measure("daily-note", () => this.getOrCreateDailyNoteForDate(consumedAt));
+      entry.dailyNotePath = dailyFile.path;
       logger.flow("FoodLog", "write:resolved", {
         food: loggedItem.name,
         source: loggedItem.source,
         sourcePath: loggedItem.sourcePath || "",
-        target: "native-records",
+        target,
+        dailyNotePath: dailyFile.path,
+        section: section || this.settings.defaultFoodLogSection || "",
         requestedQuantity: quantity,
         requestedUnit: unit,
         servings: resolvedServing.servings,
         amount: resolvedServing.amount ?? "",
         amountUnit: resolvedServing.amountUnit || "",
+        portionRoute: options.amountGrams ? "described-gram-override" : "native-serving",
       });
-      const record = await this.nativeRecordService.createFoodEntry(entry);
+      let writtenFile: TFile;
+      if (target === "daily-note") {
+        writtenFile = await timing.measure("write-entry", () => this.insertIntoDailyNote(foodEntryLine(entry), section || this.settings.defaultFoodLogSection, dailyFile));
+      } else if (target === "single-file") {
+        writtenFile = await timing.measure("write-entry", () => this.insertIntoFoodLogFile(foodEntryLine(entry), section || this.settings.defaultFoodLogSection));
+      } else {
+        logger.flowWarn("FoodLog", "write:unsupported-target", { target });
+        throw new Error(`Unsupported food log target: ${target}`);
+      }
+      logger.flow("FoodLog", "write:inserted", {
+        foodId: entry.id,
+        food: loggedItem.name,
+        target,
+        path: writtenFile.path,
+        dailyNotePath: dailyFile.path,
+      });
       this.markFoodUsageIndexDirty();
+      let rollupUpdated = false;
+      if (this.settings.automaticDailyRollups) {
+        try {
+          await timing.measure("daily-rollup", () => this.updateDailyRollupForFile(dailyFile));
+          rollupUpdated = true;
+        } catch (error) {
+          logger.flowError("FoodLog", "post-write:rollup-failed", error, { path: dailyFile.path, foodId: entry.id, target });
+          new Notice("Food was logged, but TPS Health could not refresh the daily rollup.", 10000);
+        }
+      }
+      if (options.focusAfterLog !== false) {
+        try {
+          await timing.measure("focus-entry", () => this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`));
+        } catch (error) {
+          logger.flowError("FoodLog", "post-write:focus-failed", error, { path: dailyFile.path, foodId: entry.id, target });
+          new Notice("Food was logged, but TPS Health could not focus the new entry.", 10000);
+        }
+      } else {
+        logger.flow("FoodLog", "focus:skipped", { path: dailyFile.path, foodId: entry.id, target });
+      }
       logger.flow("FoodLog", "write:done", {
         foodId: entry.id,
         food: loggedItem.name,
-        recordPath: record.path,
-        storage: "native-records",
+        target,
+        dailyNotePath: dailyFile.path,
+        rollupUpdated,
       });
       new Notice("Logged food");
       return entry;
-    }
-    const dailyFile = await this.getOrCreateDailyNoteForDate(consumedAt);
-    entry.dailyNotePath = dailyFile.path;
-    logger.flow("FoodLog", "write:resolved", {
-      food: loggedItem.name,
-      source: loggedItem.source,
-      sourcePath: loggedItem.sourcePath || "",
-      target,
-      dailyNotePath: dailyFile.path,
-      section: section || this.settings.defaultFoodLogSection || "",
-      requestedQuantity: quantity,
-      requestedUnit: unit,
-      servings: resolvedServing.servings,
-      amount: resolvedServing.amount ?? "",
-      amountUnit: resolvedServing.amountUnit || "",
-      portionRoute: options.amountGrams ? "described-gram-override" : "native-serving",
     });
-    let writtenFile: TFile;
-    if (target === "daily-note") {
-      writtenFile = await this.insertIntoDailyNote(foodEntryLine(entry), section || this.settings.defaultFoodLogSection, dailyFile);
-    } else if (target === "single-file") {
-      writtenFile = await this.insertIntoFoodLogFile(foodEntryLine(entry), section || this.settings.defaultFoodLogSection);
-    } else {
-      logger.flowWarn("FoodLog", "write:unsupported-target", { target });
-      throw new Error(`Unsupported food log target: ${target}`);
-    }
-    logger.flow("FoodLog", "write:inserted", {
-      foodId: entry.id,
-      food: loggedItem.name,
-      target,
-      path: writtenFile.path,
-      dailyNotePath: dailyFile.path,
-    });
-    this.markFoodUsageIndexDirty();
-    let rollupUpdated = false;
-    if (this.settings.automaticDailyRollups) {
-      try {
-        await this.updateDailyRollupForFile(dailyFile);
-        rollupUpdated = true;
-      } catch (error) {
-        logger.flowError("FoodLog", "post-write:rollup-failed", error, { path: dailyFile.path, foodId: entry.id, target });
-        new Notice("Food was logged, but TPS Health could not refresh the daily rollup.", 10000);
-      }
-    }
-    if (options.focusAfterLog !== false) {
-      try {
-        await this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`);
-      } catch (error) {
-        logger.flowError("FoodLog", "post-write:focus-failed", error, { path: dailyFile.path, foodId: entry.id, target });
-        new Notice("Food was logged, but TPS Health could not focus the new entry.", 10000);
-      }
-    } else {
-      logger.flow("FoodLog", "focus:skipped", { path: dailyFile.path, foodId: entry.id, target });
-    }
-    logger.flow("FoodLog", "write:done", {
-      foodId: entry.id,
-      food: loggedItem.name,
-      target,
-      dailyNotePath: dailyFile.path,
-      rollupUpdated,
-    });
-    new Notice("Logged food");
-    return entry;
   }
 
   async createFoodNote(type: FoodNoteType, name: string, nutrition: Nutrition, servingAmount = 1, servingUnit = "serving"): Promise<void> {
@@ -11618,126 +11653,128 @@ class FoodSearchModal extends FoodInputModal {
       new Notice(`Choose a supported unit for ${invalid.item.name}. The tray has been kept.`, 8000);
       return;
     }
-    const snapshot = this.selectionItems.map((entry) => ({
-      entry,
-      selection: cloneBatchFoodSelection(entry),
-      signature: batchFoodSelectionSignature(entry),
-    }));
-    const completedDate = resolveBatchFoodCompletedDate(this.consumedDateInput, this.dateContext);
-    this.selectionSubmitting = true;
-    this.renderSelection();
-    logger.flow("FoodModal", "selection:log-start", {
-      selected: snapshot.length,
-      completedDate,
-      ...summarizeDateContext(this.dateContext),
-    });
-    let loggedCount = 0;
-    let persistWarningShown = false;
-    this.cancelDraftPersistTimer();
-    try {
-      const claimed = await this.persistDraftIfOwned();
-      if (!claimed) {
-        logger.flowWarn("FoodModal", "selection:log-draft-not-claimed", {
-          draftId: this.draftId,
-          currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
-          selected: this.selectionItems.length,
-        });
-        this.selectionSubmitting = false;
-        this.adoptPendingTray();
-        this.renderSelection();
-        new Notice("The food tray changed. Review it before logging; nothing was logged.", 10000);
-        return;
-      }
-    } catch (error) {
-      logger.flowError("FoodModal", "selection:log-draft-claim-failed", error, { draftId: this.draftId, selected: this.selectionItems.length });
-      this.selectionSubmitting = false;
+    return this.plugin.measureFoodLogging("tray", this.selectionItems.length, async timing => {
+      const snapshot = this.selectionItems.map((entry) => ({
+        entry,
+        selection: cloneBatchFoodSelection(entry),
+        signature: batchFoodSelectionSignature(entry),
+      }));
+      const completedDate = resolveBatchFoodCompletedDate(this.consumedDateInput, this.dateContext);
+      this.selectionSubmitting = true;
       this.renderSelection();
-      new Notice("Could not save the tray. Nothing was logged. Try again.", 10000);
-      return;
-    }
-    for (const captured of snapshot) {
-      if ((this.plugin.settings.pendingFoodLogDraft?.id || null) !== this.draftExpectedId) {
-        this.selectionSubmitting = false;
-        this.adoptPendingTray();
-        this.renderSelection();
-        new Notice("The food tray changed. Review it before continuing.", 10000);
-        return;
-      }
-      try {
-        await this.plugin.logFood(captured.selection.item, captured.selection.quantity, captured.selection.unit, undefined, completedDate, captured.selection.item.source !== "custom-inline", this.dateContext?.foodLogTarget, {
-          focusAfterLog: this.dateContext?.focusAfterLog,
-          amountGrams: describedSelectionAmountGrams(captured.selection),
-          tags: captured.selection.tags,
-        });
-      } catch (error) {
-        logger.flowError("FoodModal", "selection:log-failed", error, {
-          selected: snapshot.length,
-          logged: loggedCount,
-          food: captured.selection.item.name,
-          completedDate,
-        });
-        this.selectionSubmitting = false;
-        this.renderSelection();
-        new Notice(loggedCount
-          ? `Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. ${captured.selection.item.name} and the remaining tray were not logged.`
-          : `Could not log ${captured.selection.item.name}. The tray was kept for retry.`, 10000);
-        return;
-      }
-
-      loggedCount += 1;
+      logger.flow("FoodModal", "selection:log-start", {
+        selected: snapshot.length,
+        completedDate,
+        ...summarizeDateContext(this.dateContext),
+      });
+      let loggedCount = 0;
+      let persistWarningShown = false;
       this.cancelDraftPersistTimer();
-      const committedIndex = this.selectionItems.findIndex((candidate) => (
-        candidate === captured.entry && batchFoodSelectionSignature(candidate) === captured.signature
-      ));
-      if (committedIndex >= 0) {
-        this.selectionItems = [
-          ...this.selectionItems.slice(0, committedIndex),
-          ...this.selectionItems.slice(committedIndex + 1),
-        ];
-      } else {
-        logger.flowWarn("FoodModal", "selection:log-consume-missing-or-changed", {
-          food: captured.selection.item.name,
-          selected: this.selectionItems.length,
-          logged: loggedCount,
-        });
-      }
       try {
-        const persisted = await this.persistDraftIfOwned();
-        if (!persisted) {
-          logger.flowWarn("FoodModal", "selection:log-consume-not-persisted", {
+        const claimed = await timing.measure("save-tray", () => this.persistDraftIfOwned());
+        if (!claimed) {
+          logger.flowWarn("FoodModal", "selection:log-draft-not-claimed", {
             draftId: this.draftId,
             currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
             selected: this.selectionItems.length,
-            logged: loggedCount,
           });
           this.selectionSubmitting = false;
           this.adoptPendingTray();
           this.renderSelection();
-          new Notice(`Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. The tray changed; review the remaining foods before continuing.`, 10000);
+          new Notice("The food tray changed. Review it before logging; nothing was logged.", 10000);
           return;
         }
       } catch (error) {
-        logger.flowError("FoodModal", "selection:log-consume-persist-failed", error, {
-          draftId: this.draftId,
-          selected: this.selectionItems.length,
-          logged: loggedCount,
-        });
-        if (!persistWarningShown) {
-          persistWarningShown = true;
-          new Notice("Food was logged, but TPS Health could not save the cleaned-up tray. Keep this logger open until you finish.", 10000);
-        }
+        logger.flowError("FoodModal", "selection:log-draft-claim-failed", error, { draftId: this.draftId, selected: this.selectionItems.length });
+        this.selectionSubmitting = false;
+        this.renderSelection();
+        new Notice("Could not save the tray. Nothing was logged. Try again.", 10000);
+        return;
       }
-      this.renderSelection();
-    }
+      for (const captured of snapshot) {
+        if ((this.plugin.settings.pendingFoodLogDraft?.id || null) !== this.draftExpectedId) {
+          this.selectionSubmitting = false;
+          this.adoptPendingTray();
+          this.renderSelection();
+          new Notice("The food tray changed. Review it before continuing.", 10000);
+          return;
+        }
+        try {
+          await timing.measure("log-food", () => this.plugin.logFood(captured.selection.item, captured.selection.quantity, captured.selection.unit, undefined, completedDate, captured.selection.item.source !== "custom-inline", this.dateContext?.foodLogTarget, {
+            focusAfterLog: this.dateContext?.focusAfterLog,
+            amountGrams: describedSelectionAmountGrams(captured.selection),
+            tags: captured.selection.tags,
+          }));
+        } catch (error) {
+          logger.flowError("FoodModal", "selection:log-failed", error, {
+            selected: snapshot.length,
+            logged: loggedCount,
+            food: captured.selection.item.name,
+            completedDate,
+          });
+          this.selectionSubmitting = false;
+          this.renderSelection();
+          new Notice(loggedCount
+            ? `Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. ${captured.selection.item.name} and the remaining tray were not logged.`
+            : `Could not log ${captured.selection.item.name}. The tray was kept for retry.`, 10000);
+          return;
+        }
 
-    this.selectionSubmitting = false;
-    logger.flow("FoodModal", "selection:log-done", { selected: loggedCount, completedDate });
-    new Notice(`Logged ${loggedCount} foods.`);
-    this.renderSelection();
-    if (!this.selectionItems.length) {
-      this.suppressDraftPersistOnClose = true;
-      this.closeFromAction();
-    }
+        loggedCount += 1;
+        this.cancelDraftPersistTimer();
+        const committedIndex = this.selectionItems.findIndex((candidate) => (
+          candidate === captured.entry && batchFoodSelectionSignature(candidate) === captured.signature
+        ));
+        if (committedIndex >= 0) {
+          this.selectionItems = [
+            ...this.selectionItems.slice(0, committedIndex),
+            ...this.selectionItems.slice(committedIndex + 1),
+          ];
+        } else {
+          logger.flowWarn("FoodModal", "selection:log-consume-missing-or-changed", {
+            food: captured.selection.item.name,
+            selected: this.selectionItems.length,
+            logged: loggedCount,
+          });
+        }
+        try {
+          const persisted = await timing.measure("save-remaining-tray", () => this.persistDraftIfOwned());
+          if (!persisted) {
+            logger.flowWarn("FoodModal", "selection:log-consume-not-persisted", {
+              draftId: this.draftId,
+              currentDraftId: this.plugin.settings.pendingFoodLogDraft?.id || "",
+              selected: this.selectionItems.length,
+              logged: loggedCount,
+            });
+            this.selectionSubmitting = false;
+            this.adoptPendingTray();
+            this.renderSelection();
+            new Notice(`Logged ${loggedCount} food${loggedCount === 1 ? "" : "s"}. The tray changed; review the remaining foods before continuing.`, 10000);
+            return;
+          }
+        } catch (error) {
+          logger.flowError("FoodModal", "selection:log-consume-persist-failed", error, {
+            draftId: this.draftId,
+            selected: this.selectionItems.length,
+            logged: loggedCount,
+          });
+          if (!persistWarningShown) {
+            persistWarningShown = true;
+            new Notice("Food was logged, but TPS Health could not save the cleaned-up tray. Keep this logger open until you finish.", 10000);
+          }
+        }
+        this.renderSelection();
+      }
+
+      this.selectionSubmitting = false;
+      logger.flow("FoodModal", "selection:log-done", { selected: loggedCount, completedDate });
+      new Notice(`Logged ${loggedCount} foods.`);
+      this.renderSelection();
+      if (!this.selectionItems.length) {
+        this.suppressDraftPersistOnClose = true;
+        this.closeFromAction();
+      }
+    });
   }
 
   private async createRecipeFromSelection(): Promise<void> {

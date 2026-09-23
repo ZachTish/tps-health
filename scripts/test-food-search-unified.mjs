@@ -627,3 +627,42 @@ test('tray and search log actions share submission and stay synchronized', async
   tray.selectionSubmitting=false;tray.selectionItems=[];tray.refreshSelectionSummary();
   assert.ok(buttons().every(b=>b.disabled&&b.attributes['aria-busy']==='false'));
 });
+
+test('diagnostic command separates a 30-second native write from tray persistence', async () => {
+  const {tray,plugin}=await setup();
+  let now=0,finishNative;
+  plugin.foodLogTimings.now=()=>now;
+  plugin.manifest={version:'3.2.0'};
+  plugin.app.plugins={plugins:{'tps-global-context-menu':{manifest:{version:'3.1.7'}}}};
+  plugin.findOrCreateFoodNote=async item=>{now+=2000;return item;};
+  plugin.nativeRecordService={isEnabled:()=>true,createFoodEntry:()=>new Promise(resolve=>{finishNative=()=>{now+=30000;resolve({path:'Private/entry.md'});};})};
+  const saveSettings=plugin.saveSettings.bind(plugin);
+  plugin.saveSettings=async()=>{now+=1000;await saveSettings();};
+  tray.selectionItems=[{item:food('Private food'),quantity:1,unit:'serving'}];
+  const operation=tray.logSelected();
+  for(let i=0;i<10 && !finishNative;i++)await turn();
+  assert.equal(typeof finishNative,'function');
+  await tray.logSelected(); // A second press must still be suppressed.
+  finishNative();await operation;
+  const report=JSON.parse(plugin.foodLogTimings.report());
+  const single=report.attempts.find(a=>a.route==='food');
+  const batch=report.attempts.find(a=>a.route==='tray');
+  assert.equal(single.healthVersion,'3.2.0');assert.equal(single.gcmVersion,'3.1.7');
+  assert.equal(single.storage,'native-records');
+  assert.deepEqual(single.stages.map(s=>[s.stage,s.durationMs]),[['food-note',2000],['native-entry',30000]]);
+  assert.deepEqual(batch.stages.map(s=>[s.stage,s.durationMs]),[['save-tray',1000],['log-food',32000],['save-remaining-tray',1000]]);
+  assert.equal(batch.durationMs,34000);assert.equal(tray.selectionItems.length,0);
+  assert.equal(report.attempts.length,2);
+  assert.doesNotMatch(plugin.foodLogTimings.report(),/Private|nutrition|calories/);
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');let copied;
+  try {
+    Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>{copied=text;}}}});
+    await plugin.copyFoodLogTimings();
+    assert.equal(copied,plugin.foodLogTimings.report());
+    navigator.clipboard.writeText=async()=>{throw Error('Permission denied');};
+    await plugin.copyFoodLogTimings();
+    assert.ok(globalThis.__TPSHealthTestNotices.some(message=>message.includes('Could not access the clipboard')));
+  } finally {
+    if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;
+  }
+});

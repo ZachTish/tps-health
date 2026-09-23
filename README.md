@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.1.3](https://github.com/ZachTish/tps-health/releases/tag/3.1.3) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.2.0](https://github.com/ZachTish/tps-health/releases/tag/3.2.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -15,6 +15,18 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 
 **Start workout** or **Start blank workout** opens the workout flow. Set deletion and separate dropset boundaries are supported. Workout controls appear for an open active workout; rendered content belongs in Live Preview and Reading mode, while Source mode stays literal. Atomic note workouts have their own notes. Atomic line workouts retain a real level-2 heading in the Daily Note for their legacy inline blocks.
+
+## 3.2.0 — Food logging timings
+
+For a slow food save on mobile or desktop, run **TPS Health: Copy recent food log timings** from the command palette after logging, before reloading Health. It also reports an in-progress save when the command palette is accessible. The report distinguishes saving the tray, finding/creating the reusable food note, native entry creation, legacy Daily Note creation/write/rollup/focus, and saving the remaining tray. It includes platform, installed Health/GCM versions, storage mode, Markdown-file count and selection count. A finished stage means its promise returned; a finished batch does not assert that every selected food was logged. Tray totals and individual-food timings overlap and must not be added together. Native-entry time includes GCM verification and record creation, not a separate disk-only measurement. Suspension, storage waits and other plugin work can contribute to elapsed time.
+
+Reports retain at most eight recent attempts with eighty stages each, in memory only, even with debug logging disabled. They contain no food names, paths, nutrient amounts, note contents, credentials or error text, and are never automatically saved or sent. Reloading the plugin clears them. Clipboard failure shows a retry notice and does not affect the food log. Settings navigation, persisted schema, provider requests, tray ownership, partial-save handling, duplicate-submit guards and all write ordering remain unchanged.
+
+This minor version adds a diagnostic command. **It is not a confirmed fix for the reported 30-second mobile delay.** The test vault's first GCM native save still authoritatively reads the vault's Markdown sources; desktop profiling cannot establish where a physical device spends its time. Share the copied report after a slow save so the next fix can target the measured stage. Minimum Obsidian remains 1.12.0.
+
+Coverage includes a simulated 30-second native write, distinct tray-save timings, in-progress reports, bounded retention, private-error omission, duplicate-click suppression, unchanged return/rejection behavior, and clipboard failure. Release validation is recorded in [3.2.0 release notes](release-notes/3.2.0.md). Physical iOS QA is not claimed.
+
+Validation on 2026-09-23: 477 tests passed, zero failed, one optional live USDA test skipped without its credential. The final TypeScript/build deploys only to the test vault; the named Health reload loads 3.2.0. Installed nonvisual QA created a synthetic food note and native entry (half of a 200-calorie serving remained 100 calories), registered and executed the copy command, and checked the clipboard against the generated report. The report measured 126 ms for the food note and 3,689 ms for native entry creation, 3,815 ms total, with installed plugin versions and no food name/path. Health and GCM settings remained byte-identical, temporary adapters/folder overrides were restored, and fixtures moved directly to `_archive/QA-food-timings-20260923`. No provider calls or production access. This does not reproduce the physical mobile delay.
 
 ## Barcode Flow
 
