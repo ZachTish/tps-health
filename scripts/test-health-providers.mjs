@@ -458,7 +458,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
   assert.match(mainSource, /this\.activeFoodLogTab = initialTab \|\| "search";/);
   assert.doesNotMatch(foodSearchOpen, /pendingDraft\?\.activeTab \|\| "mine"/);
   assert.match(foodSearchOpen, /const tabOrder: FoodLogTab\[\] = \["search", "describe"\]/);
-  assert.doesNotMatch(foodSearchModalSource, /this\.searchInput = "";/);
+  assert.match(foodSearchModalSource, /this\.searchInput = "";/);
   assert.match(mainSource, /this\.selectionEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-selection" \}\);\s+const resultsScroll = this\.contentEl\.createDiv\(\{ cls: "tps-health-search-scroll" \}\);\s+this\.resultsEl = resultsScroll\.createDiv\(\{ cls: "tps-health-search-results" \}\);\s+this\.actionsEl = resultsScroll\.createDiv\(\{ cls: "tps-health-search-actions" \}\);/);
   assert.doesNotMatch(stylesSource, /\.tps-health-quick-input/);
   assert.doesNotMatch(stylesSource, /\.tps-health-floating-selection/);

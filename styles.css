@@ -4840,6 +4840,12 @@ body .tps-health-food-search-frame .tps-health-macro-pill {
   padding: 0;
   font-size: var(--font-ui-smaller);
 }
+/* Obsidian owns keyboard visibility; remove the collapsed footer while it is open. */
+@container not style(--keyboard-height: 0px) {
+  body.is-mobile .tps-health-food-search-frame[data-food-mode="search"] .tps-health-selection:has(.tps-health-selection-body[hidden]) {
+    display: none;
+  }
+}
 body .tps-health-food-search-frame .tps-health-selection-header {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "title" "macros" "actions";

@@ -1,5 +1,13 @@
 # TPS Health
 
+## 3.4.1 — Clear food search and remove the typing footer
+
+Adding a food to the tray clears the visible query and saved draft query, invalidates in-flight results, and reuses the existing search queue to show saved/recent foods. The tray still opens automatically and duplicate selections still merge. On mobile Search, the collapsed Review/Log footer is removed while Obsidian reports a nonzero `--keyboard-height`, and returns when the keyboard is dismissed even if the search input remains focused. An open review stays usable while editing quantities. Desktop and other food tabs keep their controls.
+
+The implementation changes the existing reset method and uses one CSS style query; no new keyboard listeners, viewport heuristics, observers, settings or stored UI state. Style queries require iOS/WebKit 18+ or a supporting Android WebView; older engines retain the existing visible footer. See [WebKit’s support announcement](https://webkit.org/blog/15865/webkit-features-in-safari-18-0/). Minimum Obsidian remains 1.12.0. This patch preserves the 3.4.0 connection handoffs. Validation and artifact hashes are in [3.4.1 release notes](release-notes/3.4.1.md).
+
+Validation on 2026-09-24: 484 checks passed, zero failed, one optional live USDA check skipped without its credential. TypeScript and the test-vault build passed. Installed 3.4.1 QA used a 390 px logger and the actual Add button with synthetic provider responses. The query and draft cleared, review opened, and no food was logged. With Obsidian's keyboard-height property set to 320 px, the collapsed footer had zero height; restoring 0 px showed it again with the search input still focused. Desktop controls and the open review remained visible. The restored footer measured 364 × 55 px. All adapters, mobile CSS class, keyboard property, pending tray and modal state were restored; Health data.json remained byte-identical. No provider calls, notes, production access or outbound automation. This validates the installed DOM/CSS with simulated keyboard state, not a physical iPhone keyboard. Named test-vault reload and a separate final build complete the release checks.
+
 ## 3.4.0 — Food connections in Controller
 
 **Integrations & advanced** now links **Food databases** and **AI-assisted Describe** directly to their respective Controller → Connections panels. Open Food Facts client identification and the ordered USDA key editor moved out of Health's Provider credentials disclosure. Add, edit, reorder, and remove remain available in Controller; existing SecretStorage values and references are preserved. USDA reference names remain vault settings; the secret values are device-local. AI provider configuration remains device-local in AI Gateway.
@@ -13,7 +21,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.4.0](https://github.com/ZachTish/tps-health/releases/tag/3.4.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.4.1](https://github.com/ZachTish/tps-health/releases/tag/3.4.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

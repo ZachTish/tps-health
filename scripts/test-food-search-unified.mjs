@@ -152,15 +152,16 @@ test('recipe component disclosure scales half a serving and keeps missing ingred
   assert.equal(fake.writes.length, 0);
 });
 
-test('adding food opens review while retaining query, result nodes and scroll', async () => {
+test('adding food clears the query and opens review while retaining scroll', async () => {
   const { tray } = await setup();
   tray.searchInput = 'oats'; tray.searchInputEl.value = 'oats';
   tray.contentEl.scrollTop = 120;
-  const results = tray.resultsEl.children;
   await tray.addSelection(food('Oats'), null, { enrich: false });
-  assert.equal(tray.searchInput, 'oats');
-  assert.equal(tray.searchInputEl.value, 'oats');
-  assert.equal(tray.resultsEl.children, results);
+  assert.equal(tray.searchInput, '');
+  assert.equal(tray.searchInputEl.value, '');
+  await turn();
+  assert.deepEqual(titles(tray), ['Saved oats']);
+  assert.equal(tray.plugin.settings.pendingFoodLogDraft.searchInput, '');
   assert.equal(tray.contentEl.scrollTop, 120);
   const body = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body');
   const toggle = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-title');
@@ -665,4 +666,32 @@ test('diagnostic command separates a 30-second native write from tray persistenc
   } finally {
     if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;
   }
+});
+
+
+test('selection invalidates an in-flight search and cancels its pending database request', async () => {
+  const {tray, plugin} = await setup();
+  const timers = new Map(); let next = 0;
+  window.setTimeout = (fn, delay) => { timers.set(++next, {fn, delay}); return next; };
+  window.clearTimeout = id => timers.delete(id);
+  const tick = async delay => { for (const [id, task] of [...timers]) if (task.delay === delay) { timers.delete(id); task.fn(); } await turn(); };
+  let finishOnline;
+  plugin.searchLocalFoods = async () => [food('Oats')];
+  plugin.searchFoods = () => new Promise(resolve => { finishOnline = resolve; });
+  tray.searchInput = 'oats'; tray.searchInputEl.value = 'oats';
+  tray.submitOnlineSearch('oats'); await turn();
+  await tray.addSelection(food('Oats'), null, {enrich:false});
+  await tick(100);
+  assert.deepEqual(titles(tray), ['Saved oats']);
+  finishOnline([food('Stale database result')]); await turn();
+  assert.deepEqual(titles(tray), ['Saved oats']);
+  assert.equal(tray.onlineSearchActive, false);
+  assert.equal(tray.searchButtonEl.disabled, false);
+  let calls=0; plugin.searchFoods=async()=>{calls++;return[];};
+  tray.queueSearch('later'); await tick(100);
+  await tray.addSelection(food('Oats'), null, {enrich:false});
+  await tick(100); await tick(700);
+  assert.equal(calls,0);
+  assert.equal(tray.selectionItems[0].quantity,2);
+  assert.equal(plugin.settings.pendingFoodLogDraft.searchInput,'');
 });

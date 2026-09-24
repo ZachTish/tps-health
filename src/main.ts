@@ -11635,6 +11635,9 @@ class FoodSearchModal extends FoodInputModal {
   }
 
   private resetSearchForNextFood(addedName: string): void {
+    this.searchInput = "";
+    if (this.searchInputEl) this.searchInputEl.value = "";
+    this.queueSearch("");
     this.statusEl.setText(`Added ${addedName}`);
   }
 
