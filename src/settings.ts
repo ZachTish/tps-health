@@ -4,11 +4,11 @@ import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
-import { App, Notice, FuzzySuggestModal, PluginSettingTab, SecretComponent, Setting, TFolder, TextComponent } from "obsidian";
+import { App, Notice, FuzzySuggestModal, PluginSettingTab, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
-import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition, normalizeUsdaApiKeySecrets } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, USDA_API_KEY_SECRET_MAX, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition } from "./settings-normalization";
+import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 import {
   DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
@@ -18,7 +18,7 @@ import {
 } from "./native-record-schema";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
-type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter" | "provider-credentials";
+type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter";
 type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exercisesFolder" | "foodsFolder" | "recipesFolder";
 
 interface HealthSettingsDestination {
@@ -799,24 +799,15 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     this.renderNativeFrontmatterSettings(nativeFrontmatter);
 
-    const aiGateway = createSettingsGroup(
-      page,
-      "TPS AI Gateway",
-    );
-    new Setting(aiGateway)
-      .setName("AI-assisted Describe")
-      .setDesc("Open AI Gateway settings to configure providers. Describe falls back to deterministic local matching when the gateway is unavailable.")
-      .addButton((button) => button
-        .setButtonText("Open AI Gateway settings")
-        .onClick(() => this.openPluginSettings("tps-ai-gateway")));
-
-    const providerCredentials = this.createOptionalDisclosure(
-      page,
-      "provider-credentials",
-      "Provider credentials",
-      "Optional Open Food Facts client identification and ordered USDA SecretStorage references.",
-    );
-    this.renderProviderCredentials(providerCredentials);
+    const connections = createSettingsGroup(page, "Connections");
+    for (const [section, label] of [["health", "Food databases"], ["ai", "AI-assisted Describe"]]) {
+      new Setting(connections).setName(label).setDesc("Managed in TPS Controller.")
+        .addButton(button => button.setButtonText("Open connections").onClick(() => {
+          const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
+          if (typeof controller?.openConnectionSettings === "function") controller.openConnectionSettings(section);
+          else new Notice("Enable or update TPS Controller to 2.6.0+ to manage connections.");
+        }));
+    }
 
     const diagnostics = createSettingsGroup(
       page,
@@ -946,125 +937,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       text.inputEl.setAttribute("aria-label", label);
       text.inputEl.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); void apply(); } });
     }).addButton(button => button.setButtonText("Apply").setTooltip(`Review ${label.toLowerCase()} change`).onClick(apply));
-  }
-
-  private renderProviderCredentials(section: HTMLElement): void {
-    new Setting(section)
-      .setName("Open Food Facts User-Agent")
-      .setDesc("Open Food Facts asks API clients to identify themselves.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.openFoodFactsUserAgent)
-        .onChange(async (value) => {
-          this.plugin.settings.openFoodFactsUserAgent = value.trim() || DEFAULT_SETTINGS.openFoodFactsUserAgent;
-          await this.plugin.saveSettings();
-        }));
-
-    section.createEl("p", {
-      cls: "setting-item-description",
-      text: "USDA credentials are tried in order only when a device secret is empty or USDA returns API_KEY_MISSING/API_KEY_INVALID. Disabled, unverified, unauthorized, generic 403, and HTTP 429 responses do not rotate; TPS Health surfaces the error or waits for Retry-After.",
-    });
-
-    for (const [index, reference] of this.plugin.settings.usdaApiKeySecrets.entries()) {
-      const label = index === 0 ? "USDA API key — Primary" : `USDA API key — Fallback ${index}`;
-      const setting = new Setting(section)
-        .setName(label)
-        .setDesc(index === 0
-          ? "First populated device-local Obsidian secret used for FoodData Central."
-          : "Used only after an earlier device secret is empty or receives API_KEY_MISSING/API_KEY_INVALID.")
-        .addComponent((element) => {
-          element.dataset.tpsHealthUsdaSecretIndex = String(index);
-          return new SecretComponent(this.plugin.app, element)
-            .setValue(reference)
-            .onChange(async (value) => {
-              const references = [...this.plugin.settings.usdaApiKeySecrets];
-              references[index] = value;
-              this.plugin.settings.usdaApiKeySecrets = normalizeUsdaApiKeySecrets(references);
-              await this.plugin.saveSettings();
-              this.disclosureState.set("provider-credentials", true);
-              const nextIndex = Math.min(index, Math.max(0, this.plugin.settings.usdaApiKeySecrets.length - 1));
-              this.redisplayPreservingContext(
-                this.plugin.settings.usdaApiKeySecrets.length
-                  ? this.usdaSecretFocusSelector(nextIndex)
-                  : "[data-tps-health-usda-add] button",
-              );
-            });
-        });
-
-      if (index > 0) {
-        setting.addExtraButton((button) => {
-          button.extraSettingsEl.dataset.tpsHealthUsdaAction = "move-up";
-          button
-            .setIcon("arrow-up")
-            .setTooltip("Move USDA key earlier")
-            .onClick(async () => {
-              const references = [...this.plugin.settings.usdaApiKeySecrets];
-              [references[index - 1], references[index]] = [references[index], references[index - 1]];
-              this.plugin.settings.usdaApiKeySecrets = references;
-              await this.plugin.saveSettings();
-              this.disclosureState.set("provider-credentials", true);
-              this.redisplayPreservingContext(this.usdaSecretFocusSelector(index - 1));
-            });
-        });
-      }
-
-      if (index < this.plugin.settings.usdaApiKeySecrets.length - 1) {
-        setting.addExtraButton((button) => {
-          button.extraSettingsEl.dataset.tpsHealthUsdaAction = "move-down";
-          button
-            .setIcon("arrow-down")
-            .setTooltip("Move USDA key later")
-            .onClick(async () => {
-              const references = [...this.plugin.settings.usdaApiKeySecrets];
-              [references[index], references[index + 1]] = [references[index + 1], references[index]];
-              this.plugin.settings.usdaApiKeySecrets = references;
-              await this.plugin.saveSettings();
-              this.disclosureState.set("provider-credentials", true);
-              this.redisplayPreservingContext(this.usdaSecretFocusSelector(index + 1));
-            });
-        });
-      }
-
-      setting.addExtraButton((button) => {
-        button.extraSettingsEl.dataset.tpsHealthUsdaAction = "remove";
-        button
-          .setIcon("trash")
-          .setTooltip("Remove USDA key reference")
-          .onClick(async () => {
-            this.plugin.settings.usdaApiKeySecrets = this.plugin.settings.usdaApiKeySecrets.filter((_entry, entryIndex) => entryIndex !== index);
-            await this.plugin.saveSettings();
-            this.disclosureState.set("provider-credentials", true);
-            const remaining = this.plugin.settings.usdaApiKeySecrets.length;
-            this.redisplayPreservingContext(
-              remaining
-                ? this.usdaSecretFocusSelector(Math.min(index, remaining - 1))
-                : "[data-tps-health-usda-add] button",
-            );
-          });
-      });
-    }
-
-    if (this.plugin.settings.usdaApiKeySecrets.length < USDA_API_KEY_SECRET_MAX) {
-      const addSetting = new Setting(section)
-        .setName(this.plugin.settings.usdaApiKeySecrets.length ? "Add USDA fallback" : "Add USDA API key")
-        .setDesc(`Up to ${USDA_API_KEY_SECRET_MAX} ordered SecretStorage references. If none contain a value, TPS Health uses DEMO_KEY.`)
-        .addButton((button) => {
-          button.buttonEl.dataset.tpsHealthUsdaAction = "add";
-          button
-            .setButtonText("Add secret")
-            .onClick(() => {
-              const index = this.plugin.settings.usdaApiKeySecrets.length;
-              this.plugin.settings.usdaApiKeySecrets = [...this.plugin.settings.usdaApiKeySecrets, ""];
-              this.disclosureState.set("provider-credentials", true);
-              this.redisplayPreservingContext(this.usdaSecretFocusSelector(index));
-            });
-        });
-      addSetting.settingEl.dataset.tpsHealthUsdaAdd = "true";
-    }
-
-  }
-
-  private usdaSecretFocusSelector(index: number): string {
-    return `[data-tps-health-usda-secret-index="${index}"] input`;
   }
 
   private openPluginSettings(pluginId: string): void {

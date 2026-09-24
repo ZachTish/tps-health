@@ -1,3 +1,4 @@
+import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
 import { libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
@@ -9505,6 +9506,11 @@ export default class TPSHealthPlugin extends Plugin {
 
   private createApi(): TPSHealthApi {
     return {
+      connectionSettings: { version: 1, render: (parent: HTMLElement) => {
+        const panel = new HealthConnectionSettings(this, parent);
+        panel.render();
+        return () => panel.dispose();
+      } },
       version: 1,
       getSchema: () => this.getApiSchema(),
       searchFoods: (query) => this.traceApiCall("searchFoods", { query }, () => this.searchFoods(query)),

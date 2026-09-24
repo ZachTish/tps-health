@@ -1,8 +1,19 @@
 # TPS Health
 
+## 3.4.0 — Food connections in Controller
+
+**Integrations & advanced** now links **Food databases** and **AI-assisted Describe** directly to their respective Controller → Connections panels. Open Food Facts client identification and the ordered USDA key editor moved out of Health's Provider credentials disclosure. Add, edit, reorder, and remove remain available in Controller; existing SecretStorage values and references are preserved. USDA reference names remain vault settings; the secret values are device-local. AI provider configuration remains device-local in AI Gateway.
+
+The five Health destinations and Daily logging default remain. Health retains food/workout logging, nutrient goals, note routing, identity/property migration, GCM integration, and diagnostics. The remaining optional disclosures are Custom goal JSON, Templates, and Health record frontmatter. Connection setup requires Controller 2.6.0+; existing food lookup and logging keep working with the saved configuration if Controller is absent.
+
+The connection editor API is `api.connectionSettings = { version: 1, render(parent): dispose }`. Controller mounts one editor at a time and disposes it on navigation/hide. Provider-specific editors retain the existing save paths, runtime adapters, commands, and device state. No keys, tokens, pairing authority, queued requests, connection IDs, sync cursors, or note mappings are copied or reset. No connection or provider test runs merely from opening settings. Missing/outdated plugins produce an upgrade/enable message instead of a duplicate configuration surface.
+
+This is a minor configuration/API release with no data/settings migration. Native handoff buttons and provider controls remain keyboard accessible, while Controller supplies the narrow wrapping layout. Minimum Obsidian remains 1.12.0. See [release validation](release-notes/3.4.0.md) for focused/full tests, final build, test deployment/reload/UI verification, limitations and hashes.
+
+
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.3.0](https://github.com/ZachTish/tps-health/releases/tag/3.3.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.4.0](https://github.com/ZachTish/tps-health/releases/tag/3.4.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -56,7 +67,7 @@ USDA credentials use device-local Obsidian SecretStorage. The `DEMO_KEY` fallbac
 
 ## Settings
 
-The hub opens on **Daily logging**; the other routes are **Food & goals**, **Workouts**, **Note library**, and **Integrations & advanced**. Exercise tag and library identification remain configurable. Custom goal JSON and Provider credentials are optional disclosures. Rerenders retain route and scroll position. Food-log tags categorize records; they are not yet per-tag calorie-goal enforcement.
+The hub opens on **Daily logging**; the other routes are **Food & goals**, **Workouts**, **Note library**, and **Integrations & advanced**. Exercise tag and library identification remain configurable. Custom goal JSON, Templates, and Health record frontmatter are optional disclosures. Food and AI connections are configured in Controller. Rerenders retain route and scroll position. Food-log tags categorize records; they are not yet per-tag calorie-goal enforcement.
 
 The reference's old `Default food log section` and Apple Shortcut instructions describe legacy compatibility, not controls in the current logger. Native/legacy record migrations remain explicit; changing display preferences does not silently convert records.
 

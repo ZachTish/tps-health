@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const settingsSource = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
+const connectionSource = readFileSync(new URL("../src/connection-settings.ts", import.meta.url), "utf8");
 const nutrientGoalSource = readFileSync(new URL("../src/nutrient-goal-settings.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const readmeSource = readFileSync(new URL("../README.md", import.meta.url), "utf8");
@@ -34,16 +35,16 @@ test("Health settings expose five shallow routed destinations", () => {
   assert.doesNotMatch(settingsSource, /tps-health-settings-(?:intro|route-summary|route-description|page-description)/);
 });
 
-test("Health settings keep only the four intentional optional disclosures", () => {
+test("Health settings keep only the three intentional optional disclosures", () => {
   const disclosureIds = [...settingsSource.matchAll(
     /this\.createOptionalDisclosure\(\s*page,\s*"([^"]+)"/g,
   )].map((match) => match[1]);
-  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter", "provider-credentials"]);
+  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter"]);
   assert.equal((settingsSource.match(/createEl\("details"/g) || []).length, 1);
   assert.doesNotMatch(settingsSource, /createCollapsibleSection|tps-collapsible-section/);
   assert.match(settingsSource, /"Custom goal JSON"/);
   assert.match(settingsSource, /"Templates"/);
-  assert.match(settingsSource, /"Provider credentials"/);
+  assert.doesNotMatch(settingsSource, /"Provider credentials"/);
   assert.match(settingsSource, /"Health record frontmatter"/);
 });
 
@@ -100,7 +101,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
       ? new RegExp(`addLibraryFolderSetting\\(folders, "${key}"`)
       : null;
     assert.match(
-      ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : settingsSource.replaceAll("settings => settings", "settings => this.plugin.settings").replaceAll("settings.nativeRecord", "this.plugin.settings.nativeRecord"),
+      ["calorieGoal", "proteinGoalG"].includes(key) ? nutrientGoalSource.replaceAll("plugin.settings", "this.plugin.settings") : (settingsSource + connectionSource).replaceAll("settings => settings", "settings => this.plugin.settings").replaceAll("settings.nativeRecord", "this.plugin.settings.nativeRecord"),
       ["workoutStartPropertyKey", "workoutIntervalPropertyKey", "foodFrontmatterFoodValue", "foodFrontmatterRecipeValue", "foodFrontmatterMealValue"].includes(key) ? new RegExp(`"${key}"`) : folderHelperBinding ?? new RegExp(`this\\.plugin\\.settings\\.${key}\\b`),
       `${key} must remain connected to the settings UI`,
     );
@@ -122,7 +123,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /Obsidian → Core plugins → Daily notes/);
   assert.match(settingsSource, /setButtonText\("Open Daily Notes settings"\)/);
   assert.match(settingsSource, /openTabById\?\.\("daily-notes"\)/);
-  assert.match(settingsSource, /setButtonText\("Open AI Gateway settings"\)/);
+  assert.match(settingsSource, /setButtonText\("Open connections"\)/);
   assert.match(settingsSource, /\.setName\("Also create a dedicated workout note"\)/);
   assert.match(settingsSource, /\.setName\("Workout position in Daily Note"\)/);
   assert.match(settingsSource, /\.addOption\("after-frontmatter", "Top, after properties"\)/);
@@ -138,7 +139,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /\.addOption\("floating", "Floating over note"\)/);
   assert.match(settingsSource, /workout-controls:changed/);
   assert.match(settingsSource, /this\.addMappingSetting\(calendarProperties/);
-  assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
+  assert.match(settingsSource, /controller\.openConnectionSettings\(section\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeWorkoutPath|activeWorkoutId|pendingFoodLogDraft|rollupHeading)/);
@@ -173,23 +174,23 @@ test("Reusable entity destinations can be typed atomically or selected from exis
 });
 
 test("USDA rerenders retain disclosure, scroll, and reachable focus", () => {
-  const providerSource = settingsSource.slice(
-    settingsSource.indexOf("private renderProviderCredentials"),
-    settingsSource.indexOf("private usdaSecretFocusSelector"),
+  const providerSource = connectionSource.slice(
+    connectionSource.indexOf("private renderProviderCredentials"),
+    connectionSource.indexOf("private usdaSecretFocusSelector"),
   );
   assert.match(settingsSource, /private redisplayPreservingContext\(focusSelector\?: string\): void/);
   assert.match(settingsSource, /const scrollTop = this\.containerEl\.scrollTop/);
   assert.match(settingsSource, /\.focus\(\{ preventScroll: true \}\)/);
   assert.match(settingsSource, /this\.containerEl\.scrollTop = scrollTop/);
-  assert.match(providerSource, /this\.disclosureState\.set\("provider-credentials", true\)/);
+  assert.match(connectionSource, /if \(this\.disposed\) return/);
   assert.ok(
-    (providerSource.match(/this\.redisplayPreservingContext\(/g) || []).length >= 5,
+    (providerSource.match(/this\.refresh\(/g) || []).length >= 5,
     "secret edit, move, remove, and add routes must use the preserving rerender helper",
   );
   assert.doesNotMatch(providerSource, /this\.display\(\)/);
   assert.match(providerSource, /dataset\.tpsHealthUsdaSecretIndex/);
   assert.match(providerSource, /dataset\.tpsHealthUsdaAdd/);
-  assert.match(settingsSource, /\[data-tps-health-usda-secret-index="\$\{index\}"\] input/);
+  assert.match(connectionSource, /\[data-tps-health-usda-secret-index="\$\{index\}"\] input/);
 });
 
 test("Food log file is shown only for the single-file owner and the selector keeps focus", () => {

@@ -206,8 +206,8 @@ test("Describe delegates its review pipeline to TPS AI Gateway and retains the l
   assert.doesNotMatch(mainSource, /generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(mainSource, /\/api\/chat/);
   assert.match(mainSource, /return await this\.legacyOpenFoodDescriber\(workflow\.description, workflow\.dateContext, onProgress, workflow\)/);
-  assert.match(settingsSource, /setButtonText\("Open AI Gateway settings"\)/);
-  assert.match(settingsSource, /openPluginSettings\("tps-ai-gateway"\)/);
+  assert.match(settingsSource, /setButtonText\("Open connections"\)/);
+  assert.match(settingsSource, /controller\.openConnectionSettings\(section\)/);
 });
 
 test("Describe reviews and repairs every extracted item before preparing editable inline tray items", () => {

@@ -5072,7 +5072,7 @@ test("USDA credential references and legacy plaintext migrate without destructiv
   const { normalizeTPSHealthSettings, normalizeUsdaApiKeySecrets, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } = await importSettingsNormalizationUtility();
   const { errorSummary } = await importLoggerUtility();
   const [settingsSource, typesSource, manifestSource, versionsSource, readmeSource] = await Promise.all([
-    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/settings.ts", import.meta.url)), "utf8")),
+    import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/connection-settings.ts", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/types.ts", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../manifest.json", import.meta.url)), "utf8")),
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../versions.json", import.meta.url)), "utf8")),

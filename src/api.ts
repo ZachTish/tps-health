@@ -228,6 +228,7 @@ export interface DailyFoodMacroTotals extends NutritionTotals {
 }
 
 export interface TPSHealthApi {
+  connectionSettings: { version: 1; render(parent: HTMLElement): () => void };
   version: 1;
   homeActions?: TPSHealthHomeActionProvider;
   getSchema(): TPSHealthApiSchema;
