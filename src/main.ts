@@ -10782,7 +10782,7 @@ class FoodSearchModal extends FoodInputModal {
 
   onOpen(): void {
     this.contentEl.empty();
-    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-search-frame");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-food-search-frame");
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Log food" });
     this.dateBannerEl = this.contentEl.createDiv({ cls: "tps-health-log-date-banner" });

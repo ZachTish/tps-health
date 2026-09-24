@@ -3468,10 +3468,6 @@ body.is-tablet .tps-health-workout-action-bar--mobile-floating .tps-health-worko
     padding-right: 14px;
   }
 
-  .modal.tps-health-food-search-frame .modal-content {
-    padding: 14px 12px calc(14px + env(safe-area-inset-bottom));
-  }
-
   .tps-health-food-editor-grid {
     grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
     gap: 9px 10px;
@@ -4840,12 +4836,6 @@ body .tps-health-food-search-frame .tps-health-macro-pill {
   padding: 0;
   font-size: var(--font-ui-smaller);
 }
-/* Obsidian owns keyboard visibility; remove the collapsed footer while it is open. */
-@container not style(--keyboard-height: 0px) {
-  body.is-mobile .tps-health-food-search-frame[data-food-mode="search"] .tps-health-selection:has(.tps-health-selection-body[hidden]) {
-    display: none;
-  }
-}
 body .tps-health-food-search-frame .tps-health-selection-header {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "title" "macros" "actions";
@@ -5046,6 +5036,16 @@ body.is-mobile .modal.tps-health-food-search-frame {
   left: 50% !important;
   right: auto !important;
   transform: translateX(-50%) !important;
+}
+
+/* Obsidian owns keyboard visibility; remove the collapsed footer while it is open. */
+@container not style(--keyboard-height: 0px) {
+  body.is-mobile .modal.tps-health-food-search-frame {
+    padding-bottom: 12px;
+  }
+  body.is-mobile .tps-health-food-search-frame[data-food-mode="search"] .tps-health-selection:has(.tps-health-selection-body[hidden]) {
+    display: none;
+  }
 }
 
 /* Health surfaces: compact nutrition cards and consistent controls. */
