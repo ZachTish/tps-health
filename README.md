@@ -2,7 +2,7 @@
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.2.1](https://github.com/ZachTish/tps-health/releases/tag/3.2.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.3.0](https://github.com/ZachTish/tps-health/releases/tag/3.3.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -15,6 +15,16 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 
 **Start workout** or **Start blank workout** opens the workout flow. Set deletion and separate dropset boundaries are supported. Workout controls appear for an open active workout; rendered content belongs in Live Preview and Reading mode, while Source mode stays literal. Atomic note workouts have their own notes. Atomic line workouts retain a real level-2 heading in the Daily Note for their legacy inline blocks.
+
+## 3.3.0 — Schedule workouts when they start
+
+Starting a workout immediately writes a timed calendar slot using the configured start and duration/end properties. **Workouts → Calendar properties → Default workout estimate (minutes)** defaults to 60; it applies to new sessions. Set edits preserve the estimate. Finishing replaces it with the actual elapsed interval. Active estimates do not contribute to completed activity minutes or appear as a completed session end in Health. Native sessions and legacy workout notes use your configured keys; legacy Daily Note tasks retain their existing `scheduled` field and now include `timeEstimate`. Existing sessions are not automatically rewritten, and there are no mapping aliases or schema migration.
+
+The existing GCM workout timer now starts after the session and active state are saved, before exercise-plan population. A valid running timer takes priority in TishOS and can continue beyond the estimated calendar slot. Without a running timer, scheduled eligibility ends at the estimate. TishOS Live Activities must be enabled; scheduled mode must select a Calendar Base view that includes these sessions and uses the same timing properties. Sync/Relay and iOS execution still determine when the Live Activity appears—this plugin cannot guarantee an instant background start.
+
+This additive configuration feature is a minor release. Settings retain the five destinations, Daily logging default, current disclosures and mobile layout; the estimate is a plain numeric field beside the calendar mappings. Minimum Obsidian remains 1.12.0. Focused tests cover both interval styles, custom keys, estimate preservation, actual finish timing, active totals, legacy tasks and timer-before-plan ordering. See [release validation](release-notes/3.3.0.md).
+
+Validation on 2026-09-24: **482 passed, 0 failed, 1 optional live USDA check skipped** without its credential. TypeScript/build deployed to the test vault and the named Health reload loaded 3.3.0. Installed QA used the real **Start empty** button in the verified test-vault Settings window, checked the persisted current 60-minute slot and timer invocation, and finished it at 12.5 minutes. A second synthetic session validated custom start/end keys with a 90-minute estimate and a 10-minute actual finish. The Workouts estimate control rendered with the default value. QA temporarily suppressed settings writes, file opening and actual GCM timer writes; prior active-workout state and all overrides were restored. GCM settings stayed byte-identical; the sole Health settings addition is the new default estimate. Fixtures moved from Inbox directly to `_archive/QA-workout-schedule-20260924-accepted` (earlier diagnostic fixtures were also archived). No production access or outbound automation. Physical iPhone ActivityKit/sync timing and a real GCM timer write were not exercised in this QA; timer ordering is covered by regression tests. The final separate build/reload and artifact hashes are recorded in the release notes.
 
 ## 3.2.1 — Food saves without the global identity scan
 

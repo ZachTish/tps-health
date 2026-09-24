@@ -454,7 +454,8 @@ const optionalNonNegativeNumber = (value: unknown): number | null => {
 };
 
 function nativeActivityDurationMinutes(frontmatter: Record<string, unknown>, settings?: Partial<TPSHealthSettings>): number {
-  if (settings) return workoutDurationMinutes(frontmatter, settings);
+  if (settings) return String(frontmatter.status || 'active').trim().toLowerCase() === 'active'
+    ? 0 : workoutDurationMinutes(frontmatter, settings);
   return numberValue(frontmatter.durationMinutes)
     || numberValue(frontmatter.timeEstimate)
     || numberValue(frontmatter.durationSeconds) / 60
@@ -775,7 +776,7 @@ function workoutSessionDataUpdates(
   const durationMinutes = numberValue(updates.durationMinutes)
     || numberValue(updates.timeEstimate)
     || numberValue(updates.durationSeconds) / 60
-    || workoutDurationMinutes(current, settings);
+    || (updates.endedAt || updates.completedDate ? 0 : workoutDurationMinutes(current, settings));
   return {
     ...clearProperties(REDUNDANT_WORKOUT_SESSION_KEYS),
     ...workoutTemporalPropertyUpdates(settings, current, {
@@ -1218,7 +1219,9 @@ export class HealthNativeRecordService {
       workoutPlan: this.recordLink(properties.workoutPlan || properties.workoutPlanPath),
       caloriesBurned: properties.caloriesBurned,
       session: workoutSessionPropertyValue([]),
-      ...workoutTemporalPropertyUpdates(this.plugin.settings, {}, { startedAt }),
+      ...workoutTemporalPropertyUpdates(this.plugin.settings, {}, {
+        startedAt, durationMinutes: this.plugin.settings.defaultWorkoutEstimateMinutes || 60,
+      }),
     });
     const api = this.requireApi();
     const record = await this.createRecord('workout-session', recordProperties, {
@@ -1848,7 +1851,8 @@ export class HealthNativeRecordService {
       title: String(session.frontmatter.title || session.file.basename).trim() || session.file.basename,
       status: String(session.frontmatter.status || 'active').trim().toLowerCase() || 'active',
       startedAt: workoutStartedAt(session.frontmatter, this.plugin.settings),
-      endedAt: workoutEndedAt(session.frontmatter, this.plugin.settings),
+      endedAt: String(session.frontmatter.status || 'active').trim().toLowerCase() === 'active'
+        ? '' : workoutEndedAt(session.frontmatter, this.plugin.settings),
       exerciseCount: exercises.length,
       setCount: exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0),
       exercises,
@@ -1923,8 +1927,9 @@ export class HealthNativeRecordService {
         const startedAt = workout
           ? workoutStartedAt(record.frontmatter, this.plugin.settings)
           : String(record.frontmatter.startedAt || '');
+        const activeWorkout = workout && String(record.frontmatter.status || 'active').trim().toLowerCase() === 'active';
         const endedAt = workout
-          ? workoutEndedAt(record.frontmatter, this.plugin.settings)
+          ? activeWorkout ? '' : workoutEndedAt(record.frontmatter, this.plugin.settings)
           : String(record.frontmatter.completedDate || record.frontmatter.endedAt || startedAt);
         return {
           id: record.id,

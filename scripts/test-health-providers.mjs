@@ -5929,7 +5929,7 @@ test("whole-note workouts use configurable calendar properties and plain set log
   assert.match(typesSource, /workoutStartPropertyKey: "scheduled"/);
   assert.match(typesSource, /workoutIntervalMode: "duration"/);
   assert.match(typesSource, /workoutIntervalPropertyKey: "timeEstimate"/);
-  assert.match(mainSource, /workoutTemporalPropertyUpdates\(this\.settings, frontmatter, \{ startedAt \}\)/);
+  assert.match(mainSource, /workoutTemporalPropertyUpdates\(this\.settings, frontmatter, \{[\s\S]*?startedAt, durationMinutes: workoutDurationMinutes/);
   assert.match(mainSource, /workoutTemporalPropertyUpdates\(this\.settings, frontmatter, \{[\s\S]+?endedAt,[\s\S]+?durationMinutes,[\s\S]+?terminal: true/);
   assert.doesNotMatch(mainSource, /frontmatter\.(scheduled|startedAt|endedAt|timeEstimate|durationSeconds)\s*=/);
   assert.match(mainSource, /frontmatter\.setCount = Math\.max/);
@@ -7928,7 +7928,7 @@ test("blank active workouts can log sets with rest and save repeated planned set
   assert.doesNotMatch(fake.files.get(workoutPath), /## Sets|### Bench press/);
   const dailyWorkoutPath = "Daily/2026-07-06.md";
   assert.match(fake.files.get(dailyWorkoutPath), /## Workout\n/);
-  assert.match(fake.files.get(dailyWorkoutPath), /- \[ \] \[\[#Workout\|Blank Active QA\]\] \[scheduled:: 2026-07-06T10:00:00\.000Z\] \[kind:: workout\] \[workoutId:: workout-/);
+  assert.match(fake.files.get(dailyWorkoutPath), /- \[ \] \[\[#Workout\|Blank Active QA\]\] \[scheduled:: 2026-07-06T10:00:00\.000Z\] \[timeEstimate:: 60\] \[kind:: workout\] \[workoutId:: workout-/);
   assert.equal((fake.files.get(dailyWorkoutPath).match(/\[kind:: workout\]/g) || []).length, 1);
   assert.doesNotMatch(fake.files.get(dailyWorkoutPath), /tps-health:workout-task/);
   assert.match(fake.files.get(dailyWorkoutPath), /<!-- tps-health:workout .*?\[workoutId:: workout-/);

@@ -477,6 +477,18 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       "workoutIntervalPropertyKey",
     );
 
+    new Setting(calendarProperties)
+      .setName("Default workout estimate (minutes)")
+      .setDesc("Schedules a timed slot as soon as a workout starts. Finishing replaces the estimate with the actual duration. TishOS uses your selected Calendar view and Live Activity settings.")
+      .addText((text) => text
+        .setValue(String(this.plugin.settings.defaultWorkoutEstimateMinutes))
+        .onChange(async (value) => {
+          const parsed = Number(value);
+          this.plugin.settings.defaultWorkoutEstimateMinutes = Number.isFinite(parsed) && parsed >= 1
+            ? Math.round(parsed) : DEFAULT_SETTINGS.defaultWorkoutEstimateMinutes;
+          await this.plugin.saveSettings();
+        }));
+
     const sessionDefaults = createSettingsGroup(
       page,
       "Session defaults",

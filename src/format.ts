@@ -225,6 +225,7 @@ function workoutSetMarkers(set: WorkoutSet): string[] {
 }
 
 export function workoutSessionLine(input: {
+  estimatedDurationMinutes?: number;
   id: string;
   title: string;
   startedAt: string;
@@ -261,6 +262,7 @@ export function workoutSessionLine(input: {
     dataviewField("workoutDate", isoDateKey(input.startedAt)),
     dataviewField("startedAt", input.startedAt),
     dataviewField("status", input.status || "active"),
+    input.estimatedDurationMinutes ? dataviewField("estimatedDurationMinutes", input.estimatedDurationMinutes) : "",
     input.cooldownDays != null ? dataviewField("cooldownDays", input.cooldownDays) : "",
     input.endedAt ? dataviewField("completedDate", input.endedAt) : "",
     input.endedAt ? dataviewField("endedAt", input.endedAt) : "",

@@ -105,8 +105,11 @@ export function workoutTemporalPropertyUpdates(
   const intervalKey = workoutIntervalPropertyKey(settings);
   const mode = workoutIntervalMode(settings);
   const startedAt = String(values.startedAt || workoutStartedAt(current, settings)).trim();
-  let endedAt = String(values.endedAt || workoutEndedAt(current, settings)).trim();
-  let durationMinutes = positiveNumber(values.durationMinutes) || workoutDurationMinutes(current, settings);
+  const explicitEnd = String(values.endedAt || "").trim();
+  let endedAt = explicitEnd || (positiveNumber(values.durationMinutes) > 0 ? "" : workoutEndedAt(current, settings));
+  // A real finish must replace the provisional calendar interval.
+  let durationMinutes = positiveNumber(values.durationMinutes)
+    || (explicitEnd ? 0 : workoutDurationMinutes(current, settings));
   if (!endedAt && startedAt && durationMinutes > 0) {
     const started = Date.parse(startedAt);
     if (Number.isFinite(started)) endedAt = new Date(started + durationMinutes * 60_000).toISOString();
@@ -117,9 +120,9 @@ export function workoutTemporalPropertyUpdates(
   }
   const updates: Record<string, unknown> = {};
   if (startedAt) updates[startKey] = startedAt;
-  if (values.terminal) {
+  if (values.terminal || durationMinutes > 0 || endedAt) {
     if (mode === "end" && endedAt) updates[intervalKey] = endedAt;
-    if (mode === "duration" && durationMinutes > 0) updates[intervalKey] = stableNumber(durationMinutes);
+    if (mode === "duration" && (durationMinutes > 0 || (values.terminal && explicitEnd && Date.parse(explicitEnd) === Date.parse(startedAt)))) updates[intervalKey] = stableNumber(durationMinutes);
   }
   return updates;
 }

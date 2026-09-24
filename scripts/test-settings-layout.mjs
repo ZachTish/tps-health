@@ -66,6 +66,7 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "restTimerMode",
     "defaultRestSeconds",
     "defaultWorkoutCooldownDays",
+    "defaultWorkoutEstimateMinutes",
     "workoutSetNotation",
     "workoutControlPlacement",
     "workoutsFolder",

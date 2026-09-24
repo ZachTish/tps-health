@@ -124,3 +124,17 @@ test('floating workout target rejects other notes, completed sessions, and liter
  plugin.nativeRecordService={isEnabled:()=>true,getWorkoutSnapshot:()=>({status:'complete'})};
  assert.equal(plugin.resolveMobileWorkoutActionBarTarget(),null,'ended record with stale active pointer');
 });
+
+
+test('native startup starts its timer before waiting for plan population', async () => {
+ const fake=harness.createFakeHealthApp(),plugin=new Plugin(fake.app),path='Inbox/Scheduled.md';
+ fake.files.set(path,'---\nstatus: active\n---\n');
+ const events=[];
+ plugin.nativeRecordService={createWorkoutSession:async()=>{events.push('create');return {path,id:'schedule',file:fake.app.vault.getAbstractFileByPath(path)};}};
+ plugin.saveSettings=async()=>{events.push('save');};
+ plugin.emitActiveWorkoutStateChanged=()=>{};
+ plugin.ensureGcmWorkoutTimer=async()=>{events.push('timer');};
+ plugin.applyWorkoutPlanToNativeSession=async()=>{events.push('plan');};
+ await plugin.startNativeWorkout({input:{openFile:false},startedAt:'2026-09-24T12:00:00Z',dailyNoteDate:'2026-09-24',plan:{sourcePath:'Inbox/Plan.md'},title:'Scheduled',cooldownDays:0});
+ assert.deepEqual(events,['create','save','timer','plan']);
+});

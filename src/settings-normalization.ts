@@ -106,6 +106,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.workoutIdentificationMode)) settings.workoutIdentificationMode = DEFAULT_SETTINGS.workoutIdentificationMode;
   if (!WORKOUT_LOG_TARGETS.includes(settings.activeWorkoutTarget)) settings.activeWorkoutTarget = "";
 
+  settings.defaultWorkoutEstimateMinutes = positiveInteger(settings.defaultWorkoutEstimateMinutes, DEFAULT_SETTINGS.defaultWorkoutEstimateMinutes);
   settings.defaultRestSeconds = positiveInteger(settings.defaultRestSeconds, DEFAULT_SETTINGS.defaultRestSeconds);
   settings.defaultWorkoutCooldownDays = nonNegativeInteger(settings.defaultWorkoutCooldownDays, DEFAULT_SETTINGS.defaultWorkoutCooldownDays);
   const bmr = nutritionNumber(settings.energyBmrKcal);

@@ -2527,6 +2527,7 @@ export default class TPSHealthPlugin extends Plugin {
         plan,
         cooldownDays,
         status: "active",
+        estimatedDurationMinutes: this.settings.defaultWorkoutEstimateMinutes,
       }), dailyNoteDate, dailyFile);
       dailyNotePath = insertedDailyFile.path;
     } catch (error) {
@@ -2644,6 +2645,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings.activeWorkoutSetCount = 0;
     await this.saveSettings();
     this.emitActiveWorkoutStateChanged();
+    await this.ensureGcmWorkoutTimer();
     if (context.plan?.sourcePath) {
       try {
         await this.applyWorkoutPlanToNativeSession(record.file, context.plan.sourcePath);
@@ -2655,7 +2657,6 @@ export default class TPSHealthPlugin extends Plugin {
         new Notice("Started workout, but its saved exercise plan could not be preloaded.");
       }
     }
-    await this.ensureGcmWorkoutTimer();
     if (context.input.openFile !== false) await this.openWorkoutFile(record.file);
     logger.flow("Workout", "start:done", {
       workoutId,
@@ -6948,7 +6949,10 @@ export default class TPSHealthPlugin extends Plugin {
       if (nextEligibleDate) line = upsertWorkoutDailyMarkerField(line, "nextEligibleDate", nextEligibleDate);
       lines[index] = line;
       const taskIndex = workoutDailyTaskIndex(lines, workoutId);
-      if (taskIndex >= 0) lines[taskIndex] = lines[taskIndex].replace(/^(\s*-\s+)\[[ xX]\]/, "$1[x]");
+      if (taskIndex >= 0) {
+        lines[taskIndex] = lines[taskIndex].replace(/^(\s*-\s+)\[[ xX]\]/, "$1[x]");
+        if (Number.isFinite(durationMinutes)) lines[taskIndex] = upsertDataviewField(lines[taskIndex], "timeEstimate", String(durationMinutes));
+      }
       ensureWorkoutDailyEndMarker(lines, index);
       await this.writeWorkoutMutationContent(file, lines.join("\n"), "complete-daily-workout");
       logger.flow("Workout", "daily-complete:done", { path: file.path, workoutId, line: index, nextEligibleDate: nextEligibleDate || "" });
@@ -6973,7 +6977,9 @@ export default class TPSHealthPlugin extends Plugin {
       if (plan?.name) frontmatter.workflowName = frontmatter.workflowName || plan.name;
       if (plan?.lastCompletedDate) frontmatter.previousCompletedDate = frontmatter.previousCompletedDate || plan.lastCompletedDate;
       if (secondsSincePreviousCompletion != null) frontmatter.secondsSincePreviousCompletion = frontmatter.secondsSincePreviousCompletion ?? secondsSincePreviousCompletion;
-      const temporalUpdates = workoutTemporalPropertyUpdates(this.settings, frontmatter, { startedAt });
+      const temporalUpdates = workoutTemporalPropertyUpdates(this.settings, frontmatter, {
+        startedAt, durationMinutes: workoutDurationMinutes(frontmatter, this.settings) || this.settings.defaultWorkoutEstimateMinutes,
+      });
       for (const [key, value] of Object.entries(temporalUpdates)) {
         if (value == null) delete frontmatter[key];
         else frontmatter[key] = value;
@@ -9284,7 +9290,9 @@ export default class TPSHealthPlugin extends Plugin {
 	      plan?.lastCompletedDate ? `previousCompletedDate: ${plan.lastCompletedDate}` : "",
 	      nullableSecondsBetween(plan?.lastCompletedDate, startedAt) != null ? `secondsSincePreviousCompletion: ${nullableSecondsBetween(plan?.lastCompletedDate, startedAt)}` : "",
 	      `workoutDate: ${isoDateKey(startedAt)}`,
-	      `${this.settings.workoutStartPropertyKey}: ${startedAt}`,
+	      ...Object.entries(workoutTemporalPropertyUpdates(this.settings, {}, {
+        startedAt, durationMinutes: this.settings.defaultWorkoutEstimateMinutes,
+      })).map(([key, value]) => `${key}: ${value}`),
       "status: active",
       "allDay: false",
       "cssclasses:",
@@ -22402,7 +22410,9 @@ function workoutDailyTaskLine(marker: string, completed = false): string {
     .trim() || "Workout";
   const startedAt = readStringField(marker, "startedAt");
   const scheduled = startedAt ? ` [scheduled:: ${startedAt}]` : "";
-  return `- [${completed ? "x" : " "}] [[#Workout|${title}]]${scheduled} [kind:: workout] [workoutId:: ${workoutId}]`;
+  const duration = readNumber(marker, "durationMinutes") || readNumber(marker, "estimatedDurationMinutes");
+  const interval = duration && duration > 0 ? ` [timeEstimate:: ${duration}]` : "";
+  return `- [${completed ? "x" : " "}] [[#Workout|${title}]]${scheduled}${interval} [kind:: workout] [workoutId:: ${workoutId}]`;
 }
 
 function isWorkoutDailyTaskLine(line: string, workoutId = ""): boolean {

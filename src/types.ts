@@ -54,6 +54,7 @@ export interface TPSHealthSettings {
   restTimerMode: RestTimerMode;
   defaultRestSeconds: number;
   defaultWorkoutCooldownDays: number;
+  defaultWorkoutEstimateMinutes: number;
   workoutSetNotation: WorkoutSetNotation;
   workoutControlPlacement: WorkoutControlPlacement;
   workoutStartPropertyKey: string;
@@ -320,6 +321,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   restTimerMode: "count-up",
   defaultRestSeconds: 90,
   defaultWorkoutCooldownDays: 0,
+  defaultWorkoutEstimateMinutes: 60,
   workoutSetNotation: "compact",
   workoutControlPlacement: "inline",
   workoutStartPropertyKey: "scheduled",

@@ -1118,7 +1118,10 @@ test('native workouts use the calendar-friendly start and duration properties wi
   const session = await service.createWorkoutSession({ title: 'Calendar strength', startedAt }, 'workout-calendar');
 
   assert.equal(session.frontmatter.scheduled, startedAt);
-  for (const redundant of ['startedAt', 'end', 'endedAt', 'completedDate', 'timeEstimate', 'durationMinutes', 'durationSeconds']) {
+  assert.equal(session.frontmatter.timeEstimate, 60);
+  assert.equal(service.getWorkoutSnapshot(session.path).endedAt, '');
+  assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 0);
+  for (const redundant of ['startedAt', 'end', 'endedAt', 'completedDate', 'durationMinutes', 'durationSeconds']) {
     assert.equal(Object.hasOwn(session.frontmatter, redundant), false, `${redundant} is absent while the workout is active`);
   }
 
@@ -1146,6 +1149,7 @@ test('native workouts use custom start and end keys without reading old timing n
   const session = await service.createWorkoutSession({ title: 'Custom calendar strength', startedAt }, 'workout-custom-calendar');
 
   assert.equal(session.frontmatter.calendarStart, startedAt);
+  assert.equal(session.frontmatter.calendarEnd, '2026-08-24T17:00:00.000Z');
   assert.equal(Object.hasOwn(session.frontmatter, 'scheduled'), false);
   assert.equal(Object.hasOwn(session.frontmatter, 'startedAt'), false);
 
@@ -2044,4 +2048,32 @@ test('fresh-create errors never fall through to a second food write',async()=>{
  const entry=freshFoodEntry();
  await assert.rejects(h.service.createFoodEntry(entry),/Storage unavailable/);
  assert.equal(calls,1);assert.equal(h.createCalls.length,0);assert.equal(entry.id,'uncommitted-food-id');
+});
+
+
+test('workout estimates survive set edits and real completion replaces them in either interval mode', async () => {
+  for (const mode of ['duration', 'end']) {
+    const { service, frontmatters } = createHarness({ settings: {
+      defaultWorkoutEstimateMinutes: 90, workoutStartPropertyKey: 'began',
+      workoutIntervalPropertyKey: 'interval', workoutIntervalMode: mode,
+    } });
+    const startedAt = '2026-08-24T12:00:00.000Z';
+    const record = await service.createWorkoutSession({ title: 'Scheduled', startedAt }, `schedule-${mode}`);
+    const estimated = mode === 'duration' ? 90 : '2026-08-24T13:30:00.000Z';
+    assert.equal(record.frontmatter.interval, estimated);
+    assert.equal(record.frontmatter.began, startedAt);
+    assert.equal(Object.hasOwn(record.frontmatter, 'scheduled'), false);
+    assert.equal(Object.hasOwn(record.frontmatter, 'timeEstimate'), false);
+    await service.appendWorkoutSet(record.file, { id: 'set-schedule', exercise: 'Press', exercisePath: 'Exercises/Press.md', reps: 10 });
+    assert.equal(frontmatters.get(record.file).interval, estimated, 'editing sets preserves the schedule');
+    const after = await service.resolveWorkoutSession({ id: record.id });
+    assert.equal(after.state, 'active');
+    const snapshot = service.getWorkoutSnapshot(record.path);
+    assert.equal(snapshot.endedAt, '');
+    assert.equal(service.getDailyActivityEntries('2026-08-24')[0].durationMinutes, 0);
+    assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 0);
+    const finished = await service.finishWorkout(record.file, { endedAt: '2026-08-24T12:22:30.000Z' });
+    assert.equal(finished.frontmatter.interval, mode === 'duration' ? 22.5 : '2026-08-24T12:22:30.000Z');
+    assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 22.5);
+  }
 });
