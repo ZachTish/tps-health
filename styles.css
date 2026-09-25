@@ -5004,6 +5004,16 @@ body .tps-health-food-search-frame .tps-health-selection-header-actions button {
   min-height: 44px; border-radius: 22px; justify-content: center; text-align: center;
   border: 1px solid var(--background-modifier-border); padding: 8px; width: 100%;
 }
+body .tps-health-food-search-frame .tps-health-selection-title.tps-health-food-added {
+  animation: tps-health-food-added 1100ms ease-out;
+}
+@keyframes tps-health-food-added {
+  from { box-shadow: inset 0 0 0 2px var(--interactive-accent); background-color: var(--background-modifier-hover); }
+  to { box-shadow: inset 0 0 0 2px transparent; background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body .tps-health-food-search-frame .tps-health-selection-title.tps-health-food-added { animation: none; }
+}
 body .tps-health-food-search-frame .tps-health-selection-title::before,
 body .tps-health-food-search-frame .tps-health-selection-title[aria-expanded=true]::before { content: none; }
 body .tps-health-food-search-frame .tps-health-selection-body {

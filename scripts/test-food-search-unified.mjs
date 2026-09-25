@@ -16,7 +16,7 @@ function nativeTrayTestElement(tag = "div", options = {}) {
   const listeners = new Map();
   const node = { tag, text: options.text || "", value: options.attr?.value || "", className: options.cls || "", children: [],
     attributes: { ...options.attr }, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
-    addClass() {}, removeClass() {}, toggleClass() {}, empty() { this.children = []; }, setText(value) { this.text = value; },
+    addClass(...names) { this.addedClasses = [...(this.addedClasses || []), ...names]; }, removeClass(...names) { this.addedClasses = (this.addedClasses || []).filter(name => !names.includes(name)); }, toggleClass() {}, empty() { this.children = []; }, setText(value) { this.text = value; },
     setAttr(key, value) { this.attributes[key] = value; }, removeAttribute(key) { delete this.attributes[key]; },
     addEventListener(name, fn) { const previous = listeners.get(name); listeners.set(name, (...args) => { previous?.(...args); return fn(...args); }); }, removeEventListener() {}, listeners,
     createEl(tag, options) { const child = nativeTrayTestElement(tag, options); child.parentElement = this; this.children.push(child); return child; },
@@ -152,8 +152,9 @@ test('recipe component disclosure scales half a serving and keeps missing ingred
   assert.equal(fake.writes.length, 0);
 });
 
-test('adding food clears the query and opens review while retaining scroll', async () => {
+test('adding food highlights Review without opening it, clearing the query and retaining scroll', async () => {
   const { tray } = await setup();
+  tray.selectionEl.querySelector = selector => walk(tray.selectionEl).find(n => n.className === selector.slice(1));
   tray.searchInput = 'oats'; tray.searchInputEl.value = 'oats';
   tray.contentEl.scrollTop = 120;
   await tray.addSelection(food('Oats'), null, { enrich: false });
@@ -165,14 +166,22 @@ test('adding food clears the query and opens review while retaining scroll', asy
   assert.equal(tray.contentEl.scrollTop, 120);
   const body = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body');
   const toggle = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-title');
+  assert.equal(body.hidden, true);
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.ok(toggle.addedClasses.includes('tps-health-food-added'));
+  toggle.listeners.get('animationend')();
+  assert.ok(!toggle.addedClasses.includes('tps-health-food-added'), 'finished highlight cannot replay on keyboard dismissal');
+  toggle.listeners.get('click')();
   assert.equal(body.hidden, false);
-  assert.equal(toggle.attributes['aria-expanded'], 'true');
   toggle.listeners.get('click')();
   assert.equal(body.hidden, true);
   await tray.addSelection(food('Oats'), null, { enrich: false });
   assert.equal(tray.selectionItems.length, 1);
   assert.equal(tray.selectionItems[0].quantity, 2);
-  assert.equal(walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body').hidden, false);
+  assert.equal(walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-body').hidden, true);
+  const nextToggle = walk(tray.selectionEl).find(n => n.className === 'tps-health-selection-title');
+  assert.notEqual(nextToggle, toggle);
+  assert.ok(nextToggle.addedClasses.includes('tps-health-food-added'), 'duplicate additions highlight the newly rendered button too');
   assert.equal(tray.contentEl.scrollTop, 120);
 });
 

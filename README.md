@@ -1,5 +1,11 @@
 # TPS Health
 
+## 3.4.3 — Highlight Review after adding food
+
+Selecting a food keeps the tray collapsed and gives its Review button a 1.1-second fading accent highlight. Repeated additions, including merged duplicates, highlight the freshly rendered button again. Search clearing, draft persistence and scrolling remain; adding food no longer moves focus into the tray. Review still opens explicitly on tap. If the mobile keyboard hides the footer, the CSS animation starts when the footer becomes visible again. Reduced-motion preferences disable the animation. Describe estimates and validation errors retain their existing review flows.
+
+This replaces automatic opening at the selection handler with a CSS animation on the existing button; the animation removes its temporary class when it finishes, with no timers, keyboard listeners, settings or persistent UI state. Validation on 2026-09-25: 484 tests passed, zero failed, one optional live USDA check skipped without its credential. The named test-vault reload loaded 3.4.3. The real Add button with synthetic food data cleared the query/draft without opening review or moving search focus, merged repeated additions, started a 1100 ms CSS animation after simulated keyboard dismissal, finished the animation and highlighted a subsequent addition again. Explicit Review still opened. Health data.json remained byte-identical after restoring all adapters, settings references, keyboard property, body class and modal state; no provider calls or notes. A separate final build deploys only to the test vault. Physical mobile keyboard verification is not claimed. Minimum Obsidian remains 1.12.0. See [3.4.3 release notes](release-notes/3.4.3.md) for validation and artifact hashes.
+
 ## 3.4.2 — Give typing space back to food results
 
 The food logger no longer opts into the generic form-modal layout, and its obsolete narrow-screen content padding is removed. It keeps its own existing flex layout and shared keyboard positioning. While the mobile keyboard is open, the logger uses its normal 12 px bottom padding instead of reserving the home-indicator safe area again. The collapsed Review/Log footer remains removed; dismissing the keyboard restores the footer and safe-area padding. Query clearing and automatic tray review are unchanged. No new keyboard listeners, layout state, settings or migrations.

@@ -11410,10 +11410,13 @@ class FoodSearchModal extends FoodInputModal {
       selected: this.selectionItems.length,
       merged: !!existing,
     });
-    this.selectionExpanded = true;
     this.renderSelection();
     this.resetSearchForNextFood(enriched.name);
-    this.selectionEl?.querySelector<HTMLButtonElement>('[aria-label="Close food review"]')?.focus({ preventScroll: true });
+    const reviewButton = this.selectionEl?.querySelector<HTMLButtonElement>(".tps-health-selection-title");
+    if (reviewButton) {
+      reviewButton.addClass("tps-health-food-added");
+      reviewButton.addEventListener("animationend", () => reviewButton.removeClass("tps-health-food-added"), { once: true });
+    }
 
     this.persistDraft();
 
