@@ -12057,3 +12057,11 @@ test("configured workout library identity governs creation, templates, lookup, a
   assert.equal(fm.entityKind,"routine"); assert.equal(fm.kind,undefined);
   assert.match(fake.files.get(templated.sourcePath),/Custom content/);
 });
+
+test('library note creation uses GCM classification while preserving nutrition and identity',async()=>{
+ installDeterministicBrowserGlobals();const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+ const fake=createFakeHealthApp();const plugin=new TPSHealthPlugin(fake.app);
+ fake.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:{definition:kind=>kind==='food'?{parentKind:'entity',key:'entityKind',value:'food'}:null,encode:fm=>({...fm,kind:'entity',entityKind:'food'})}}};
+ const fm={tpsId:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Food'},'food','Food');
+ assert.equal(fm.kind,'entity');assert.equal(fm.entityKind,'food');assert.equal(fm.tpsId,'retained');assert.equal(fm.calories,100);
+});

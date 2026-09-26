@@ -7766,6 +7766,10 @@ export default class TPSHealthPlugin extends Plugin {
     else if (normalizedKind === "food" || normalizedKind === "recipe" || normalizedKind === "meal") {
       applyFoodIdentityFrontmatterMode(frontmatter, normalizedKind === "food" ? this.settings.customFoodTag : this.settings.recipeTag, normalizedKind, this.settings);
     } else this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
+    const classifier = this.getGcmApi()?.frontmatterKinds;
+    if (classifier?.definition?.(normalizedKind)) {
+      Object.assign(frontmatter, classifier.encode({ ...frontmatter, kind: normalizedKind }));
+    }
     const titleKey = this.findHealthFrontmatterKey(frontmatter, "title");
     const nameKey = this.findHealthFrontmatterKey(frontmatter, "name");
     const existingTitle = String(
