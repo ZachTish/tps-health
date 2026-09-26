@@ -844,6 +844,14 @@ export default class TPSHealthPlugin extends Plugin {
       }),
     });
     this.addCommand({
+      id: "create-recipe",
+      name: "Create recipe",
+      callback: () => this.traceCommand("create-recipe", async () => {
+        const dateContext = await this.getActiveDailyNoteDateContext();
+        new CustomFoodModal(this.app, this, "recipe", "", true, undefined, dateContext).open();
+      }),
+    });
+    this.addCommand({
       id: "copy-food-log-timings",
       name: "Copy recent food log timings",
       callback: () => this.copyFoodLogTimings(),
@@ -4285,6 +4293,7 @@ export default class TPSHealthPlugin extends Plugin {
       item.nutritionBasis ? `nutritionBasis: ${item.nutritionBasis}` : "",
       item.nutritionProvenance ? `nutritionProvenance: ${JSON.stringify(foodNutritionProvenance(item.nutritionProvenance))}` : "",
       isRecipeLikeFoodType(type) ? `recipeServings: ${recipeServingsForFood(item, type)}` : "",
+      type === "recipe" && item.recipeTotalGrams != null ? `recipeTotalGrams: ${item.recipeTotalGrams}` : "",
       isRecipeLikeFoodType(type) ? yamlStringList("ingredients", recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")) : "",
       item.confidence != null ? `confidence: ${item.confidence}` : "",
       nutritionNumber(nutrition.calories) != null ? `calories: ${nutrition.calories}` : "",
@@ -4326,6 +4335,7 @@ export default class TPSHealthPlugin extends Plugin {
       servingMl: item.servingMl == null ? "" : String(round(item.servingMl)),
       nutritionBasis: item.nutritionBasis || "",
       recipeServings: isRecipeLikeFoodType(type) ? String(recipeServingsForFood(item, type)) : "",
+      recipeTotalGrams: type === "recipe" && item.recipeTotalGrams != null ? String(item.recipeTotalGrams) : "",
       calories: String(nutritionNumber(nutrition.calories) ?? ""),
       proteinG: String(nutritionNumber(nutrition.proteinG) ?? ""),
       carbsG: String(nutritionNumber(nutrition.carbsG) ?? ""),
@@ -4382,7 +4392,13 @@ export default class TPSHealthPlugin extends Plugin {
         .filter((line) => !parseRecipeIngredientLine(line, (name) => this.findRecipeIngredientFoodByName(name)))
         .join("\n"));
     const normalizedIngredients = this.normalizeRecipeIngredientLines(ingredientLines);
-    const recipeServings = recipeServingsForFood(item, type);
+    const ingredientWeight = recipeIngredientWeight(normalizedIngredients.split(/\r?\n/).map(line => {
+      const ingredient = parseRecipeIngredientLine(line, name => this.findRecipeIngredientFoodByName(name));
+      const file = ingredient?.foodPath ? this.app.vault.getAbstractFileByPath(ingredient.foodPath) : null;
+      return ingredient ? { ...ingredient, food: file instanceof TFile ? foodFromFileCache(this, file) : this.findRecipeIngredientFoodByName(ingredient.foodName) } : null;
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null));
+    const serving = recipeServingDefinition(item, type, ingredientWeight);
+    const recipeServings = serving.recipeServings;
     const totalNutrition = normalizedIngredients
       ? this.calculateFoodTotals(normalizedIngredients)
       : hasExplicitIngredients ? zeroNutrition() : (item.nutrition || {});
@@ -4392,10 +4408,7 @@ export default class TPSHealthPlugin extends Plugin {
       ingredients: normalizedIngredients || ingredientLines || item.ingredients,
       recipeBody,
       notes: item.notes,
-      recipeServings,
-      servingAmount: 1,
-      servingUnit: type === "meal" ? "meal" : "serving",
-      servingGrams: undefined,
+      ...serving,
       servingMl: undefined,
       nutrition: multiplyNutrition(totalNutrition, 1 / recipeServings),
     });
@@ -4715,7 +4728,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
-      for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis"]) if (updated[key] == null) delete frontmatter[key];
+      for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -5163,7 +5176,7 @@ export default class TPSHealthPlugin extends Plugin {
       ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
       ...itemFrontmatter,
     };
-    for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
+    for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
     const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
@@ -5758,6 +5771,7 @@ export default class TPSHealthPlugin extends Plugin {
       nutritionProvenance: foodNutritionProvenance(fm.nutritionProvenance),
       nutritionBasis: isMeal ? undefined : nutritionBasisFromValue(fm.nutritionBasis),
       recipeServings: isMeal ? 1 : numberOrUndefined(fm.recipeServings),
+      recipeTotalGrams: type === "recipe" ? numberOrUndefined(fm.recipeTotalGrams) : undefined,
       source: "custom-note",
       sourcePath: file.path,
       confidence: numberOrUndefined(fm.confidence),
@@ -12203,6 +12217,7 @@ function foodQueueItemSignature(item: FoodItem): string {
     item.servingMl ?? null,
     item.nutritionBasis ?? null,
     item.recipeServings ?? null,
+    item.recipeTotalGrams ?? null,
     item.ingredients || "",
     nutrition.calories ?? null,
     nutrition.proteinG ?? null,
@@ -18080,6 +18095,8 @@ class CustomFoodModal extends FoodInputModal {
     let servingAmount = this.baseFood?.servingAmount || 1;
     let servingUnit = this.baseFood?.servingUnit || "serving";
     let recipeServings = recipeServingsForFood(this.baseFood || { id: "", name: "", source: "manual" }, this.type);
+    let recipeTotalGrams = this.baseFood?.recipeTotalGrams;
+    let recipeByWeight = this.type === "recipe" && this.baseFood?.servingUnit === "g";
     const originalRecipeIngredients = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.ingredients || "") : "";
     const originalRecipeBody = isRecipeLikeFoodType(this.type) ? String(this.baseFood?.recipeBody || "") : "";
     const originalRecipeSourceBody = isRecipeLikeFoodType(this.type)
@@ -18157,13 +18174,26 @@ class CustomFoodModal extends FoodInputModal {
       return persisted;
     };
     const caloriePreview = this.contentEl.createDiv({ cls: "tps-health-status" });
+    const recipeMacroPreview = isRecipeLikeFoodType(this.type) ? this.contentEl.createDiv({ cls: "tps-health-selection-macros" }) : null;
+    const recipeServing = () => recipeServingDefinition({ recipeServings, recipeTotalGrams, servingUnit: recipeByWeight ? "g" : "serving" }, this.type,
+      recipeIngredientWeight(recipeIngredients.map(ingredient => ({ ...ingredient, food: recipeIngredientFoodItem(ingredient) }))));
     const updateCaloriePreview = () => {
       if (isRecipeLikeFoodType(this.type)) {
         const ingredientTotals = recipeIngredients.length
           ? recipeIngredientTotals()
           : zeroNutrition();
-        const perServing = multiplyNutrition(ingredientTotals, 1 / recipeServingsForFood({ ...this.baseFood, recipeServings } as FoodItem, this.type));
-        caloriePreview.setText(`Recipe yield: ${round(recipeServings)} ${this.type === "meal" ? "meal" : "servings"}; per serving: ${round(perServing.calories)} kcal`);
+        recipeMacroPreview?.empty();
+        try {
+          const serving = recipeServing();
+          const perServing = multiplyNutrition(ingredientTotals, 1 / serving.recipeServings);
+          const weight = serving.servingGrams == null ? "weight unavailable" : `${round(serving.servingGrams)} g`;
+          caloriePreview.setText(recipeByWeight
+            ? `Total weight: ${round(serving.recipeServings * 100)} g · Nutrition per 100 g`
+            : `Yield: ${round(serving.recipeServings)} ${this.type === "meal" ? "meal" : "servings"} · Each: ${weight}`);
+          if (recipeMacroPreview) renderMacroPills(recipeMacroPreview, perServing);
+        } catch (error) {
+          caloriePreview.setText(error instanceof Error ? error.message : "Check the recipe yield.");
+        }
         return;
       }
       const preservingImport = this.baseFood?.nutritionProvenance && customFoodNutritionFields().every(key => (this.baseFood?.nutrition?.[key] ?? null) === (nutrition[key] ?? null));
@@ -18179,8 +18209,19 @@ class CustomFoodModal extends FoodInputModal {
       .addText((text) => text.setPlaceholder("protein doritos, Costco pretzels").setValue(aliases).onChange((value) => aliases = value));
     if (isRecipeLikeFoodType(this.type)) {
       if (this.type === "recipe") {
-        new Setting(formEl).setName("Recipe servings").setDesc("Yield from the full ingredient list.").addText((text) => text.setValue(String(recipeServings)).onChange((value) => {
-          recipeServings = normalizeRecipeServings(value);
+        const portionMode = new Setting(formEl).setName("Portion by");
+        const servingsSetting = new Setting(formEl).setName("Recipe servings").setDesc("Number of portions in the full recipe.").addText((text) => text.setValue(String(recipeServings)).onChange((value) => {
+          recipeServings = Number(value);
+          updateCaloriePreview();
+        }));
+        servingsSetting.settingEl.hidden = recipeByWeight;
+        portionMode.addDropdown(dropdown => dropdown.addOption("servings", "Number of servings").addOption("weight", "Total weight (100 g portions)").setValue(recipeByWeight ? "weight" : "servings").onChange(value => {
+          recipeByWeight = value === "weight";
+          servingsSetting.settingEl.hidden = recipeByWeight;
+          updateCaloriePreview();
+        }));
+        new Setting(formEl).setName("Finished recipe weight (g)").setDesc("Optional when all ingredients have known weights. Enter the cooked weight to account for water gained or lost.").addText(text => text.setValue(recipeTotalGrams == null ? "" : String(recipeTotalGrams)).setPlaceholder("Calculate from ingredients").onChange(value => {
+          recipeTotalGrams = value.trim() === "" ? undefined : Number(value);
           updateCaloriePreview();
         }));
       } else {
@@ -18249,7 +18290,7 @@ class CustomFoodModal extends FoodInputModal {
     if (isRecipeLikeFoodType(this.type)) {
       const section = this.contentEl.createDiv({ cls: "tps-health-meal-ingredient-editor" });
       section.createEl("h3", { text: "Ingredients" });
-      section.createDiv({ cls: "tps-health-status", text: `Adjust amounts, replace or remove foods, or add another ingredient. Changes to this ${typeLabel} apply only after Save and the linked-instance choice.` });
+      section.createDiv({ cls: "tps-health-status", text: this.editPath ? `Adjust amounts, replace or remove foods, or add another ingredient. Changes to this ${typeLabel} apply only after Save and the linked-instance choice.` : "Add foods and choose the amount of each ingredient in the full recipe." });
       const list = section.createDiv({ cls: "tps-health-meal-ingredient-list" });
       const syncIngredients = () => {
         updateCaloriePreview();
@@ -18258,7 +18299,7 @@ class CustomFoodModal extends FoodInputModal {
         list.empty();
         recipeIngredientQuantityControls = [];
         if (!recipeIngredients.length) {
-          list.createDiv({ cls: "tps-health-status", text: `No editable ingredient lines were found in this ${typeLabel}.` });
+          list.createDiv({ cls: "tps-health-status", text: this.editPath ? `No editable ingredient lines were found in this ${typeLabel}.` : "Add your first ingredient below." });
           return;
         }
         recipeIngredients.forEach((ingredient, index) => {
@@ -18404,6 +18445,8 @@ class CustomFoodModal extends FoodInputModal {
         return;
       }
       if (isRecipeLikeFoodType(this.type)) {
+        if (!recipeIngredients.length && !this.editPath) { new Notice("Add at least one ingredient."); return; }
+        try { recipeServing(); } catch (error) { new Notice(error instanceof Error ? error.message : "Check the recipe yield."); return; }
         const invalidQuantity = recipeIngredientQuantityControls.find(({ input }) => {
           const rawValue = input.value.trim();
           const value = Number(rawValue);
@@ -18468,9 +18511,10 @@ class CustomFoodModal extends FoodInputModal {
         const servingMetadata = this.type === "food"
           ? customFoodServingMetadataForSave(this.baseFood, servingAmount, servingUnit, nutrition)
           : {
-            servingGrams: this.baseFood?.servingGrams,
-            servingMl: this.baseFood?.servingMl,
-            nutritionBasis: this.baseFood?.nutritionBasis,
+            ...recipeServing(),
+            recipeTotalGrams,
+            servingMl: undefined,
+            nutritionBasis: undefined,
           };
         const upsertInput: UpsertFoodInput = {
           type: this.type,
@@ -19484,6 +19528,7 @@ function foodItemFromInput(input: CreateFoodInput): FoodItem {
     servingMl: input.servingMl,
     nutritionBasis: input.nutritionBasis,
     recipeServings: input.recipeServings,
+    recipeTotalGrams: input.recipeTotalGrams,
     source: foodNutritionProvenance(input.nutritionProvenance)?.provider || "manual",
     nutritionProvenance: foodNutritionProvenance(input.nutritionProvenance),
     confidence: input.confidence,
@@ -19519,6 +19564,7 @@ function foodFrontmatter(
     servingMl: item.servingMl == null ? undefined : round(item.servingMl),
     nutritionBasis: isRecipeLikeFoodType(type) ? undefined : item.nutritionBasis,
     recipeServings: isRecipeLikeFoodType(type) ? recipeServingsForFood(item, type) : undefined,
+    recipeTotalGrams: type === "recipe" ? item.recipeTotalGrams : undefined,
     calories: nutritionNumber(nutrition.calories),
     proteinG: nutritionNumber(nutrition.proteinG),
     carbsG: nutritionNumber(nutrition.carbsG),
@@ -19593,6 +19639,29 @@ function hasFoodIdentitySignal(settings: TPSHealthSettings, file: TFile, fm: any
 
 function isArchivedHealthPath(path: string): boolean {
   return /^Archive\//i.test(path) || /^_archive\//i.test(path);
+}
+
+function recipeIngredientWeight(entries: readonly { food: FoodItem | null | undefined; quantity: number; unit: string }[]): number | undefined {
+  if (!entries.length) return undefined;
+  let grams = 0;
+  for (const entry of entries) {
+    if (!entry.food) return undefined;
+    const resolved = resolveFoodLogServing(entry.food, entry.quantity, entry.unit);
+    if (resolved.unsupportedUnit || resolved.amountUnit !== "g" || !resolved.amount || !Number.isFinite(resolved.amount)) return undefined;
+    grams += resolved.amount;
+  }
+  return grams;
+}
+
+function recipeServingDefinition(item: Pick<FoodItem, "recipeServings" | "recipeTotalGrams" | "servingUnit" | "servingAmount">, type: FoodNoteType, ingredientGrams?: number) {
+  if (type === "meal") return { recipeServings: 1, servingAmount: 1, servingUnit: "meal", servingGrams: undefined };
+  const totalGrams = item.recipeTotalGrams ?? ingredientGrams;
+  if (item.recipeTotalGrams != null && (!Number.isFinite(item.recipeTotalGrams) || item.recipeTotalGrams <= 0)) throw new Error("Enter a total recipe weight greater than 0 g.");
+  const byWeight = item.servingUnit === "g";
+  if (byWeight && (!totalGrams || !Number.isFinite(totalGrams))) throw new Error("Enter the finished recipe weight in grams, or use ingredients with known weights.");
+  const servings = byWeight ? totalGrams! / 100 : item.recipeServings ?? item.servingAmount ?? 1;
+  if (!Number.isFinite(servings) || servings <= 0) throw new Error("Enter a number of servings greater than 0.");
+  return { recipeServings: servings, servingAmount: byWeight ? 100 : 1, servingUnit: byWeight ? "g" : "serving", servingGrams: totalGrams == null ? undefined : totalGrams / servings };
 }
 
 function normalizeRecipeServings(value: unknown): number {

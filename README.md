@@ -1,5 +1,15 @@
 # TPS Health
 
+## 3.7.0 — Create and log recipes by yield or weight
+
+Run **TPS Health: Create recipe**. Add ingredients through the existing saved/provider food search, set their quantities and units, and name the recipe. Choose **Number of servings** for portions with a calculated gram weight, or **Total weight (100 g portions)** for nutrition per 100 g. An optional **Finished recipe weight (g)** overrides ingredient weights to account for cooking gains/losses. Weight is calculated only when every ingredient has a supported gram conversion; volume-only or unknown weights are not treated as grams. The editor previews the portion and its macros. Invalid or nonpositive yields/weights cannot be saved.
+
+Create saves a reusable recipe note and opens the standard food logger so a portion can be logged immediately, or the logger can be dismissed to save for later. Recipes remain searchable with other saved foods and support fractional servings and gram amounts when weight is known. The editor supports both modes when reopening a recipe. Existing meals remain one portion. The new command does not consume or replace the food tray.
+
+The existing ingredient picker, editor, note identity settings, nutrient calculation and food logger are reused. Recipe saves now preserve their calculated mass instead of stripping it. `recipeTotalGrams` is an optional explicit finished weight on recipe notes/API inputs; absent means derive from ingredients. Weight mode uses `servingAmount: 100`, `servingUnit: g`, and `recipeServings: totalGrams / 100`; count mode uses one serving and the entered yield. All tracked nutrients share this denominator. No migrations or automatic note repair. Minimum Obsidian remains 1.12.0. See [3.7.0 release notes](release-notes/3.7.0.md) for validation and artifact hashes.
+
+Validation on 2026-09-26: 489 tests passed, zero failed, and one optional live USDA check skipped without its credential. Installed test-vault command, ingredient picker, Create and Log actions produced actual native entries: an 800 g recipe divided into four portions logged half a portion at 100 g / 95 calories; a 400 g finished recipe logged 150 g at 285 calories. All nutrients scaled consistently. Synthetic search adapters and temporary Health/GCM settings were restored; both data.json files remained byte-identical. Fixtures moved from Inbox directly to `_archive/QA-recipe-yield-20260926`. No provider requests or outbound automation. The separate final TypeScript/build deploys only to the test vault, and the named plugin reload loads 3.7.0. Physical iPhone interaction is not claimed.
+
 ## 3.4.3 — Highlight Review after adding food
 
 Selecting a food keeps the tray collapsed and gives its Review button a 1.1-second fading accent highlight. Repeated additions, including merged duplicates, highlight the freshly rendered button again. Search clearing, draft persistence and scrolling remain; adding food no longer moves focus into the tray. Review still opens explicitly on tap. If the mobile keyboard hides the footer, the CSS animation starts when the footer becomes visible again. Reduced-motion preferences disable the animation. Describe estimates and validation errors retain their existing review flows.
@@ -33,7 +43,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.4.1](https://github.com/ZachTish/tps-health/releases/tag/3.4.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.7.0](https://github.com/ZachTish/tps-health/releases/tag/3.7.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

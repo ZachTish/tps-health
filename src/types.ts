@@ -158,6 +158,8 @@ export interface FoodItem {
   nutritionBasis?: NutritionBasis;
   nutritionProvenance?: FoodNutritionProvenance;
   recipeServings?: number;
+  /** Explicit finished recipe weight; omit to calculate from ingredient weights. */
+  recipeTotalGrams?: number;
   source: FoodSource;
   sourcePath?: string;
   confidence?: number;

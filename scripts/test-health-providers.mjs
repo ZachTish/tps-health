@@ -6148,6 +6148,7 @@ test("command palette only exposes polished everyday health actions", async () =
     "save-active-workout-layout",
     "finish-workout-and-save-layout",
     "log-food",
+    "create-recipe",
     "quick-add-food",
     "open-food-log-base",
     "open-workout-log-base",
@@ -6162,7 +6163,6 @@ test("command palette only exposes polished everyday health actions", async () =
     "create-workout-plan",
     "complete-inline-food-log",
     "create-custom-food",
-    "create-recipe",
   ]) {
     assert.doesNotMatch(mainSource, new RegExp(`id: "${id}"`));
   }
@@ -12080,4 +12080,63 @@ test('tag-classified library creation and lookup use the complete GCM tag withou
  const exercise=await plugin.createExercise({name:'Tag press'});
  plugin.settings.exercisesFolder='Elsewhere';
  assert.equal((await plugin.searchExercises('Tag press'))[0]?.sourcePath,exercise.sourcePath);
+});
+
+async function recipeYieldFixture() {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, resolveFoodLogServing, foodEntryLine } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodTemplatePath: '', foodsFolder: 'Health/Foods', recipesFolder: 'Health/Recipes', foodIdentificationMode: 'frontmatter' };
+  const oats = await plugin.createFoodFromInput({ name: 'Yield oats', servingAmount: 100, servingUnit: 'g', nutrition: { proteinG: 10, carbsG: 20, fatG: 0, fiberG: 5, sodiumMg: 40 } });
+  const fruit = await plugin.createFoodFromInput({ name: 'Yield fruit', servingAmount: 100, servingUnit: 'g', nutrition: { proteinG: 0, carbsG: 20, fatG: 0, fiberG: 2, sodiumMg: 10 } });
+  const ingredients = `- 300 g - [[${oats.sourcePath}|Oats]]\n- 500 g - [[${fruit.sourcePath}|Fruit]]`;
+  return { plugin, fake, ingredients, resolveFoodLogServing, foodEntryLine };
+}
+
+test('recipe yield: count portions calculate grams and every nutrient, and fractional logs scale once', async () => {
+  const {plugin, fake, ingredients, resolveFoodLogServing, foodEntryLine} = await recipeYieldFixture();
+  const recipe = await plugin.createFoodFromInput({type:'recipe',name:'Four portions',recipeServings:4,ingredients});
+  assert.equal(recipe.servingAmount,1); assert.equal(recipe.servingUnit,'serving'); assert.equal(recipe.servingGrams,200);
+  const legacy = await plugin.createFoodFromInput({type:'recipe',name:'Legacy yield',servingAmount:4,ingredients});
+  assert.equal(legacy.recipeServings,4);assert.equal(legacy.nutrition.calories,190);
+  assert.equal(recipe.nutrition.calories,190); assert.equal(recipe.nutrition.proteinG,7.5); assert.equal(recipe.nutrition.fiberG,6.25); assert.equal(recipe.nutrition.sodiumMg,42.5);
+  const file=fake.app.vault.getAbstractFileByPath(recipe.sourcePath);
+  const reloaded=plugin.foodFromFrontmatter(file,parseFrontmatter(fake.files.get(file.path)));
+  assert.equal(reloaded.servingGrams,200);
+  assert.equal(resolveFoodLogServing(reloaded,100,'g').servings,0.5);
+  const line=foodEntryLine({id:'half-recipe',item:reloaded,quantity:0.5,unit:'serving',createdDate:'2026-09-26T12:00:00Z'});
+  assert.equal(plugin.calculateFoodTotals(line).calories,95);
+  assert.equal(plugin.calculateFoodTotals(line).sodiumMg,21.3);
+});
+
+test('recipe yield: finished weight defines 100 g nutrition and survives search, reload and edits', async () => {
+  const {plugin,fake,ingredients,resolveFoodLogServing,foodEntryLine}=await recipeYieldFixture();
+  let recipe=await plugin.createFoodFromInput({type:'recipe',name:'Cooked recipe',servingAmount:100,servingUnit:'g',recipeTotalGrams:400,ingredients});
+  assert.equal(recipe.recipeServings,4); assert.equal(recipe.servingGrams,100); assert.equal(recipe.nutrition.calories,190);
+  let fm=parseFrontmatter(fake.files.get(recipe.sourcePath));assert.equal(fm.recipeTotalGrams,400);assert.equal(fm.servingAmount,100);assert.equal(fm.servingUnit,'g');
+  const found=(await plugin.searchLocalFoods('Cooked recipe')).find(i=>i.sourcePath===recipe.sourcePath);assert.ok(found);
+  assert.equal(resolveFoodLogServing(found,150,'g').servings,1.5);
+  const line=foodEntryLine({id:'weighted-recipe',item:found,quantity:resolveFoodLogServing(found,150,'g').servings,unit:'serving',createdDate:'2026-09-26T12:00:00Z'});
+  assert.equal(plugin.calculateFoodTotals(line).calories,285);
+  recipe=await plugin.upsertFoodFromInput({type:'recipe',path:recipe.sourcePath,name:recipe.name,servingUnit:'g',servingAmount:100,ingredients,recipeTotalGrams:undefined});
+  assert.equal(recipe.recipeServings,8);assert.equal(recipe.nutrition.calories,95);
+  fm=parseFrontmatter(fake.files.get(recipe.sourcePath));assert.equal(fm.recipeTotalGrams,undefined,'clearing finished weight restores ingredient weight');
+  assert.equal(fm.servingUnit,'g');assert.equal(fm.servingGrams,100);
+});
+
+test('recipe yield: missing mass is unknown, liquid volume is not grams, and invalid yield cannot save', async () => {
+  const {plugin,fake,ingredients}=await recipeYieldFixture();
+  const liquid=await plugin.createFoodFromInput({name:'Volume only',servingAmount:100,servingUnit:'ml',nutrition:{carbsG:5}});
+  const mixed=ingredients+`\n- 100 ml - [[${liquid.sourcePath}|Liquid]]`;
+  const counted=await plugin.createFoodFromInput({type:'recipe',name:'Unknown mass',recipeServings:2,ingredients:mixed});
+  assert.equal(counted.servingGrams,undefined);assert.equal(counted.nutrition.calories,390);
+  const count=fake.files.size;
+  await assert.rejects(plugin.createFoodFromInput({type:'recipe',name:'No mass',servingUnit:'g',ingredients:mixed}),/weight/);
+  for(const value of [0,-2,NaN,Infinity]) {
+    await assert.rejects(plugin.createFoodFromInput({type:'recipe',name:'Invalid count',recipeServings:value,ingredients}),/servings/);
+    await assert.rejects(plugin.createFoodFromInput({type:'recipe',name:'Invalid weight',recipeTotalGrams:value,ingredients}),/weight/);
+  }
+  assert.equal(fake.files.size,count,'invalid yield does not create recipe notes');
+  const weighed=await plugin.createFoodFromInput({type:'recipe',name:'Weighed liquid recipe',servingUnit:'g',recipeTotalGrams:500,ingredients:mixed});
+  assert.equal(weighed.nutrition.calories,156);assert.equal(weighed.servingGrams,100);
 });

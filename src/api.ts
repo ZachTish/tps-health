@@ -35,6 +35,8 @@ export interface CreateFoodInput {
   /** Optional import receipt; preserves reported energy instead of deriving it from incomplete macros. */
   nutritionProvenance?: FoodItem["nutritionProvenance"];
   recipeServings?: number;
+  /** Explicit finished recipe weight; omit to calculate from ingredient weights. */
+  recipeTotalGrams?: number;
   nutrition?: Nutrition;
   sourceImagePath?: string;
   confidence?: number;
