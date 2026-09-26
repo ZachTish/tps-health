@@ -489,7 +489,7 @@ test("selected food tray edit action keeps the vault-backed pending draft valid"
   assert.match(mainSource, /private async refreshSelectionItemsFromSources\(\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:refresh-no-change"/);
   assert.match(mainSource, /private async refreshFoodItemFromSource\(item: FoodItem\): Promise<FoodItem \| null>/);
-  assert.match(mainSource, /foodNoteTypeFromFrontmatter\(fm, file, this\.plugin\.settings\)/);
+  assert.match(mainSource, /foodNoteTypeFromFrontmatter\(fm, file, this\.plugin\.settings, this\.plugin\.getGcmApi\(\)\?\.frontmatterKinds\)/);
   assert.match(mainSource, /function foodQueueItemSignature\(item: FoodItem\): string/);
   assert.match(mainSource, /private onSaved\?: \(saved: FoodItem\) => void \| Promise<void>/);
 });
@@ -12064,4 +12064,20 @@ test('library note creation uses GCM classification while preserving nutrition a
  fake.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:{definition:kind=>kind==='food'?{parentKind:'entity',key:'entityKind',value:'food'}:null,encode:fm=>({...fm,kind:'entity',entityKind:'food'})}}};
  const fm={tpsId:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Food'},'food','Food');
  assert.equal(fm.kind,'entity');assert.equal(fm.entityKind,'food');assert.equal(fm.tpsId,'retained');assert.equal(fm.calories,100);
+});
+
+test('tag-classified library creation and lookup use the complete GCM tag without retaining kind',async()=>{
+ installDeterministicBrowserGlobals();const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+ const fake=createFakeHealthApp();const plugin=new TPSHealthPlugin(fake.app);
+ const tags={food:'kind/food/entity',recipe:'recipes',meal:'meals/personal',exercise:'training/library/exercises', 'workout-plan':'plans'};
+ const codec={definition:kind=>tags[kind]?{tag:tags[kind]}:null,encode:fm=>{const next={...fm,tags:[...(fm.tags||[]),tags[fm.kind]]};delete next.kind;return next;},decode:fm=>({...fm,kind:Object.keys(tags).find(kind=>fm.tags?.includes(tags[kind]))||fm.kind})};
+ fake.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ plugin.settings.foodFrontmatterKey='entityKind';plugin.settings.workoutFrontmatterKey='entityKind';
+ for(const kind of Object.keys(tags)) {
+  const fm={tpsId:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Library'},kind,'Library');
+  assert.equal(fm.kind,undefined);assert.equal(fm.entityKind,undefined);assert.ok(fm.tags.includes(tags[kind]));assert.equal(fm.tpsId,'retained');assert.equal(fm.calories,100);
+ }
+ const exercise=await plugin.createExercise({name:'Tag press'});
+ plugin.settings.exercisesFolder='Elsewhere';
+ assert.equal((await plugin.searchExercises('Tag press'))[0]?.sourcePath,exercise.sourcePath);
 });

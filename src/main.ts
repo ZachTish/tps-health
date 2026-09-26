@@ -1,6 +1,6 @@
 import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
-import { libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
+import { HealthKindCodec, libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
 import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange } from "./nutrient-goals";
@@ -4429,6 +4429,7 @@ export default class TPSHealthPlugin extends Plugin {
       this.settings.foodFrontmatterFoodValue,
       this.settings.foodFrontmatterRecipeValue,
       this.settings.foodFrontmatterMealValue,
+      ["food", "recipe", "meal"].map(kind => this.getGcmApi()?.frontmatterKinds?.definition(kind)),
     ]);
   }
 
@@ -4610,7 +4611,7 @@ export default class TPSHealthPlugin extends Plugin {
         const file = this.app.vault.getAbstractFileByPath(candidate.sourcePath);
         if (!(file instanceof TFile)) return null;
         const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-        if (foodNoteTypeFromFrontmatter(frontmatter, file, this.settings) !== "food") return null;
+        if (foodNoteTypeFromFrontmatter(frontmatter, file, this.settings, this.getGcmApi()?.frontmatterKinds) !== "food") return null;
         const reason = foodDuplicateMatchReason(item, candidate);
         return reason ? { item: candidate, reason } : null;
       })
@@ -4770,7 +4771,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   async openFoodEditor(file: TFile): Promise<void> {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
+    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings, this.getGcmApi()?.frontmatterKinds);
     const food = this.foodFromFrontmatter(file, fm);
     if (isRecipeLikeFoodType(type)) {
       const content = await this.app.vault.cachedRead(file);
@@ -5355,8 +5356,8 @@ export default class TPSHealthPlugin extends Plugin {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter || {};
       const tags = cache?.tags?.map((tag) => tag.tag) || [];
-      if (isArchivedHealthPath(file.path) || hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
-      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+      if (isArchivedHealthPath(file.path) || hasFoodIdentitySignal(this.settings, file, fm, tags, this.getGcmApi()?.frontmatterKinds)) continue;
+      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise", this.getGcmApi()?.frontmatterKinds) || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
       recognized++;
@@ -5429,11 +5430,11 @@ export default class TPSHealthPlugin extends Plugin {
           archived++;
           continue;
         }
-        if (hasFoodIdentitySignal(this.settings, file, fm, tags)) {
+        if (hasFoodIdentitySignal(this.settings, file, fm, tags, this.getGcmApi()?.frontmatterKinds)) {
           foodLike++;
           continue;
         }
-        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise", this.getGcmApi()?.frontmatterKinds) || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
         if (!isExercise) continue;
         recognized++;
@@ -5523,9 +5524,9 @@ export default class TPSHealthPlugin extends Plugin {
     const cache = this.app.metadataCache.getFileCache(file);
     const fm = cache?.frontmatter || {};
     const tags = cache?.tags?.map((tag) => tag.tag) || [];
-    if (hasFoodIdentitySignal(this.settings, file, fm, tags)) return null;
+    if (hasFoodIdentitySignal(this.settings, file, fm, tags, this.getGcmApi()?.frontmatterKinds)) return null;
     const recognized = tags.includes(this.settings.exerciseTag) ||
-      matchesLibraryIdentity(this.settings, fm, "exercise") ||
+      matchesLibraryIdentity(this.settings, fm, "exercise", this.getGcmApi()?.frontmatterKinds) ||
       fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
     if (!recognized) return null;
     const item = this.exerciseFromFrontmatter(file, fm);
@@ -5561,7 +5562,7 @@ export default class TPSHealthPlugin extends Plugin {
         const cache = this.app.metadataCache.getFileCache(file);
         const fm = cache?.frontmatter || {};
         const tags = cache?.tags?.map((tag) => tag.tag) || [];
-        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+        const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise", this.getGcmApi()?.frontmatterKinds) || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
         if (isExercise) return this.exerciseFromFrontmatter(file, fm);
       }
@@ -5624,7 +5625,7 @@ export default class TPSHealthPlugin extends Plugin {
     for (const file of files) {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter || {};
-      const recognized = matchesLibraryIdentity(this.settings, fm, "workout-plan") ||
+      const recognized = matchesLibraryIdentity(this.settings, fm, "workout-plan", this.getGcmApi()?.frontmatterKinds) ||
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!recognized) continue;
       stats.recognized++;
@@ -5737,7 +5738,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   foodFromFrontmatter(file: TFile, fm: any): FoodItem {
-    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
+    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings, this.getGcmApi()?.frontmatterKinds);
     const isMeal = type === "meal";
     return normalizeFoodMetricServing({
       id: file.path,
@@ -7768,7 +7769,19 @@ export default class TPSHealthPlugin extends Plugin {
     } else this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
     const classifier = this.getGcmApi()?.frontmatterKinds;
     if (classifier?.definition?.(normalizedKind)) {
-      Object.assign(frontmatter, classifier.encode({ ...frontmatter, kind: normalizedKind }));
+      const encoded = classifier.encode({ ...frontmatter, kind: normalizedKind });
+      // Encoding a tag deliberately omits kind. Object.assign alone retained
+      // the property just written by the library builder.
+      if (!Object.prototype.hasOwnProperty.call(encoded, "kind")) {
+        this.deleteHealthFrontmatterValue(frontmatter, "kind");
+        const libraryKey = normalizedKind === "exercise" || normalizedKind === "workout-plan"
+          ? libraryIdentity(this.settings, normalizedKind).key : foodFrontmatterKey(this.settings);
+        const libraryValue = normalizedKind === "exercise" || normalizedKind === "workout-plan"
+          ? libraryIdentity(this.settings, normalizedKind).value : ["food", "recipe", "meal"].includes(normalizedKind) ? foodFrontmatterValue(this.settings, normalizedKind as FoodNoteType) : normalizedKind;
+        if (encoded[libraryKey] === libraryValue) delete encoded[libraryKey];
+        if (frontmatter[libraryKey] === libraryValue) delete frontmatter[libraryKey];
+      }
+      Object.assign(frontmatter, encoded);
     }
     const titleKey = this.findHealthFrontmatterKey(frontmatter, "title");
     const nameKey = this.findHealthFrontmatterKey(frontmatter, "name");
@@ -7831,7 +7844,7 @@ export default class TPSHealthPlugin extends Plugin {
     };
   }
 
-  private getGcmApi(): any {
+  getGcmApi(): any {
     return this.getGcmPluginState().api;
   }
 
@@ -8957,7 +8970,7 @@ export default class TPSHealthPlugin extends Plugin {
     const normalized = normalizeLookup(name);
     for (const file of this.app.vault.getMarkdownFiles()) {
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      const isWorkoutPlan = matchesLibraryIdentity(this.settings, fm, "workout-plan") ||
+      const isWorkoutPlan = matchesLibraryIdentity(this.settings, fm, "workout-plan", this.getGcmApi()?.frontmatterKinds) ||
         fileIsInConfiguredFolder(file.path, this.settings.workoutPlansFolder);
       if (!isWorkoutPlan) continue;
       if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) return this.workoutPlanFromFrontmatter(file, fm);
@@ -10168,7 +10181,7 @@ export default class TPSHealthPlugin extends Plugin {
 
   async refreshRecipeNutrition(file: TFile): Promise<void> {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings);
+    const type = foodNoteTypeFromFrontmatter(fm, file, this.settings, this.getGcmApi()?.frontmatterKinds);
     if (!isRecipeLikeFoodType(type)) return;
     const content = await this.app.vault.cachedRead(file);
     const food = {
@@ -10303,8 +10316,8 @@ export default class TPSHealthPlugin extends Plugin {
       const fm = cache?.frontmatter || {};
       const tags = cache?.tags?.map((tag) => tag.tag) || [];
       if (isArchivedHealthPath(file.path)) continue;
-      if (hasFoodIdentitySignal(this.settings, file, fm, tags)) continue;
-      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise") || tags.includes(this.settings.exerciseTag) ||
+      if (hasFoodIdentitySignal(this.settings, file, fm, tags, this.getGcmApi()?.frontmatterKinds)) continue;
+      const isExercise = matchesLibraryIdentity(this.settings, fm, "exercise", this.getGcmApi()?.frontmatterKinds) || tags.includes(this.settings.exerciseTag) ||
         fileIsInConfiguredFolder(file.path, this.settings.exercisesFolder);
       if (!isExercise) continue;
       if (normalizeLookup(String(fm.title || fm.name || file.basename)) === normalized) {
@@ -11958,7 +11971,7 @@ class FoodSearchModal extends FoodInputModal {
     const file = this.app.vault.getAbstractFileByPath(item.sourcePath);
     if (!(file instanceof TFile)) return null;
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-    const type = foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings);
+    const type = foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings, this.plugin.getGcmApi()?.frontmatterKinds);
     const refreshed = this.plugin.foodFromFrontmatter(file, fm);
     if (isRecipeLikeFoodType(type)) {
       const content = await this.app.vault.cachedRead(file);
@@ -11973,7 +11986,7 @@ class FoodSearchModal extends FoodInputModal {
     if (!item.sourcePath) return item.ingredients || item.recipeServings ? "recipe" : "food";
     const file = this.app.vault.getAbstractFileByPath(item.sourcePath);
     const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
-    return file instanceof TFile ? foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings) : "food";
+    return file instanceof TFile ? foodNoteTypeFromFrontmatter(fm, file, this.plugin.settings, this.plugin.getGcmApi()?.frontmatterKinds) : "food";
   }
 
   private scheduleDraftPersist(): void {
@@ -13089,7 +13102,7 @@ function renderNativeDailyComponents(
   const file = foodOverride?.file ?? (raw ? plugin.app.metadataCache.getFirstLinkpathDest(raw, entry.path) : null);
   if (!(file instanceof TFile)) return;
   const foodFm = plugin.app.metadataCache.getFileCache(file)?.frontmatter || {};
-  const type = foodNoteTypeFromFrontmatter(foodFm, file, plugin.settings);
+  const type = foodNoteTypeFromFrontmatter(foodFm, file, plugin.settings, plugin.getGcmApi()?.frontmatterKinds);
   if (!isRecipeLikeFoodType(type)) return;
   const details = container.createEl("details", { cls: "tps-health-native-daily-breakdown tps-health-native-daily-components" });
   container.addClass("tps-health-native-daily-has-components");
@@ -13542,7 +13555,7 @@ function foodLogChipDataFromRenderedItem(item: Element, plugin: TPSHealthPlugin)
 function recipeIngredientEntityLabel(plugin: TPSHealthPlugin, sourcePath: string): "recipe" | "meal" {
   const file = plugin.app.vault.getAbstractFileByPath(sourcePath);
   if (!(file instanceof TFile)) return "recipe";
-  const type = foodNoteTypeFromFrontmatter(plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}, file, plugin.settings);
+  const type = foodNoteTypeFromFrontmatter(plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}, file, plugin.settings, plugin.getGcmApi()?.frontmatterKinds);
   return type === "meal" ? "meal" : "recipe";
 }
 
@@ -14311,7 +14324,7 @@ function isRecipeLikeMarkdownFile(plugin: TPSHealthPlugin, path: string | null |
   if (!(file instanceof TFile)) return false;
   const cache = plugin.app.metadataCache.getFileCache(file);
   const fm = cache?.frontmatter || {};
-  const type = foodNoteTypeFromFrontmatter(fm, file, plugin.settings);
+  const type = foodNoteTypeFromFrontmatter(fm, file, plugin.settings, plugin.getGcmApi()?.frontmatterKinds);
   if (!isRecipeLikeFoodType(type)) return false;
   return isFoodLikeMarkdownFile(plugin, file, cache) ||
     fileIsInConfiguredFolder(file.path, plugin.settings.recipesFolder) ||
@@ -19552,7 +19565,11 @@ function foodFrontmatterValue(
   return String(value || "").trim() || foodFrontmatterValue(DEFAULT_SETTINGS, type);
 }
 
-function configuredFoodFrontmatterType(fm: any, settings: TPSHealthSettings): FoodNoteType | null {
+function configuredFoodFrontmatterType(fm: any, settings: TPSHealthSettings, codec?: HealthKindCodec): FoodNoteType | null {
+  if (codec) {
+    const kind = codec.decode(fm).kind;
+    if (["food", "recipe", "meal"].includes(kind) && codec.definition(kind)) return kind;
+  }
   const configuredValue = String(fm?.[foodFrontmatterKey(settings)] ?? "").trim();
   for (const type of ["food", "recipe", "meal"] as FoodNoteType[]) {
     if (configuredValue === foodFrontmatterValue(settings, type)) return type;
@@ -19568,8 +19585,8 @@ function foodIdentificationWritesTag(mode: HealthEntityIdentificationMode | unde
   return mode !== "folder" && mode !== "metadata";
 }
 
-function hasFoodIdentitySignal(settings: TPSHealthSettings, file: TFile, fm: any, tags: string[] = []): boolean {
-  return configuredFoodFrontmatterType(fm, settings) != null ||
+function hasFoodIdentitySignal(settings: TPSHealthSettings, file: TFile, fm: any, tags: string[] = [], codec?: HealthKindCodec): boolean {
+  return configuredFoodFrontmatterType(fm, settings, codec) != null ||
     tags.includes(settings.customFoodTag) ||
     tags.includes(settings.recipeTag);
 }
@@ -19592,7 +19609,7 @@ function isFoodLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?: an
   const resolvedCache = cache || plugin.app.metadataCache.getFileCache(file);
   const fm = resolvedCache?.frontmatter || {};
   return healthEntityMatches(plugin.settings.foodIdentificationMode, {
-    metadata: configuredFoodFrontmatterType(fm, plugin.settings) != null,
+    metadata: configuredFoodFrontmatterType(fm, plugin.settings, plugin.getGcmApi()?.frontmatterKinds) != null,
     folder: fileIsInConfiguredFolder(file.path, plugin.settings.foodsFolder) ||
       fileIsInConfiguredFolder(file.path, plugin.settings.recipesFolder),
     tag: hasConfiguredTag(resolvedCache, plugin.settings.customFoodTag) ||
@@ -19924,8 +19941,8 @@ function hasCssClass(value: unknown, cssClass: string): boolean {
   return classes.includes(cssClass);
 }
 
-function foodNoteTypeFromFrontmatter(fm: any, file: TFile, settings: TPSHealthSettings): FoodNoteType {
-  const configuredType = configuredFoodFrontmatterType(fm, settings);
+function foodNoteTypeFromFrontmatter(fm: any, file: TFile, settings: TPSHealthSettings, codec?: HealthKindCodec): FoodNoteType {
+  const configuredType = configuredFoodFrontmatterType(fm, settings, codec);
   if (configuredType) return configuredType;
   const recipeIdentity = normalizePath(file.path).startsWith(`${normalizePath(settings.recipesFolder)}/`) ||
     frontmatterTags(fm.tags).some((tag) => normalizeHealthTag(tag) === normalizeHealthTag(settings.recipeTag));
