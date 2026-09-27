@@ -1,5 +1,15 @@
 # TPS Health
 
+## 3.7.2 — Keep note navigation free of food maintenance
+
+Opening a note, loading Health and metadata-index resolution no longer compact legacy food fields or scan/process daily notes to fill nutrition. These observers previously ran even in native-record storage mode; ordinary edits could schedule another whole-log sweep, and opening a legacy entry could modify its source. The responsible observers, timer, private repair methods and unused helpers are removed. No replacement watcher, queue, cache or migration is introduced.
+
+Food creation and explicit edits continue to write their nutrition and compact field format through the existing authoring paths. Existing legacy notes remain unchanged when viewed; read-only nutrition projection still understands legacy entries. Explicit Base configuration/repair actions and configured daily-rollup writes after food logging remain available. Native record indexing, workout restoration and other plugins' work retain their existing behavior; this fix does not claim to eliminate all startup or render costs.
+
+The lifecycle regression executes the real plugin load and 100 navigation/metadata-resolution bursts with 128 unrelated notes and a legacy food entry. It requires zero body reads, process attempts or source modifications on startup, and zero body reads, write attempts or vault scans from the settled event bursts. The released 3.7.0 source failed with two cached reads, one process attempt and one source modification during startup. Food-authoring tests continue to cover portion scaling, nutrition snapshots and recipe yields. This patch also preserves the published 3.7.1 phone/tablet form improvements. Settings, stored schemas, APIs and minimum Obsidian **1.12.0** are unchanged. Final tests, build/deployment, reload verification and artifact hashes are recorded in [3.7.2 release notes](release-notes/3.7.2.md).
+
+Validation on 2026-09-27: **493 checks passed, zero failed, one optional live USDA test skipped** without its credential; TypeScript/build passed. The separate final build deploys only to Obsidian Plugin Test Vault, and named disable/enable reload verifies 3.7.2. Four installed note opens and Calendar note creation passed in the combined plugin smoke test, with Health settings byte-identical. No live provider calls or physical iPhone verification are claimed; production remains the user's BRAT pull.
+
 ## 3.7.1 — Consistent phone and tablet forms
 
 Health dialogs now share viewport sizing, safe-area spacing, touch controls, focus outlines and a single scrolling content area. The previous phone top offset, double content padding, empty native header and separate workout footer sizing are removed. Mobile food search expands to tablet width (up to 860 px) instead of retaining a 520 px cap. Keyboard sizing uses existing Obsidian/GCM CSS variables; no new listeners, timers, observers, caches or settings are introduced. The existing keyboard-hidden food-search footer and Review highlight remain.
@@ -53,7 +63,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.7.1](https://github.com/ZachTish/tps-health/releases/tag/3.7.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.7.2](https://github.com/ZachTish/tps-health/releases/tag/3.7.2) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
