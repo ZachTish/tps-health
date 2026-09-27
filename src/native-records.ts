@@ -954,7 +954,7 @@ export class HealthNativeRecordService {
   private readonly foodDefinitionsByPath = new Map<string, Record<string, unknown>>();
   private readonly workoutDataByPath = new Map<string, StoredWorkoutExercise[]>();
   private readonly changeListeners = new Set<(change: NativeHealthRecordChange) => void>();
-  private readonly refreshGenerations = new Map<string, number>();
+  private readonly refreshGenerations = new Map<string, symbol>();
   private readonly foodProjectionTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
@@ -972,10 +972,16 @@ export class HealthNativeRecordService {
     this.rebuild();
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
 
-    this.plugin.registerEvent(metadataCache.on('changed', (file, _data, cache) => this.indexFile(file, cache?.frontmatter)));
+    this.plugin.registerEvent(metadataCache.on('changed', (file, data, cache) => {
+      // The indexed source supersedes reads started before this event. A late
+      // cachedRead result must not replace its newer frontmatter or body data.
+      const hadPendingRead = this.refreshGenerations.delete(file.path);
+      this.indexFile(file, cache?.frontmatter ?? null, data);
+      if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
+    }));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
       // `resolved` also fires after ordinary edits. Once startup is settled,
-      // changed/create/modify/delete/rename already maintain this index.
+      // Metadata changes and scoped Health file events maintain this index.
       if (!this.workoutIndexReady) this.rebuild();
       this.workoutIndexReady = true;
       this.plugin.scheduleWorkoutActionBars();
@@ -988,17 +994,23 @@ export class HealthNativeRecordService {
       this.plugin.scheduleWorkoutActionBars();
     });
     this.plugin.registerEvent(vault.on('create', (file) => {
-      // Obsidian replays create for every existing file while loading the vault.
-      // Metadata events and the layout-ready rebuild cover discovery without
-      // queuing the entire vault ahead of Obsidian's workspace-file read.
-      if (!this.plugin.app.workspace?.layoutReady) return;
-      if (file instanceof TFile) void this.refreshFile(file);
+      // A synced active-workout file can arrive before its metadata. Keep its
+      // saved pointer guarded without reading every newly discovered note.
+      if (this.plugin.app.workspace?.layoutReady && file instanceof TFile
+        && file.path === this.plugin.settings.activeWorkoutPath) void this.refreshFile(file);
     }));
     this.plugin.registerEvent(vault.on('modify', (file) => {
-      if (file instanceof TFile) void this.refreshFile(file);
+      // Metadata owns external discovery. Only already-known Health sources
+      // need the in-flight guard before that event arrives; ordinary editing
+      // must not enter the file queue or disable workout controls.
+      if (file instanceof TFile && (
+        this.recordsByPath.has(file.path) || this.entryPathsByFoodPath.has(file.path)
+        || file.path === this.plugin.settings.activeWorkoutPath
+      )) void this.refreshFile(file);
     }));
     this.plugin.registerEvent(vault.on('delete', (file) => {
       if (file instanceof TFile) {
+        const hadPendingRead = this.refreshGenerations.delete(file.path);
         const deleted = this.recordsByPath.get(file.path);
         const legacyChildren = deleted?.kind === 'workout-session'
           ? this.getWorkoutExerciseRecords(deleted)
@@ -1006,16 +1018,22 @@ export class HealthNativeRecordService {
         this.foodDefinitionsByPath.delete(file.path);
         this.workoutDataByPath.delete(file.path);
         this.removePath(file.path);
+        if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
         if (legacyChildren.length) void this.trashLegacyWorkoutChildren(deleted!, legacyChildren, 'health-workout-delete');
       }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
+      this.refreshGenerations.delete(oldPath);
+      const wasHealthSource = this.recordsByPath.has(oldPath) || this.entryPathsByFoodPath.has(oldPath)
+        || oldPath === this.plugin.settings.activeWorkoutPath || file.path === this.plugin.settings.activeWorkoutPath;
       this.foodDefinitionsByPath.delete(oldPath);
       const workoutData = this.workoutDataByPath.get(oldPath);
       this.workoutDataByPath.delete(oldPath);
       if (workoutData && file instanceof TFile) this.workoutDataByPath.set(file.path, workoutData);
       this.removePath(oldPath);
-      if (file instanceof TFile) void this.refreshFile(file);
+      // Obsidian does not emit metadata changed on rename. Preserve that
+      // explicit refresh for Health files without reading unrelated notes.
+      if (file instanceof TFile && wasHealthSource) void this.refreshFile(file);
     }));
   }
 
@@ -2684,10 +2702,14 @@ export class HealthNativeRecordService {
     if (this.plugin.app.workspace?.layoutReady && metadataComplete) this.workoutIndexReady = true;
   }
 
-  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null): void {
+  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string): void {
     const previous = this.recordsByPath.get(file.path);
     this.removePath(file.path, false);
-    const resolved = frontmatter || this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+    // An explicit absent frontmatter value comes from an indexed source. Do
+    // not revive its old identity from a lagging getFileCache result.
+    const resolved = frontmatter === undefined
+      ? this.plugin.app.metadataCache.getFileCache(file)?.frontmatter
+      : frontmatter;
     const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
     const inspected = api?.version === 6 && typeof api.inspect === 'function' && api.isEnabled?.() === true
       ? api.inspect(resolved)
@@ -2696,6 +2718,7 @@ export class HealthNativeRecordService {
     const recordId = String(inspected?.id || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion);
     if (!recordId || schemaVersion !== 1 || !kind || !HEALTH_KINDS.has(kind)) {
+      this.workoutDataByPath.delete(file.path);
       if (resolved && this.entryPathsByFoodPath.has(file.path)) {
         this.foodDefinitionsByPath.set(file.path, { ...resolved });
         this.refreshLinkedFoodEntries(file.path);
@@ -2707,6 +2730,17 @@ export class HealthNativeRecordService {
       this.plugin.settings,
       { ...(inspected?.frontmatter || resolved) },
     );
+    if (kind === 'workout-session' && content !== undefined) {
+      const nested = Object.prototype.hasOwnProperty.call(rawFrontmatter, 'session')
+        ? storedWorkoutExercises(rawFrontmatter.session)
+        : null;
+      const bodyValue = nested ? null : readWorkoutDataFromNoteContent(content);
+      const exercises = nested || (bodyValue == null ? null : storedWorkoutExercises(bodyValue));
+      if (exercises) this.workoutDataByPath.set(file.path, exercises);
+      else this.workoutDataByPath.delete(file.path);
+    } else if (kind !== 'workout-session') {
+      this.workoutDataByPath.delete(file.path);
+    }
     const projected = kind === 'food-entry'
       ? this.projectFoodEntry(rawFrontmatter, file.path)
       : null;
@@ -2759,37 +2793,32 @@ export class HealthNativeRecordService {
 
   private async refreshFile(file: TFile): Promise<void> {
     if (this.disposed || file.extension !== 'md') return;
-    const generation = (this.refreshGenerations.get(file.path) || 0) + 1;
+    // Unique tokens cannot be reused if metadata settles one read and another
+    // begins while the invalidated promise is still pending.
+    const generation = Symbol();
     this.refreshGenerations.set(file.path, generation);
     try {
-      const content = await this.plugin.app.vault.read(file);
+      const content = await this.plugin.app.vault.cachedRead(file);
       if (this.refreshGenerations.get(file.path) !== generation) return;
       if (this.plugin.app.vault.getAbstractFileByPath(file.path) !== file) return;
       const info = getFrontMatterInfo(content);
-      const parsed = info.exists ? parseYaml(info.frontmatter) : null;
+      let parsed: unknown = null;
+      try {
+        parsed = info.exists ? parseYaml(info.frontmatter) : null;
+      } catch {
+        // A known Health note with invalid YAML no longer has a safe identity.
+        // Clear the projection; the next indexed source can restore it.
+      }
       const resolvedFrontmatter = parsed && typeof parsed === 'object'
         ? parsed as Record<string, unknown>
         : null;
-      if (canonicalNativeKind(this.plugin.settings, this.plugin.getGcmNativeRecordsApi()?.inspect?.(resolvedFrontmatter)?.kind) === 'workout-session') {
-        const workoutFrontmatter = decodeNativeRecordFrontmatter(this.plugin.settings, resolvedFrontmatter as Record<string, unknown>);
-        const nested = Object.prototype.hasOwnProperty.call(workoutFrontmatter, 'session')
-          ? storedWorkoutExercises(workoutFrontmatter.session)
-          : null;
-        const bodyValue = nested ? null : readWorkoutDataFromNoteContent(content);
-        const exercises = nested || (bodyValue == null ? null : storedWorkoutExercises(bodyValue));
-        if (exercises) this.workoutDataByPath.set(file.path, exercises);
-        else this.workoutDataByPath.delete(file.path);
-      } else {
-        this.workoutDataByPath.delete(file.path);
-      }
-      this.indexFile(file, resolvedFrontmatter);
+      this.indexFile(file, resolvedFrontmatter, content);
     } catch {
       // MetadataCache remains the safe eventual fallback for transient reads.
     } finally {
       if (this.refreshGenerations.get(file.path) === generation) {
         this.refreshGenerations.delete(file.path);
-        // The last read can belong to an unrelated note. Controls disabled by
-        // the shared indexing guard still need a settled-state render.
+        // Controls disabled by an in-flight Health read need a settled-state render.
         if (this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
       }
     }

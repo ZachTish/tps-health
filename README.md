@@ -1,5 +1,16 @@
 # TPS Health
 
+## 3.7.3 — Keep ordinary edits outside the Health file queue
+
+Ordinary Markdown creation, editing and renaming no longer ask Health to read the note. Obsidian's `metadataCache.changed(file, data, cache)` owns discovery and provides both frontmatter and the source needed for legacy workout body data. An externally created note or an ordinary note newly classified as Health becomes visible when that indexing event arrives. Health's own create/edit operations still update the index directly from their returned record, without waiting for Obsidian's cache.
+
+Known Health records and linked food definitions retain a scoped `cachedRead` refresh on modification, including the existing in-flight workout guard. The saved active-workout path receives the same protection if its file arrives before metadata, so Finish cannot mistake a newly synced session for a missing one. Known Health renames also refresh because Obsidian does not emit metadata `changed` for renames. Initial legacy workout hydration uses `cachedRead`; unrelated notes never delay workout controls. Explicitly missing/invalid indexed frontmatter removes the previous identity instead of falling back to stale cached frontmatter. A metadata indexing event invalidates its older pending read; unique tokens in the existing pending map prevent an old completion from replacing newer source or releasing a later edit guard. No new cache, timer, watcher, migration, settings or automatic note repair is added; authoritative mutation checks remain at their existing write boundaries.
+
+Focused regression coverage includes 128 ordinary create/edit/rename sequences with zero Health raw reads, cached reads, scans or writes; new external Health discovery; body-only legacy workout changes; stale-cache/invalid-frontmatter eviction; known-record updates before metadata catches up; rename without a metadata event; out-of-order reads preserving the latest record, and pending reads cancelled by rename/delete. The 74 native-record checks pass. The versioned declared suite passes 504 tests with zero failures and one optional live USDA check skipped without its credential, including TypeScript and a build-only build. Installed test-vault comparisons and final release artifacts are recorded in [3.7.3 release notes](release-notes/3.7.3.md); these operation counts are not a production timing claim.
+
+
+Installed test-vault QA compared the same synthetic Inbox actions on 3.7.2 and 3.7.3. Three ordinary create/edit/rename sequences fell from 9 Health refreshes and 9 direct `Vault.read` calls to zero. A native workout's external discovery, set edit (5 → 12 reps), and rename retained the expected index, body and settings: the new version performed 2 scoped refreshes and 2 `cachedRead` calls, with zero direct Health `Vault.read` calls. Obsidian filled its cache through one nested `Vault.read` call; cached reads do not promise zero disk access. An initial probe incorrectly rejected that nested read; its failure was retained and the corrected repeat attributed it to core Obsidian by stack. These are operation counts, not timing or production-speed claims. The normal stable build deployed to the test vault, and a named disable/load-manifest/enable reload verified 3.7.3. The final separate build after these docs must remain byte-identical to the verified artifacts.
+
 ## 3.7.2 — Keep note navigation free of food maintenance
 
 Opening a note, loading Health and metadata-index resolution no longer compact legacy food fields or scan/process daily notes to fill nutrition. These observers previously ran even in native-record storage mode; ordinary edits could schedule another whole-log sweep, and opening a legacy entry could modify its source. The responsible observers, timer, private repair methods and unused helpers are removed. No replacement watcher, queue, cache or migration is introduced.
@@ -63,7 +74,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.7.2](https://github.com/ZachTish/tps-health/releases/tag/3.7.2) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.7.3](https://github.com/ZachTish/tps-health/releases/tag/3.7.3) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

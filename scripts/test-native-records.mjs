@@ -35,6 +35,7 @@ async function loadModule() {
                 const match = line.match(/^([A-Za-z0-9_-]+):\\s*(.*)$/);
                 if (!match) continue;
                 const raw = match[2].trim();
+                if (raw.startsWith('[') && !raw.endsWith(']')) throw new Error('Invalid YAML sequence');
                 result[match[1]] = raw.startsWith('__json__:')
                   ? JSON.parse(decodeURIComponent(raw.slice('__json__:'.length)))
                   : /^-?\\d+(?:\\.\\d+)?$/.test(raw) ? Number(raw) : /^(true|false)$/.test(raw) ? raw === 'true' : raw.replace(/^['"]|['"]$/g, '');
@@ -73,6 +74,7 @@ function createHarness(options = {}) {
   const createCalls = [];
   const updateCalls = [];
   const readCalls = [];
+  const cachedReadCalls = [];
   const layoutReadyCallbacks = [];
   const trashedPaths = [];
   const exerciseDefinitions = new Set();
@@ -212,7 +214,10 @@ function createHarness(options = {}) {
       },
       vault: {
         getMarkdownFiles: () => [...files.values()],
-        cachedRead: async (file) => contents.get(file.path) || '',
+        cachedRead: async (file) => {
+          cachedReadCalls.push(file.path);
+          return contents.get(file.path) || '';
+        },
         read: async (file) => {
           readCalls.push(file.path);
           return contents.get(file.path) || '';
@@ -289,8 +294,244 @@ function createHarness(options = {}) {
     plugin.app.workspace.layoutReady = true;
     for (const callback of layoutReadyCallbacks.splice(0)) callback();
   };
-  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, readCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata, finishLayout };
+  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, readCalls, cachedReadCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata, finishLayout };
 }
+
+test('ordinary note create, edit and rename bursts do not read sources or unsettle workouts', async () => {
+  const h = createHarness();
+  const workout = await h.service.createWorkoutSession({ title: 'Active workout' }, 'ordinary-burst');
+  let scans = 0;
+  let writes = 0;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.plugin.app.vault.process = async () => { writes++; };
+  h.plugin.app.fileManager.processFrontMatter = async () => { writes++; };
+  h.readCalls.length = h.cachedReadCalls.length = 0;
+  const notifications = [];
+  h.service.onRecordsChanged(change => notifications.push(change));
+  for (let index = 0; index < 128; index++) {
+    const file = h.addLegacyFile(`Inbox/ordinary-${index}.md`, 'Body');
+    h.emitVault('create', file);
+    h.emitVault('modify', file);
+    assert.equal(h.service.isWorkoutIndexSettled(), true, 'unrelated edits cannot block workout controls');
+    h.emitMetadata('changed', file, 'Body', {});
+    const oldPath = file.path;
+    h.files.delete(oldPath);
+    file.path = `Inbox/renamed-${index}.md`;
+    h.files.set(file.path, file);
+    h.emitVault('rename', file, oldPath);
+  }
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.equal(scans, 0);
+  assert.equal(writes, 0);
+  assert.deepEqual(notifications, []);
+  assert.equal(h.service.resolveWorkoutSession({ id: workout.id }).state, 'active');
+  h.service.dispose();
+});
+
+test('external Health discovery and workout body edits use the indexed event source without another read', async () => {
+  const h = createHarness();
+  const file = h.addLegacyFile('Inbox/external.md', 'Ordinary note');
+  h.emitVault('create', file);
+  await Promise.resolve();
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  const fm = { tpsId: 'external-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'External', status: 'active' };
+  const body = reps => writeWorkoutDataToNoteContent('---\ntpsId: external-workout\n---\n', JSON.stringify({
+    version: 1, exercises: [{ id: 'press', name: 'Press', sets: [{ id: 'set', reps }] }],
+  }));
+  // The event's cache/source are current even when getFileCache still returns the old note.
+  h.emitMetadata('changed', file, body(5), { frontmatter: fm });
+  assert.equal(h.service.getWorkoutSnapshot(file.path).exercises[0].sets[0].reps, 5);
+  h.emitMetadata('changed', file, body(9), { frontmatter: fm });
+  assert.equal(h.service.getWorkoutSnapshot(file.path).exercises[0].sets[0].reps, 9);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  h.service.dispose();
+});
+
+test('missing or malformed indexed frontmatter clears old Health identity instead of consulting stale cache', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Remove identity' }, 'remove-identity');
+  assert.ok(h.frontmatters.get(record.file), 'retain a deliberately stale getFileCache value');
+  h.emitMetadata('changed', record.file, '---\nkind: [invalid\n---\nBody', {});
+  assert.equal(h.service.getWorkoutSnapshot(record.path), null);
+  assert.equal(h.service.recordsByPath.has(record.path), false);
+  assert.equal(h.service.workoutDataByPath.has(record.path), false);
+  assert.deepEqual(h.readCalls, []);
+  h.service.dispose();
+});
+
+test('known workout edits preserve the pending guard and newest source when reads finish out of order', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Concurrent' }, 'concurrent');
+  const original = h.contents.get(record.path);
+  const releases = [];
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => releases.push(resolve));
+  h.emitVault('modify', record.file);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  h.emitVault('modify', record.file);
+  releases[1](original.replace('title: Concurrent', 'title: Latest'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'Latest');
+  releases[0](original);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'Latest');
+  assert.deepEqual(h.readCalls, []);
+  h.service.dispose();
+});
+
+test('newer indexed source wins over an older pending Health cached read', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Before event' }, 'metadata-wins');
+  const older = h.contents.get(record.path);
+  let release;
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => { release = resolve; });
+  h.emitVault('modify', record.file);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  const newerFm = { ...record.frontmatter, title: 'After event' };
+  delete newerFm.session;
+  const newer = writeWorkoutDataToNoteContent(older.replace('title: Before event', 'title: After event'), JSON.stringify({
+    version: 1, exercises: [{ id: 'press', name: 'Press', sets: [{ id: 'set', reps: 12 }] }],
+  }));
+  const settledStates = [];
+  h.plugin.scheduleWorkoutActionBars = () => settledStates.push(h.service.isWorkoutIndexSettled());
+  h.emitMetadata('changed', record.file, newer, { frontmatter: newerFm });
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'After event');
+  assert.equal(h.service.getWorkoutSnapshot(record.path).exercises[0].sets[0].reps, 12);
+  release(older);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'After event');
+  assert.equal(h.service.getWorkoutSnapshot(record.path).exercises[0].sets[0].reps, 12);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(settledStates.at(-1), true, 'metadata ownership must wake the controls once its source is indexed');
+  h.service.dispose();
+});
+
+test('an invalidated read cannot reuse a later refresh token or release its pending guard', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Before event' }, 'metadata-aba');
+  const original = h.contents.get(record.path);
+  const releases = [];
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => releases.push(resolve));
+  h.emitVault('modify', record.file);
+  h.emitMetadata('changed', record.file, original.replace('title: Before event', 'title: Indexed'), {
+    frontmatter: { ...record.frontmatter, title: 'Indexed' },
+  });
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.emitVault('modify', record.file);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  releases[0](original);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'Indexed');
+  assert.equal(h.service.isWorkoutIndexSettled(), false, 'the old read cannot release the later read guard');
+  releases[1](original.replace('title: Before event', 'title: Latest'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path).title, 'Latest');
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.service.dispose();
+});
+
+test('a newly arrived saved active-workout path remains guarded before metadata discovery', async () => {
+  const path = 'Inbox/synced-active-workout.md';
+  const h = createHarness({ settings: { activeWorkoutPath: path } });
+  const file = h.addLegacyFile(path, [
+    '---', 'tpsId: synced-active', 'tpsSchemaVersion: 1', 'kind: workout-session',
+    'title: Synced active', 'status: active', '---',
+  ].join('\n'));
+  let release;
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => { release = resolve; });
+  h.emitVault('create', file);
+  assert.equal(h.service.isWorkoutIndexSettled(), false, 'Finish must not treat the saved pointer as missing before its source arrives');
+  release(h.contents.get(path));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(h.service.resolveWorkoutSession({ id: 'synced-active', path }).state, 'active');
+  assert.deepEqual(h.readCalls, []);
+  h.service.dispose();
+});
+
+test('known workout rename updates the index without depending on a metadata changed event', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Rename me' }, 'rename-known');
+  const oldPath = record.path;
+  const nextPath = 'Inbox/renamed-workout.md';
+  h.files.delete(oldPath);
+  h.files.set(nextPath, record.file);
+  h.contents.set(nextPath, h.contents.get(oldPath));
+  h.contents.delete(oldPath);
+  record.file.path = nextPath;
+  h.emitVault('rename', record.file, oldPath);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.recordsByPath.has(oldPath), false);
+  assert.equal(h.service.getWorkoutSnapshot(nextPath).id, record.id);
+  assert.deepEqual(h.cachedReadCalls, [nextPath]);
+  assert.deepEqual(h.readCalls, []);
+  h.service.dispose();
+});
+
+test('rename during a Health read clears its old path token without releasing the new path guard', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Rename pending' }, 'rename-pending');
+  const oldPath = record.path;
+  const nextPath = 'Inbox/renamed-pending.md';
+  const content = h.contents.get(oldPath);
+  const releases = [];
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => releases.push(resolve));
+  h.emitVault('modify', record.file);
+  h.files.delete(oldPath);
+  h.files.set(nextPath, record.file);
+  h.contents.set(nextPath, content);
+  h.contents.delete(oldPath);
+  record.file.path = nextPath;
+  h.emitVault('rename', record.file, oldPath);
+  releases[0](content);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.refreshGenerations.has(oldPath), false);
+  assert.equal(h.service.isWorkoutIndexSettled(), false, 'the new path refresh retains its own guard');
+  releases[1](content);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(h.service.getWorkoutSnapshot(nextPath).id, record.id);
+  h.service.dispose();
+});
+
+test('deleting a Health source cancels its pending guard and late data cannot restore the record', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Delete pending' }, 'delete-pending');
+  const content = h.contents.get(record.path);
+  let release;
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => { release = resolve; });
+  h.emitVault('modify', record.file);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  await h.plugin.app.vault.trash(record.file);
+  assert.equal(h.service.isWorkoutIndexSettled(), true, 'a deleted file cannot keep controls waiting for its irrelevant read');
+  assert.equal(h.service.getWorkoutSnapshot(record.path), null);
+  release(content);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path), null);
+  assert.equal(h.service.refreshGenerations.size, 0);
+  h.service.dispose();
+});
+
+test('known source losing valid YAML or Health classification evicts its stale identity', async () => {
+  const h = createHarness();
+  const record = await h.service.createWorkoutSession({ title: 'Malformed' }, 'malformed-known');
+  h.contents.set(record.path, '---\ntpsId: malformed-known\ntpsSchemaVersion: 1\nkind: [invalid\n---\nBody');
+  h.emitVault('modify', record.file);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getWorkoutSnapshot(record.path), null);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  h.emitMetadata('changed', record.file, '', { frontmatter: record.frontmatter });
+  assert.ok(h.service.getWorkoutSnapshot(record.path));
+  h.emitMetadata('changed', record.file, '---\nkind: note\n---\nBody', { frontmatter: { kind: 'note' } });
+  assert.equal(h.service.getWorkoutSnapshot(record.path), null);
+  assert.equal(h.service.workoutDataByPath.has(record.path), false);
+  assert.deepEqual(h.readCalls, []);
+  h.service.dispose();
+});
 
 test('startup discovery does not queue a body read for every Markdown file in either storage mode', async () => {
   for (const storageMode of ['legacy', 'native-records']) {
@@ -331,13 +572,14 @@ test('startup metadata restores food records and hydrates legacy workout bodies 
 
   harness.finishLayout();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(harness.readCalls, [workout.path], 'only a recognized workout needs legacy body hydration');
+  assert.deepEqual(harness.readCalls, [], 'read-only startup hydration must not use raw reads');
+  assert.deepEqual(harness.cachedReadCalls, [workout.path], 'only a recognized workout needs legacy body hydration');
   assert.equal(harness.service.getWorkoutSnapshot('startup-workout').exercises[0].sets[0].reps, 8);
   assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 210);
   harness.service.dispose();
 });
 
-test('a user-created record after startup is indexed before MetadataCache catches up', async () => {
+test('an externally created Health record is discovered by its metadata event without a competing source read', async () => {
   const harness = createHarness({ layoutReady: false });
   harness.finishLayout();
   const file = harness.addLegacyFile('Inbox/new-food.md', [
@@ -346,7 +588,12 @@ test('a user-created record after startup is indexed before MetadataCache catche
   ].join('\n'));
   harness.emitVault('create', file);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(harness.readCalls, [file.path]);
+  assert.deepEqual(harness.readCalls, []);
+  assert.deepEqual(harness.cachedReadCalls, []);
+  assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 0);
+  harness.emitMetadata('changed', file, harness.contents.get(file.path), { frontmatter: {
+    tpsId: 'new-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 320,
+  } });
   assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 320);
   harness.service.dispose();
 });
@@ -941,10 +1188,11 @@ test('editing a linked food definition recalculates only its indexed food entrie
   assert.equal(persisted.frontmatter.carbsG, 40);
 });
 
-test('a vault modify refreshes the exact record before MetadataCache catches up', async () => {
-  const { service, files, contents, emitVault } = createHarness();
-  const file = { path: 'food-live.md', name: 'food-live.md', extension: 'md', basename: 'food-live' };
-  files.set(file.path, file);
+test('a known Health modify refreshes its cached source before MetadataCache catches up', async () => {
+  const { service, addFrontmatterFile, contents, emitVault, readCalls, cachedReadCalls } = createHarness();
+  const original = { tpsId: 'food-live', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-08-24', calories: 100 };
+  const file = addFrontmatterFile('food-live.md', original);
+  service.indexFile(file, original);
   contents.set(file.path, [
     '---',
     'tpsId: food-live',
@@ -962,6 +1210,8 @@ test('a vault modify refreshes the exact record before MetadataCache catches up'
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(service.getDailyFoodTotals('2026-08-24').calories, 210);
+  assert.deepEqual(readCalls, []);
+  assert.deepEqual(cachedReadCalls, [file.path]);
   assert.deepEqual(changes.at(-1), {
     path: 'food-live.md', kinds: ['food-entry'], dates: ['2026-08-24'],
   });
@@ -1782,21 +2032,21 @@ test('mobile layout readiness cannot revoke an already resolved metadata generat
   assert.equal(h.service.isWorkoutIndexSettled(), true, 'layout must preserve the authoritative resolved event');
 });
 
-test('delayed mobile reads refresh workout controls after the last pending read settles', async () => {
+test('delayed known-Health reads refresh workout controls after the last pending read settles', async () => {
   const h = createHarness();
   const record = await h.service.createWorkoutSession({ title: 'Mobile', startedAt: '2026-09-12T12:00:00Z' }, 'mobile');
-  const unrelated = h.addLegacyFile('Inbox/unrelated.md', 'Unrelated');
+  const second = await h.service.createWorkoutSession({ title: 'Second' }, 'second');
   const releases = new Map();
-  h.plugin.app.vault.read = file => new Promise(resolve => releases.set(file.path, () => resolve(h.contents.get(file.path))));
+  h.plugin.app.vault.cachedRead = file => new Promise(resolve => releases.set(file.path, () => resolve(h.contents.get(file.path))));
   const states = [];
   h.plugin.scheduleWorkoutActionBars = () => states.push(h.service.isWorkoutIndexSettled());
   const workoutRead = h.service.refreshFile(record.file);
-  const otherRead = h.service.refreshFile(unrelated);
+  const otherRead = h.service.refreshFile(second.file);
   assert.equal(h.service.isWorkoutIndexSettled(), false);
   releases.get(record.path)();
   await workoutRead;
   assert.equal(h.service.isWorkoutIndexSettled(), false);
-  releases.get(unrelated.path)();
+  releases.get(second.path)();
   await otherRead;
   assert.equal(states.at(-1), true, 'the final read must wake controls even when it belongs to another file');
   assert.equal(h.service.resolveWorkoutSession({ id: record.id, path: record.path }).state, 'active');
@@ -1833,7 +2083,7 @@ test('warm mobile load uses public cache coverage when initialized is absent and
 
 test('an unloaded service cannot refresh controls when an old mobile read finishes', async()=>{
  const h=createHarness(),record=await h.service.createWorkoutSession({title:'Unload'},'unload');
- let release;h.plugin.app.vault.read=()=>new Promise(resolve=>release=()=>resolve(h.contents.get(record.path)));
+ let release;h.plugin.app.vault.cachedRead=()=>new Promise(resolve=>release=()=>resolve(h.contents.get(record.path)));
  let refreshes=0;h.plugin.scheduleWorkoutActionBars=()=>refreshes++;
  const read=h.service.refreshFile(record.file);h.service.dispose();release();await read;
  assert.equal(refreshes,0);
