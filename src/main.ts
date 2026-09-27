@@ -678,7 +678,6 @@ export default class TPSHealthPlugin extends Plugin {
   private finishPromptWorkoutFiles = new Set<string>();
   private readonly workoutSurfaceInstanceKey = id("workout-surface");
   private workoutActionBarRefreshTimer: number | null = null;
-  private foodLogNutritionRepairTimer: number | null = null;
   private localFoodIndex: LocalFoodIndex | null = null;
   private exerciseSearchIndex: ExerciseSearchIndex | null = null;
   private exerciseSearchIndexDirty = true;
@@ -1082,10 +1081,9 @@ export default class TPSHealthPlugin extends Plugin {
       this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
     }));
-    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+    this.registerEvent(this.app.workspace.on("file-open", () => {
       this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
-      if (file instanceof TFile) void this.compactVisibleFoodLogFields(file);
     }));
     this.registerEvent(this.app.workspace.on("layout-change", () => {
       const provider = this.getGcmApi()?.externalActions ?? null;
@@ -1098,14 +1096,7 @@ export default class TPSHealthPlugin extends Plugin {
       this.scheduleGcmMenuRefresh();
       this.scheduleWorkoutActionBars();
     }));
-    const activeFile = this.app.workspace.getActiveFile();
-    if (activeFile instanceof TFile) void this.compactVisibleFoodLogFields(activeFile);
-    this.register(() => {
-      if (this.foodLogNutritionRepairTimer != null) window.clearTimeout(this.foodLogNutritionRepairTimer);
-      this.foodLogNutritionRepairTimer = null;
-    });
     this.app.workspace.onLayoutReady(() => {
-      this.scheduleFoodLogNutritionRepair("layout-ready", 500);
       void (async () => {
         if (this.nativeRecordService?.isEnabled() && this.getActiveWorkoutState()) {
           this.activeWorkoutFile();
@@ -1120,8 +1111,6 @@ export default class TPSHealthPlugin extends Plugin {
       });
       void this.resumePendingFoodDescribeWorkflow("layout-ready");
     });
-    this.registerEvent(this.app.metadataCache.on("resolved", () => this.scheduleFoodLogNutritionRepair("metadata-resolved", 250)));
-    this.scheduleFoodLogNutritionRepair("load", 1500);
     this.scheduleWorkoutActionBars();
 
   }
@@ -2180,118 +2169,6 @@ export default class TPSHealthPlugin extends Plugin {
       }
     }
     return null;
-  }
-
-  private async compactVisibleFoodLogFields(file: TFile): Promise<void> {
-    if (file.extension !== "md") return;
-    const content = await this.app.vault.cachedRead(file);
-    const lines = content.split("\n");
-    let changed = false;
-    const next = lines.map((line) => {
-      const compacted = compactFoodLogLineFields(line);
-      const repaired = this.withFoodLogNutritionFields(compacted);
-      if (repaired !== line) changed = true;
-      return repaired;
-    }).join("\n");
-    if (changed) {
-      await this.app.vault.modify(file, next);
-      logger.flow("FoodLogEntry", "compact-visible-fields", { path: file.path });
-    }
-  }
-
-  private async repairFoodLogNutritionFieldsInVault(): Promise<void> {
-    const files = await this.foodLogRepairSourceFiles();
-    let changedFiles = 0;
-    let changedLines = 0;
-    let failedFiles = 0;
-    for (const file of files) {
-      try {
-        const result = await this.repairFoodLogNutritionFieldsInFile(file);
-        if (result.lines) {
-          changedFiles++;
-          changedLines += result.lines;
-        }
-      } catch (error) {
-        failedFiles++;
-        logger.flowWarn("FoodLogEntry", "nutrition-repair:file-failed", { path: file.path, error: logger.errorSummary(error) });
-      }
-    }
-    logger.flow("FoodLogEntry", "nutrition-repair:done", { files: files.length, changedFiles, changedLines, failedFiles });
-  }
-
-  private scheduleFoodLogNutritionRepair(reason: string, delayMs: number): void {
-    if (this.foodLogNutritionRepairTimer != null) window.clearTimeout(this.foodLogNutritionRepairTimer);
-    this.foodLogNutritionRepairTimer = window.setTimeout(() => {
-      this.foodLogNutritionRepairTimer = null;
-      void this.repairFoodLogNutritionFieldsInVault();
-    }, delayMs);
-    logger.flow("FoodLogEntry", "nutrition-repair:scheduled", { reason, delayMs });
-  }
-
-  private async foodLogRepairSourceFiles(): Promise<TFile[]> {
-    const { folder: dailyFolder } = await this.getDailyNoteSettings();
-    const foodLogFilePath = normalizePath(this.settings.foodLogFilePath || "");
-    return this.app.vault.getMarkdownFiles()
-      .filter((file) => file.path === foodLogFilePath || isFoodLogBaseDailyNoteFile(file.path, dailyFolder) || /^Dailynotes\//i.test(file.path));
-  }
-
-  private async repairFoodLogNutritionFieldsInFile(file: TFile): Promise<{ lines: number }> {
-    const original = await this.app.vault.cachedRead(file);
-    const foods = await this.resolveFoodLogLineFoods(original);
-    let changedLines = 0;
-    await this.app.vault.process(file, (content) => {
-      const lines = content.split("\n");
-      const next = lines.map((line) => {
-        const repaired = this.withFoodLogNutritionFields(line, foods);
-        if (repaired !== line) changedLines++;
-        return repaired;
-      }).join("\n");
-      return changedLines ? next : content;
-    });
-    return { lines: changedLines };
-  }
-
-  private async resolveFoodLogLineFoods(content: string): Promise<Map<string, FoodItem>> {
-    const paths = new Set<string>();
-    for (const line of content.split("\n")) {
-      if (!isFoodLogLine(line) || hasLineNutritionFields(line)) continue;
-      const foodPath = readStringField(line, "foodPath");
-      if (foodPath) paths.add(foodPath);
-    }
-    const foods = new Map<string, FoodItem>();
-    for (const foodPath of paths) {
-      const file = this.app.vault.getAbstractFileByPath(foodPath);
-      if (!(file instanceof TFile)) continue;
-      foods.set(foodPath, await this.foodFromFileForRepair(file));
-    }
-    return foods;
-  }
-
-  private async foodFromFileForRepair(file: TFile): Promise<FoodItem> {
-    const cached = foodFromFileCache(this, file);
-    if (foodLogLineNutritionHasValue(cached.nutrition || {})) return cached;
-    try {
-      const content = await this.app.vault.cachedRead(file);
-      const fm = frontmatterFromMarkdown(content);
-      if (fm) return this.foodFromFrontmatter(file, fm);
-    } catch (error) {
-      logger.flowWarn("FoodLogEntry", "nutrition-repair:food-read-failed", { path: file.path, error: logger.errorSummary(error) });
-    }
-    return cached;
-  }
-
-  private withFoodLogNutritionFields(line: string, foods?: Map<string, FoodItem>): string {
-    if (!isFoodLogLine(line) || hasLineNutritionFields(line)) return line;
-    const foodPath = readStringField(line, "foodPath");
-    if (!foodPath) return line;
-    const food = foods?.get(foodPath) || (() => {
-      const foodFile = this.app.vault.getAbstractFileByPath(foodPath);
-      return foodFile instanceof TFile ? foodFromFileCache(this, foodFile) : null;
-    })();
-    if (!food) return line;
-    const nutrition = foodLogLineNutritionFromFood(line, food);
-    if (!foodLogLineNutritionHasValue(nutrition)) return line;
-    return upsertFoodLogNutritionFields(line, nutrition);
   }
 
   async logActivity(input: LogActivityInput): Promise<ActivityLogEntry> {
@@ -23032,10 +22909,6 @@ function foodLogMultiplier(line: string, food: FoodItem): number {
   return normalizedQuantity(readNumber(line, "servings") ?? readNumber(line, "qty"));
 }
 
-function foodLogLineNutritionFromFood(line: string, food: FoodItem): Nutrition {
-  return scaleKnownNutrition(food.nutrition || {}, foodLogMultiplier(line, food));
-}
-
 function scaleKnownNutrition(nutrition: Nutrition, multiplier: number): Nutrition {
   const safeMultiplier = Number.isFinite(multiplier) ? multiplier : 1;
   return {
@@ -23055,35 +22928,6 @@ function scaleKnownNutrition(nutrition: Nutrition, multiplier: number): Nutritio
 
 function scaleKnownNutritionValue(value: number | undefined, multiplier: number): number | undefined {
   return value == null || !Number.isFinite(Number(value)) ? undefined : round(Number(value) * multiplier);
-}
-
-function foodLogLineNutritionHasValue(nutrition: Nutrition): boolean {
-  return [nutrition.calories, nutrition.proteinG, nutrition.carbsG, nutrition.fatG, nutrition.fiberG, nutrition.sugarG, nutrition.sugarAlcoholG, nutrition.alcoholG, nutrition.sodiumMg, ...Object.values(extraNutrition(nutrition))]
-    .some((value) => value != null && Number.isFinite(Number(value)));
-}
-
-function upsertFoodLogNutritionFields(line: string, nutrition: Nutrition): string {
-  let next = line;
-  const fields: Array<[string, number | undefined]> = [
-    ["cal", nutrition.calories],
-    ["protein", nutrition.proteinG],
-    ["carbs", nutrition.carbsG],
-    ["fat", nutrition.fatG],
-    ["fiber", nutrition.fiberG],
-    ["sugar", nutrition.sugarG],
-    ["sugarAlcohol", nutrition.sugarAlcoholG],
-    ["alcohol", nutrition.alcoholG],
-    ["sodium", nutrition.sodiumMg],
-    ...EXTRA_NUTRIENT_KEYS.map(key => [key, nutrition[key]] as [string, number | undefined]),
-  ];
-  for (const [key, value] of fields) {
-    if (value == null || !Number.isFinite(Number(value))) {
-      if (isExtraNutrientKey(key)) next = removeDataviewField(next, key);
-      continue;
-    }
-    next = upsertFoodLogCommentField(next, key, isExtraNutrientKey(key) ? Number(value) : round(Number(value)));
-  }
-  return next;
 }
 
 function upsertFoodLogCommentField(line: string, key: string, value: string | number): string {
@@ -23231,71 +23075,9 @@ function foodFromFileCache(plugin: TPSHealthPlugin, file: TFile): FoodItem {
   return plugin.foodFromFrontmatter(file, fm);
 }
 
-function frontmatterFromMarkdown(content: string): Record<string, unknown> | null {
-  const match = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) return null;
-  return parseSimpleFrontmatter(match[1]);
-}
-
-function parseSimpleFrontmatter(yaml: string): Record<string, unknown> {
-  const frontmatter: Record<string, unknown> = {};
-  let listKey = "";
-  for (const rawLine of yaml.split(/\r?\n/)) {
-    const line = rawLine.trimEnd();
-    if (!line.trim() || /^\s*#/.test(line)) continue;
-    const listItem = line.match(/^\s+-\s+(.+)$/);
-    if (listItem && listKey) {
-      const current = Array.isArray(frontmatter[listKey]) ? frontmatter[listKey] as unknown[] : [];
-      current.push(parseSimpleFrontmatterScalar(listItem[1]));
-      frontmatter[listKey] = current;
-      continue;
-    }
-    const field = line.match(/^([A-Za-z0-9_-]+):(?:\s*(.*))?$/);
-    if (!field) continue;
-    const key = field[1];
-    const value = field[2] ?? "";
-    listKey = value === "" ? key : "";
-    frontmatter[key] = value === "" ? [] : parseSimpleFrontmatterScalar(value);
-  }
-  return frontmatter;
-}
-
-function parseSimpleFrontmatterScalar(value: string): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1);
-  }
-  if (/^(true|false)$/i.test(trimmed)) return /^true$/i.test(trimmed);
-  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    return trimmed.slice(1, -1)
-      .split(",")
-      .map((part) => parseSimpleFrontmatterScalar(part.trim()))
-      .filter((part) => part !== "");
-  }
-  return trimmed;
-}
-
 function isFoodLogLine(line: string): boolean {
   return line.includes("tps-health:food") ||
     (/\[food::\s*[^\]]+\]/i.test(line) && /\[(qty|servings)::\s*-?\d/i.test(line));
-}
-
-function compactFoodLogLineFields(line: string): string {
-  if (!isFoodLogLine(line)) return line;
-  if (/<!--[\s\S]*?\[food::[\s\S]*?-->/i.test(line)) return stripRedundantFoodLogFields(line);
-  const commentMatch = line.match(/^(.*?)(?:\s+%%\s*)(\[food::[\s\S]*?\])\s*%%\s*$/i);
-  if (commentMatch) return stripRedundantFoodLogFields(`${commentMatch[1].trimEnd()} <!-- ${commentMatch[2].trim()} -->`);
-  const firstField = line.search(/\s+\[food::/i);
-  if (firstField < 0) return line;
-  const summary = line.slice(0, firstField).trimEnd();
-  const fields = line.slice(firstField).trim();
-  return stripRedundantFoodLogFields(`${summary} <!-- ${fields} -->`);
-}
-
-function stripRedundantFoodLogFields(line: string): string {
-  return line.replace(/\s+\[dailyNote::\s*\[\[[^\]]+\]\]\]/gi, "");
 }
 
 function foodLogVisibleSummary(line: string): string {

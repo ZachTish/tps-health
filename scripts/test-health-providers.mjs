@@ -5384,6 +5384,78 @@ test("future Health settings remain read-only and are never downgraded or rewrit
   assert.equal(savedPayloads.length, 0, "later state or settings changes must remain fail-closed");
 });
 
+test("Health startup and navigation never rewrite or sweep food log sources", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  TFile.prototype.extension = "md";
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Daily");
+  const originalDaily = "---\ntitle: Daily\n---\n- Legacy meal [food:: Meal] [qty:: 1] [foodPath:: Foods/Meal.md]";
+  fake.files.set("Daily/2026-09-27.md", originalDaily);
+  fake.files.set("Foods/Meal.md", "---\ncalories: 200\nproteinG: 10\n---");
+  for (let index = 0; index < 128; index++) fake.files.set(`Inbox/unrelated-${index}.md`, "Ordinary note.");
+  const activeFile = new TFile("Daily/2026-09-27.md");
+  fake.app.workspace.getActiveFile = () => activeFile;
+  fake.app.workspace.layoutReady = true;
+  fake.app.metadataCache.initialized = true;
+  const ready = [];
+  fake.app.workspace.onLayoutReady = callback => ready.push(callback);
+  const metadataListeners = new Map();
+  fake.app.metadataCache.on = (name, callback) => {
+    const callbacks = metadataListeners.get(name) || [];
+    callbacks.push(callback);
+    metadataListeners.set(name, callbacks);
+    return { name, callback };
+  };
+  fake.app.vault.on = () => ({});
+  const counts = { read: 0, cachedRead: 0, process: 0, modify: 0, scans: 0 };
+  for (const method of ["read", "cachedRead", "process", "modify"]) {
+    const original = fake.app.vault[method];
+    fake.app.vault[method] = (...args) => { counts[method]++; return original(...args); };
+  }
+  const getMarkdownFiles = fake.app.vault.getMarkdownFiles;
+  fake.app.vault.getMarkdownFiles = () => { counts.scans++; return getMarkdownFiles(); };
+  const timers = new Map();
+  let timerId = 0;
+  window.setTimeout = callback => { timers.set(++timerId, callback); return timerId; };
+  window.clearTimeout = id => timers.delete(id);
+  const settle = async () => {
+    for (let pass = 0; pass < 8; pass++) {
+      const pending = [...timers.values()];
+      timers.clear();
+      pending.forEach(callback => callback());
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "refreshGcmFoodLogButtonRegistration", "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => settingsPersistencePayload(normalizeTPSHealthSettings({
+    storageMode: "native-records", foodLogTarget: "daily-note", automaticDailyRollups: false,
+  }));
+  plugin.saveData = async () => {};
+  await plugin.onload();
+  ready.forEach(callback => callback());
+  await settle();
+  assert.deepEqual({ ...counts, scans: 0 }, { read: 0, cachedRead: 0, process: 0, modify: 0, scans: 0 },
+    "startup can index metadata but must not read or process food log bodies");
+  counts.scans = 0;
+  for (let index = 0; index < 100; index++) {
+    fake.app.workspace.trigger("file-open", index % 2 ? activeFile : new TFile(`Inbox/unrelated-${index}.md`));
+    fake.app.workspace.trigger("active-leaf-change");
+    for (const callback of metadataListeners.get("resolved") || []) callback();
+  }
+  await settle();
+  assert.deepEqual(counts, { read: 0, cachedRead: 0, process: 0, modify: 0, scans: 0 },
+    "open/resolve bursts must not queue maintenance proportional to the vault or daily-note count");
+  assert.equal(fake.files.get(activeFile.path), originalDaily, "viewing a legacy food line must preserve authored source");
+  plugin.nativeRecordService.dispose();
+});
+
 test("GCM food action retries reuse one Health lifecycle listener", async () => {
   installDeterministicBrowserGlobals();
   const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
@@ -5408,7 +5480,6 @@ test("GCM food action retries reuse one Health lifecycle listener", async () => 
     "registerWorkoutTaskCompletionTracking",
     "registerGcmFoodLogButtonTapFallback",
     "registerInlineFoodLogMenuHandler",
-    "scheduleFoodLogNutritionRepair",
     "removeWorkoutActionBars",
   ]) plugin[method] = () => {};
   let menuRefreshes = 0;
@@ -6309,11 +6380,7 @@ test("food log modal displays serving conversion and food log lines persist scal
   assert.match(mainSource, /servingEl\.setText\(parts\.join\(" = "\)\)/);
   assert.match(mainSource, /renderMacroPills\(nutritionEl, multiplyNutrition\(this\.item\.nutrition \|\| \{\}, resolved\.servings\)\)/);
   assert.match(formatSource, /if \(entry\.nutritionOverride\) return entry\.nutritionOverride;\s+return scaleNutrition\(entry\.item\.nutrition \|\| \{\}, entry\.quantity\);/);
-  assert.match(mainSource, /private async repairFoodLogNutritionFieldsInVault\(\): Promise<void>/);
-  assert.match(mainSource, /this\.registerEvent\(this\.app\.metadataCache\.on\("resolved", \(\) => this\.scheduleFoodLogNutritionRepair\("metadata-resolved", 250\)\)\);/);
-  assert.match(mainSource, /private async foodFromFileForRepair\(file: TFile\): Promise<FoodItem>/);
-  assert.match(mainSource, /const fm = frontmatterFromMarkdown\(content\);/);
-  assert.match(mainSource, /logger\.flow\("FoodLogEntry", "nutrition-repair:done"/);
+
 });
 
 test("inline food draft parser handles overrides and half servings", () => {
