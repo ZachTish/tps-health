@@ -1674,8 +1674,8 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /for \(const duplicate of matches\) duplicate\.remove\(\)/u);
   assert.match(mainSource, /if \(!target\?\.isConnected\) return false/u);
   assert.match(stylesSource, /\.markdown-source-view:not\(\.is-live-preview\) \.tps-health-native-workout-surface/u);
-  assert.match(stylesSource, /\.tps-health-workout-entry-modal \.setting-item-control \{[\s\S]*?flex: 0 0 auto;/u, 'mobile set fields do not inherit a tall desktop flex basis');
-  assert.match(stylesSource, /\.tps-health-workout-entry-modal > \.setting-item:last-child \{[\s\S]*?position: sticky;/u, 'mobile actions remain reachable above the keyboard');
+  assert.match(stylesSource, /\.tps-health-form-grid \.setting-item-control \{[\s\S]*?flex: 0 0 auto;/u, "grid fields do not inherit a tall desktop flex basis");
+  assert.match(stylesSource, /\.tps-health-modal \.tps-health-modal-actions \{[\s\S]*?position: sticky;/u, "shared actions remain reachable above the keyboard");
   assert.match(stylesSource, /\.tps-health-native-workout-exercise\.is-superset/u);
   assert.match(stylesSource, /\.tps-health-native-workout-row\.is-drop-set/u);
   assert.match(stylesSource, /@container tps-health-native-workout \(max-width: 620px\)[\s\S]*?\.tps-health-native-workout-row \{[\s\S]*?min-width: 0;/u, 'narrow workout rows keep completion and the set menu on screen');
@@ -1698,7 +1698,7 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /this\.nativeRecordService\.createFoodEntry\(entry\)/u);
   assert.match(mainSource, /this\.nativeRecordService\.createActivityEntry\(entry\)/u);
   assert.match(mainSource, /this\.plugin\.nativeRecordService\?\.isEnabled\(\)/u);
-  assert.match(mainSource, /Create one typed activity record\. The Daily Note body is not rewritten\./u);
+  assert.match(mainSource, /Record duration, distance, steps, or calories for this activity\./u);
   assert.match(mainSource, /return this\.startNativeWorkout/u);
   assert.match(mainSource, /return this\.logNativeWorkoutSet\(set, path\)/u);
   assert.match(mainSource, /storage: "native-record-index"/u);

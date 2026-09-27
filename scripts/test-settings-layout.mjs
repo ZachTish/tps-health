@@ -258,7 +258,7 @@ test("recipe expansion omits the generic explanation", () => {
 test('supplement fields use one transient selector and bounded narrow-editor controls', () => {
  assert.match(settingsSource, /setName\("Vitamin, mineral or supplement field"\)/);
  assert.match(settingsSource, /dropdown\.onChange\(renderNutrientKey\)/);
- assert.match(stylesSource, /\.tps-health-food-editor-grid \.tps-health-nutrient-editor \.setting-item\s*\{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) 110px;/);
+ assert.match(stylesSource, /\.tps-health-form-grid \.tps-health-nutrient-editor \.setting-item\s*\{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) 110px;/);
  assert.match(stylesSource, /\.tps-health-nutrient-editor \.setting-item\[hidden\]/);
 });
 

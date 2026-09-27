@@ -1,5 +1,15 @@
 # TPS Health
 
+## 3.7.1 — Consistent phone and tablet forms
+
+Health dialogs now share viewport sizing, safe-area spacing, touch controls, focus outlines and a single scrolling content area. The previous phone top offset, double content padding, empty native header and separate workout footer sizing are removed. Mobile food search expands to tablet width (up to 860 px) instead of retaining a 520 px cap. Keyboard sizing uses existing Obsidian/GCM CSS variables; no new listeners, timers, observers, caches or settings are introduced. The existing keyboard-hidden food-search footer and Review highlight remain.
+
+Recipe creation/editing follows **name → ingredients → yield → nutrition preview → optional search aliases → Create/Save**. Add ingredient is above the list, ingredient cards share a row when space permits, yield uses decimal keyboards, and weight mode hides the servings field. Ingredient search hides amount controls until a food is selected, then places them above results. Food, activity, logged-entry and workout-set editors use the same responsive field grid; date/time and multiline notes take full rows. Primary form actions remain visible while scrolling. The existing close/draft behavior, searches, save handlers, nutrient calculations and stored data are unchanged.
+
+The settings destination map and disclosures are unchanged. Search aliases are the single new optional disclosure in the custom food/recipe editor. This is a patch for cramped/inconsistent layouts, not a storage change. Minimum Obsidian remains 1.12.0. Validation, limitations and artifact hashes are recorded in [3.7.1 release notes](release-notes/3.7.1.md).
+
+Validation on 2026-09-27: 492 tests passed, zero failed, and one optional live USDA check skipped without its credential. Installed test-vault forms were measured in 66 phone/tablet cases at widths from 320 to 1024 px, including simulated keyboards and populated recipes: controls did not overflow horizontally and primary actions remained reachable. The real ingredient picker and Create handlers retained all ingredients and both yield modes and opened the portion logger; synthetic persistence adapters prevented note writes. Health/GCM settings remained byte-identical after restoring temporary adapters. The separate final build deploys only to the test vault; named plugin reload verifies 3.7.1. Physical iPhone/iPad interaction remains for device testing. Workout sets remain within their existing workout; no per-set pages, new navigation steps or storage changes are introduced.
+
 ## 3.7.0 — Create and log recipes by yield or weight
 
 Run **TPS Health: Create recipe**. Add ingredients through the existing saved/provider food search, set their quantities and units, and name the recipe. Choose **Number of servings** for portions with a calculated gram weight, or **Total weight (100 g portions)** for nutrition per 100 g. An optional **Finished recipe weight (g)** overrides ingredient weights to account for cooking gains/losses. Weight is calculated only when every ingredient has a supported gram conversion; volume-only or unknown weights are not treated as grams. The editor previews the portion and its macros. Invalid or nonpositive yields/weights cannot be saved.
@@ -43,7 +53,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.7.0](https://github.com/ZachTish/tps-health/releases/tag/3.7.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.7.1](https://github.com/ZachTish/tps-health/releases/tag/3.7.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
