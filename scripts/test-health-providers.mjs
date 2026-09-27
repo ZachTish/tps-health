@@ -1264,7 +1264,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--macros \{[\s\S]+?grid-column: 1 \/ -1;\s+grid-row: 3;/);
   assert.match(stylesSource, /\.tps-health-recipe-ingredient-field--actions \{\s+grid-column: 1 \/ -1;\s+grid-row: 4;/);
   assert.doesNotMatch(stylesSource, /@media \(min-width: 700px\)[\s\S]+?\.tps-health-recipe-ingredient/);
-  assert.match(stylesSource, /\.tps-health-meal-ingredient-row \{[\s\S]+?grid-template-columns: minmax\(5rem, 0\.75fr\) minmax\(6\.5rem, 1fr\);/);
+  assert.match(stylesSource, /\.tps-health-meal-ingredient-row \{[\s\S]+?grid-template-columns: minmax\(0, 0\.75fr\) minmax\(0, 1fr\);/);
   assert.match(stylesSource, /\.tps-health-meal-ingredient-actions \{[\s\S]+?grid-column: 1 \/ -1;\s+grid-row: 4;/);
   assert.match(mainSource, /function isRecipeLikeMarkdownFile\(plugin: TPSHealthPlugin, path: string \| null \| undefined\): boolean/);
   assert.match(mainSource, /fileIsInConfiguredFolder\(file\.path, plugin\.settings\.recipesFolder\)/);
@@ -7514,14 +7514,14 @@ test("create from food search upserts canonical local foods instead of creating 
 });
 
 test("food detail editors use a compact responsive field grid", () => {
-  assert.match(mainSource, /class BarcodeFoodReviewModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
-  assert.match(mainSource, /class CustomFoodModal extends FoodInputModal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-food-editor-grid/);
+  assert.match(mainSource, /class BarcodeFoodReviewModal extends Modal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-form-grid/);
+  assert.match(mainSource, /class CustomFoodModal extends FoodInputModal[\s\S]+tps-health-food-editor-frame[\s\S]+tps-health-form-grid/);
   assert.match(mainSource, /let aliases = \(this\.baseFood\?\.aliases \|\| \[\]\)\.join\(", "\)/);
   assert.match(mainSource, /setName\("Search aliases"\)[\s\S]+Comma-separated nicknames[\s\S]+aliases = value/);
   assert.match(mainSource, /aliases: aliasesFromFrontmatter\(aliases\) \|\| \[\]/);
-  assert.match(stylesSource, /\.tps-health-food-editor-grid \{[\s\S]+grid-template-columns: repeat\(auto-fit, minmax\(min\(190px, 100%\), 1fr\)\)/);
-  assert.match(stylesSource, /\.tps-health-food-editor-grid > \.setting-item \{[\s\S]+flex-direction: column/);
-  assert.match(stylesSource, /\.tps-health-food-editor-grid \.setting-item-control input,[\s\S]+font-size: var\(--font-ui-small\)/);
+  assert.match(stylesSource, /\.tps-health-form-grid \{[\s\S]+grid-template-columns: repeat\(auto-fit, minmax\(min\(190px, 100%\), 1fr\)\)/);
+  assert.match(stylesSource, /\.tps-health-form-grid > \.setting-item \{[\s\S]+flex-direction: column/);
+  assert.match(stylesSource, /\.tps-health-form-grid \.setting-item-control input,[\s\S]+font-size: var\(--font-ui-small\)/);
   assert.match(stylesSource, /@media \(max-width: 600px\)[\s\S]+minmax\(min\(132px, 100%\), 1fr\)/);
 });
 
@@ -12206,4 +12206,36 @@ test('recipe yield: missing mass is unknown, liquid volume is not grams, and inv
   assert.equal(fake.files.size,count,'invalid yield does not create recipe notes');
   const weighed=await plugin.createFoodFromInput({type:'recipe',name:'Weighed liquid recipe',servingUnit:'g',recipeTotalGrams:500,ingredients:mixed});
   assert.equal(weighed.nutrition.calories,156);assert.equal(weighed.servingGrams,100);
+});
+
+test('Health mobile frames use the visible viewport without legacy reserved space or phone-only tablet caps', () => {
+  assert.doesNotMatch(stylesSource, /top: max\(96px|78dvh|82dvh/);
+  assert.match(stylesSource, /body\.is-mobile \.modal:is\(\.tps-health-modal-frame, \.tps-health-food-search-frame\)/);
+  assert.match(stylesSource, /--tps-health-available-height: min\(var\(--tps-visible-viewport-height, 100dvh\), calc\(100dvh - var\(--keyboard-height, 0px\)\)\)/);
+  assert.match(stylesSource, /width: min\(860px, calc\(var\(--tps-visible-viewport-width, 100vw\) - 16px\)\) !important/);
+  assert.match(stylesSource, /\.tps-health-modal \[hidden\] \{ display: none !important/);
+  assert.match(stylesSource, /\.tps-health-modal \.tps-health-modal-actions \{[\s\S]*?position: sticky;[\s\S]*?bottom: 0;/);
+  assert.match(stylesSource, /\.tps-health-workout-exercise-picker:empty \{ display: none; \}/);
+  assert.match(stylesSource, /body\.is-mobile \.tps-health-modal :is\(button, summary, input:not\(\[type=checkbox\]\), select\) \{ min-height: 44px;/);
+});
+
+test('Activity and workout forms opt into the shared Health frame and retain their primary actions', () => {
+  for (const name of ['ActivityLogModal','StartWorkoutModal','FinishWorkoutPromptModal','DiscardWorkoutPromptModal']) {
+    const body = mainSource.slice(mainSource.indexOf(`class ${name} `)).split('\nclass ')[0];
+    assert.match(body, /this\.modalEl\.addClass\("tps-keyboard-aware-modal", "tps-health-modal-frame"\)/, name);
+  }
+  for (const name of ['CustomFoodModal','ActivityLogModal','FoodLogModal','NativeFoodEntryEditModal','NativeActivityEntryEditModal','StartWorkoutModal','SetModal','WorkoutFileSetModal','WorkoutLayoutModal']) {
+    const body = mainSource.slice(mainSource.indexOf(`class ${name} `)).split('\nclass ')[0];
+    assert.match(body, /setClass\("tps-health-modal-actions"\)/, name);
+  }
+});
+
+test('Recipe editor keeps ingredients before yield, add before the list, and aliases optional', () => {
+  const body = mainSource.slice(mainSource.indexOf('class CustomFoodModal ')).split('\nclass ')[0];
+  assert.match(body, /formEl\.after\(section\)/);
+  assert.match(body, /list\.before\(add\)/);
+  assert.match(body, /createEl\("details", \{ cls: "tps-health-food-details" \}\)/);
+  assert.match(body, /portionEl\.after\(caloriePreview\)/);
+  assert.match(body, /input\.type = "number"; input\.inputMode = "decimal"/);
+  assert.match(body, /servingsSetting\.settingEl\.hidden = recipeByWeight/);
 });

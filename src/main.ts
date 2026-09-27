@@ -10291,7 +10291,7 @@ class FoodLogConsumedDateModal extends Modal {
         inputEl = text.inputEl;
         text.setValue(consumedDateInput).onChange((value) => consumedDateInput = value.trim());
       });
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button
         .setButtonText("Now")
         .onClick(() => {
@@ -10363,7 +10363,7 @@ class FoodLogAdjustModal extends Modal {
         updatePreview();
       });
     });
-    const actions = new Setting(this.contentEl);
+    const actions = new Setting(this.contentEl).setClass("tps-health-modal-actions");
     if (this.item.sourcePath) actions.addButton((button) => button
         .setButtonText("Open food note")
         .onClick(async () => {
@@ -10540,7 +10540,7 @@ class BatchFoodRecipeModal extends FoodInputModal {
         .onChange((value) => this.recipeName = value.trim()));
     const mealNameInput = this.contentEl.querySelector<HTMLInputElement>('.setting-item input[type="text"]');
     mealNameInput?.addEventListener("focus", () => scrollHealthModalInputIntoView(mealNameInput));
-    new Setting(this.contentEl).addButton((button) => {
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => {
       this.submitButtonEl = button.buttonEl;
       return button
         .setButtonText("Create meal")
@@ -10789,7 +10789,7 @@ class FoodSearchModal extends FoodInputModal {
       cls: "tps-health-selection-empty",
       text: "Enter your best estimate. This log is saved only in the selected day and will not create a food note.",
     });
-    const quickFields = quickForm.createDiv({ cls: "tps-health-food-editor-grid" });
+    const quickFields = quickForm.createDiv({ cls: "tps-health-form-grid" });
     let quickName = "";
     const quickNutrition: Nutrition = { calories: 0, proteinG: 0, carbsG: 0, fatG: 0 };
     let quickNameInput: HTMLInputElement | null = null;
@@ -13774,14 +13774,14 @@ class RecipeIngredientModal extends Modal {
 
   onOpen(): void {
     this.contentEl.empty();
-    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-ingredient-picker-frame");
     this.contentEl.addClass("tps-health-modal");
     const actionLabel = this.action === "replace" ? "Replace" : "Add";
     this.contentEl.createEl("h2", { text: `${actionLabel} ${this.targetLabel} ingredient` });
     this.statusEl = this.contentEl.createDiv({ cls: "tps-health-status", text: "Search for a saved or provider food." });
     this.statusEl.setAttr("role", "status");
     this.statusEl.setAttr("aria-live", "polite");
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-ingredient-search")
       .setName("Food")
       .addText((text) => {
         text.setPlaceholder("Greek yogurt, protein powder, milk...");
@@ -13824,7 +13824,7 @@ class RecipeIngredientModal extends Modal {
     this.macrosEl = controls.createDiv({ cls: "tps-health-recipe-add-macros" });
     this.quantityEl.addEventListener("input", () => this.updateSelectedMacros());
     this.unitEl.addEventListener("change", () => this.updateSelectedMacros());
-    const actions = this.contentEl.createDiv({ cls: "tps-health-search-actions" });
+    const actions = this.contentEl.createDiv({ cls: "tps-health-search-actions tps-health-modal-actions" });
     this.saveButton = actions.createEl("button", { text: `${actionLabel} ingredient`, cls: "mod-cta" });
     this.saveButton.type = "button";
     this.saveButton.disabled = true;
@@ -13832,6 +13832,7 @@ class RecipeIngredientModal extends Modal {
     const cancel = actions.createEl("button", { text: "Cancel", cls: "mod-muted" });
     cancel.type = "button";
     cancel.addEventListener("click", () => this.close());
+    this.resultsEl.before(this.selectedEl, controls);
     this.renderSelectedFood();
   }
 
@@ -13946,6 +13947,8 @@ class RecipeIngredientModal extends Modal {
 
   private renderSelectedFood(): void {
     this.selectedEl.empty();
+    this.selectedEl.hidden = !this.selectedFood;
+    this.quantityEl.closest<HTMLElement>(".tps-health-recipe-add-controls")!.hidden = !this.selectedFood;
     if (!this.selectedFood) {
       this.selectedEl.createDiv({ cls: "tps-health-selection-empty", text: "No food selected." });
       this.saveButton.disabled = true;
@@ -16414,7 +16417,7 @@ class BarcodeFoodReviewModal extends Modal {
     const updateCaloriePreview = () => caloriePreview.setText(preserveLabelCalories
       ? `Reported calories: ${nutrition.calories ?? 0} kcal per ${servingAmount} ${servingUnit}`
       : `Calories calculated from macros: ${caloriesFromMacros(nutrition)} kcal per ${servingAmount} ${servingUnit}`);
-    const formEl = this.contentEl.createDiv({ cls: "tps-health-food-editor-grid" });
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
 
     new Setting(formEl).setName("Name").addText((text) => text.setValue(name).onChange((value) => name = value.trim()));
     new Setting(formEl).setName("Brand").addText((text) => text.setValue(brand).onChange((value) => brand = value.trim()));
@@ -16457,7 +16460,7 @@ class BarcodeFoodReviewModal extends Modal {
     new Setting(formEl).setName("Sodium mg").addText((text) => text.setValue(String(nutrition.sodiumMg ?? "")).onChange((value) => nutrition.sodiumMg = nutritionNumber(value)));
     updateCaloriePreview();
     let submitting = false;
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button
         .setButtonText(this.onSaved ? "Create and add" : "Create food")
         .setCta()
@@ -16615,7 +16618,7 @@ class FoodLogModal extends FoodInputModal {
       .addText((text) => text
         .setPlaceholder("#food/healthy, #meal/breakfast")
         .onChange((value) => tags = normalizeFoodLogTags(value)));
-    new Setting(this.contentEl).addButton((button) => {
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => {
       const submitButtonEl = button.buttonEl;
       return button.setButtonText("Log").setCta().onClick(async () => {
         if (this.submitting) return;
@@ -16687,14 +16690,12 @@ class ActivityLogModal extends Modal {
   }
 
   onOpen(): void {
-    this.modalEl.addClass("tps-keyboard-aware-modal");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal", "tps-health-activity-log-frame");
     this.contentEl.createEl("h2", { text: "Log activity" });
     this.contentEl.createEl("p", {
-      text: this.plugin.nativeRecordService?.isEnabled()
-        ? "Create one typed activity record. The Daily Note body is not rewritten."
-        : "Record an activity directly in your daily note. No separate note is created.",
+      text: "Record duration, distance, steps, or calories for this activity.",
       cls: "tps-health-status",
     });
     let activity = "Walking";
@@ -16706,11 +16707,12 @@ class ActivityLogModal extends Modal {
     let caloriesBurned = "";
     let completedDateInput = initialFoodLogConsumedDateInput(this.dateContext);
     let note = "";
-    new Setting(this.contentEl).setName("Activity").addText((text) => text.setPlaceholder("Walking").setValue(activity).onChange((value) => activity = value.trim()));
-    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
+    new Setting(formEl).setName("Activity").addText((text) => text.setPlaceholder("Walking").setValue(activity).onChange((value) => activity = value.trim()));
+    new Setting(formEl).setName("Type").addDropdown((dropdown) => dropdown
       .addOptions({ walking: "Walking", running: "Running", cycling: "Cycling", hiking: "Hiking", mobility: "Mobility", other: "Other" })
       .setValue(activityType).onChange((value) => activityType = value));
-    const numberField = (name: string, onChange: (value: string) => void, step = "any") => new Setting(this.contentEl).setName(name).addText((text) => {
+    const numberField = (name: string, onChange: (value: string) => void, step = "any") => new Setting(formEl).setName(name).addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0";
       text.inputEl.step = step;
@@ -16721,12 +16723,12 @@ class ActivityLogModal extends Modal {
       .addOptions({ mi: "mi", km: "km", m: "m" }).setValue(distanceUnit).onChange((value) => distanceUnit = value));
     numberField("Steps", (value) => steps = value, "1");
     numberField("Calories burned", (value) => caloriesBurned = value);
-    new Setting(this.contentEl).setName("Completed time").addText((text) => {
+    new Setting(formEl).setName("Completed time").addText((text) => {
       configureFoodLogDateTimeInput(text.inputEl);
       text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
     });
-    new Setting(this.contentEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").onChange((value) => note = value.trim()));
-    new Setting(this.contentEl).addButton((button) => button.setButtonText("Log activity").setCta().onClick(async () => {
+    new Setting(formEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").onChange((value) => note = value.trim()));
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => button.setButtonText("Log activity").setCta().onClick(async () => {
       if (!activity) {
         new Notice("Activity name is required.");
         return;
@@ -16777,15 +16779,16 @@ class NativeFoodEntryEditModal extends Modal {
       fatG: String(this.entry.fatG), fiberG: String(this.entry.fiberG), sugarG: String(this.entry.sugarG),
       sugarAlcoholG: String(this.entry.sugarAlcoholG), alcoholG: String(this.entry.alcoholG), sodiumMg: String(this.entry.sodiumMg),
     };
-    new Setting(this.contentEl).setName("Name").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
-    new Setting(this.contentEl).setName("Amount").addText((text) => {
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
+    new Setting(formEl).setName("Name").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
+    new Setting(formEl).setName("Amount").addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0.000001";
       text.inputEl.step = "any";
       text.setValue(quantity).onChange((value) => quantity = value.trim());
     });
-    new Setting(this.contentEl).setName("Unit").addText((text) => text.setValue(unit).onChange((value) => unit = value.trim()));
-    new Setting(this.contentEl).setName("Consumed time").addText((text) => {
+    new Setting(formEl).setName("Unit").addText((text) => text.setValue(unit).onChange((value) => unit = value.trim()));
+    new Setting(formEl).setName("Consumed time").addText((text) => {
       configureFoodLogDateTimeInput(text.inputEl);
       text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
     });
@@ -16796,7 +16799,7 @@ class NativeFoodEntryEditModal extends Modal {
         ["sugarAlcoholG", "Sugar alcohol (g)", "any"], ["alcoholG", "Alcohol (g)", "any"], ["sodiumMg", "Sodium (mg)", "any"],
       ];
       for (const [key, label, step] of fields) {
-        new Setting(this.contentEl).setName(label).addText((text) => {
+        new Setting(formEl).setName(label).addText((text) => {
           text.inputEl.type = "number";
           text.inputEl.min = "0";
           text.inputEl.step = step;
@@ -16804,8 +16807,8 @@ class NativeFoodEntryEditModal extends Modal {
         });
       }
     }
-    new Setting(this.contentEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
-    new Setting(this.contentEl).addButton((button) => button.setButtonText("Save log entry").setCta().onClick(async () => {
+    new Setting(formEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => button.setButtonText("Save log entry").setCta().onClick(async () => {
       if (this.submitting) return;
       this.submitting = true;
       button.setDisabled(true);
@@ -16866,11 +16869,12 @@ class NativeActivityEntryEditModal extends Modal {
     let caloriesBurned = String(this.entry.caloriesBurned || "");
     let completedDateInput = foodLogDateTimeLocalFromTimestamp(this.entry.completedDate || this.entry.startedAt);
     let note = this.entry.note;
-    new Setting(this.contentEl).setName("Activity").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
-    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
+    new Setting(formEl).setName("Activity").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
+    new Setting(formEl).setName("Type").addDropdown((dropdown) => dropdown
       .addOptions({ walking: "Walking", running: "Running", cycling: "Cycling", hiking: "Hiking", mobility: "Mobility", other: "Other" })
       .setValue(activityType).onChange((value) => activityType = value));
-    const numberField = (name: string, initial: string, onChange: (value: string) => void, step = "any") => new Setting(this.contentEl).setName(name).addText((text) => {
+    const numberField = (name: string, initial: string, onChange: (value: string) => void, step = "any") => new Setting(formEl).setName(name).addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0";
       text.inputEl.step = step;
@@ -16881,12 +16885,12 @@ class NativeActivityEntryEditModal extends Modal {
       .addOptions({ mi: "mi", km: "km", m: "m" }).setValue(distanceUnit).onChange((value) => distanceUnit = value));
     numberField("Steps", steps, (value) => steps = value, "1");
     numberField("Calories burned", caloriesBurned, (value) => caloriesBurned = value);
-    new Setting(this.contentEl).setName("Completed time").addText((text) => {
+    new Setting(formEl).setName("Completed time").addText((text) => {
       configureFoodLogDateTimeInput(text.inputEl);
       text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
     });
-    new Setting(this.contentEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
-    new Setting(this.contentEl).addButton((button) => button.setButtonText("Save activity").setCta().onClick(async () => {
+    new Setting(formEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => button.setButtonText("Save activity").setCta().onClick(async () => {
       if (this.submitting) return;
       this.submitting = true;
       button.setDisabled(true);
@@ -16931,7 +16935,7 @@ class StartWorkoutModal extends Modal {
 
   onOpen(): void {
     logger.flow("WorkoutModal", "start:open", summarizeDateContext(this.dateContext));
-    this.modalEl.addClass("tps-keyboard-aware-modal");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Start workout" });
@@ -17041,7 +17045,7 @@ class StartWorkoutModal extends Modal {
         .setValue(openFile)
         .onChange((value) => openFile = value));
 
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button
         .setButtonText("Start empty")
         .onClick(async () => {
@@ -17174,6 +17178,7 @@ class SetModal extends Modal {
       status.setText(`${status.textContent || active.title || "Active workout"} • previous ${previousSet.reps} × ${previousSet.weight} ${previousSet.weightUnit} loaded`);
     }
     let note = "";
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
     const exerciseList = this.contentEl.createEl("datalist");
     exerciseList.id = `tps-health-exercise-options-${Date.now()}`;
     void this.plugin.searchExercises("").then((items) => {
@@ -17183,13 +17188,13 @@ class SetModal extends Modal {
     let exerciseInput: HTMLInputElement | null = null;
     let repsInput: HTMLInputElement | null = null;
     let restInput: HTMLInputElement | null = null;
-    new Setting(this.contentEl).setName("Exercise").addText((text) => {
+    new Setting(formEl).setClass("tps-health-form-wide").setName("Exercise").addText((text) => {
       exerciseInput = text.inputEl;
       text.inputEl.setAttr("list", exerciseList.id);
       text.setPlaceholder("Bench press, run, plank...").setValue(exercise).onChange((value) => exercise = value.trim());
       text.inputEl.addEventListener("input", () => void renderExercisePicker(text.inputEl.value || ""));
     });
-    const exercisePicker = this.contentEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
+    const exercisePicker = formEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
     let exercisePickerToken = 0;
     const pickExercise = (name: string) => {
       exercise = name.trim();
@@ -17248,22 +17253,22 @@ class SetModal extends Modal {
       }
     };
     void renderExercisePicker(exercise);
-    new Setting(this.contentEl).setName("Reps").addText((text) => {
+    new Setting(formEl).setName("Reps").addText((text) => {
       repsInput = text.inputEl;
       text.inputEl.setAttr("inputmode", "decimal");
       text.setValue(reps == null ? "" : String(reps)).onChange((value) => reps = numberOrUndefined(value));
     });
-    new Setting(this.contentEl).setName("Weight").addText((text) => {
+    new Setting(formEl).setName("Weight").addText((text) => {
       text.inputEl.setAttr("inputmode", "decimal");
       text.setValue(weight == null ? "" : String(weight)).onChange((value) => weight = numberOrUndefined(value));
     });
-    new Setting(this.contentEl).setName("Weight unit").addText((text) => text.setValue(weightUnit).onChange((value) => weightUnit = value.trim() || "lb"));
-    new Setting(this.contentEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.setValue(perArm).onChange((value) => perArm = value));
-    new Setting(this.contentEl).setName("RPE").addText((text) => {
+    new Setting(formEl).setName("Weight unit").addText((text) => text.setValue(weightUnit).onChange((value) => weightUnit = value.trim() || "lb"));
+    new Setting(formEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.setValue(perArm).onChange((value) => perArm = value));
+    new Setting(formEl).setName("RPE").addText((text) => {
       text.inputEl.setAttr("inputmode", "decimal");
       text.setValue(rpe == null ? "" : String(rpe)).onChange((value) => rpe = numberOrUndefined(value));
     });
-    new Setting(this.contentEl)
+    new Setting(formEl)
       .setName("Rest seconds")
       .setDesc("Leave blank to use elapsed rest since the previous set.")
       .addText((text) => {
@@ -17274,7 +17279,7 @@ class SetModal extends Modal {
           restSeconds = parsed == null ? undefined : Math.max(0, Math.round(parsed));
         });
       });
-    new Setting(this.contentEl)
+    new Setting(formEl)
       .setName("Set type")
       .addDropdown((dropdown) => dropdown
         .addOption("normal", "Normal")
@@ -17283,7 +17288,7 @@ class SetModal extends Modal {
         .addOption("failure", "Failure")
         .setValue(setType)
         .onChange((value) => setType = value as NonNullable<WorkoutSet["setType"]>));
-    new Setting(this.contentEl).setName("Note").addText((text) => text.onChange((value) => note = value.trim()));
+    new Setting(formEl).setName("Note").addText((text) => text.onChange((value) => note = value.trim()));
     const log = async (closeAfterLog: boolean) => {
       if (!exercise) {
         logger.flowWarn("WorkoutSetModal", "submit:missing-exercise");
@@ -17333,7 +17338,7 @@ class SetModal extends Modal {
         throw error;
       }
     };
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button.setButtonText("Log set").setCta().onClick(() => void log(false)))
       .addButton((button) => button.setButtonText("Log & close").onClick(() => void log(true)))
       .addButton((button) => button.setButtonText("Save layout").onClick(() => new WorkoutLayoutModal(this.app, this.plugin, false).open()))
@@ -17525,19 +17530,20 @@ class WorkoutFileSetModal extends Modal {
     let exerciseInput: HTMLInputElement | null = null;
     let repsInput: HTMLInputElement | null = null;
     let restInput: HTMLInputElement | null = null;
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
     const exerciseList = this.contentEl.createEl("datalist");
     exerciseList.id = `tps-health-workout-file-exercise-options-${Date.now()}`;
     this.plugin.searchExercises("").then((items) => {
       exerciseList.empty();
       for (const item of items.slice(0, 80)) exerciseList.createEl("option", { attr: { value: item.name } });
     });
-    new Setting(this.contentEl).setName("Exercise").addText((text) => {
+    new Setting(formEl).setClass("tps-health-form-wide").setName("Exercise").addText((text) => {
       exerciseInput = text.inputEl;
       text.inputEl.setAttr("list", exerciseList.id);
       text.setPlaceholder("Bench press, run, plank...").onChange((value) => exercise = value.trim());
       text.inputEl.addEventListener("input", () => void renderExercisePicker(text.inputEl.value || ""));
     });
-    const exercisePicker = this.contentEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
+    const exercisePicker = formEl.createDiv({ cls: "tps-health-workout-exercise-picker" });
     let exercisePickerToken = 0;
     const pickExercise = (name: string) => {
       exercise = name.trim();
@@ -17583,18 +17589,18 @@ class WorkoutFileSetModal extends Modal {
       }
     };
     void renderExercisePicker();
-    new Setting(this.contentEl).setName("Reps").addText((text) => {
+    new Setting(formEl).setName("Reps").addText((text) => {
       repsInput = text.inputEl;
       text.inputEl.setAttr("inputmode", "decimal");
       text.onChange((value) => reps = numberOrUndefined(value));
     });
-    new Setting(this.contentEl).setName("Weight").addText((text) => {
+    new Setting(formEl).setName("Weight").addText((text) => {
       text.inputEl.setAttr("inputmode", "decimal");
       text.onChange((value) => weight = numberOrUndefined(value));
     });
-    new Setting(this.contentEl).setName("Weight unit").addText((text) => text.setValue(weightUnit).onChange((value) => weightUnit = value.trim() || "lb"));
-    new Setting(this.contentEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.onChange((value) => perArm = value));
-    new Setting(this.contentEl)
+    new Setting(formEl).setName("Weight unit").addText((text) => text.setValue(weightUnit).onChange((value) => weightUnit = value.trim() || "lb"));
+    new Setting(formEl).setName("Per arm").setDesc("Counts this weight for each arm when calculating total lifted volume.").addToggle((toggle) => toggle.onChange((value) => perArm = value));
+    new Setting(formEl)
       .setName("Rest seconds")
       .addText((text) => {
         restInput = text.inputEl;
@@ -17604,7 +17610,7 @@ class WorkoutFileSetModal extends Modal {
           restSeconds = parsed == null ? undefined : Math.max(0, Math.round(parsed));
         });
       });
-    new Setting(this.contentEl)
+    new Setting(formEl)
       .setName("Set type")
       .addDropdown((dropdown) => dropdown
         .addOption("normal", "Normal")
@@ -17613,7 +17619,7 @@ class WorkoutFileSetModal extends Modal {
         .addOption("failure", "Failure")
         .setValue(setType)
         .onChange((value) => setType = value as NonNullable<WorkoutSet["setType"]>));
-    new Setting(this.contentEl).setName("Note").addText((text) => text.onChange((value) => note = value.trim()));
+    new Setting(formEl).setName("Note").addText((text) => text.onChange((value) => note = value.trim()));
     const log = async (closeAfterLog: boolean) => {
       if (!exercise) {
         logger.flowWarn("WorkoutFileSetModal", "submit:missing-exercise", { path: this.filePath });
@@ -17659,7 +17665,7 @@ class WorkoutFileSetModal extends Modal {
         throw error;
       }
     };
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button.setButtonText("Log set").setCta().onClick(() => void log(false)))
       .addButton((button) => button.setButtonText("Log & close").onClick(() => void log(true)));
     window.setTimeout(() => exerciseInput?.focus(), 0);
@@ -17723,7 +17729,7 @@ class WorkoutLayoutModal extends Modal {
           defaultRestSeconds = parsed == null ? this.plugin.settings.defaultRestSeconds : Math.max(0, Math.round(parsed));
         });
       });
-    new Setting(this.contentEl)
+    new Setting(this.contentEl).setClass("tps-health-modal-actions")
       .addButton((button) => button
         .setButtonText(this.finishAfterSave ? "Save layout & finish" : "Save layout")
         .setCta()
@@ -18078,16 +18084,21 @@ class CustomFoodModal extends FoodInputModal {
         ? `Reported energy: ${nutrition.calories == null ? "unknown" : `${round(nutrition.calories)} kcal`} per ${servingAmount} ${servingUnit}`
         : `Calories calculated from macros: ${caloriesFromMacros(nutrition)} kcal per ${servingAmount} ${servingUnit}`);
     };
-    const formEl = this.contentEl.createDiv({ cls: "tps-health-food-editor-grid" });
-    new Setting(formEl).setName("Name").addText((text) => text.setValue(name).onChange((value) => name = value.trim()));
-    new Setting(formEl)
+    const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
+    const recipeLike = isRecipeLikeFoodType(this.type);
+    if (recipeLike) formEl.addClass("tps-health-recipe-name");
+    const portionEl = recipeLike ? this.contentEl.createDiv({ cls: "tps-health-form-grid tps-health-recipe-yield" }) : formEl;
+    const detailsEl = this.contentEl.createEl("details", { cls: "tps-health-food-details" });
+    detailsEl.createEl("summary", { text: "Search aliases" });
+    new Setting(formEl).setName("Name").addText((text) => text.setPlaceholder(recipeLike ? "Recipe or meal name" : "Food name").setValue(name).onChange((value) => name = value.trim()));
+    new Setting(detailsEl)
       .setName("Search aliases")
       .setDesc("Comma-separated nicknames, store names, or old package names.")
       .addText((text) => text.setPlaceholder("protein doritos, Costco pretzels").setValue(aliases).onChange((value) => aliases = value));
     if (isRecipeLikeFoodType(this.type)) {
       if (this.type === "recipe") {
-        const portionMode = new Setting(formEl).setName("Portion by");
-        const servingsSetting = new Setting(formEl).setName("Recipe servings").setDesc("Number of portions in the full recipe.").addText((text) => text.setValue(String(recipeServings)).onChange((value) => {
+        const portionMode = new Setting(portionEl).setName("Portion by").setClass("tps-health-recipe-portion-mode");
+        const servingsSetting = new Setting(portionEl).setName("Servings").setDesc("Portions in the full recipe.").addText((text) => text.setValue(String(recipeServings)).onChange((value) => {
           recipeServings = Number(value);
           updateCaloriePreview();
         }));
@@ -18097,7 +18108,7 @@ class CustomFoodModal extends FoodInputModal {
           servingsSetting.settingEl.hidden = recipeByWeight;
           updateCaloriePreview();
         }));
-        new Setting(formEl).setName("Finished recipe weight (g)").setDesc("Optional when all ingredients have known weights. Enter the cooked weight to account for water gained or lost.").addText(text => text.setValue(recipeTotalGrams == null ? "" : String(recipeTotalGrams)).setPlaceholder("Calculate from ingredients").onChange(value => {
+        new Setting(portionEl).setName("Finished weight (g)").setDesc("Optional cooked weight; otherwise use ingredient weights.").addText(text => text.setValue(recipeTotalGrams == null ? "" : String(recipeTotalGrams)).setPlaceholder("Automatic").onChange(value => {
           recipeTotalGrams = value.trim() === "" ? undefined : Number(value);
           updateCaloriePreview();
         }));
@@ -18166,6 +18177,9 @@ class CustomFoodModal extends FoodInputModal {
     }
     if (isRecipeLikeFoodType(this.type)) {
       const section = this.contentEl.createDiv({ cls: "tps-health-meal-ingredient-editor" });
+      formEl.after(section);
+      portionEl.after(caloriePreview);
+      if (recipeMacroPreview) caloriePreview.after(recipeMacroPreview);
       section.createEl("h3", { text: "Ingredients" });
       section.createDiv({ cls: "tps-health-status", text: this.editPath ? `Adjust amounts, replace or remove foods, or add another ingredient. Changes to this ${typeLabel} apply only after Save and the linked-instance choice.` : "Add foods and choose the amount of each ingredient in the full recipe." });
       const list = section.createDiv({ cls: "tps-health-meal-ingredient-list" });
@@ -18176,7 +18190,7 @@ class CustomFoodModal extends FoodInputModal {
         list.empty();
         recipeIngredientQuantityControls = [];
         if (!recipeIngredients.length) {
-          list.createDiv({ cls: "tps-health-status", text: this.editPath ? `No editable ingredient lines were found in this ${typeLabel}.` : "Add your first ingredient below." });
+          list.createDiv({ cls: "tps-health-status", text: this.editPath ? `No editable ingredient lines were found in this ${typeLabel}.` : "Add your first ingredient." });
           return;
         }
         recipeIngredients.forEach((ingredient, index) => {
@@ -18263,6 +18277,7 @@ class CustomFoodModal extends FoodInputModal {
         });
       };
       const add = section.createDiv({ cls: "tps-health-recipe-add" });
+      list.before(add);
       const addButton = add.createEl("button", {
         text: "+ Add ingredient",
         cls: "tps-health-recipe-add-button",
@@ -18296,9 +18311,13 @@ class CustomFoodModal extends FoodInputModal {
       });
       renderIngredients();
     }
+    this.contentEl.append(detailsEl);
+    for (const input of recipeLike ? Array.from(portionEl.querySelectorAll<HTMLInputElement>("input")) : []) {
+      input.type = "number"; input.inputMode = "decimal"; input.min = "0.01"; input.step = "any";
+    }
     updateCaloriePreview();
     let submitting = false;
-    new Setting(this.contentEl).addButton((button) => {
+    new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => {
       button.setButtonText(this.inlineOnly || this.editPath ? "Save" : "Create").setCta().onClick(async () => {
       if (submitting) {
         logger.flowWarn("CustomFoodModal", "submit:suppressed-active", { type: this.type, name, editPath: this.editPath || "" });
@@ -18555,7 +18574,7 @@ class FinishWorkoutPromptModal extends Modal {
   }
 
   onOpen(): void {
-    this.modalEl.addClass("tps-keyboard-aware-modal");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Finish workout?" });
@@ -18596,7 +18615,7 @@ class DiscardWorkoutPromptModal extends Modal {
   }
 
   onOpen(): void {
-    this.modalEl.addClass("tps-keyboard-aware-modal");
+    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
     this.contentEl.empty();
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Discard workout?" });
