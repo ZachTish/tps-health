@@ -968,8 +968,11 @@ export class HealthNativeRecordService {
     const metadataCache = this.plugin.app.metadataCache;
     const vault = this.plugin.app.vault;
     const metadataInitialized = (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
-    this.workoutIndexReady = this.plugin.app.workspace?.layoutReady === true && metadataInitialized;
+    // Metadata can already be settled before layout. Only body hydration waits
+    // for the workspace; the metadata-ready owner schedules that work once.
+    this.workoutIndexReady = metadataInitialized;
     this.rebuild();
+    if (this.workoutIndexReady) this.hydrateWorkoutBodiesAfterLayout();
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, data, cache) => {
@@ -982,17 +985,13 @@ export class HealthNativeRecordService {
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
       // `resolved` also fires after ordinary edits. Once startup is settled,
       // Metadata changes and scoped Health file events maintain this index.
-      if (!this.workoutIndexReady) this.rebuild();
-      this.workoutIndexReady = true;
+      if (!this.workoutIndexReady) {
+        this.rebuild();
+        this.workoutIndexReady = true;
+        this.hydrateWorkoutBodiesAfterLayout();
+      }
       this.plugin.scheduleWorkoutActionBars();
     }));
-    this.plugin.app.workspace?.onLayoutReady?.(() => {
-      this.rebuild();
-      // A resolved event may precede layout readiness on mobile. Never revoke
-      // that authoritative event using the optional, internal initialized flag.
-      this.workoutIndexReady ||= (metadataCache as unknown as { initialized?: boolean })?.initialized === true;
-      this.plugin.scheduleWorkoutActionBars();
-    });
     this.plugin.registerEvent(vault.on('create', (file) => {
       // A synced active-workout file can arrive before its metadata. Keep its
       // saved pointer guarded without reading every newly discovered note.
@@ -1066,6 +1065,7 @@ export class HealthNativeRecordService {
 
   refreshConfiguration(): void {
     this.rebuild();
+    this.hydrateWorkoutBodiesAfterLayout();
     this.plugin.scheduleWorkoutActionBars();
   }
 
@@ -2692,14 +2692,24 @@ export class HealthNativeRecordService {
       const cache = this.plugin.app.metadataCache.getFileCache(file);
       metadataComplete &&= cache != null;
       this.indexFile(file, cache?.frontmatter);
-      if (this.plugin.app.workspace?.layoutReady && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
-        void this.refreshFile(file);
-      }
     }
     // On a warm mobile plugin load, `resolved` may already have fired and the
     // private initialized flag may not exist. Use the public cache coverage of
     // the fully restored vault; a missing cache keeps reconciliation closed.
     if (this.plugin.app.workspace?.layoutReady && metadataComplete) this.workoutIndexReady = true;
+  }
+
+  private hydrateWorkoutBodiesAfterLayout(): void {
+    // Metadata readiness owns the full index. Layout only permits the deferred
+    // body reads; it must not rebuild an index that `resolved` already finished.
+    this.plugin.app.workspace?.onLayoutReady?.(() => {
+      if (this.disposed) return;
+      for (const path of this.pathsByKind.get('workout-session') || []) {
+        const record = this.recordsByPath.get(path);
+        if (record) void this.refreshFile(record.file);
+      }
+      this.plugin.scheduleWorkoutActionBars();
+    });
   }
 
   private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string): void {

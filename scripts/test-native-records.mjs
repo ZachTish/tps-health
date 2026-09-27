@@ -271,7 +271,7 @@ function createHarness(options = {}) {
     },
   };
   const service = new HealthNativeRecordService(plugin);
-  service.setup();
+  if (!options.deferSetup) service.setup();
   const addLegacyFile = (path, content) => {
     const file = { path, name: path.split('/').pop(), extension: 'md', basename: path.split('/').pop().replace(/\.md$/u, '') };
     files.set(path, file);
@@ -2259,10 +2259,145 @@ test('cold metadata resolution builds once and later batches preserve the settle
   assert.equal(scans, 1);
   assert.equal(h.service.isWorkoutIndexSettled(), true);
   h.finishLayout();
-  assert.equal(scans, 2, 'layout still hydrates startup workout bodies');
+  assert.equal(scans, 1, 'layout hydration must reuse the metadata index');
   h.emitMetadata('resolved');
-  assert.equal(scans, 2);
+  assert.equal(scans, 1);
   h.service.dispose();
+});
+
+function addStartupRecords(h) {
+  for (let index = 0; index < 2048; index++) h.addFrontmatterFile(`Inbox/startup-${index}.md`, { title: `Note ${index}` });
+  const workout = h.addFrontmatterFile('Inbox/startup-session.md', {
+    tpsId: 'startup-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Workout', status: 'active',
+  });
+  h.contents.set(workout.path, writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
+    version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 8 }] }],
+  })));
+  return workout;
+}
+
+for (const order of ['resolved-before-layout', 'layout-before-resolved', 'resolved-before-delayed-layout-callback']) {
+  test(`startup indexes once and hydrates once: ${order}`, async () => {
+    const h = createHarness({ layoutReady: false, metadataInitialized: false });
+    const workout = addStartupRecords(h);
+    let scans = 0;
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+    if (order === 'layout-before-resolved') {
+      h.finishLayout();
+      assert.equal(scans, 0, 'layout must not preempt metadata readiness with a whole-vault scan');
+      assert.equal(h.service.isWorkoutIndexSettled(), false);
+    } else if (order === 'resolved-before-delayed-layout-callback') {
+      // Obsidian sets layoutReady before its queued callbacks run. This is the
+      // order observed in the installed startup profile, not a second event.
+      h.plugin.app.workspace.layoutReady = true;
+    }
+    h.plugin.app.metadataCache.initialized = true;
+    h.emitMetadata('resolved');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    h.finishLayout();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    for (let i = 0; i < 10; i++) h.emitMetadata('resolved');
+    assert.equal(scans, 1, 'metadata owns the single nonempty startup index');
+    assert.deepEqual(h.cachedReadCalls, [workout.path], 'each recognized workout hydrates once');
+    assert.deepEqual(h.readCalls, []);
+    assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
+    assert.equal(h.service.isWorkoutIndexSettled(), true);
+    h.service.dispose();
+  });
+}
+
+test('warm setup indexes and hydrates once even when onLayoutReady calls synchronously', async () => {
+  for (const metadataInitialized of [true, false]) {
+    const h = createHarness({ deferSetup: true, metadataInitialized });
+    if (!metadataInitialized) delete h.plugin.app.metadataCache.initialized;
+    const workout = addStartupRecords(h);
+    let scans = 0;
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+    h.service.setup();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(scans, 1);
+    assert.deepEqual(h.cachedReadCalls, [workout.path]);
+    assert.equal(h.service.isWorkoutIndexSettled(), true, 'complete public caches still support warm mobile loading');
+    h.service.refreshConfiguration();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(scans, 2, 'explicit settings refresh retains its full rebuild');
+    assert.deepEqual(h.cachedReadCalls, [workout.path, workout.path]);
+    h.service.dispose();
+  }
+});
+
+test('metadata already initialized before layout defers only workout hydration', async () => {
+  const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: true });
+  const workout = addStartupRecords(h);
+  let scans = 0;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.service.setup();
+  h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  assert.deepEqual(h.cachedReadCalls, [], 'legacy bodies wait for layout even when metadata is ready');
+  h.finishLayout();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(scans, 1);
+  assert.deepEqual(h.cachedReadCalls, [workout.path]);
+  assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
+  h.service.dispose();
+});
+
+test('layout with an incomplete or blank metadata cache does not preempt resolved discovery', async () => {
+  const h = createHarness({ layoutReady: false, metadataInitialized: false });
+  const workout = addStartupRecords(h);
+  const getCache = h.plugin.app.metadataCache.getFileCache;
+  let scans = 0;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.plugin.app.metadataCache.getFileCache = () => null;
+  h.finishLayout();
+  assert.equal(scans, 0);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  h.plugin.app.metadataCache.getFileCache = getCache;
+  h.emitMetadata('resolved');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(scans, 1);
+  assert.deepEqual(h.cachedReadCalls, [workout.path]);
+  assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
+  h.service.dispose();
+});
+
+test('deferred startup hydration uses current indexed paths and cannot replace a newer indexed body', async () => {
+  const h = createHarness({ layoutReady: false, metadataInitialized: false });
+  const workout = addStartupRecords(h);
+  h.emitMetadata('resolved');
+  const oldContent = h.contents.get(workout.path);
+  const currentContent = writeWorkoutDataToNoteContent(oldContent, JSON.stringify({
+    version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 12 }] }],
+  }));
+  let completeRead;
+  h.plugin.app.vault.cachedRead = file => {
+    h.cachedReadCalls.push(file.path);
+    return new Promise(resolve => { completeRead = () => resolve(oldContent); });
+  };
+  h.finishLayout();
+  assert.equal(h.service.isWorkoutIndexSettled(), false, 'pending legacy hydration protects workout controls');
+  h.contents.set(workout.path, currentContent);
+  h.emitMetadata('changed', workout, currentContent, { frontmatter: h.frontmatters.get(workout) });
+  completeRead();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.cachedReadCalls, [workout.path]);
+  assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 12);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(h.contents.get(workout.path), currentContent, 'startup is read-only');
+  h.service.dispose();
+});
+
+test('a deferred layout callback cannot hydrate after Health is unloaded', () => {
+  const h = createHarness({ layoutReady: false, metadataInitialized: false });
+  addStartupRecords(h);
+  h.emitMetadata('resolved');
+  h.service.dispose();
+  h.plugin.scheduleWorkoutActionBars = () => { throw new Error('Disposed callback must not refresh controls'); };
+  h.finishLayout();
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
 });
 
 const freshFoodEntry=()=>({id:'uncommitted-food-id',createdDate:'2026-09-23T12:00:00.000Z',completedDate:'2026-09-23T12:00:00.000Z',item:{id:'food',name:'Synthetic food',source:'manual'},quantity:0.5,unit:'serving',servingQuantity:50,servingUnit:'g',nutritionOverride:{calories:100,proteinG:5,fiberG:2},tags:['lunch']});
