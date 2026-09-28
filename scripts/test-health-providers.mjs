@@ -107,6 +107,7 @@ async function importPluginWithObsidianStub() {
     export class App {}
     export const Platform = { isDesktop: true, isMobile: false, isDesktopApp: true, isMobileApp: false, isIosApp: false, isAndroidApp: false };
     export const editorLivePreviewField = {};
+    export const editorInfoField = {};
     export function normalizePath(path) {
       return String(path || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/").replace(/^\\.\\//, "");
     }
@@ -139,7 +140,7 @@ async function importPluginWithObsidianStub() {
       return { status: 200, headers: {}, json: {} };
     }
   `;
-  const emptyModule = "export class RangeSetBuilder { add() {} finish() { return {}; } } export const StateField = { define: (spec) => spec }; export class EditorState { static transactionFilter = { of: (filter) => filter }; } export class Decoration { static none = {}; static widget() { return {}; } static replace() { return {}; } } export class ViewPlugin { static fromClass() { return {}; } } export class WidgetType {} export const EditorView = { decorations: { from: () => ({}) } }; export const DecorationSet = {}; export class ViewUpdate {}";
+  const emptyModule = "export class RangeSetBuilder { add() {} finish() { return {}; } } export const StateField = { define: (spec) => spec }; export const StateEffect = { define: () => ({of: () => ({is: () => false})}) }; export class EditorState { static transactionFilter = { of: (filter) => filter }; } export class Decoration { static none = {}; static widget() { return {}; } static replace() { return {}; } } export class ViewPlugin { static fromClass() { return {}; } } export class WidgetType {} export const EditorView = { decorations: { from: () => ({}) } }; export const DecorationSet = {}; export class ViewUpdate {}";
   const zxingBrowserStub = "export class BrowserMultiFormatOneDReader {} export class BrowserMultiFormatReader {}";
   const zxingLibraryStub = "export const BarcodeFormat = {}; export const DecodeHintType = {};";
   const virtualModules = new Map([
@@ -7730,7 +7731,7 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(mainSource, /function buildFoodLogChipDecorations\(plugin: TPSHealthPlugin, state: EditorState\)/);
   assert.match(mainSource, /selectionTouchesLineInState\(state, line\.from, line\.to\)/);
   assert.match(mainSource, /new FoodLogChipWidget\(plugin, chip, \{ filePath, lineNumber: line\.number - 1, line: line\.text \}\),\s+block: true/);
-  assert.match(mainSource, /registerEditorExtension\(createWorkoutSetChipExtension\(this\)\)/);
+  assert.match(mainSource, /registerEditorExtension\(this\.workoutSetChipField\)/);
   assert.match(mainSource, /class WorkoutExercisePickerModal extends Modal/);
   assert.match(mainSource, /text: "Workout • 0\/0"/);
   assert.match(mainSource, /async addSeededWorkoutSetAfterBlock\(source: WorkoutSetLineSource\)/);
@@ -7842,7 +7843,7 @@ test("completed food logs render as the same lean reliable row in Live Preview a
   assert.match(workoutSetExtensionSource, /state\.field\(editorLivePreviewField, false\)/);
   assert.match(workoutSetExtensionSource, /selectionTouchesLineInState\(state, line\.from, line\.to\)/);
   assert.doesNotMatch(workoutSetExtensionSource, /ViewPlugin\.fromClass/);
-  assert.match(workoutSetExtensionSource, /if \(!filePath \|\| \(!isWorkoutLikeMarkdownPath\(plugin, filePath\) && !dailyWorkoutDocument\)\) return Decoration\.none;/);
+  assert.match(workoutSetExtensionSource, /if \(!filePath \|\| \(!nativeWorkout && !isWorkoutLikeMarkdownPath\(plugin, filePath\) && !dailyWorkoutDocument\)\) return Decoration\.none;/);
   assert.match(workoutSetExtensionSource, /builder\.add\(line\.from, line\.to, Decoration\.replace/);
   assert.match(mainSource, /function workoutFilePathForRenderedRoot\(plugin: TPSHealthPlugin, root: HTMLElement, sourcePath: string \| null \| undefined\): string/);
   assert.match(mainSource, /function markdownFilePathForRenderedElement\(plugin: TPSHealthPlugin, element: HTMLElement\): string/);

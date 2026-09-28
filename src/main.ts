@@ -14,9 +14,9 @@ import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interactio
 import { FoodLogTimings, type FoodLogTiming } from "./food-log-timings";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
-import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, DailyRollup, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
@@ -639,9 +639,12 @@ function invariantMomentIsoDate(date: any): string {
   return String(date?.clone?.().locale?.("en")?.format?.("YYYY-MM-DD") || date?.format?.("YYYY-MM-DD") || "");
 }
 
+const nativeWorkoutRefresh = StateEffect.define<null>();
+
 export default class TPSHealthPlugin extends Plugin {
   settings: TPSHealthSettings = DEFAULT_SETTINGS;
   nativeRecordService!: HealthNativeRecordService;
+  private workoutSetChipField: StateField<DecorationSet> | null = null;
   private readonly foodLogTimings = new FoodLogTimings();
   private dailyNoteSettingsSnapshot: CoreDailyNoteSettings = { format: "YYYY-MM-DD", folder: "" };
   private settingsSavePromise: Promise<void> | null = null;
@@ -1003,7 +1006,8 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorExtension(createRecipeIngredientEditorExtension(this));
     this.registerEditorExtension(createWorkoutDailyMarkerProtectionExtension());
     this.registerEditorExtension(createWorkoutDailyHeaderExtension(this));
-    this.registerEditorExtension(createWorkoutSetChipExtension(this));
+    this.workoutSetChipField = createWorkoutSetChipExtension(this);
+    this.registerEditorExtension(this.workoutSetChipField);
     this.registerEditorExtension(createFoodLogChipExtension(this));
     if (typeof (this as any).registerMarkdownCodeBlockProcessor === "function") {
       const registerNativeDailySection = (language: string, section: NativeDailyDashboardSection) => {
@@ -8129,6 +8133,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private updateNativeWorkoutSurfaces(): void {
+    // Index events own editor membership as well as updates to mounted controls.
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || view.getMode() !== "source") return;
+      const cm = (view.editor as any)?.cm as EditorView | undefined;
+      if (cm) refreshNativeWorkoutEditor(this, cm, this.workoutSetChipField);
+    });
     if (!this.nativeRecordService?.isEnabled()) {
       document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surface.remove());
       return;
@@ -14537,7 +14548,7 @@ class WorkoutSetEmptyWidget extends WidgetType {
 }
 
 class NativeWorkoutSurfaceWidget extends WidgetType {
-  constructor(private plugin: TPSHealthPlugin, private filePath: string) {
+  constructor(private plugin: TPSHealthPlugin, readonly filePath: string) {
     super();
   }
 
@@ -14564,6 +14575,27 @@ class NativeWorkoutSurfaceWidget extends WidgetType {
   }
 }
 
+function refreshNativeWorkoutEditor(
+  plugin: TPSHealthPlugin,
+  editor: EditorView,
+  field: StateField<DecorationSet> | null,
+): void {
+  const decorations = field && editor.state.field(field, false);
+  if (!decorations) return;
+  const path = editor.state.field(editorInfoField, false)?.file?.path || "";
+  const expectedPath = path && editor.state.field(editorLivePreviewField, false)
+    && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(path)
+    ? path : "";
+  let renderedPath = "";
+  decorations.between(0, editor.state.doc.length, (_from, _to, decoration) => {
+    const widget = decoration.spec.widget;
+    if (widget instanceof NativeWorkoutSurfaceWidget) renderedPath = widget.filePath;
+  });
+  // Compare decorations, not DOM: CodeMirror can virtualize an offscreen widget.
+  // An unchanged index event must not dispatch or disturb an in-progress edit.
+  if (renderedPath !== expectedPath) editor.dispatch({ effects: nativeWorkoutRefresh.of(null) });
+}
+
 function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
   return StateField.define<DecorationSet>({
     create(state) {
@@ -14571,6 +14603,7 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
     },
     update(decorations, transaction) {
       if (transaction.docChanged || transaction.selection
+        || transaction.effects.some((effect) => effect.is(nativeWorkoutRefresh))
         || transaction.startState.field(editorLivePreviewField, false) !== transaction.state.field(editorLivePreviewField, false)) {
         return buildWorkoutSetChipDecorations(plugin, transaction.state);
       }
@@ -14583,10 +14616,11 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
 function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
   if (!state.field(editorLivePreviewField, false)) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
-  const filePath = plugin.app.workspace.getActiveFile()?.path || "";
+  const filePath = state.field(editorInfoField, false)?.file?.path || "";
   const documentContent = state.doc.toString();
   const dailyWorkoutDocument = documentContent.split("\n").some(isWorkoutDailyMarkerLine);
-  if (!filePath || (!isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
+  const nativeWorkout = !!filePath && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(filePath);
+  if (!filePath || (!nativeWorkout && !isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
   const hasWorkoutSets = docHasWorkoutSetLine(documentContent);
   const documentLines = documentContent.split("\n");
   for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
@@ -14609,7 +14643,7 @@ function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorSt
       block: true,
     }));
   }
-  if (plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(filePath)) {
+  if (nativeWorkout) {
     builder.add(state.doc.length, state.doc.length, Decoration.widget({
       widget: new NativeWorkoutSurfaceWidget(plugin, filePath),
       block: true,
