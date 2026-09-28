@@ -1,5 +1,13 @@
 # TPS Health
 
+## 3.8.1 — Skip source reads for unrelated Reading sections
+
+Reading mode runs postprocessors for individual rendered sections. Health now checks the existing list items and unprocessed level-two headings before reading a section's source for food chips or Daily Note workout headers. A paragraph with neither target no longer starts two concurrent full-note cached reads. Already-rendered workout headings also return before reading, while the existing post-read check still prevents duplicate controls from concurrent renders.
+
+Recipes keep their existing classification and ingredient renderer, including the **+ Ingredient** control when the recipe has no list items. Hidden food fields and custom units still resolve against source; ordinary lists and unprocessed headings retain their existing source inspection. Recipe identity checks and other postprocessors are unchanged. No cache, watcher, retry, automatic repair, settings/schema/API change or migration is added. This is a backward-compatible performance fix; minimum Obsidian remains **1.12.0**.
+
+The actual-function/class regression mounts 700 ordinary paragraph sections: their food/header reads fell from 1,400 to zero. Twenty already-rendered header refreshes fell from 20 reads to zero. All 11 focused tests pass, including empty/populated recipes, hidden and raw food rows, custom units, source cursor/menu paths, ordinary lists, workout marker offsets, concurrent headers and eligible-content read errors. The versioned declared suite passes 530 tests with zero failures and one optional live USDA check skipped without its credential; TypeScript, the suite build and a separate build pass under Node 24.19.0. Installed test-vault QA verified the final artifact with a named plugin reload. Three actual Reading-mode opens of a 700-paragraph note reduced cached reads from 4,209 to 3 and raw reads from 4,215 to 9. The six-click paired capture retained stable artifacts/settings, correct final content and no mutations, errors or long tasks. The remaining ordinary source reads and recipe identity work are outside these two no-op render guards. Food chips, workout headers and empty-recipe ingredient controls remained visible, with fixture bytes unchanged. These are bounded test-vault operation counts; the measured long-note body times improved in three samples but do not establish native parity, cold-start, physical-device or production performance. The final normal build is byte-identical to the installed artifact. Exact counts, timings, limitations and hashes are recorded in [3.8.1 release notes](release-notes/3.8.1.md).
+
 ## 3.8.0 — Health dashboard
 
 Open **TPS Health: Open health dashboard** from the command palette or the heart-pulse ribbon icon. The command reuses an existing Health tab. Pick a day, move backward/forward or return to Today; all logging actions use that selected date. Log food, log activity, start/resume a workout, create a recipe and open Health settings from one place. Workouts retain their existing session and inline-set flow.
@@ -94,7 +102,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.7.3](https://github.com/ZachTish/tps-health/releases/tag/3.7.3) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.8.1](https://github.com/ZachTish/tps-health/releases/tag/3.8.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

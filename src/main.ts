@@ -13342,10 +13342,13 @@ async function renderDailyWorkoutHeaders(
   plugin: TPSHealthPlugin,
   ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null },
 ): Promise<void> {
+  const headings = Array.from(root.querySelectorAll<HTMLElement>("h2"))
+    .filter(heading => !heading.nextElementSibling?.classList.contains("tps-health-daily-workout-header"));
+  if (!headings.length) return;
   const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
   if (!(file instanceof TFile)) return;
   const lines = (await plugin.app.vault.cachedRead(file)).split("\n");
-  for (const heading of Array.from(root.querySelectorAll<HTMLElement>("h2"))) {
+  for (const heading of headings) {
     if (heading.nextElementSibling?.classList.contains("tps-health-daily-workout-header")) continue;
     const section = ctx.getSectionInfo?.(heading);
     let markerIndex = (section?.lineStart ?? -1) + 1;
@@ -13358,14 +13361,16 @@ async function renderDailyWorkoutHeaders(
 }
 
 async function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): Promise<void> {
+  const items = Array.from(root.querySelectorAll("li"));
   if (isRecipeLikeMarkdownFile(plugin, ctx.sourcePath)) {
     renderRecipeIngredientChips(root, plugin, ctx);
     return;
   }
+  if (!items.length) return;
   const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
   const sourceLines = file instanceof TFile ? (await plugin.app.vault.cachedRead(file)).split("\n") : [];
   let sourceCursor = 0;
-  for (const item of Array.from(root.querySelectorAll("li"))) {
+  for (const item of items) {
     const text = item.textContent || "";
     const section = ctx.getSectionInfo?.(item as HTMLElement);
     const sectionLineNumber = section?.lineStart ?? -1;
