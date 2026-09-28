@@ -2550,7 +2550,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
     if (context.input.openFile !== false) await this.openWorkoutFile(record.file);
     logger.flow("Workout", "start:done", {
-      workoutId,
+      workoutId: record.id,
       path: record.path,
       storage: "native-records",
       planPath: context.plan?.sourcePath || "",

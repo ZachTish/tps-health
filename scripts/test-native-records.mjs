@@ -2462,3 +2462,55 @@ test('workout estimates survive set edits and real completion replaces them in e
     assert.equal(service.getDailyActivityTotals('2026-08-24').durationMinutes, 22.5);
   }
 });
+
+
+test('new workout bursts use one fresh create each and adopt the persisted identity', async () => {
+  const h = createHarness();
+  const create = h.api.create;
+  let freshCalls = 0;
+  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.create = async () => { throw Error('Unexpected scanning create'); };
+  h.api.createFresh = async function (kind, properties, options) {
+    assert.equal(this, h.api, 'API receiver is retained');
+    assert.equal(Object.hasOwn(options, 'id'), false);
+    assert.equal(options.cause.surface, 'health-workout-start');
+    assert.equal(options.now.toISOString(), '2026-09-28T12:00:00.000Z');
+    return create.call(this, kind, properties, { ...options, id: `fresh-workout-${++freshCalls}` });
+  };
+  for (let i = 0; i < 25; i++) {
+    const record = await h.service.createWorkoutSession({ title: `Workout ${i}`, startedAt: '2026-09-28T12:00:00Z' }, `uncommitted-${i}`);
+    assert.equal(record.id, `fresh-workout-${i + 1}`);
+    assert.equal(record.frontmatter.status, 'active');
+    assert.equal(record.frontmatter.scheduled, '2026-09-28T12:00:00Z');
+    assert.equal(record.frontmatter.timeEstimate, 60);
+    assert.deepEqual(record.frontmatter.session, workoutSessionPropertyValue([]));
+    assert.equal(h.service.getWorkoutSnapshot(record.id).path, record.path);
+  }
+  assert.equal(freshCalls, 25);
+  assert.equal(h.createCalls.length, 25);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+});
+
+for (const capability of [undefined, false, true, 'true']) {
+  test(`workout creation preserves the legacy ID without the complete fresh contract (${capability})`, async () => {
+    const h = createHarness();
+    h.api.capabilities = { freshIdentityCreates: capability };
+    if (capability !== true) h.api.createFresh = () => { throw Error('Unadvertised API must not run'); };
+    const record = await h.service.createWorkoutSession({ title: 'Compatible workout' }, 'legacy-workout');
+    assert.equal(h.createCalls.length, 1);
+    assert.equal(h.createCalls[0].options.id, 'legacy-workout');
+    assert.equal(record.id, 'legacy-workout');
+  });
+}
+
+test('a failed fresh workout write rejects once without publishing an active snapshot or writing again', async () => {
+  const h = createHarness();
+  let calls = 0;
+  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.createFresh = async () => { calls++; throw Error('Storage unavailable'); };
+  await assert.rejects(h.service.createWorkoutSession({ title: 'Failed' }, 'uncommitted-workout'), /Storage unavailable/);
+  assert.equal(calls, 1);
+  assert.equal(h.createCalls.length, 0);
+  assert.equal(h.service.getWorkoutSnapshot('uncommitted-workout'), null);
+});

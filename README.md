@@ -1,5 +1,13 @@
 # TPS Health
 
+## 3.8.2 — Create new workouts without global identity verification
+
+New native workout sessions now use GCM's existing feature-detected fresh-ID creation contract, as food entries already do. GCM owns generating the persisted UUID; Health adopts that returned ID for active state, indexing and its completion log. The internal local ID remains only for compatibility with older GCM. One failed fresh write is reported without trying another creation route. Existing session mutations, imported activity identities, timer behavior, schedule properties, plans, filenames and opening preferences retain their owners and behavior.
+
+This removes an unnecessary whole-vault verification from creating a previously nonexistent workout. It does not remove GCM's authoritative identity verification for an existing record's first edit or finish; saved-plan population can also invoke those mutations. No new cache, watcher, background indexing, retry, repair, setting or migration is added. Backward-compatible patch; minimum Obsidian remains **1.12.0**. Install with GCM **3.3.0+** for the fresh-create contract. Validation, measured scope and known limitations are recorded in [3.8.2 release notes](release-notes/3.8.2.md).
+
+Validation: 536 full-suite tests passed, zero failed, with one optional live USDA skip; 96 focused native/workout checks, TypeScript and separate test-vault build passed. Installed actual Start/Finish controls retained note identity, body/session, schedule and timer cleanup, with settings restored and synthetic Inbox folders archived. One cold-index Start fell from 4230 ms to 912 ms; a repeat took 586 ms. The first Finish then took 2522 ms because it still verified all native identity sources; repeated Finish took 190 ms. This is creation-only improvement, not less total identity verification or proof of the overall performance target. Named reload and final byte-identical build validate the shipped artifacts; complete counts, timings, limitations and hashes are in the release notes.
+
 ## 3.8.1 — Skip source reads for unrelated Reading sections
 
 Reading mode runs postprocessors for individual rendered sections. Health now checks the existing list items and unprocessed level-two headings before reading a section's source for food chips or Daily Note workout headers. A paragraph with neither target no longer starts two concurrent full-note cached reads. Already-rendered workout headings also return before reading, while the existing post-read check still prevents duplicate controls from concurrent renders.
@@ -102,7 +110,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.8.1](https://github.com/ZachTish/tps-health/releases/tag/3.8.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.8.2](https://github.com/ZachTish/tps-health/releases/tag/3.8.2) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

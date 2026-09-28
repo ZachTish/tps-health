@@ -1253,7 +1253,7 @@ export class HealthNativeRecordService {
         })
         : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-workout-start' },
-    });
+    }, true);
     this.workoutDataByPath.set(record.path, []);
     this.trackHandle(record);
     return record;

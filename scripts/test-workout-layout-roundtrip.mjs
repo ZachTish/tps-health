@@ -137,4 +137,6 @@ test('native startup starts its timer before waiting for plan population', async
  plugin.applyWorkoutPlanToNativeSession=async()=>{events.push('plan');};
  await plugin.startNativeWorkout({input:{openFile:false},startedAt:'2026-09-24T12:00:00Z',dailyNoteDate:'2026-09-24',plan:{sourcePath:'Inbox/Plan.md'},title:'Scheduled',cooldownDays:0});
  assert.deepEqual(events,['create','save','timer','plan']);
+ assert.equal(plugin.settings.activeWorkoutId, 'schedule', 'active state adopts the persisted ID instead of the discarded local ID');
+ assert.equal(plugin.settings.activeWorkoutPath, path);
 });
