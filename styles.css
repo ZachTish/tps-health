@@ -5248,3 +5248,39 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
 .tps-health-mapping-preview { max-height: 35vh; overflow-y: auto; overflow-wrap: anywhere; }
 .tps-health-settings-group [data-tps-health-mapping] .setting-item-control { flex-wrap: wrap; }
 .tps-health-settings-group [data-tps-health-mapping] button { height: auto; min-height: 32px; }
+
+/* Standalone Health dashboard; the day cards reuse the embedded Health blocks. */
+.tps-health-dashboard-view { padding: clamp(12px, 3vw, 28px); overflow-y: auto; }
+.tps-health-dashboard-view > * { max-width: 1200px; margin-inline: auto; }
+.tps-health-dashboard-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.tps-health-dashboard-header h1 { margin: 0; }
+.tps-health-dashboard-dates, .tps-health-dashboard-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tps-health-dashboard-actions { margin-block: 12px 20px; }
+.tps-health-dashboard-view :is(button, input) { min-height: 44px; height: auto; max-width: 100%; }
+.tps-health-dashboard-view button { white-space: normal; }
+.tps-health-dashboard-view :is(button, input, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.tps-health-dashboard-day-label, .tps-health-dashboard-note { color: var(--text-muted); }
+.tps-health-dashboard-day .tps-health-native-daily-stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start; }
+.tps-health-dashboard-day .tps-health-energy-overview { grid-column: 1 / -1; }
+.tps-health-dashboard-day .tps-health-native-daily { min-width: 0; margin: 0; }
+.tps-health-dashboard-week { margin-top: 24px; padding: 16px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-primary); }
+.tps-health-dashboard-week h2 { margin-top: 0; }
+.tps-health-dashboard-table { overflow-x: auto; }
+.tps-health-dashboard-table table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.tps-health-dashboard-table caption { text-align: left; color: var(--text-muted); padding-bottom: 10px; }
+.tps-health-dashboard-table :is(th, td) { text-align: right; padding: 8px; border-bottom: 1px solid var(--background-modifier-border); }
+.tps-health-dashboard-table th:first-child { text-align: left; }
+.tps-health-dashboard-table button[aria-current=date] { color: var(--text-on-accent); background: var(--interactive-accent); }
+@media (max-width: 600px) {
+  .tps-health-dashboard-view { padding: 12px; }
+  .tps-health-dashboard-dates { width: 100%; }
+  .tps-health-dashboard-dates input { min-width: 0; flex: 1; font-size: 16px; }
+  .tps-health-dashboard-actions button { flex: 1 1 120px; }
+  .tps-health-dashboard-week { padding: 10px; }
+  .tps-health-dashboard-table :is(th, td) { padding: 6px 3px; font-size: var(--font-ui-smaller); }
+}
+.tps-health-dashboard-view .tps-health-native-daily button { min-height: 44px; height: auto; }
+.tps-health-dashboard-view .tps-health-native-daily :is(.tps-health-native-daily-action, .tps-health-native-daily-row-action) { min-width: 44px; width: 44px; }
+
+.tps-health-dashboard-activity-facts { padding: 10px 12px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.tps-health-dashboard-view summary { min-height: 44px; }

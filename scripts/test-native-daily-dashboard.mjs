@@ -235,7 +235,7 @@ test('Daily Note actions use the exact resolved date context for every Health wo
 
 test('dashboard refreshes from the indexed record signal instead of racing MetadataCache', () => {
   assert.match(mainSource, /nativeRecordService\?\.onRecordsChanged/u);
-  assert.match(mainSource, /change\.dates\.includes\(this\.dateContext\.dateIso\)/u);
+  assert.match(mainSource, /change\.dates\.some\(date => \(this\.dashboard\?\.dates \?\? \[this\.dateContext\.dateIso\]\)\.includes\(date\)\)/u);
   assert.match(mainSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.render\(\);[\s\S]*?\}, 0\)/u);
   assert.doesNotMatch(mainSource, /metadataCache\.on\("changed"[\s\S]{0,600}?scheduleRefresh/u);
 });

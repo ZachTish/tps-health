@@ -63,6 +63,8 @@ async function importPluginWithObsidianStub() {
     export class Plugin {
       constructor(app) { this.app = app; this.__pluginData = null; }
       addCommand() {}
+      registerView() {}
+      addRibbonIcon() {}
       addSettingTab() {}
       registerEditorExtension() {}
       registerEvent() {}
@@ -97,6 +99,7 @@ async function importPluginWithObsidianStub() {
     }
     export class TextComponent { setValue() { return this; } getValue() { return ""; } }
     export class SecretComponent { constructor() {} setValue() { return this; } onChange() { return this; } }
+    export class ItemView {}
     export class MarkdownView {}
     globalThis.__TPSHealthTestMarkdownView = MarkdownView;
     export class MarkdownRenderChild { constructor(containerEl) { this.containerEl = containerEl; } onload() {} onunload() {} }
@@ -158,7 +161,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
             loader: "ts",
           };
         });
@@ -12238,4 +12241,36 @@ test('Recipe editor keeps ingredients before yield, add before the list, and ali
   assert.match(body, /portionEl\.after\(caloriePreview\)/);
   assert.match(body, /input\.type = "number"; input\.inputMode = "decimal"/);
   assert.match(body, /servingsSetting\.settingEl\.hidden = recipeByWeight/);
+});
+
+
+test('standalone Health dashboard reuses an existing leaf and creates only the view when absent', async () => {
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+  const calls = []; const leaf = { setViewState: async state => calls.push(state) };
+  fake.app.workspace.getLeavesOfType = () => [leaf];
+  fake.app.workspace.getLeaf = () => { throw Error('Duplicate tab'); };
+  fake.app.workspace.revealLeaf = async value => { assert.equal(value, leaf); calls.push('reveal'); };
+  await plugin.openHealthDashboard(); assert.deepEqual(calls, ['reveal']);
+  fake.app.workspace.getLeavesOfType = () => [];
+  fake.app.workspace.getLeaf = mode => { assert.equal(mode, 'tab'); return leaf; };
+  await plugin.openHealthDashboard(); assert.deepEqual(calls.slice(1), [{type:'tps-health-dashboard',active:true},'reveal']);
+});
+
+test('daily dashboard unload invalidates pending successes and errors before detached DOM commits', async () => {
+  installDeterministicBrowserGlobals();
+  const { TPSHealthNativeDailyDashboardChild: Child } = await importPluginWithObsidianStub();
+  for (const rejected of [false, true]) {
+    let resolve, reject, changed, reads = 0; const cleanup = [];
+    const promise = new Promise((ok, fail) => { resolve=ok; reject=fail; });
+    const plugin = { settings: {}, app: { workspace: { on:()=>({}) } }, getActiveNativeWorkoutPresentation:()=>null,
+      getDailyFoodMacroTotals:()=>{reads++;return promise;}, nativeRecordService:{onRecordsChanged:fn=>{changed=fn;return ()=>{changed=null;};}}, onActiveWorkoutStateChanged:()=>()=>{} };
+    const child = new Child({ empty(){throw Error('Detached render');} },plugin,{dateIso:'2026-09-27'},'overview',{});
+    child.register=fn=>cleanup.push(fn);child.registerEvent=()=>{};
+    child.onload();assert.equal(reads,1);assert.equal(typeof changed,'function');
+    cleanup.forEach(fn=>fn());assert.equal(changed,null);
+    if(rejected)reject(Error('Superseded read'));else resolve({dateIso:'2026-09-27',entryCount:0});
+    for(let i=0;i<5;i++)await Promise.resolve();
+    assert.equal(child.activeWorkoutTimer,null);
+  }
 });
