@@ -1885,6 +1885,96 @@ test("Saved quick picks reuse the ranked local catalog without rescoring it", as
   rendered.local.forEach((item, resultIndex) => assert.strictEqual(item, expectedLocal[resultIndex]));
 });
 
+test("unbuilt food indexes do no classification work during a startup event burst", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const listeners = new Map();
+  fake.app.vault.on = (event, handler) => listeners.set(event, handler);
+  const counts = { catalog: 0, usage: 0, metadata: 0, scans: 0, reads: 0 };
+  for (const [method, count] of [["foodCatalogPathCouldChange", "catalog"], ["foodUsagePathCouldChange", "usage"]]) {
+    const original = plugin[method].bind(plugin);
+    plugin[method] = (...args) => { counts[count]++; return original(...args); };
+  }
+  fake.app.metadataCache.getFileCache = () => { counts.metadata++; return {}; };
+  fake.app.vault.getMarkdownFiles = () => { counts.scans++; return []; };
+  fake.app.vault.read = fake.app.vault.cachedRead = async () => { counts.reads++; return ""; };
+  plugin.registerFoodSearchIndexInvalidation();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  for (let index = 0; index < 512; index++) {
+    listeners.get("create")(new TFile(`Inbox/Note ${index}.md`));
+    listeners.get("create")(new TFile(`Assets/Image ${index}.png`));
+  }
+  assert.deepEqual(counts, { catalog: 0, usage: 0, metadata: 0, scans: 0, reads: 0 });
+  assert.equal(plugin.localFoodIndexDirty, true);
+  assert.equal(plugin.foodUsageIndexDirty, true);
+  assert.equal(plugin.exerciseSearchIndexGeneration, 512, "Markdown events still invalidate an exercise build");
+  assert.equal(fake.writes.length, 0);
+});
+
+test("already-dirty food indexes skip repeated classification after a real invalidation", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
+  plugin.localFoodIndex = { items: [] };
+  plugin.foodUsageIndex = { stats: new Map() };
+  plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = false;
+  plugin.invalidateFoodSearchIndexes("settings");
+  plugin.foodCatalogPathCouldChange = plugin.foodUsagePathCouldChange = () => assert.fail("dirty indexes need no path classification");
+  plugin.app.metadataCache.getFileCache = () => assert.fail("dirty indexes need no metadata inspection");
+  const TFile = globalThis.__TPSHealthTestTFile;
+  for (let index = 0; index < 128; index++) plugin.invalidateFoodSearchIndexes("metadata", new TFile(`Inbox/${index}.md`));
+  assert.equal(plugin.localFoodIndexDirty, true);
+  assert.equal(plugin.foodUsageIndexDirty, true);
+});
+
+test("non-Markdown file events leave clean food and exercise indexes unchanged", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  const vaultEvents = new Map(), metadataEvents = new Map();
+  fake.app.vault.on = (event, handler) => vaultEvents.set(event, handler);
+  fake.app.metadataCache.on = (event, handler) => metadataEvents.set(event, handler);
+  plugin.registerFoodSearchIndexInvalidation();
+  plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = plugin.exerciseSearchIndexDirty = false;
+  plugin.invalidateFoodSearchIndexes = () => assert.fail("a non-Markdown event cannot change a Markdown search index");
+  const TFile = globalThis.__TPSHealthTestTFile;
+  for (const extension of ["png", "pdf", "base", "ts", "css"]) {
+    const file = new TFile(`Assets/Example.${extension}`);
+    for (const event of ["create", "modify", "delete"]) vaultEvents.get(event)(file);
+    vaultEvents.get("rename")(file, `Old/Example.${extension}`);
+    metadataEvents.get("changed")(file);
+  }
+  assert.equal(plugin.exerciseSearchIndexGeneration, 0);
+  assert.equal(plugin.localFoodIndexDirty, false);
+  assert.equal(plugin.foodUsageIndexDirty, false);
+});
+
+test("rename invalidation retains both Markdown extension boundaries and old source paths", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodsFolder: "Health/Foods", recipesFolder: "Health/Recipes", foodLogFilePath: "Food Log.md" };
+  plugin.dailyNoteSettingsSnapshot = { folder: "Daily Notes", format: "YYYY-MM-DD" };
+  const events = new Map();
+  fake.app.vault.on = (event, handler) => events.set(event, handler);
+  plugin.registerFoodSearchIndexInvalidation();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  for (const [path, oldPath, catalog, usage] of [
+    ["Archive/Food.txt", "Health/Foods/Food.md", true, false],
+    ["Archive/Day.txt", "Daily Notes/2026-07-26.MD", false, true],
+    ["Health/Foods/Food.md", "Imports/Food.txt", true, false],
+  ]) {
+    plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = false;
+    events.get("rename")(new TFile(path), oldPath);
+    assert.equal(plugin.localFoodIndexDirty, catalog, oldPath);
+    assert.equal(plugin.foodUsageIndexDirty, usage, oldPath);
+  }
+});
+
 test("food index invalidation ignores unrelated metadata churn", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();

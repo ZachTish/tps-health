@@ -4336,7 +4336,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private isMarkdownEventFile(file: unknown): file is TFile {
-    return file instanceof TFile || Boolean(file && typeof file === "object" && /\.md$/i.test(String((file as any).path || "")));
+    return Boolean(file && typeof file === "object" && /\.md$/i.test(String((file as any).path || "")));
   }
 
   private foodCatalogPathCouldChange(path: string): boolean {
@@ -4361,13 +4361,15 @@ export default class TPSHealthPlugin extends Plugin {
   private invalidateFoodSearchIndexes(reason: string, file?: TFile, oldPath = ""): void {
     const hadCatalog = Boolean(this.localFoodIndex);
     const hadUsage = Boolean(this.foodUsageIndex);
-    const invalidateCatalog = !file
+    // An unbuilt or already-dirty snapshot cannot become any less current.
+    // An in-flight usage build still needs its generation invalidated.
+    const invalidateCatalog = !this.localFoodIndexDirty && (!file
       || this.foodCatalogPathCouldChange(file.path)
       || this.foodCatalogPathCouldChange(oldPath)
-      || isFoodLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file));
-    const invalidateUsage = !file
+      || isFoodLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file)));
+    const invalidateUsage = (!this.foodUsageIndexDirty || Boolean(this.foodUsageIndexInFlight)) && (!file
       || this.foodUsagePathCouldChange(file.path)
-      || this.foodUsagePathCouldChange(oldPath);
+      || this.foodUsagePathCouldChange(oldPath));
     if (invalidateCatalog) this.localFoodIndexDirty = true;
     this.exerciseSearchIndexDirty = true;
     this.exerciseSearchIndexGeneration++;
@@ -4397,7 +4399,7 @@ export default class TPSHealthPlugin extends Plugin {
         if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("delete", file);
       }));
       this.registerEvent(vault.on("rename", (file: TFile, oldPath: string) => {
-        if (this.isMarkdownEventFile(file)) this.invalidateFoodSearchIndexes("rename", file, oldPath);
+        if (this.isMarkdownEventFile(file) || /\.md$/i.test(oldPath)) this.invalidateFoodSearchIndexes("rename", file, oldPath);
       }));
     }
     if (typeof metadataCache?.on === "function") {
