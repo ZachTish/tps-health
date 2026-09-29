@@ -21,7 +21,10 @@ function nativeTrayTestElement(tag = "div", options = {}) {
     addEventListener(name, fn) { const previous = listeners.get(name); listeners.set(name, (...args) => { previous?.(...args); return fn(...args); }); }, removeEventListener() {}, listeners,
     createEl(tag, options) { const child = nativeTrayTestElement(tag, options); child.parentElement = this; this.children.push(child); return child; },
     createDiv(options) { return this.createEl("div", options); }, createSpan(options) { return this.createEl("span", options); },
-    querySelector() { return null; }, querySelectorAll() { return []; }, closest() { return null; }, focus() {}, blur() {}, scrollIntoView() {},
+    querySelector(selector) { return selector.startsWith('.') ? walk(this).slice(1).find(n => n.className.split(' ').includes(selector.slice(1))) || null : null; },
+    querySelectorAll() { return []; }, closest() { return null; },
+    getBoundingClientRect() { return { left: 10, bottom: 50 }; },
+    focus() { this.focusCalls = (this.focusCalls || 0) + 1; }, blur() {}, scrollIntoView() {},
   };
   return node;
 }
@@ -540,9 +543,13 @@ for (const action of ['log','remove','clear']) test(`successfully ${action === '
     await tray.logSelected();
     assert.deepEqual(logged,['Existing oats','Described banana']);
   } else {
-    const control=walk(tray.selectionEl).find(node=>action==='clear' ? node.text==='Clear tray' : node.attributes?.['aria-label']==='Remove Described banana');
+    const control=walk(tray.selectionEl).find(node=>action==='clear' ? node.text==='Clear tray' : node.attributes?.['aria-label']==='More options for Described banana');
     assert.ok(control,'exercise the visible tray action');
-    control.listeners.get('click')();
+    globalThis.__TPSHealthTestMenus = [];
+    try {
+      control.listeners.get('click')();
+      if (action === 'remove') globalThis.__TPSHealthTestMenus[0].items.find(item => item.title === 'Remove from tray').callback();
+    } finally { delete globalThis.__TPSHealthTestMenus; }
     for (let i=0;i<8;i++) await turn();
     assert.deepEqual(logged,[]);
   }
@@ -703,4 +710,86 @@ test('selection invalidates an in-flight search and cancels its pending database
   assert.equal(calls,0);
   assert.equal(tray.selectionItems[0].quantity,2);
   assert.equal(plugin.settings.pendingFoodLogDraft.searchInput,'');
+});
+
+
+test('tray names are inert and the options menu owns edit and removal', async () => {
+  const { tray } = await setup();
+  const entry = { item: food('Oats'), quantity: 0.5, unit: 'serving', tags: ['breakfast'] };
+  const other = { item: food('Milk'), quantity: 1, unit: 'serving' };
+  tray.selectionItems = [entry, other];
+  tray.selectionExpanded = true;
+  let edited = null, persisted = 0;
+  tray.openSelectionFoodEditor = value => { edited = value; };
+  tray.persistDraft = () => { persisted++; };
+  tray.renderSelection();
+  const row = tray.selectionEl.querySelector('.tps-health-selection-row');
+  const name = row.querySelector('.tps-health-selection-name');
+  assert.equal(name.tag, 'span');
+  name.listeners.get('click')?.();
+  row.listeners.get('click')?.();
+  assert.equal(edited, null);
+  const more = row.querySelector('.tps-health-selection-options');
+  assert.ok(more);
+  assert.equal(more.tag, 'button');
+  assert.equal(more.attributes['aria-haspopup'], 'menu');
+  assert.equal(more.attributes['aria-label'], 'More options for Oats');
+  assert.equal(more.dataset.icon, 'ellipsis');
+  globalThis.__TPSHealthTestMenus = [];
+  try {
+    more.listeners.get('click')();
+    const [menu] = globalThis.__TPSHealthTestMenus;
+    assert.deepEqual(menu.items.map(item => item.title), ['Edit food', 'Remove from tray']);
+    assert.deepEqual(menu.position, { x: 10, y: 50 });
+    assert.equal(edited, null, 'opening options cannot start an edit');
+    assert.equal(persisted, 0, 'opening options cannot save or remove a food');
+    await menu.items[0].callback();
+    assert.equal(edited, entry, 'the existing food editor receives the same queued item');
+    assert.equal(entry.quantity, 0.5);
+    assert.deepEqual(entry.tags, ['breakfast']);
+    menu.items[1].callback();
+    assert.deepEqual(tray.selectionItems, [other]);
+    assert.equal(persisted, 1);
+  } finally { delete globalThis.__TPSHealthTestMenus; }
+});
+
+test('search focus and clicks dismiss review without rebuilding, saving or stealing focus', async () => {
+  const { tray } = await setup();
+  const entry = { item: food('Oats'), quantity: 0.5, unit: 'serving', tags: ['breakfast'] };
+  tray.selectionItems = [entry];
+  tray.selectionExpanded = true;
+  tray.renderSelection();
+  const body = tray.selectionEl.querySelector('.tps-health-selection-body');
+  const toggle = tray.selectionEl.querySelector('.tps-health-selection-title');
+  const input = tray.searchInputEl;
+  input.value = 'existing query';
+  body.scrollTop = 123;
+  tray.persistDraft = () => { throw Error('Collapsing review must not save'); };
+  tray.renderSelection = () => { throw Error('Collapsing review must not rebuild controls'); };
+  for (const event of ['focus', 'click']) {
+    if (!tray.selectionExpanded) toggle.listeners.get('click')();
+    assert.equal(body.hidden, false);
+    const focusCalls = toggle.focusCalls || 0;
+    input.listeners.get(event)?.();
+    assert.equal(tray.selectionExpanded, false, event);
+    assert.equal(body.hidden, true);
+    assert.equal(toggle.attributes['aria-expanded'], 'false');
+    assert.equal(toggle.focusCalls || 0, focusCalls, 'search keeps keyboard focus');
+    assert.equal(input.value, 'existing query');
+    assert.equal(body.scrollTop, 123);
+    assert.equal(tray.selectionItems[0], entry);
+    input.listeners.get(event)();
+    assert.equal(body.hidden, true, 'already collapsed is harmless');
+  }
+});
+
+test('tray options retain submission protection and a 44px touch target', async () => {
+  const { tray } = await setup();
+  tray.selectionItems = [{ item: food('Oats'), quantity: 1, unit: 'serving' }];
+  tray.selectionSubmitting = true;
+  tray.renderSelection();
+  assert.equal(tray.selectionEl.querySelector('.tps-health-selection-options')?.disabled, true);
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(css, /> \.tps-health-selection-options \{[^}]*width: 44px;[^}]*min-height: 44px;/);
+  assert.match(css, /\.tps-health-selection-options:focus-visible/);
 });

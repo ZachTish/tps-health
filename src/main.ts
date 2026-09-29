@@ -10960,6 +10960,9 @@ class FoodSearchModal extends FoodInputModal {
         text.setPlaceholder("Search all foods…");
         text.inputEl.setAttr("aria-label", "Search saved foods and food databases");
         text.inputEl.setAttr("enterkeyhint", "search");
+        const dismissReview = () => this.setSelectionExpanded(false);
+        text.inputEl.addEventListener("focus", dismissReview);
+        text.inputEl.addEventListener("click", dismissReview);
         if (this.initialDraft?.query) {
           text.setValue(this.initialDraft.query);
           this.searchInput = this.initialDraft.query;
@@ -11407,9 +11410,7 @@ class FoodSearchModal extends FoodInputModal {
     const back = reviewHeading.createEl("button", { attr: { type: "button", "aria-label": "Close food review" } });
     setIcon(back, "x");
     const setReview = (expanded: boolean) => {
-      this.selectionExpanded = expanded;
-      trayBody.hidden = !expanded;
-      reviewButton.setAttr("aria-expanded", String(expanded));
+      this.setSelectionExpanded(expanded);
       if (expanded) back.focus({ preventScroll: true });
       else reviewButton.focus({ preventScroll: true });
     };
@@ -11430,9 +11431,25 @@ class FoodSearchModal extends FoodInputModal {
 
     for (const entry of this.selectionItems) {
       const row = trayBody.createDiv({ cls: "tps-health-selection-row" });
-      const edit = row.createEl("button", { cls: "tps-health-selection-name", text: entry.item.name, attr: { type: "button", "aria-label": `Edit ${entry.item.name}` } });
-      edit.disabled = this.selectionSubmitting;
-      edit.addEventListener("click", () => this.openSelectionFoodEditor(entry));
+      row.createSpan({ cls: "tps-health-selection-name", text: entry.item.name });
+      const more = row.createEl("button", { cls: "mod-muted tps-health-selection-options", attr: {
+        type: "button", "aria-label": `More options for ${entry.item.name}`, "aria-haspopup": "menu",
+      } });
+      setIcon(more, "ellipsis");
+      more.disabled = this.selectionSubmitting;
+      more.addEventListener("click", () => {
+        const menu = new Menu();
+        menu.addItem(option => option.setTitle("Edit food").setIcon("pencil")
+          .onClick(() => this.openSelectionFoodEditor(entry)));
+        menu.addItem(option => option.setTitle("Remove from tray").setIcon("x")
+          .onClick(() => {
+            this.selectionItems = this.selectionItems.filter(candidate => candidate !== entry);
+            void this.persistDraft();
+            this.renderSelection();
+          }));
+        const bounds = more.getBoundingClientRect();
+        menu.showAtPosition({ x: bounds.left, y: bounds.bottom });
+      });
       const copy = row.createDiv({ cls: "tps-health-selection-copy" });
 
       renderBatchFoodSelectionMacros(copy.createDiv({ cls: "tps-health-selection-line-macros" }), entry);
@@ -11509,14 +11526,6 @@ class FoodSearchModal extends FoodInputModal {
         });
         void this.persistDraft();
       });
-      const remove = row.createEl("button", { cls: "mod-muted tps-health-selection-remove", attr: { type: "button", "aria-label": `Remove ${entry.item.name}` } });
-      setIcon(remove, "x");
-      remove.disabled = this.selectionSubmitting;
-      remove.addEventListener("click", () => {
-        this.selectionItems = this.selectionItems.filter((candidate) => candidate !== entry);
-        void this.persistDraft();
-        this.renderSelection();
-      });
     }
 
     const consumedTimeSetting = new Setting(trayBody)
@@ -11531,6 +11540,13 @@ class FoodSearchModal extends FoodInputModal {
         });
       });
     consumedTimeSetting.settingEl.addClass("tps-health-selection-time");
+  }
+
+  private setSelectionExpanded(expanded: boolean): void {
+    this.selectionExpanded = expanded;
+    const body = this.selectionEl?.querySelector<HTMLElement>(".tps-health-selection-body");
+    if (body) body.hidden = !expanded;
+    this.selectionEl?.querySelector(".tps-health-selection-title")?.setAttr("aria-expanded", String(expanded));
   }
 
   private selectionTrayTitle(): string {

@@ -4810,16 +4810,24 @@ body .tps-health-food-search-frame .tps-health-selection-header-actions button {
 body .tps-health-food-search-frame .tps-health-selection-body[hidden] { display: none; }
 body .tps-health-food-search-frame .tps-health-selection-row {
   grid-template-columns: minmax(0, 1fr) 44px;
-  grid-template-areas: "name remove" "copy copy" "controls controls" "tags tags";
+  grid-template-areas: "name options" "copy copy" "controls controls" "tags tags";
   padding: 4px 0;
   gap: 2px 4px;
 }
-body .tps-health-food-search-frame .tps-health-selection-row > .tps-health-selection-remove {
-  grid-area: remove;
+body .tps-health-food-search-frame .tps-health-selection-row > .tps-health-selection-options {
+  grid-area: options;
   width: 44px;
   min-height: 44px;
   padding: 0;
   align-self: start;
+}
+body .tps-health-food-search-frame .tps-health-selection-options:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+body .tps-health-food-search-frame .tps-health-selection-row > .tps-health-selection-name {
+  display: flex;
+  align-items: center;
 }
 body .tps-health-food-search-frame .tps-health-selection-controls {
   grid-template-columns: 44px minmax(48px, 60px) 44px minmax(0, 1fr);
@@ -5185,7 +5193,7 @@ body .tps-health-food-search-frame[data-food-mode]:not([data-food-mode="search"]
   padding-right: 0; max-height: none;
 }
 
-body .tps-health-food-search-frame :is(.tps-health-selection-remove, .tps-health-review-heading button) svg {
+body .tps-health-food-search-frame :is(.tps-health-selection-options, .tps-health-review-heading button) svg {
   flex: 0 0 20px; width: 20px; height: 20px;
 }
 body .tps-health-food-search-frame:has(.tps-health-selection-body:not([hidden])) .tps-health-search-scroll { visibility: hidden; }

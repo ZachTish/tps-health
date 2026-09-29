@@ -78,11 +78,14 @@ async function importPluginWithObsidianStub() {
     }
     export class FuzzySuggestModal extends Modal { setPlaceholder() { return this; } }
     export class Menu {
+      constructor() { this.items = []; }
       addItem(callback) {
-        callback?.({ setTitle() { return this; }, setIcon() { return this; }, onClick() { return this; } });
+        const item = { setTitle(value) { this.title = value; return this; }, setIcon(value) { this.icon = value; return this; }, onClick(callback) { this.callback = callback; return this; } };
+        callback?.(item); this.items.push(item);
         return this;
       }
       showAtMouseEvent() {}
+      showAtPosition(position) { this.position = position; globalThis.__TPSHealthTestMenus?.push(this); }
     }
     export class Notice { constructor(message) { globalThis.__TPSHealthTestNotices?.push(String(message)); } }
     export class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = {}; } display() {} }
@@ -479,7 +482,7 @@ test("food logger queues searched foods without leaving the search flow", () => 
 
 test("selected food tray edit action keeps the vault-backed pending draft valid", () => {
   assert.match(mainSource, /void this\.refreshSelectionItemsFromSources\(\);/);
-  assert.match(mainSource, /const edit = row\.createEl\("button", \{ cls: "tps-health-selection-name"/);
+  assert.match(mainSource, /row\.createSpan\(\{ cls: "tps-health-selection-name"/);
   assert.match(mainSource, /private async openSelectionFoodEditor\(entry: BatchFoodSelection\): Promise<void>/);
   assert.match(mainSource, /logger\.flow\("FoodModal", "selection:edit-open"/);
   assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, type, freshItem\.name, false, freshItem, this\.dateContext, freshItem\.sourcePath, async \(saved\) => \{/);
