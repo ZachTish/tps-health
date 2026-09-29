@@ -9,7 +9,7 @@ import { transform } from 'esbuild';
 const sourcePath = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 const source = readFileSync(sourcePath, 'utf8');
 const ast = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const names = ['renderFoodLogChips', 'renderDailyWorkoutHeaders', 'TPSHealthRenderedControlsChild'];
+const names = ['renderFoodLogChips', 'renderDailyWorkoutHeaders', 'renderWorkoutSetChips', 'renderNativeWorkoutSurfaceInReadingView', 'TPSHealthRenderedControlsChild'];
 const declarations = names.map(name => {
   const declaration = ast.statements.find(node => node.name?.text === name);
   assert.ok(declaration, `Run the actual ${name} declaration`);
@@ -23,6 +23,7 @@ function item(text = '', lineStart = 0) {
     empty() { this.children = []; },
     appendChild(child) { this.children.push(child); },
     addClass(name) { this.classes.add(name); },
+    toggleClass(name, enabled) { if (enabled) this.classes.add(name); else this.classes.delete(name); },
     addEventListener(name, fn) { this.listeners[name] = fn; },
     insertAdjacentElement(position, element) {
       assert.equal(position, 'afterend');
@@ -30,24 +31,42 @@ function item(text = '', lineStart = 0) {
     },
   };
 }
-function fixture({ items = [], headings = [], recipe = false, missingFile = false, content = '', read = null } = {}) {
-  const counts = { cachedReads: 0, fileLookups: 0, recipeChecks: 0, recipeRenders: 0, sourceLookups: 0, headerRenders: 0, errors: 0 };
+function fixture({ items = [], headings = [], recipe = false, missingFile = false, content = '', read = null, workout = false, rootItem = null } = {}) {
+  const counts = { cachedReads: 0, fileLookups: 0, recipeChecks: 0, recipeRenders: 0, sourceLookups: 0, headerRenders: 0, errors: 0, workoutOwners: 0, workoutChecks: 0, setRenders: 0, nativeMembership: 0, nativeSnapshots: 0, nativeRenders: 0 };
   class TFile { constructor(path) { this.path = path; } }
   const file = new TFile('Inbox/QA render.md');
-  const root = { querySelectorAll: selector => selector === 'li' ? items : selector === 'h2' ? headings : [] };
+  const root = Object.assign(rootItem || {}, { matches: selector => selector === 'li' && Boolean(rootItem), querySelectorAll: selector => selector === 'li' ? items : selector === 'h2' ? headings : [] });
   const menus = [], chips = [], sourceLookups = [];
   const ctx = { sourcePath: file.path, getSectionInfo: node => ({ lineStart: node.lineStart }) };
+  const native = { enabled: true, indexed: false, snapshot: null, ownerPath: file.path };
+  const target = { isConnected: true, querySelectorAll: () => [], appendChild(element) { element.parentElement = target; } };
+  root.closest = () => target;
   const plugin = {
     app: { vault: {
       getAbstractFileByPath(path) { counts.fileLookups++; assert.equal(path, file.path); return missingFile ? null : file; },
       cachedRead(actual) { counts.cachedReads++; assert.equal(actual, file); return read ? read() : Promise.resolve(content); },
     } },
     openFoodLogEntryMenuFromLine(...args) { menus.push(args); },
+    nativeRecordService: {
+      isEnabled: () => native.enabled,
+      isWorkoutSession(path) { counts.nativeMembership++; assert.equal(path, file.path); return native.indexed; },
+      getWorkoutSnapshot(path) { counts.nativeSnapshots++; assert.equal(path, file.path); return native.snapshot; },
+    },
+    renderNativeWorkoutSurfaceElement(element, snapshot) { counts.nativeRenders++; assert.equal(snapshot, native.snapshot); assert.equal(element.dataset.workoutPath, file.path); },
   };
   const context = vm.createContext({
     TFile,
     MarkdownRenderChild: class { constructor(el) { this.containerEl = el; } },
-    renderWorkoutSetChips() {}, renderNativeWorkoutSurfaceInReadingView() {},
+    document: { createElement: () => ({ dataset: {} }) },
+    markdownFilePathForRenderedElement: () => native.ownerPath,
+    nativeWorkoutReadingMountTarget: () => target,
+    workoutFilePathForRenderedRoot(actualPlugin, actualRoot, path) {
+      counts.workoutOwners++; assert.equal(actualPlugin, plugin); assert.equal(actualRoot, root); return path;
+    },
+    isWorkoutLikeMarkdownPath(actualPlugin, path) { counts.workoutChecks++; assert.equal(actualPlugin, plugin); assert.equal(path, file.path); return workout; },
+    isWorkoutSetLine: text => text.startsWith('SET:'),
+    workoutSetChipDataFromLine: text => text.includes('Squat') ? { exercise: 'Squat' } : null,
+    safeWorkoutSetEditorElement(actualPlugin, chip, source) { counts.setRenders++; assert.equal(actualPlugin, plugin); return { chip, source }; },
     logger: { flowError() { counts.errors++; } },
     isRecipeLikeMarkdownFile(actual, path) { counts.recipeChecks++; assert.equal(actual, plugin); assert.equal(path, file.path); return recipe; },
     renderRecipeIngredientChips(actualRoot, actualPlugin, actualCtx) { counts.recipeRenders++; assert.equal(actualRoot, root); assert.equal(actualPlugin, plugin); assert.equal(actualCtx, ctx); },
@@ -66,10 +85,11 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
     workoutDailyHeaderElement(actualPlugin, data, path) { counts.headerRenders++; assert.equal(actualPlugin, plugin); return { data, path }; },
   });
   vm.runInContext(compiled.code, context);
-  const { renderFoodLogChips, renderDailyWorkoutHeaders, TPSHealthRenderedControlsChild } = context.api;
+  const { renderFoodLogChips, renderDailyWorkoutHeaders, renderWorkoutSetChips, TPSHealthRenderedControlsChild } = context.api;
   return { root, plugin, ctx, counts, menus, chips, sourceLookups,
     food: () => renderFoodLogChips(root, plugin, ctx),
     headers: () => renderDailyWorkoutHeaders(root, plugin, ctx),
+    sets: () => renderWorkoutSetChips(root, plugin, ctx),
     child: () => new TPSHealthRenderedControlsChild(root, plugin, ctx),
   };
 }
@@ -83,7 +103,59 @@ test('700 ordinary paragraph postprocessor mounts perform no food/header source 
   assert.equal(f.counts.cachedReads, 0);
   assert.equal(f.counts.fileLookups, 0);
   assert.equal(f.counts.recipeChecks, 700, 'Recipe classification still owns the empty-recipe add control');
+  assert.equal(f.counts.workoutOwners, 0, 'Paragraphs cannot contain workout set rows');
+  assert.equal(f.counts.workoutChecks, 0);
+  assert.equal(f.counts.nativeSnapshots, 0, 'Ordinary source paths cannot own a native workout surface');
   assert.equal(f.counts.errors, 0);
+});
+
+test('native workout membership uses the live index and retains eligible Reading mounts', async () => {
+  const f = fixture();
+  f.plugin.nativeRecordService.isEnabled = () => false;
+  f.child().onload();
+  await settle();
+  assert.equal(f.counts.nativeMembership, 0);
+  assert.equal(f.counts.nativeSnapshots, 0);
+  f.plugin.nativeRecordService.isEnabled = () => true;
+  f.child().onload();
+  assert.equal(f.counts.nativeSnapshots, 0);
+  f.plugin.nativeRecordService.isWorkoutSession = () => true;
+  f.plugin.nativeRecordService.getWorkoutSnapshot = () => null;
+  f.child().onload();
+  assert.equal(f.counts.nativeRenders, 0, 'An archived, ambiguous or unavailable snapshot still renders nothing');
+  const snapshot = { path: f.ctx.sourcePath };
+  f.plugin.nativeRecordService.getWorkoutSnapshot = () => snapshot;
+  let rendered = null;
+  f.plugin.renderNativeWorkoutSurfaceElement = (element, actual) => { rendered = { element, actual }; };
+  f.child().onload();
+  await settle();
+  assert.equal(rendered.actual, snapshot);
+  assert.equal(rendered.element.dataset.workoutPath, f.ctx.sourcePath);
+  assert.equal(rendered.element.dataset.renderContext, 'reading');
+  assert.equal(f.counts.errors, 0);
+});
+
+test('workout lists retain ownership, set ordering and line targets', () => {
+  const first = item('Squat 5 reps', 3), second = item('Squat 8 reps', 4);
+  const f = fixture({ workout: true, items: [first, second] });
+  f.sets();
+  assert.equal(f.counts.workoutOwners, 1);
+  assert.equal(f.counts.workoutChecks, 1);
+  assert.equal(f.counts.setRenders, 2);
+  assert.deepEqual([first, second].map(row => row.children[0].chip.setOrdinal), [1, 2]);
+  assert.deepEqual([first, second].map(row => row.children[0].source.lineNumber), [3, 4]);
+  assert.equal(first.children[0].source.filePath, f.ctx.sourcePath);
+});
+
+test('standalone li roots retain explicit workout rows in ordinary notes', () => {
+  const row = item('SET:Squat 5 reps', 7);
+  const f = fixture({ rootItem: row });
+  f.sets();
+  assert.equal(f.counts.setRenders, 1);
+  assert.equal(row.children[0].source.lineNumber, 7);
+  const ordinary = fixture({ items: [item('Squat shopping reminder')] });
+  ordinary.sets();
+  assert.equal(ordinary.counts.setRenders, 0);
 });
 
 test('already rendered workout headings do not reread the note', async () => {

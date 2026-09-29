@@ -14676,6 +14676,7 @@ function workoutFilePathForRenderedRoot(plugin: TPSHealthPlugin, root: HTMLEleme
 
 function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSHealthPlugin, sourcePath: string): void {
   if (!plugin.nativeRecordService?.isEnabled()) return;
+  if (!plugin.nativeRecordService.isWorkoutSession(sourcePath)) return;
   const snapshot = plugin.nativeRecordService.getWorkoutSnapshot(sourcePath);
   if (!snapshot) return;
   const mount = (): boolean => {
@@ -14731,10 +14732,11 @@ function markdownFilePathForRenderedElement(plugin: TPSHealthPlugin, element: HT
 }
 
 function renderWorkoutSetChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): void {
+  const items = root.matches("li") ? [root, ...Array.from(root.querySelectorAll("li"))] : Array.from(root.querySelectorAll("li"));
+  // Reading postprocessors run for every section; only list items can own sets.
+  if (!items.length) return;
   const sourcePath = workoutFilePathForRenderedRoot(plugin, root, ctx.sourcePath);
   const workoutLikeFile = isWorkoutLikeMarkdownPath(plugin, sourcePath);
-  let renderedSets = 0;
-  const items = root.matches("li") ? [root, ...Array.from(root.querySelectorAll("li"))] : Array.from(root.querySelectorAll("li"));
   const records = items.map((item) => {
     const text = item.textContent || "";
     const chip = workoutLikeFile ? workoutSetChipDataFromLine(text) : isWorkoutSetLine(text) ? workoutSetChipDataFromLine(text) : null;
@@ -14745,7 +14747,6 @@ function renderWorkoutSetChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: 
   for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
     const { item, text, chip } = records[recordIndex];
     try {
-      renderedSets++;
       const previous = previousByExercise.get(chip.exercise);
       chip.exerciseStart = records[recordIndex - 1]?.chip.exercise !== chip.exercise;
       chip.exerciseEnd = records[recordIndex + 1]?.chip.exercise !== chip.exercise;
