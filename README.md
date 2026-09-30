@@ -1,5 +1,13 @@
 # TPS Health
 
+## 3.8.7 — Index food records when GCM becomes ready
+
+Health now consumes GCM's existing `tps:gcm-api-changed` lifecycle event. Previously, loading Health before GCM's asynchronous API initialization could leave the native index empty even after metadata settled, making macros and food history show zero despite valid food notes. Health waits for a usable record provider before considering the index settled and builds from cached metadata when that provider becomes available. Already-open Health sections receive the normal day-change notifications.
+
+Provider reloads retain accepted data during the unavailable interval, invalidate older pending reads, and reconcile current metadata when the provider returns. Reconciliation notifies both previous and current dates, including records removed while the provider was unavailable. Provider identity and global/per-kind classification profiles determine whether an announcement requires a rebuild; unchanged announcements and ordinary navigation do not scan again. This adds no poller, persistent cache, settings, migration, automatic repair, or new note-writing route. GCM API v6 and minimum Obsidian 1.12.0 are unchanged. This is a backward-compatible patch; it does not change widgets, Relay, or food nutrient calculations.
+
+Nine lifecycle regressions cover late providers, reloads, changed/deleted records, changed classification profiles, three provider/metadata/layout orderings, obsolete pending reads, disposal, and single-pass legacy workout hydration. The versioned declared suite passes 560 tests with zero failures and one optional live USDA check skipped. TypeScript and the separate production build pass and deploy only to the test vault. A named Health reload verifies 3.8.7; a real GCM-disabled → Health-start → GCM-start check changes the already-open macros block from 0 to 210 kcal with one rebuild, without reopening the note. The installed-service comparison uses the actual GCM classifier with a synthetic in-memory vault/provider timing: 3.8.6 stays at zero; 3.8.7 discovers the entry, with one metadata pass, one change notification, zero body reads/writes, and no extra work for 100 unchanged lifecycle/navigation bursts. Existing consumer plugins stay enabled; five plugin settings files remain byte-identical. These are test-vault operation counts, not production timing or physical-phone claims. Full boundaries and artifact hashes are in [3.8.7 release notes](release-notes/3.8.7.md). Production remains the user's BRAT update; do not re-enter existing food logs.
+
 ## 3.8.6 — Explicit tray actions and search dismissal
 
 Queued food names in the food logger are plain text. Each row has a labeled, keyboard-accessible three-dot button with **Edit food** and **Remove from tray**. Edit reuses the existing food editor and preserves its draft, quantity/unit and save behavior; removal uses the existing queued-item removal. The menu is anchored to its button for touch and keyboard use, keeps a 44 px target and visible focus, and is disabled during submission.
@@ -142,7 +150,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.8.2](https://github.com/ZachTish/tps-health/releases/tag/3.8.2) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.8.7](https://github.com/ZachTish/tps-health/releases/tag/3.8.7) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

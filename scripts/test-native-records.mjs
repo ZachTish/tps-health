@@ -82,6 +82,7 @@ function createHarness(options = {}) {
   let processCalls = 0;
   const vaultEvents = new Map();
   const metadataEvents = new Map();
+  const workspaceEvents = new Map();
   const encodedYamlValue = (value) => value && typeof value === 'object'
     ? `__json__:${encodeURIComponent(JSON.stringify(value))}`
     : String(value ?? '');
@@ -206,6 +207,12 @@ function createHarness(options = {}) {
         },
       },
       workspace: {
+        on(name, callback) {
+          const listeners = workspaceEvents.get(name) || [];
+          listeners.push(callback);
+          workspaceEvents.set(name, listeners);
+          return {};
+        },
         layoutReady: options.layoutReady ?? true,
         onLayoutReady(callback) {
           if (this.layoutReady) callback();
@@ -294,8 +301,188 @@ function createHarness(options = {}) {
     plugin.app.workspace.layoutReady = true;
     for (const callback of layoutReadyCallbacks.splice(0)) callback();
   };
-  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, readCalls, cachedReadCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata, finishLayout };
+  const emitWorkspace = (name, ...args) => {
+    for (const listener of workspaceEvents.get(name) || []) listener(...args);
+  };
+  return { service, api, plugin, files, frontmatters, contents, createCalls, updateCalls, readCalls, cachedReadCalls, trashedPaths, exerciseDefinitions, addLegacyFile, addFrontmatterFile, emitVault, emitMetadata, emitWorkspace, finishLayout };
 }
+
+const providerEvent = available => ({ source: 'tps-global-context-menu', available });
+function addProviderFood(h, path = 'Inbox/provider-food.md') {
+  return h.addFrontmatterFile(path, {
+    tpsId: 'provider-food', tpsSchemaVersion: 1, kind: 'food-entry',
+    title: 'Synthetic food', completedDate: '2026-09-29T12:00:00.000Z', calories: 210,
+  });
+}
+
+test('late GCM readiness populates a settled empty Health index and notifies day consumers once', () => {
+  const h = createHarness({ deferSetup: true });
+  addProviderFood(h);
+  let ready = false, scans = 0;
+  h.plugin.getGcmNativeRecordsApi = () => ready ? h.api : null;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.service.setup();
+  assert.equal(h.service.isWorkoutIndexSettled(), false, 'metadata alone is not record readiness');
+  assert.equal(scans, 0, 'do not scan while classification is unavailable');
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  ready = true;
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(h.service.getDailyFoodEntries('2026-09-29').length, 1);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(scans, 1);
+  assert.ok(changes.some(c => c.dates.includes('2026-09-29') && c.kinds.includes('food-entry')));
+  const notifications = changes.length;
+  for (let i = 0; i < 100; i++) {
+    h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+    h.emitMetadata('resolved');
+    h.emitWorkspace('file-open');
+  }
+  assert.equal(scans, 1);
+  assert.equal(changes.length, notifications);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('provider reload reconciles edits and removals from cached metadata without replaying old reads', () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  const removed = h.addFrontmatterFile('Inbox/removed-food.md', {
+    tpsId: 'removed-food', tpsSchemaVersion: 1, kind: 'food-entry',
+    title: 'Removed synthetic food', completedDate: '2026-09-28T12:00:00.000Z', calories: 120,
+  });
+  h.service.setup();
+  const changes = [];
+  h.service.onRecordsChanged(c => changes.push(c));
+  h.plugin.getGcmNativeRecordsApi = () => null;
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(false));
+  assert.equal(h.service.isWorkoutIndexSettled(), false);
+  const changed = { ...h.frontmatters.get(food), calories: 320 };
+  h.frontmatters.set(food, changed);
+  h.emitMetadata('changed', food, '', { frontmatter: changed });
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210, 'provider absence is not deletion evidence');
+  h.files.delete(removed.path);
+  const replacement = { ...h.api };
+  h.plugin.getGcmNativeRecordsApi = () => replacement;
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 320);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-28').entryCount, 0);
+  assert.ok(changes.some(c => c.dates.includes('2026-09-28')), 'removed-day consumers must redraw');
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('provider configuration changes rebuild classification but unchanged announcements and disposal do not', () => {
+  const h = createHarness({ deferSetup: true });
+  addProviderFood(h);
+  let binding = 'kind', scans = 0;
+  h.api.getStorageProfile = () => ({ kindPropertyKey: binding });
+  h.api.getKindPropertyKeys = () => ({});
+  const inspect = h.api.inspect;
+  h.api.inspect = fm => binding === 'kind' ? inspect(fm) : null;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.service.setup();
+  const changes = [];
+  h.service.onRecordsChanged(c => changes.push(c));
+  binding = 'category';
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
+  assert.ok(changes.some(c => c.dates.includes('2026-09-29')));
+  assert.equal(scans, 2);
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  h.service.dispose();
+  binding = 'kind';
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(scans, 2);
+});
+
+for (const order of [['provider', 'metadata', 'layout'], ['metadata', 'layout', 'provider'], ['layout', 'provider', 'metadata']]) {
+  test(`cold Health startup settles across provider/metadata/layout ordering: ${order.join(', ')}`, () => {
+    const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: false });
+    const food = addProviderFood(h);
+    let providerReady = false, metadataReady = false;
+    h.plugin.getGcmNativeRecordsApi = () => providerReady ? h.api : null;
+    h.plugin.app.metadataCache.getFileCache = file => metadataReady
+      ? { frontmatter: h.frontmatters.get(file) } : null;
+    h.service.setup();
+    assert.equal(h.service.isWorkoutIndexSettled(), false);
+    for (const step of order) {
+      if (step === 'provider') {
+        providerReady = true;
+        h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+      } else if (step === 'metadata') {
+        metadataReady = true;
+        h.emitMetadata('changed', food, '', { frontmatter: h.frontmatters.get(food) });
+        h.emitMetadata('resolved');
+      } else h.finishLayout();
+      assert.equal(h.service.isWorkoutIndexSettled(), providerReady && metadataReady);
+    }
+    assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+    assert.deepEqual(h.readCalls, []);
+    assert.deepEqual(h.cachedReadCalls, []);
+    assert.deepEqual(h.updateCalls, []);
+    h.service.dispose();
+  });
+}
+
+test('a read started before provider replacement cannot overwrite its newer metadata index', async () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  h.service.setup();
+  const older = h.contents.get(food.path);
+  let release;
+  h.plugin.app.vault.cachedRead = () => new Promise(resolve => { release = resolve; });
+  h.emitVault('modify', food);
+  const replacement = { ...h.api };
+  h.frontmatters.set(food, { ...h.frontmatters.get(food), calories: 320 });
+  h.plugin.getGcmNativeRecordsApi = () => replacement;
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  release(older);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 320);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('per-kind classification tags are part of the provider configuration fingerprint', () => {
+  const h = createHarness({ deferSetup: true });
+  addProviderFood(h);
+  let tag = 'kind/food/transaction', scans = 0;
+  h.api.getStorageProfile = kind => kind === 'food-entry'
+    ? { classification: { recordKind: kind, tag } } : {};
+  h.api.getKindPropertyKeys = () => ({}); // Tag classifications are not property keys.
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.service.setup();
+  tag = 'kind/food/log';
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(scans, 2);
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(scans, 2);
+  h.service.dispose();
+});
+
+test('late provider startup before layout queues legacy workout hydration only once', async () => {
+  for (const metadataInitialized of [false, true]) {
+    const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized });
+    const workout = h.addFrontmatterFile('Inbox/provider-workout.md', {
+      tpsId: 'provider-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Synthetic workout',
+    });
+    h.plugin.getGcmNativeRecordsApi = () => null;
+    h.service.setup();
+    h.plugin.getGcmNativeRecordsApi = () => h.api;
+    h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+    h.emitMetadata('resolved');
+    h.finishLayout();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(h.cachedReadCalls, [workout.path]);
+    assert.deepEqual(h.readCalls, []);
+    h.service.dispose();
+  }
+});
 
 test('ordinary note create, edit and rename bursts do not read sources or unsettle workouts', async () => {
   const h = createHarness();

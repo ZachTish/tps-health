@@ -46,6 +46,8 @@ interface NativeRecordsApi {
   version: number;
   capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean };
   isEnabled(): boolean;
+  getStorageProfile?(kind?: string): unknown;
+  getKindPropertyKeys?(): unknown;
   create(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
   createFresh?(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
   resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<RawNativeRecordHandle | null>;
@@ -959,6 +961,8 @@ export class HealthNativeRecordService {
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
+  private indexedProvider: NativeRecordsApi | null = null;
+  private indexedProviderConfiguration = '';
   private disposed = false;
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
@@ -971,6 +975,18 @@ export class HealthNativeRecordService {
     // Metadata can already be settled before layout. Only body hydration waits
     // for the workspace; the metadata-ready owner schedules that work once.
     this.workoutIndexReady = metadataInitialized;
+    this.plugin.registerEvent(this.plugin.app.workspace.on('tps:gcm-api-changed' as any, (payload: unknown) => {
+      const event = payload as { source?: string; available?: boolean } | null;
+      if (this.disposed || event?.source !== 'tps-global-context-menu') return;
+      const api = event.available === true ? this.readApi() : null;
+      if (api === this.indexedProvider && (!api
+        || this.providerConfiguration(api) === this.indexedProviderConfiguration)) return;
+      // A provider reload invalidates old reads, not the accepted food data.
+      this.refreshGenerations.clear();
+      this.indexedProvider = null;
+      if (api) this.refreshConfiguration();
+      else this.plugin.scheduleWorkoutActionBars();
+    }));
     this.rebuild();
     if (this.workoutIndexReady) this.hydrateWorkoutBodiesAfterLayout();
     if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
@@ -1043,7 +1059,7 @@ export class HealthNativeRecordService {
   async waitForWorkoutIndexSettled(timeoutMs = 3000): Promise<boolean> {
     // A layout save itself emits file events. Let that bounded in-flight work
     // finish before checking identity; never bypass startup or ambiguity guards.
-    if (this.disposed || !this.workoutIndexReady) return false;
+    if (this.disposed || !this.workoutIndexReady || !this.indexedProvider) return false;
     const deadline = Date.now() + timeoutMs;
     while (!this.disposed && !this.isWorkoutIndexSettled() && Date.now() < deadline) {
       await new Promise<void>(resolve => globalThis.setTimeout(resolve, 50));
@@ -1052,7 +1068,8 @@ export class HealthNativeRecordService {
   }
 
   isWorkoutIndexSettled(): boolean {
-    return !this.disposed && this.workoutIndexReady && this.refreshGenerations.size === 0;
+    return !this.disposed && this.workoutIndexReady && this.indexedProvider !== null
+      && this.refreshGenerations.size === 0;
   }
 
   dispose(): void {
@@ -2679,7 +2696,11 @@ export class HealthNativeRecordService {
 
   private rebuild(): void {
     if (this.disposed) return;
-    this.recordsByPath.clear();
+    const api = this.readApi();
+    this.indexedProvider = api;
+    if (!api) return;
+    this.indexedProviderConfiguration = this.providerConfiguration(api);
+    const removedPaths = new Set(this.recordsByPath.keys());
     this.pathsByKind.clear();
     this.entryPathsByFoodPath.clear();
     this.foodDefinitionsByPath.clear();
@@ -2689,10 +2710,14 @@ export class HealthNativeRecordService {
     const files = vault.getMarkdownFiles();
     let metadataComplete = files.length > 0;
     for (const file of files) {
+      removedPaths.delete(file.path);
       const cache = this.plugin.app.metadataCache.getFileCache(file);
       metadataComplete &&= cache != null;
       this.indexFile(file, cache?.frontmatter);
     }
+    // Keep previous records until reconciliation so consumers are also told
+    // about removed records and dates changed while the provider was offline.
+    for (const path of removedPaths) this.removePath(path);
     // On a warm mobile plugin load, `resolved` may already have fired and the
     // private initialized flag may not exist. Use the public cache coverage of
     // the fully restored vault; a missing cache keeps reconciliation closed.
@@ -2700,10 +2725,11 @@ export class HealthNativeRecordService {
   }
 
   private hydrateWorkoutBodiesAfterLayout(): void {
+    if (!this.workoutIndexReady || !this.indexedProvider) return;
     // Metadata readiness owns the full index. Layout only permits the deferred
     // body reads; it must not rebuild an index that `resolved` already finished.
     this.plugin.app.workspace?.onLayoutReady?.(() => {
-      if (this.disposed) return;
+      if (this.disposed || !this.indexedProvider) return;
       for (const path of this.pathsByKind.get('workout-session') || []) {
         const record = this.recordsByPath.get(path);
         if (record) void this.refreshFile(record.file);
@@ -2713,6 +2739,9 @@ export class HealthNativeRecordService {
   }
 
   private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string): void {
+    const api = this.readApi();
+    // Provider startup/reload is not evidence that a record was deleted.
+    if (!api) return;
     const previous = this.recordsByPath.get(file.path);
     this.removePath(file.path, false);
     // An explicit absent frontmatter value comes from an indexed source. Do
@@ -2720,10 +2749,7 @@ export class HealthNativeRecordService {
     const resolved = frontmatter === undefined
       ? this.plugin.app.metadataCache.getFileCache(file)?.frontmatter
       : frontmatter;
-    const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
-    const inspected = api?.version === 6 && typeof api.inspect === 'function' && api.isEnabled?.() === true
-      ? api.inspect(resolved)
-      : null;
+    const inspected = api.inspect(resolved);
     const kind = canonicalNativeKind(this.plugin.settings, inspected?.kind);
     const recordId = String(inspected?.id || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion);
@@ -2774,6 +2800,19 @@ export class HealthNativeRecordService {
       if (projected?.needsPersist) this.scheduleFoodEntryProjection(file.path);
     }
     this.emitChange(file.path, previous, record);
+  }
+
+  private readApi(): NativeRecordsApi | null {
+    const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
+    return api?.version === 6 && typeof api.inspect === 'function' && api.isEnabled?.() === true
+      ? api : null;
+  }
+
+  private providerConfiguration(api: NativeRecordsApi): string {
+    return JSON.stringify([
+      api.getStorageProfile?.(), api.getKindPropertyKeys?.(),
+      ...[...HEALTH_KINDS].map(kind => api.getStorageProfile?.(configuredNativeKind(this.plugin.settings, kind))),
+    ]);
   }
 
   private removePath(path: string, notify = true): void {
