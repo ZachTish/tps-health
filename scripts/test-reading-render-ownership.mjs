@@ -37,7 +37,7 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
   const file = new TFile('Inbox/QA render.md');
   const root = Object.assign(rootItem || {}, { matches: selector => selector === 'li' && Boolean(rootItem), querySelectorAll: selector => selector === 'li' ? items : selector === 'h2' ? headings : [] });
   const menus = [], chips = [], sourceLookups = [];
-  const ctx = { sourcePath: file.path, getSectionInfo: node => ({ lineStart: node.lineStart }) };
+  const ctx = { sourcePath: file.path, getSectionInfo: node => node.sectionInfo === null ? null : { lineStart: node.lineStart, ...node.sectionInfo } };
   const native = { enabled: true, indexed: false, snapshot: null, ownerPath: file.path };
   const target = { isConnected: true, querySelectorAll: () => [], appendChild(element) { element.parentElement = target; } };
   root.closest = () => target;
@@ -75,12 +75,12 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
       counts.sourceLookups++; sourceLookups.push({ lines, visible, preferred, after });
       return lines.findIndex((line, index) => index >= after && line.startsWith(`FOOD:${visible}|`));
     },
-    isFoodLogLine: line => typeof line === 'string' && line.startsWith('FOOD:'),
+    isFoodLogLine: line => typeof line === 'string' && (line.startsWith('FOOD:') || line.includes('tps-health:food')),
     foodLogChipDataFromLine: line => ({ food: line, macros: ['protein'] }),
     looksLikeFoodLogVisibleLine: text => text.startsWith('1 serving '),
     foodLogChipDataFromRenderedItem: node => ({ food: node.textContent, macros: [] }),
     foodLogChipElement(data, actions) { const chip = { data, actions }; chips.push(chip); return chip; },
-    isWorkoutDailyMarkerLine: line => typeof line === 'string' && line.startsWith('WORKOUT:'),
+    isWorkoutDailyMarkerLine: line => typeof line === 'string' && (line.startsWith('WORKOUT:') || /^\s*<!--\s*tps-health:workout(?=\s|-->)/i.test(line)),
     workoutDailyHeaderDataFromLines: (lines, index) => ({ marker: lines[index], index }),
     workoutDailyHeaderElement(actualPlugin, data, path) { counts.headerRenders++; assert.equal(actualPlugin, plugin); return { data, path }; },
   });
@@ -206,23 +206,135 @@ test('raw food rows and source-less visible fallback retain their menus', async 
   assert.equal(missing.chips.length, 1);
 });
 
-test('ordinary list items are still inspected against source but not rewritten', async () => {
+test('ordinary list sections with complete source do not read the note', async () => {
   const row = item('Shopping reminder');
+  row.sectionInfo = { text: '- Shopping reminder' };
   const f = fixture({ items: [row], content: '- Shopping reminder' });
   await f.food();
-  assert.equal(f.counts.cachedReads, 1);
+  assert.equal(f.counts.cachedReads, 0);
+  assert.equal(f.counts.fileLookups, 0);
   assert.equal(f.chips.length, 0);
   assert.equal(row.classes.size, 0);
 });
 
-test('unprocessed heading source mapping retains blank lines and skips unrelated h2', async () => {
+test('ordinary heading sections with complete source do not read the note', async () => {
+  const heading = item('Shopping', 0);
+  heading.sectionInfo = { text: '## Shopping\nA plain section about groceries.' };
+  const f = fixture({ headings: [heading], content: '## Shopping\nA plain section about groceries.' });
+  await f.headers();
+  assert.equal(f.counts.cachedReads, 0);
+  assert.equal(f.counts.fileLookups, 0);
+  assert.equal(f.counts.headerRenders, 0);
+});
+
+test('full-document section text uses the heading lineStart before deciding to read', async () => {
+  const content = '- Shopping reminder\n\n## Plans\nOrdinary prose.\n## Workout\n<!-- tps-health:workout [workoutId:: qa] -->';
+  const plans = item('Plans', 2);
+  plans.sectionInfo = { text: content };
+  const ordinary = fixture({ headings: [plans], content });
+  await ordinary.headers();
+  assert.equal(ordinary.counts.cachedReads, 0);
+  assert.equal(ordinary.counts.headerRenders, 0);
+
+  const workoutHeading = item('Workout', 4);
+  workoutHeading.sectionInfo = { text: content };
+  const workout = fixture({ headings: [workoutHeading], content });
+  await workout.headers();
+  assert.equal(workout.counts.cachedReads, 1);
+  assert.equal(workout.counts.headerRenders, 1);
+  assert.equal(workoutHeading.nextElementSibling.element.data.index, 5);
+});
+
+test('ambiguous section-local and global H2 candidates keep the source read', async () => {
+  const heading = item('Workout', 2);
+  heading.sectionInfo = { text: '## Workout\n<!-- tps-health:workout [workoutId:: qa] -->\n## Other\nordinary' };
+  const content = 'front\nother\n## Workout\n<!-- tps-health:workout [workoutId:: qa] -->';
+  const f = fixture({ headings: [heading], content });
+  await f.headers();
+  assert.equal(f.counts.cachedReads, 1);
+  assert.equal(f.counts.headerRenders, 1);
+  assert.equal(heading.nextElementSibling.element.data.index, 3);
+});
+
+test('many ordinary list and heading sections start zero Health source reads', async () => {
+  const row = item('Shopping reminder', 1);
+  row.sectionInfo = { text: '- Shopping reminder' };
+  const heading = item('Shopping', 0);
+  heading.sectionInfo = { text: '## Shopping\nA plain section about groceries.' };
+  const f = fixture({ items: [row], headings: [heading], content: '## Shopping\n- Shopping reminder' });
+  for (let index = 0; index < 62; index++) f.child().onload();
+  await settle();
+  assert.equal(f.counts.cachedReads, 0);
+  assert.equal(f.counts.fileLookups, 0);
+  assert.equal(f.counts.recipeChecks, 62, 'recipe identity keeps its existing owner');
+  assert.equal(f.counts.headerRenders, 0);
+  assert.equal(f.counts.errors, 0);
+});
+
+test('unprocessed workout heading mapping retains blank lines and skips unrelated h2', async () => {
   const unrelated = item('Other', 0), workout = item('Workout', 2);
+  unrelated.sectionInfo = { text: '## Other\nordinary' };
+  workout.sectionInfo = { text: '## Workout\n\nWORKOUT:session' };
   const f = fixture({ headings: [unrelated, workout], content: '## Other\nordinary\n## Workout\n\nWORKOUT:session' });
   await f.headers();
   assert.equal(f.counts.cachedReads, 1);
   assert.equal(unrelated.nextElementSibling, null);
   assert.equal(workout.nextElementSibling.element.data.index, 4);
   assert.equal(workout.nextElementSibling.element.path, f.ctx.sourcePath);
+});
+
+test('source-backed hidden food rows still read and resolve repeated custom-unit records', async () => {
+  const visible = '2 bowls oats';
+  const first = item(visible, 0), second = item(visible, 0);
+  first.sectionInfo = { text: `FOOD:${visible}|id:first` };
+  second.sectionInfo = { text: `FOOD:${visible}|id:second` };
+  const f = fixture({ items: [first, second], content: `FOOD:${visible}|id:first\nFOOD:${visible}|id:second` });
+  await f.food();
+  assert.equal(f.counts.cachedReads, 1);
+  assert.deepEqual(f.chips.map(chip => chip.data.food), [`FOOD:${visible}|id:first`, `FOOD:${visible}|id:second`]);
+  assert.deepEqual(f.sourceLookups.map(value => value.after), [0, 1]);
+  f.chips[1].actions.onMenu('event');
+  assert.deepEqual(f.menus[0], ['event', f.ctx.sourcePath, 1, `FOOD:${visible}|id:second`]);
+});
+
+test('complete Obsidian section source keeps hidden food and workout comments eligible', async () => {
+  const foodSource = '- QA Apple <!-- tps-health:food [food:: QA Apple] [qty:: 1] -->';
+  const row = item('QA Apple', 0);
+  row.sectionInfo = { text: foodSource };
+  const food = fixture({ items: [row], content: foodSource });
+  await food.food();
+  assert.equal(food.counts.cachedReads, 1);
+  assert.equal(food.chips[0].data.food, foodSource);
+  food.chips[0].actions.onMenu('event');
+  assert.deepEqual(food.menus[0], ['event', food.ctx.sourcePath, 0, foodSource]);
+
+  const workoutSource = '## Workout\n\n<!-- tps-health:workout [workoutId:: qa] -->';
+  const heading = item('Workout', 0);
+  heading.sectionInfo = { text: workoutSource };
+  const workout = fixture({ headings: [heading], content: workoutSource });
+  await workout.headers();
+  assert.equal(workout.counts.cachedReads, 1);
+  assert.equal(workout.counts.headerRenders, 1);
+  assert.equal(heading.nextElementSibling.element.data.index, 2);
+});
+
+test('null and incomplete section information retains the existing source read', async () => {
+  for (const sectionInfo of [null, { text: '' }, { text: '- Shopping' }]) {
+    const row = item('Shopping reminder', 0);
+    row.sectionInfo = sectionInfo;
+    const f = fixture({ items: [row], content: '- Shopping reminder' });
+    await f.food();
+    assert.equal(f.counts.cachedReads, 1);
+    assert.equal(f.chips.length, 0);
+  }
+  for (const sectionInfo of [null, { text: '' }, { text: '## Workout\n\n' }]) {
+    const heading = item('Workout', 0);
+    heading.sectionInfo = sectionInfo;
+    const f = fixture({ headings: [heading], content: '## Workout\nWORKOUT:session' });
+    await f.headers();
+    assert.equal(f.counts.cachedReads, 1);
+    assert.equal(f.counts.headerRenders, sectionInfo === null ? 0 : 1);
+  }
 });
 
 test('missing workout files do not read or render', async () => {

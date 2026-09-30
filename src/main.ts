@@ -13383,15 +13383,33 @@ function renderNativeDailyMetrics(root: HTMLElement, metricModels: NativeDailyDa
 async function renderDailyWorkoutHeaders(
   root: HTMLElement,
   plugin: TPSHealthPlugin,
-  ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null },
+  ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number; text?: string } | null },
 ): Promise<void> {
   const headings = Array.from(root.querySelectorAll<HTMLElement>("h2"))
     .filter(heading => !heading.nextElementSibling?.classList.contains("tps-health-daily-workout-header"));
   if (!headings.length) return;
+  const possibleWorkoutHeadings = headings.filter((heading) => {
+    const section = ctx.getSectionInfo?.(heading);
+    const source = section?.text;
+    if (!source) return true;
+    const sectionLines = source.split(/\r?\n/);
+    // Obsidian can return either this section or the full document as text.
+    // Only the first nonblank line after the source heading can be its marker.
+    const globalLine = section?.lineStart ?? -1;
+    const headingAtStart = /^\s*##(?:\s+|$)/.test(sectionLines[0]);
+    const headingAtGlobalLine = /^\s*##(?:\s+|$)/.test(sectionLines[globalLine] || "");
+    if (globalLine > 0 && headingAtStart && headingAtGlobalLine) return true;
+    const headingIndex = headingAtGlobalLine ? globalLine : headingAtStart ? 0 : -1;
+    if (headingIndex < 0) return true;
+    let next = headingIndex + 1;
+    while (next < sectionLines.length && !sectionLines[next].trim()) next++;
+    return next >= sectionLines.length || isWorkoutDailyMarkerLine(sectionLines[next]);
+  });
+  if (!possibleWorkoutHeadings.length) return;
   const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
   if (!(file instanceof TFile)) return;
   const lines = (await plugin.app.vault.cachedRead(file)).split("\n");
-  for (const heading of headings) {
+  for (const heading of possibleWorkoutHeadings) {
     if (heading.nextElementSibling?.classList.contains("tps-health-daily-workout-header")) continue;
     const section = ctx.getSectionInfo?.(heading);
     let markerIndex = (section?.lineStart ?? -1) + 1;
@@ -13403,13 +13421,24 @@ async function renderDailyWorkoutHeaders(
   }
 }
 
-async function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number } | null }): Promise<void> {
+async function renderFoodLogChips(root: HTMLElement, plugin: TPSHealthPlugin, ctx: { sourcePath: string; getSectionInfo?: (el: HTMLElement) => { lineStart: number; text?: string } | null }): Promise<void> {
   const items = Array.from(root.querySelectorAll("li"));
   if (isRecipeLikeMarkdownFile(plugin, ctx.sourcePath)) {
     renderRecipeIngredientChips(root, plugin, ctx);
     return;
   }
   if (!items.length) return;
+  const hasPossibleFoodRow = items.some((item) => {
+    const text = item.textContent || "";
+    const visibleText = foodLogVisibleText(text);
+    if (isFoodLogLine(text) || looksLikeFoodLogVisibleLine(visibleText)) return true;
+    const source = ctx.getSectionInfo?.(item as HTMLElement)?.text;
+    // Rendered text can omit hidden food fields. Skip only when the public
+    // section source contains this row and proves it has no food record.
+    if (!source || !visibleText || !source.includes(visibleText)) return true;
+    return isFoodLogLine(source);
+  });
+  if (!hasPossibleFoodRow) return;
   const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
   const sourceLines = file instanceof TFile ? (await plugin.app.vault.cachedRead(file)).split("\n") : [];
   let sourceCursor = 0;
