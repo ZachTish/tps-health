@@ -961,6 +961,7 @@ export class HealthNativeRecordService {
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
+  private pendingMetadataResolutionRebuild = false;
   private indexedProvider: NativeRecordsApi | null = null;
   private indexedProviderConfiguration = '';
   private disposed = false;
@@ -1001,8 +1002,11 @@ export class HealthNativeRecordService {
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
       // `resolved` also fires after ordinary edits. Once startup is settled,
       // Metadata changes and scoped Health file events maintain this index.
-      if (!this.workoutIndexReady) {
+      if (!this.workoutIndexReady || this.pendingMetadataResolutionRebuild) {
         this.rebuild();
+        // `resolved` is the authoritative startup reconciliation. Later
+        // resolved bursts belong to incremental metadata changes.
+        this.pendingMetadataResolutionRebuild = false;
         this.workoutIndexReady = true;
         this.hydrateWorkoutBodiesAfterLayout();
       }
@@ -2713,19 +2717,20 @@ export class HealthNativeRecordService {
       removedPaths.delete(file.path);
       const cache = this.plugin.app.metadataCache.getFileCache(file);
       metadataComplete &&= cache != null;
-      this.indexFile(file, cache?.frontmatter);
+      this.indexFile(file, cache?.frontmatter ?? null);
     }
     // Keep previous records until reconciliation so consumers are also told
     // about removed records and dates changed while the provider was offline.
     for (const path of removedPaths) this.removePath(path);
-    // On a warm mobile plugin load, `resolved` may already have fired and the
-    // private initialized flag may not exist. Use the public cache coverage of
-    // the fully restored vault; a missing cache keeps reconciliation closed.
+    // The private initialized flag can precede cache coverage for synced files.
+    // Reconcile one incomplete scan when metadata resolves without blocking
+    // workout controls for unrelated files whose caches are still pending.
+    this.pendingMetadataResolutionRebuild = files.length > 0 && !metadataComplete;
     if (this.plugin.app.workspace?.layoutReady && metadataComplete) this.workoutIndexReady = true;
   }
 
   private hydrateWorkoutBodiesAfterLayout(): void {
-    if (!this.workoutIndexReady || !this.indexedProvider) return;
+    if (!this.workoutIndexReady || !this.indexedProvider || this.pendingMetadataResolutionRebuild) return;
     // Metadata readiness owns the full index. Layout only permits the deferred
     // body reads; it must not rebuild an index that `resolved` already finished.
     this.plugin.app.workspace?.onLayoutReady?.(() => {

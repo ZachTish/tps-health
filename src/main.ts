@@ -1394,15 +1394,19 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  async saveEnergySettings(bmr: string, factor: string): Promise<void> {
+  async saveEnergySettings(bmr: string, factor: string,
+    mode: "calculated" | "fixed" = this.settings.energyEstimateMode,
+    fixed: string = this.settings.energyFixedTdeeKcal == null ? "" : String(this.settings.energyFixedTdeeKcal)): Promise<void> {
     if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing energy settings.");
-    const next = parseEnergySettings(bmr, factor);
-    const previous = {energyBmrKcal:this.settings.energyBmrKcal,energyActivityFactor:this.settings.energyActivityFactor};
+    const next = parseEnergySettings(bmr, factor, mode, fixed);
+    const previous = {energyBmrKcal:this.settings.energyBmrKcal,energyActivityFactor:this.settings.energyActivityFactor,
+      energyEstimateMode:this.settings.energyEstimateMode,energyFixedTdeeKcal:this.settings.energyFixedTdeeKcal};
     Object.assign(this.settings, next);
     try {
       await this.saveSettings();
       this.app.workspace.trigger("tps-health:appearance-changed");
-      logger.flow("Settings", "energy-estimate:updated", {enabled:next.energyBmrKcal != null});
+      logger.flow("Settings", "energy-estimate:updated", {enabled:dailyEnergyEstimate(this.settings,{dateIso:"",calories:0,entryCount:0}).estimatedBurnKcal != null,
+        mode:this.settings.energyEstimateMode});
     } catch (error) { Object.assign(this.settings, previous); throw error; }
   }
 
@@ -2670,6 +2674,11 @@ export default class TPSHealthPlugin extends Plugin {
       new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before finishing it.", 12000);
       return;
     }
+    if (resolution.state === "missing" && path && this.app.vault.getAbstractFileByPath(path) instanceof TFile) {
+      logger.flowWarn("Workout", "finish:present-native-record-unindexed", { workoutId, path });
+      new Notice("The active workout file is present, but its record has not loaded. Try finishing it again in a moment.");
+      return;
+    }
     const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
     if (!(file instanceof TFile)) {
       const cleared = active
@@ -2751,6 +2760,11 @@ export default class TPSHealthPlugin extends Plugin {
           reason: resolution.reason || "duplicate-id",
         });
         new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before discarding it.", 12000);
+        return;
+      }
+      if (resolution.state === "missing" && active.path && this.app.vault.getAbstractFileByPath(active.path) instanceof TFile) {
+        logger.flowWarn("Workout", "discard:present-native-record-unindexed", { workoutId: active.id, path: active.path });
+        new Notice("The active workout file is present, but its record has not loaded. Try discarding it again in a moment.");
         return;
       }
       const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;

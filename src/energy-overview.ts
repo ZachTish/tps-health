@@ -2,7 +2,7 @@ import type { DailyEnergyEstimate } from './energy-estimate';
 import { formatNativeDailyMacroValue } from './native-daily-dashboard';
 
 export function energyComparisonText(model: DailyEnergyEstimate): string {
-  if (model.estimatedBurnKcal == null) return 'Set your BMR';
+  if (model.estimatedBurnKcal == null) return model.mode === 'fixed' ? 'Set fixed TDEE' : 'Set your BMR';
   if (model.differenceKcal == null) return 'No food logged';
   const rounded = Math.round(model.differenceKcal * 10) / 10;
   if (rounded === 0) return 'Matches estimate';
@@ -22,7 +22,10 @@ export function renderEnergyOverview(container: HTMLElement, model: DailyEnergyE
     const card=cards.createDiv({cls:'tps-health-energy-card'});
     card.createEl('dt',{text:label});card.createEl('dd',{text:value});
   }
-  if(model.estimatedBurnKcal == null) root.createEl('p',{text:'Set your BMR in Health → Food & goals → Energy estimate to compare intake and burn.'});
+  if(model.estimatedBurnKcal == null) root.createEl('p',{text:model.mode === 'fixed' ?
+    'Set a fixed TDEE in Health → Food & goals → Energy estimate to compare intake and burn.' :
+    'Set your BMR in Health → Food & goals → Energy estimate to compare intake and burn.'});
+  else if(model.mode === 'fixed') root.createEl('p',{text:'Fixed daily target: '+formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal/day.'});
   else root.createEl('p',{text:'BMR '+formatNativeDailyMacroValue(model.bmrKcal!)+' × activity factor '+model.activityFactor+' = '+formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal/day.'});
-  root.createEl('p',{cls:'tps-health-energy-note',text:'Full-day estimate using your current settings, not burn so far. Compares only logged food; incomplete logging changes the comparison. Typical exercise is included in the activity factor, so logged activity below is not added again.'});
+  root.createEl('p',{cls:'tps-health-energy-note',text:'Full-day target using your current settings, not burn so far. Compares only logged food; incomplete logging changes the comparison. Workout calories are shown separately and are not added again.'});
 }

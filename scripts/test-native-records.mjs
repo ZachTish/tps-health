@@ -315,6 +315,85 @@ function addProviderFood(h, path = 'Inbox/provider-food.md') {
   });
 }
 
+test('an initialized MetadataCache reconciles food missed by an incomplete startup scan', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const food = h.addFrontmatterFile('Inbox/food-sept-30.md', {
+    tpsId: 'food-sept-30', title: 'Lunch', tags: ['kind/food/transaction'],
+    completedDate: '2026-09-30T13:00:00.000Z', calories: 420,
+  });
+  const inspect = h.api.inspect;
+  h.api.inspect = (frontmatter) => frontmatter?.tags?.includes('kind/food/transaction')
+    ? { id: frontmatter.tpsId, kind: 'food-entry', schemaVersion: 1,
+        frontmatter: { ...frontmatter, tpsSchemaVersion: 1, kind: 'food-entry' } }
+    : inspect(frontmatter);
+  let cacheReady = false;
+  let cacheInspections = 0;
+  h.plugin.app.metadataCache.getFileCache = () => {
+    cacheInspections += 1;
+    return cacheReady ? { frontmatter: h.frontmatters.get(food) } : null;
+  };
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 0);
+  assert.equal(h.service.isWorkoutIndexSettled(), true,
+    'uncached ordinary notes must not block workout controls');
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 1);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').calories, 420);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  assert.equal(scans, 2, 'one partial startup scan and one settled rebuild');
+  assert.equal(cacheInspections, 2, 'each file cache is inspected once per scan');
+  assert.ok(changes.some(change => change.kinds.includes('food-entry') && change.dates.includes('2026-09-30')),
+    'the recovered food record notifies the dashboard');
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 2, 'settled metadata bursts keep the index warm');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('partially cached startup food is retained while resolved adds missing records once', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const first = h.addFrontmatterFile('Inbox/first-food.md', {
+    tpsId: 'first-food', title: 'First', tags: ['kind/food/transaction'],
+    completedDate: '2026-09-30T12:00:00.000Z', calories: 100,
+  });
+  const second = h.addFrontmatterFile('Inbox/second-food.md', {
+    tpsId: 'second-food', title: 'Second', tags: ['kind/food/transaction'],
+    completedDate: '2026-09-30T13:00:00.000Z', calories: 200,
+  });
+  const inspect = h.api.inspect;
+  h.api.inspect = (frontmatter) => frontmatter?.tags?.includes('kind/food/transaction')
+    ? { id: frontmatter.tpsId, kind: 'food-entry', schemaVersion: 1,
+        frontmatter: { ...frontmatter, tpsSchemaVersion: 1, kind: 'food-entry' } }
+    : inspect(frontmatter);
+  let secondCacheReady = false;
+  h.plugin.app.metadataCache.getFileCache = (file) => file === first || secondCacheReady
+    ? { frontmatter: h.frontmatters.get(file) }
+    : null;
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 1);
+  secondCacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 2);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-30').calories, 300);
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 2);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
 test('late GCM readiness populates a settled empty Health index and notifies day consumers once', () => {
   const h = createHarness({ deferSetup: true });
   addProviderFood(h);
@@ -2560,6 +2639,36 @@ function addStartupRecords(h) {
   })));
   return workout;
 }
+
+test('an incomplete warm startup hydrates indexed workouts only after metadata reconciliation', async () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const workout = addStartupRecords(h);
+  const getCache = h.plugin.app.metadataCache.getFileCache;
+  const getFiles = h.plugin.app.vault.getMarkdownFiles;
+  let cacheReady = false;
+  let scans = 0;
+  h.plugin.app.metadataCache.getFileCache = (file) => file.path === 'Inbox/startup-0.md' && !cacheReady
+    ? null : getCache(file);
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getFiles(); };
+
+  h.service.setup();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(scans, 1);
+  assert.equal(h.service.isWorkoutIndexSettled(), true, 'an unrelated cache gap does not block controls');
+  assert.deepEqual(h.cachedReadCalls, [], 'known workout bodies wait for the pending reconciliation');
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(scans, 2);
+  assert.deepEqual(h.cachedReadCalls, [workout.path], 'reconciliation hydrates the workout exactly once');
+  assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
+  for (let index = 0; index < 10; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 2);
+  assert.deepEqual(h.cachedReadCalls, [workout.path]);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
 
 for (const order of ['resolved-before-layout', 'layout-before-resolved', 'resolved-before-delayed-layout-callback']) {
   test(`startup indexes once and hydrates once: ${order}`, async () => {

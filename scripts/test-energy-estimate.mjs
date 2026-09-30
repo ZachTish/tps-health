@@ -29,8 +29,8 @@ test('missing BMR and unlogged days do not invent a burn or an apparent deficit'
  assert.equal(zero.consumedKcal,0,'known logged zero is distinct from an unlogged day');
 });
 test('profile validation preserves decimals and disabling while rejecting invalid inputs',()=>{
- assert.deepEqual(m.parseEnergySettings('1600.25','1.45'),{energyBmrKcal:1600.25,energyActivityFactor:1.45});
- assert.deepEqual(m.parseEnergySettings('','1.4'),{energyBmrKcal:null,energyActivityFactor:1.4});
+ assert.deepEqual(m.parseEnergySettings('1600.25','1.45'),{energyBmrKcal:1600.25,energyActivityFactor:1.45,energyEstimateMode:'calculated',energyFixedTdeeKcal:null});
+ assert.deepEqual(m.parseEnergySettings('','1.4'),{energyBmrKcal:null,energyActivityFactor:1.4,energyEstimateMode:'calculated',energyFixedTdeeKcal:null});
  for(const [bmr,factor] of [['0','1.4'],['-2','1.4'],['Infinity','1.4'],['1800',''],['1800','0.9'],['1,800','1.4'],['1e308','2']]) assert.throws(()=>m.parseEnergySettings(bmr,factor));
  const saved=m.normalizeTPSHealthSettings({...m.DEFAULT_SETTINGS,...m.parseEnergySettings('1600.25','1.45')});
  const reloaded=m.normalizeTPSHealthSettings(JSON.parse(JSON.stringify(saved)));
@@ -40,6 +40,35 @@ test('profile validation preserves decimals and disabling while rejecting invali
  assert.equal(model.estimatedBurnKcal,1600.25*1.45,'round only when displaying');
  assert.equal(m.normalizeTPSHealthSettings({energyBmrKcal:true,energyActivityFactor:-1}).energyBmrKcal,null);
  assert.equal(m.normalizeTPSHealthSettings({energyBmrKcal:1e308,energyActivityFactor:3}).energyBmrKcal,null);
+});
+test('fixed TDEE is an explicit full-day target and never includes workout calories twice',()=>{
+ const saved=m.normalizeTPSHealthSettings({...m.DEFAULT_SETTINGS,
+   ...m.parseEnergySettings('1600','1.5','fixed','2350.5')});
+ const fixed=m.dailyEnergyEstimate(saved,{...totals,caloriesBurned:500});
+ assert.equal(fixed.mode,'fixed');
+ assert.equal(fixed.estimatedBurnKcal,2350.5);
+ assert.equal(fixed.differenceKcal,-350.5);
+ assert.equal(m.dailyEnergyEstimate({...saved,energyEstimateMode:'calculated'},totals).estimatedBurnKcal,2400);
+ assert.equal(m.normalizeTPSHealthSettings(JSON.parse(JSON.stringify(saved))).energyFixedTdeeKcal,2350.5);
+ assert.throws(()=>m.parseEnergySettings('1600','1.5','fixed',''));
+ assert.throws(()=>m.parseEnergySettings('1600','1.5','fixed','-2'));
+ assert.throws(()=>m.parseEnergySettings('1600','1.5','fixed','1000000001'));
+ assert.equal(m.dailyEnergyEstimate({...saved,energyFixedTdeeKcal:null},totals).estimatedBurnKcal,null,
+   'missing fixed target must not silently fall back to calculated');
+ assert.equal(m.dailyEnergyEstimate({...saved,energyFixedTdeeKcal:1000000001},totals).estimatedBurnKcal,null);
+ assert.equal(m.normalizeTPSHealthSettings({...saved,energyEstimateMode:'unknown'}).energyEstimateMode,'calculated');
+});
+test('fixed mode can be saved without valid hidden calculated inputs',()=>{
+ const fixed=m.parseEnergySettings('not a BMR','not a factor','fixed','2200');
+ assert.equal(fixed.energyEstimateMode,'fixed');
+ assert.equal(fixed.energyBmrKcal,null);
+ assert.equal(fixed.energyActivityFactor,m.DEFAULT_SETTINGS.energyActivityFactor);
+ assert.equal(m.dailyEnergyEstimate(fixed,totals).estimatedBurnKcal,2200);
+ assert.throws(()=>m.parseEnergySettings('not a BMR','not a factor','calculated','2200'));
+ const calculated=m.parseEnergySettings('1600','1.5','calculated','not a fixed value');
+ assert.equal(calculated.energyEstimateMode,'calculated');
+ assert.equal(calculated.energyFixedTdeeKcal,null);
+ assert.equal(m.dailyEnergyEstimate(calculated,totals).estimatedBurnKcal,2400);
 });
 test('overview uses existing date, nutrition and activity rendering with separate responsive energy cards',()=>{
  const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');

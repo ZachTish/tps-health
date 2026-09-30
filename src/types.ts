@@ -8,6 +8,7 @@ export type WorkoutLogTarget = "session-note" | "daily-note" | "both";
 export type WorkoutDailyNotePlacement = "after-frontmatter" | "before-first-h2" | "bottom";
 export type ActivitySource = "manual" | "workout" | "apple-health";
 export type HealthStorageMode = "legacy" | "native-records";
+export type EnergyEstimateMode = "calculated" | "fixed";
 export type WorkoutSetNotation = "compact" | "verbose";
 export type WorkoutIntervalMode = "duration" | "end";
 export type WorkoutControlPlacement = "inline" | "floating";
@@ -92,6 +93,8 @@ export interface TPSHealthSettings {
   customNutrients: CustomNutrientDefinition[];
   energyBmrKcal: number | null;
   energyActivityFactor: number;
+  energyEstimateMode: EnergyEstimateMode;
+  energyFixedTdeeKcal: number | null;
   calorieGoal: number;
   proteinGoalG: number;
   activityGoalMinutes: number;
@@ -404,6 +407,8 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   ],
   energyBmrKcal: null,
   energyActivityFactor: 1.4,
+  energyEstimateMode: "calculated",
+  energyFixedTdeeKcal: null,
   calorieGoal: 2400,
   proteinGoalG: 180,
   activityGoalMinutes: 45,

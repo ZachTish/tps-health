@@ -3,14 +3,21 @@ import test from "node:test";
 import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const USER_AGENT = "TPSHealth/0.1 (Obsidian plugin test)";
 const mainEntryPoint = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const mainSource = readFileSync(mainEntryPoint, "utf8");
 const apiSource = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-const sharedMobileOverlaySource = readFileSync(new URL("../../TPS-Global-Context-Menu (Dev)/src/utils/mobile-overlay.ts", import.meta.url), "utf8");
+const sharedOverlayCandidates = [
+  new URL("../../TPS-Global-Context-Menu (Dev)/src/utils/mobile-overlay.ts", import.meta.url),
+  new URL("../../TPS Global Context Menu/src/utils/mobile-overlay.ts", import.meta.url),
+];
+const sharedMobileOverlaySource = readFileSync(
+  sharedOverlayCandidates.find(candidate => existsSync(candidate)) ?? sharedOverlayCandidates[0],
+  "utf8"
+);
 
 async function importFormatUtility() {
   const build = await esbuild.build({
@@ -9774,6 +9781,41 @@ test("ID-only missing native workouts recover through Finish and Discard without
   }
 });
 
+test("native Finish and Discard preserve an active pointer while its file is absent from the metadata index", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  for (const action of ["finish", "discard"]) {
+    const fake = createFakeHealthApp();
+    const plugin = new TPSHealthPlugin(fake.app);
+    plugin.settings = {
+      ...plugin.settings,
+      storageMode: "native-records",
+      activeWorkoutId: "workout-a",
+      activeWorkoutPath: "Workout A.md",
+      activeWorkoutTarget: "both",
+      activeWorkoutTitle: "A",
+    };
+    primeHealthSettingsPersistence(plugin);
+    fake.files.set("Workout A.md", "---\nkind: workout-session\nstatus: active\n---\n");
+    fake.app.metadataCache.getFileCache = () => null;
+    const harness = installNativeWorkoutTestService(plugin, fake);
+
+    if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+
+    assert.equal(plugin.settings.activeWorkoutId, "workout-a", `${action} keeps the in-memory owner`);
+    assert.equal(plugin.__pluginData.activeWorkoutId, "workout-a", `${action} keeps the saved owner`);
+    assert.equal(plugin.settings.activeWorkoutPath, "Workout A.md");
+    assert.deepEqual(harness.counts(), { create: 0, finish: 0, discard: 0 });
+    assert.deepEqual(fake.writes, []);
+
+    fake.files.delete("Workout A.md");
+    if (action === "finish") await plugin.finishWorkout();
+    else await plugin.discardWorkout();
+    assert.equal(plugin.getActiveWorkoutState(), null, `${action} clears the pointer only after the file is absent`);
+  }
+});
+
 test("native Finish and Discard fail closed if active ownership changes during reconciliation", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
@@ -12180,13 +12222,19 @@ test('energy settings save atomically, preserve intake goals, notify views and r
  await plugin.saveEnergySettings('1650','1.6');
  assert.equal(plugin.__pluginData.energyBmrKcal,1650);
  assert.equal(plugin.__pluginData.energyActivityFactor,1.6);
+ assert.equal(plugin.__pluginData.energyEstimateMode,'calculated');
+ await plugin.saveEnergySettings('1650','1.6','fixed','2250');
+ assert.equal(plugin.__pluginData.energyEstimateMode,'fixed');
+ assert.equal(plugin.__pluginData.energyFixedTdeeKcal,2250);
  assert.equal(JSON.stringify(plugin.settings.healthGoals),goals);
  const save=plugin.saveData;plugin.saveData=async()=>{throw new Error('Energy save failure');};
- await assert.rejects(plugin.saveEnergySettings('1700','1.8'),/Energy save failure/);
+ await assert.rejects(plugin.saveEnergySettings('1700','1.8','calculated','2300'),/Energy save failure/);
  assert.equal(plugin.settings.energyBmrKcal,1650);assert.equal(plugin.settings.energyActivityFactor,1.6);
+ assert.equal(plugin.settings.energyEstimateMode,'fixed');assert.equal(plugin.settings.energyFixedTdeeKcal,2250);
  plugin.saveData=save;
- await plugin.saveEnergySettings('','1.6');
+ await plugin.saveEnergySettings('','1.6','calculated','2250');
  assert.equal(plugin.__pluginData.energyBmrKcal,null);
+ assert.equal(plugin.__pluginData.energyEstimateMode,'calculated');
  plugin.settingsPersistenceBlockedByFutureSchema=true;
  await assert.rejects(plugin.saveEnergySettings('1650','1.6'),/Update Health/);
 });
