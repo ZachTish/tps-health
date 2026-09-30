@@ -1,5 +1,15 @@
 # TPS Health
 
+## 3.8.8 — Preserve logged portions and consumed dates
+
+Explicit gram portions now use that gram amount in the saved quantity/unit, matching the nutrition calculated by the food logger. Previously, a described portion could calculate 300 g while persisting “1 bowl”; the native index then recalculated that different portion and overwrote its macro projection. Ordinary logging without an explicit gram override keeps the selected unit. A food label whose serving amount exceeds one now uses the same denominator in the logger and native projection, including labels measured in servings.
+
+Food history, daily totals and day-change notifications now use the consumed timestamp before the redundant legacy `date` field. Changing consumed time moves the food to its correct local day; records with only an old date remain readable. No existing date properties are rewritten by reading them. There are no new settings, schema fields, migrations, polling or repair routes. GCM API v6 and minimum Obsidian 1.12.0 are unchanged; this is a backward-compatible correctness patch. Earlier gram overrides that never stored the intended weight cannot be safely reconstructed automatically; review those portions rather than guessing amounts from overwritten totals.
+
+The audit covers native save/index consistency, portion edits, linked-food changes, delayed definition arrival, custom property keys, local-day rollover, reload and archive. Verification details, boundaries and checksums are in [3.8.8 release notes](release-notes/3.8.8.md). No TishOS app/widget changes or production-data edits are included.
+
+Validation: 565 tests passed, zero failed, and one optional live USDA check was skipped. Three regressions were demonstrated before their fixes; five new tests cover the corrected paths and combined lifecycle. TypeScript and the separate production build passed, with test-vault deployment and a named Health-only reload. Installed 3.8.7 turned a 600 kcal gram portion into 200 kcal and a 100 kcal serving into 200 kcal; installed 3.8.8 preserves 600 and 100 in both records and daily totals. A real portion/date edit, reload and archive retain the expected 700 → 100/300 → 100/0 daily totals. Existing consumers remain enabled, no provider/import automation is enabled, and five plugin settings files remain byte-identical. QA uses synthetic food definitions and isolated native records, not production data or provider nutrition; no physical-device or new visual-UI verification is claimed. The existing block render tests pass. No UI interaction was performed against the active production window. The test fixtures are archived after validation; production installation remains the user's BRAT update.
+
 ## 3.8.7 — Index food records when GCM becomes ready
 
 Health now consumes GCM's existing `tps:gcm-api-changed` lifecycle event. Previously, loading Health before GCM's asynchronous API initialization could leave the native index empty even after metadata settled, making macros and food history show zero despite valid food notes. Health waits for a usable record provider before considering the index settled and builds from cached metadata when that provider becomes available. Already-open Health sections receive the normal day-change notifications.
@@ -150,7 +160,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.8.7](https://github.com/ZachTish/tps-health/releases/tag/3.8.7) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.8.8](https://github.com/ZachTish/tps-health/releases/tag/3.8.8) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

@@ -20,6 +20,26 @@ const m = await importPluginWithObsidianStub();
 const item = (source, name = 'Favorite oats', extra = {}) => ({ id: source, name, source, servingAmount: 1, servingUnit: 'serving', servingGrams: 40, nutrition: { calories: 150, proteinG: 5, carbsG: 27, fatG: 3 }, ...extra });
 const off = product => new m.default(createFakeHealthApp().app).foodFactsProductToItem(product, '123456789012');
 
+test('an explicit gram portion survives the handoff from food logger to native record writer', async () => {
+  const fake = createFakeHealthApp();
+  const plugin = new m.default(fake.app), entries = [];
+  plugin.nativeRecordService = {
+    isEnabled: () => true,
+    createFoodEntry: async entry => { entries.push(entry); return { id: entry.id, path: 'Inbox/entry.md' }; },
+  };
+  const food = item('custom-note', 'Synthetic bowl', { sourcePath: 'Inbox/bowl.md', servingAmount: 1,
+    servingUnit: 'bowl', servingGrams: 100, nutrition: { calories: 200, proteinG: 10, carbsG: 25, fatG: 6 } });
+  await plugin.logFood(food, 1, 'bowl', undefined, '2026-09-29T12:00:00', false, undefined, { amountGrams: 300 });
+  assert.equal(entries[0].nutritionOverride.calories, 600);
+  assert.equal(entries[0].servingQuantity, 300, 'the stored amount must describe the portion used for nutrition');
+  assert.equal(entries[0].servingUnit, 'g');
+  await plugin.logFood(food, 1, 'bowl', undefined, '2026-09-29T12:00:00', false);
+  assert.equal(entries[1].nutritionOverride.calories, 200);
+  assert.equal(entries[1].servingQuantity, 1);
+  assert.equal(entries[1].servingUnit, 'bowl');
+  assert.deepEqual(fake.writes, [], 'the controlled native adapter does not write vault files');
+});
+
 test('nutrient parsing distinguishes unknown, invalid and measured zero', () => {
   for (const raw of [undefined, null, '', '  ', false, true, [], {}, -1, '-1', NaN, Infinity, '100 mg', '0x10']) assert.equal(nutritionNumber(raw), undefined, String(raw));
   for (const raw of [0, '0', ' 0.0 ']) assert.equal(nutritionNumber(raw), 0);

@@ -20519,8 +20519,10 @@ function resolveFoodLogServingWithGramAmount(item: FoodItem, quantity: number, u
   if (amountGrams && Number.isFinite(amountGrams) && amountGrams > 0 && metricServing?.unit === "g") {
     return {
       servings: normalizeServingMultiplier(amountGrams / metricServing.amount),
-      inputQuantity: quantity,
-      inputUnit: normalizeServingUnit(unit || "serving"),
+      // Persist the same physical portion used to compute nutrition. Keeping
+      // the descriptive quantity here lets native re-indexing change the dose.
+      inputQuantity: amountGrams,
+      inputUnit: "g",
       amount: round(amountGrams),
       amountUnit: "g",
     };

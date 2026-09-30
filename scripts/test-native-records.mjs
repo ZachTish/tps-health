@@ -1124,6 +1124,104 @@ test('native food projection derives every macro from the consumed amount and li
   assert.equal(deriveNativeFoodEntryProjection({ quantity: 2, unit: 'ml' }, food), null, 'an incompatible unit fails closed');
 });
 
+test('multi-serving labels keep the same portion denominator after native indexing', () => {
+  const food = { servingAmount: 2, servingUnit: 'serving', servingGrams: 100, calories: 200 };
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 1, unit: 'serving' }, food).nutrition.calories, 100);
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 2, unit: 'servings' }, food).nutrition.calories, 200);
+  assert.equal(deriveNativeFoodEntryProjection({ quantity: 100, unit: 'g' }, food).nutrition.calories, 200);
+});
+
+test('editing consumed time moves an older food record out of its redundant legacy date', async () => {
+  const h = createHarness();
+  const file = h.addFrontmatterFile('Inbox/legacy-date-food.md', {
+    tpsId: 'date-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Food',
+    date: '2026-09-29', completedDate: '2026-09-29T12:00:00', quantity: 1, unit: 'serving', calories: 210,
+  });
+  h.service.indexFile(file, h.frontmatters.get(file));
+  const changes = [];
+  h.service.onRecordsChanged(c => changes.push(c));
+  await h.service.updateDailyFoodEntry(file, {
+    ...h.service.getDailyFoodEntries('2026-09-29')[0], completedDate: '2026-09-28T12:00:00',
+  });
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-28').calories, 210);
+  assert.deepEqual(changes.at(-1).dates.sort(), ['2026-09-28', '2026-09-29']);
+  h.service.dispose();
+});
+
+test('food lifecycle retains exact portions and local days through edits, linked updates, reload and archive', async () => {
+  const previousTZ = process.env.TZ;
+  process.env.TZ = 'America/Chicago';
+  const h = createHarness({ settings: { nativeRecordProperties: { completedDate: 'consumedAt', calories: 'energyKcal' } } });
+  try {
+    const definition = h.addFrontmatterFile('Inbox/portion-food.md', {
+      kind: 'food', title: 'Synthetic food', servingAmount: 1, servingUnit: 'bowl', servingGrams: 100,
+      calories: 200, proteinG: 10, carbsG: 25, fatG: 6,
+    });
+    const record = await h.service.createFoodEntry({
+      id: 'roundtrip-portion', createdDate: '2026-09-30T00:30:00Z', completedDate: '2026-09-30T00:30:00Z',
+      item: { id: 'food', name: 'Synthetic food', source: 'custom-note', sourcePath: definition.path },
+      quantity: 3, unit: 'serving', servingQuantity: 300, servingUnit: 'g',
+      nutritionOverride: { calories: 600, proteinG: 30, carbsG: 75, fatG: 18 },
+    });
+    const assertDay = (day, calories) => {
+      const totals = h.service.getDailyFoodTotals(day), rows = h.service.getDailyFoodEntries(day);
+      assert.equal(totals.calories, calories);
+      assert.equal(totals.calories, rows.reduce((sum, row) => sum + row.calories, 0));
+    };
+    assertDay('2026-09-29', 600);
+    assertDay('2026-09-30', 0);
+    h.service.refreshConfiguration();
+    assertDay('2026-09-29', 600);
+    await h.service.updateDailyFoodEntry(record.path, {
+      ...h.service.getDailyFoodEntries('2026-09-29')[0], quantity: 150,
+      completedDate: '2026-09-29T00:30:00Z',
+    });
+    assertDay('2026-09-29', 0);
+    assertDay('2026-09-28', 300);
+    const next = { ...h.frontmatters.get(definition), calories: 220 };
+    h.frontmatters.set(definition, next);
+    h.emitMetadata('changed', definition, '', { frontmatter: next });
+    assertDay('2026-09-28', 330);
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal(h.frontmatters.get(record.file).energyKcal, 330);
+    assert.equal(h.frontmatters.get(record.file).quantity, 150);
+    h.service.refreshConfiguration();
+    assertDay('2026-09-28', 330);
+    await h.service.archiveDailyEntry(record.path, 'food-entry');
+    assertDay('2026-09-28', 0);
+    assert.deepEqual(h.readCalls, []);
+  } finally {
+    h.service.dispose();
+    if (previousTZ === undefined) delete process.env.TZ; else process.env.TZ = previousTZ;
+  }
+});
+
+test('food notes arriving before their linked definition converge without reopening the day', async () => {
+  const h = createHarness();
+  try {
+    const entry = h.addFrontmatterFile('Inbox/synced-food.md', {
+      tpsId: 'synced-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Synced food',
+      completedDate: '2026-09-29T12:00:00', quantity: 2, unit: 'serving',
+      food: '[[Inbox/late-definition]]', calories: 400,
+    });
+    h.emitMetadata('changed', entry, '', { frontmatter: h.frontmatters.get(entry) });
+    assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 400);
+    const food = h.addFrontmatterFile('Inbox/late-definition.md', {
+      kind: 'food', title: 'Food', servingAmount: 1, servingUnit: 'serving', calories: 210,
+    });
+    const changes = [];
+    h.service.onRecordsChanged(change => changes.push(change));
+    h.emitMetadata('changed', food, '', { frontmatter: h.frontmatters.get(food) });
+    assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 420);
+    assert.ok(changes.some(change => change.dates.includes('2026-09-29')));
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal(h.frontmatters.get(entry).calories, 420);
+    assert.deepEqual(h.readCalls, []);
+    assert.deepEqual(h.cachedReadCalls, []);
+  } finally { h.service.dispose(); }
+});
+
 test('native Health indexing follows GCM API v6 legacy tag inspection without physical ID/schema properties', () => {
   const { service } = createHarness({ apiVersion: 6 });
   const file = { path: 'food-tagged.md', name: 'food-tagged.md', extension: 'md', basename: 'food-tagged' };

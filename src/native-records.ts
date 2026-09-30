@@ -921,7 +921,7 @@ export function deriveNativeFoodEntryProjection(
   let amount: number | undefined;
   let amountUnit: 'g' | 'ml' | undefined;
   if (unit === 'serving' || sameServingUnit) {
-    servings = unit === 'serving' ? quantity : quantity / servingAmount;
+    servings = sameServingUnit ? quantity / servingAmount : quantity;
     if (metricServing) {
       amount = servings * metricServing.amount;
       amountUnit = metricServing.unit;
@@ -1896,7 +1896,7 @@ export class HealthNativeRecordService {
 
   getDailyFoodTotals(dateIso: string): NutritionTotals & { entryCount: number } {
     const records = this.getKindRecords('food-entry').filter((record) => (
-      record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
+      record.frontmatter.archived !== true && dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso
     ));
     const totals: NutritionTotals = {
       calories: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, sugarG: 0,
@@ -1911,7 +1911,7 @@ export class HealthNativeRecordService {
 
   getDailyFoodEntries(dateIso: string): NativeDailyFoodEntrySnapshot[] {
     return this.getFoodEntriesForPaths(this.getKindRecords('food-entry')
-      .filter(record => dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso)
+      .filter(record => dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso)
       .map(record => record.file.path))
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
   }
@@ -1921,7 +1921,7 @@ export class HealthNativeRecordService {
     return [...new Set(paths)].map(path => this.recordsByPath.get(path))
       .filter((record): record is IndexedHealthRecord => !!record && record.kind === 'food-entry' && record.frontmatter.archived !== true)
       .map((record) => ({
-        dateIso: dateKey(record.frontmatter.date || record.frontmatter.completedDate) || "",
+        dateIso: dateKey(record.frontmatter.completedDate || record.frontmatter.date) || "",
         id: record.id,
         path: record.file.path,
         title: String(record.frontmatter.title || record.file.basename).trim() || record.file.basename,
@@ -2993,7 +2993,8 @@ export class HealthNativeRecordService {
   private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {
     const kinds = [...new Set([previous?.kind, current?.kind].filter((kind): kind is NativeHealthKind => !!kind))];
     const recordDate = (record: IndexedHealthRecord): string => dateKey(
-      record.frontmatter.date
+      (record.kind === 'food-entry' && record.frontmatter.completedDate)
+      || record.frontmatter.date
       || record.frontmatter.workoutDate
       || record.frontmatter.completedDate
       || (record.kind === 'workout-session'
