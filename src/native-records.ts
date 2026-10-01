@@ -961,7 +961,7 @@ export class HealthNativeRecordService {
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
-  private pendingMetadataResolutionRebuild = false;
+  private readonly pendingMetadataPaths = new Map<string, TFile>();
   private indexedProvider: NativeRecordsApi | null = null;
   private indexedProviderConfiguration = '';
   private disposed = false;
@@ -995,7 +995,13 @@ export class HealthNativeRecordService {
     this.plugin.registerEvent(metadataCache.on('changed', (file, data, cache) => {
       // The indexed source supersedes reads started before this event. A late
       // cachedRead result must not replace its newer frontmatter or body data.
+      // A queued event from an obsolete TFile must not consume a replacement's
+      // pending cache path or restore the old record at that path.
+      if (vault.getAbstractFileByPath(file.path) !== file) return;
+      // An event without either source or cache has not established removal.
+      if (!cache && typeof data !== 'string') return;
       const hadPendingRead = this.refreshGenerations.delete(file.path);
+      const wasPending = this.pendingMetadataPaths.delete(file.path);
       let frontmatter: Record<string, unknown> | null = cache?.frontmatter ?? null;
       if (!frontmatter && data) {
         const source = getFrontMatterInfo(data);
@@ -1011,18 +1017,21 @@ export class HealthNativeRecordService {
         }
       }
       this.indexFile(file, frontmatter, data);
+      if (wasPending && typeof data !== 'string'
+        && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
+        this.hydrateWorkoutBodiesAfterLayout([file]);
+      }
       if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
-      // `resolved` also fires after ordinary edits. Once startup is settled,
-      // Metadata changes and scoped Health file events maintain this index.
-      if (!this.workoutIndexReady || this.pendingMetadataResolutionRebuild) {
+      // The first cold resolution discovers files added during startup. Later
+      // resolutions inspect only paths whose cache was absent in that scan.
+      if (!this.workoutIndexReady) {
         this.rebuild();
-        // `resolved` is the authoritative startup reconciliation. Later
-        // resolved bursts belong to incremental metadata changes.
-        this.pendingMetadataResolutionRebuild = false;
         this.workoutIndexReady = true;
         this.hydrateWorkoutBodiesAfterLayout();
+      } else if (this.pendingMetadataPaths.size > 0) {
+        this.reconcilePendingMetadata();
       }
       this.plugin.scheduleWorkoutActionBars();
     }));
@@ -1043,6 +1052,11 @@ export class HealthNativeRecordService {
     }));
     this.plugin.registerEvent(vault.on('delete', (file) => {
       if (file instanceof TFile) {
+        // A queued delete for an obsolete object must not remove a different
+        // file that has since appeared at the same path.
+        const current = vault.getAbstractFileByPath(file.path);
+        if (current instanceof TFile && current !== file) return;
+        this.pendingMetadataPaths.delete(file.path);
         const hadPendingRead = this.refreshGenerations.delete(file.path);
         const deleted = this.recordsByPath.get(file.path);
         const legacyChildren = deleted?.kind === 'workout-session'
@@ -1056,6 +1070,11 @@ export class HealthNativeRecordService {
       }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
+      // A stale rename must not move a different file now occupying oldPath.
+      const current = vault.getAbstractFileByPath(oldPath);
+      if (current instanceof TFile && current !== file) return;
+      const wasPending = this.pendingMetadataPaths.delete(oldPath);
+      if (wasPending && file instanceof TFile) this.pendingMetadataPaths.set(file.path, file);
       this.refreshGenerations.delete(oldPath);
       const wasHealthSource = this.recordsByPath.has(oldPath) || this.entryPathsByFoodPath.has(oldPath)
         || oldPath === this.plugin.settings.activeWorkoutPath || file.path === this.plugin.settings.activeWorkoutPath;
@@ -1093,6 +1112,7 @@ export class HealthNativeRecordService {
   dispose(): void {
     this.disposed = true;
     this.refreshGenerations.clear();
+    this.pendingMetadataPaths.clear();
     for (const timer of this.foodProjectionTimers.values()) globalThis.clearTimeout(timer);
     this.foodProjectionTimers.clear();
     this.foodProjectionGenerations.clear();
@@ -2719,39 +2739,71 @@ export class HealthNativeRecordService {
     if (!api) return;
     this.indexedProviderConfiguration = this.providerConfiguration(api);
     const removedPaths = new Set(this.recordsByPath.keys());
-    this.pathsByKind.clear();
-    this.entryPathsByFoodPath.clear();
-    this.foodDefinitionsByPath.clear();
-    this.workoutDataByPath.clear();
+    this.pendingMetadataPaths.clear();
     const vault = this.plugin.app.vault;
     if (typeof vault?.getMarkdownFiles !== 'function') return;
     const files = vault.getMarkdownFiles();
-    let metadataComplete = files.length > 0;
     for (const file of files) {
       removedPaths.delete(file.path);
       const cache = this.plugin.app.metadataCache.getFileCache(file);
-      metadataComplete &&= cache != null;
-      this.indexFile(file, cache?.frontmatter ?? null);
+      if (!cache) {
+        // An absent cache is unknown, not evidence that an accepted record was
+        // removed. Keep its projections until this exact file is indexed.
+        this.pendingMetadataPaths.set(file.path, file);
+        continue;
+      }
+      this.indexFile(file, cache.frontmatter ?? null);
     }
     // Keep previous records until reconciliation so consumers are also told
     // about removed records and dates changed while the provider was offline.
-    for (const path of removedPaths) this.removePath(path);
-    // The private initialized flag can precede cache coverage for synced files.
-    // Reconcile one incomplete scan when metadata resolves without blocking
-    // workout controls for unrelated files whose caches are still pending.
-    this.pendingMetadataResolutionRebuild = files.length > 0 && !metadataComplete;
-    if (this.plugin.app.workspace?.layoutReady && metadataComplete) this.workoutIndexReady = true;
+    for (const path of removedPaths) {
+      this.foodDefinitionsByPath.delete(path);
+      this.workoutDataByPath.delete(path);
+      this.removePath(path);
+    }
+    if (this.plugin.app.workspace?.layoutReady && files.length > 0 && this.pendingMetadataPaths.size === 0) {
+      this.workoutIndexReady = true;
+    }
   }
 
-  private hydrateWorkoutBodiesAfterLayout(): void {
-    if (!this.workoutIndexReady || !this.indexedProvider || this.pendingMetadataResolutionRebuild) return;
+  private reconcilePendingMetadata(): void {
+    const vault = this.plugin.app.vault;
+    const readyWorkouts: TFile[] = [];
+    for (const [path, file] of this.pendingMetadataPaths) {
+      const current = vault.getAbstractFileByPath(path);
+      if (!(current instanceof TFile)) {
+        this.pendingMetadataPaths.delete(path);
+        this.foodDefinitionsByPath.delete(path);
+        this.workoutDataByPath.delete(path);
+        this.removePath(path);
+        continue;
+      }
+      if (current !== file) this.pendingMetadataPaths.set(path, current);
+      const cache = this.plugin.app.metadataCache.getFileCache(current);
+      if (!cache) continue;
+      this.pendingMetadataPaths.delete(path);
+      this.indexFile(current, cache.frontmatter ?? null);
+      if (this.recordsByPath.get(path)?.kind === 'workout-session') readyWorkouts.push(current);
+    }
+    if (readyWorkouts.length) this.hydrateWorkoutBodiesAfterLayout(readyWorkouts);
+  }
+
+  private hydrateWorkoutBodiesAfterLayout(files?: TFile[]): void {
+    if (!this.workoutIndexReady || !this.indexedProvider) return;
     // Metadata readiness owns the full index. Layout only permits the deferred
     // body reads; it must not rebuild an index that `resolved` already finished.
+    const workouts = files || [...(this.pathsByKind.get('workout-session') || [])]
+      .map(path => this.recordsByPath.get(path)?.file)
+      .filter((file): file is TFile => !!file);
+    const ready = workouts.filter(file => !this.pendingMetadataPaths.has(file.path));
+    if (!ready.length) return;
     this.plugin.app.workspace?.onLayoutReady?.(() => {
       if (this.disposed || !this.indexedProvider) return;
-      for (const path of this.pathsByKind.get('workout-session') || []) {
-        const record = this.recordsByPath.get(path);
-        if (record) void this.refreshFile(record.file);
+      for (const file of ready) {
+        const record = this.recordsByPath.get(file.path);
+        if (record?.kind === 'workout-session' && record.file === file && !this.pendingMetadataPaths.has(file.path)) {
+          void this.refreshFile(file);
+        }
       }
       this.plugin.scheduleWorkoutActionBars();
     });
@@ -2777,7 +2829,7 @@ export class HealthNativeRecordService {
       if (resolved && this.entryPathsByFoodPath.has(file.path)) {
         this.foodDefinitionsByPath.set(file.path, { ...resolved });
         this.refreshLinkedFoodEntries(file.path);
-      }
+      } else this.foodDefinitionsByPath.delete(file.path);
       if (previous) this.emitChange(file.path, previous, null);
       return;
     }

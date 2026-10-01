@@ -315,6 +315,226 @@ function addProviderFood(h, path = 'Inbox/provider-food.md') {
   });
 }
 
+test('staggered metadata readiness indexes pending food without repeated vault scans', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const food = addProviderFood(h);
+  let cacheReady = false, scans = 0, cacheInspections = 0;
+  h.plugin.app.metadataCache.getFileCache = file => {
+    cacheInspections += 1;
+    return cacheReady ? { frontmatter: h.frontmatters.get(file) } : null;
+  };
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 0);
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 1, 'unresolved metadata bursts inspect only pending paths');
+  assert.equal(changes.length, 0);
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.deepEqual(h.service.getDailyFoodEntries('2026-09-29').map(entry => entry.id), ['provider-food']);
+  assert.equal(changes.length, 1, 'the newly accepted food wakes the day consumer once');
+  assert.deepEqual(changes[0].dates, ['2026-09-29']);
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  assert.equal(cacheInspections, 52, 'resolved events stop inspecting once the pending cache is accepted');
+  assert.equal(changes.length, 1);
+
+  h.contents.set(food.path, 'Food body without frontmatter.');
+  h.frontmatters.delete(food);
+  h.emitMetadata('changed', food, h.contents.get(food.path), {});
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0, 'a current indexed source still removes a real record');
+  assert.equal(changes.length, 2);
+  assert.equal(scans, 1);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  assert.deepEqual(h.createCalls, []);
+  h.service.dispose();
+});
+
+test('provider rebuild preserves accepted food while its metadata cache is unknown', () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  h.plugin.app.metadataCache.getFileCache = () => null;
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(changes.length, 0, 'unknown cache is not deletion evidence');
+  assert.equal(scans, 2);
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 2, 'pending resolution stays scoped to the food path');
+  assert.equal(changes.length, 0);
+
+  h.frontmatters.set(food, { ...h.frontmatters.get(food), calories: 320 });
+  h.plugin.app.metadataCache.getFileCache = file => ({ frontmatter: h.frontmatters.get(file) });
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 320);
+  assert.equal(changes.length, 1);
+  assert.equal(scans, 2);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  assert.deepEqual(h.createCalls, []);
+  h.service.dispose();
+});
+
+test('a same-path file replacement remains pending until its new cache can be indexed', () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  h.service.setup();
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  let cacheReady = false;
+  h.plugin.app.metadataCache.getFileCache = file => cacheReady ? { frontmatter: h.frontmatters.get(file) } : null;
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  const replacement = { ...food };
+  h.files.set(food.path, replacement);
+  h.frontmatters.set(replacement, { ...h.frontmatters.get(food) });
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210,
+    'a new file object at the same path is not deletion evidence');
+  assert.equal(changes.length, 0);
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(h.service.recordsByPath.get(food.path).file, replacement);
+  assert.equal(scans, 1);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('a late metadata event for a replaced file cannot consume its pending path', () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  const originalPath = food.path;
+  h.service.setup();
+  let cacheReady = false;
+  h.plugin.app.metadataCache.getFileCache = file => cacheReady ? { frontmatter: h.frontmatters.get(file) } : null;
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  const replacement = { ...food };
+  h.files.set(food.path, replacement);
+  h.frontmatters.set(replacement, { ...h.frontmatters.get(food), calories: 320 });
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  h.emitMetadata('changed', food, h.contents.get(food.path), { frontmatter: h.frontmatters.get(food) });
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(changes.length, 0, 'the stale event is not an accepted source update');
+  h.emitVault('delete', food);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210,
+    'a queued delete for the obsolete object cannot remove its replacement');
+  assert.equal(changes.length, 0);
+  food.path = 'Inbox/obsolete-move.md';
+  h.emitVault('rename', food, originalPath);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210,
+    'a queued rename for the obsolete object cannot move its replacement');
+  assert.equal(changes.length, 0);
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 320);
+  assert.equal(h.service.recordsByPath.get(originalPath).file, replacement);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('unresolved metadata bursts inspect pending caches without repeated vault scans or writes', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  for (let index = 0; index < 256; index++) h.addLegacyFile(`Inbox/pending-${index}.md`, 'Ordinary note.');
+  let scans = 0, cacheInspections = 0;
+  h.plugin.app.metadataCache.getFileCache = () => { cacheInspections += 1; return null; };
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  assert.equal(cacheInspections, 256 * 51, 'each unresolved event inspects only the 256 known pending paths');
+  assert.deepEqual(changes, []);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  assert.deepEqual(h.createCalls, []);
+  h.service.dispose();
+});
+
+test('a provider rebuild drops a linked-food definition only when current cached frontmatter is absent', () => {
+  const h = createHarness({ deferSetup: true });
+  const definition = h.addFrontmatterFile('Inbox/definition.md', {
+    kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 100, proteinG: 10, carbsG: 0, fatG: 0,
+  });
+  h.addFrontmatterFile('Inbox/linked-entry.md', {
+    tpsId: 'linked-entry', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Linked food',
+    food: '[[Inbox/definition]]', quantity: 1, unit: 'serving',
+    completedDate: '2026-09-29T12:00:00.000Z', calories: 100, proteinG: 10, carbsG: 0, fatG: 0,
+  });
+  h.service.setup();
+  assert.equal(h.service.foodDefinitionsByPath.has(definition.path), true);
+  h.frontmatters.delete(definition);
+  h.contents.set(definition.path, 'The food definition frontmatter was removed.');
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.foodDefinitionsByPath.has(definition.path), false);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 100,
+    'the logged nutrition snapshot remains until its own current source changes');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('pending metadata follows a rename and a real vault deletion without a new scan', () => {
+  const h = createHarness({ deferSetup: true });
+  const food = addProviderFood(h);
+  let cacheReady = false, scans = 0;
+  h.plugin.app.metadataCache.getFileCache = file => cacheReady
+    ? { frontmatter: h.frontmatters.get(file) } : null;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  const oldPath = food.path;
+  h.files.delete(oldPath);
+  food.path = 'Inbox/renamed-food.md';
+  h.files.set(food.path, food);
+  h.emitVault('rename', food, oldPath);
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.deepEqual(h.service.getDailyFoodEntries('2026-09-29').map(entry => entry.path), [food.path]);
+  assert.equal(scans, 1);
+
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  h.files.delete(food.path);
+  h.emitVault('delete', food);
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
+  assert.equal(changes.length, 1);
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
 test('metadata changes use their saved source when cached frontmatter is absent', async () => {
   const h = createHarness();
   const food = await h.service.createFoodEntry({
@@ -398,12 +618,12 @@ test('an initialized MetadataCache reconciles food missed by an incomplete start
   assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 1);
   assert.equal(h.service.getDailyFoodTotals('2026-09-30').calories, 420);
   assert.equal(h.service.isWorkoutIndexSettled(), true);
-  assert.equal(scans, 2, 'one partial startup scan and one settled rebuild');
-  assert.equal(cacheInspections, 2, 'each file cache is inspected once per scan');
+  assert.equal(scans, 1, 'the pending path resolves without another vault scan');
+  assert.equal(cacheInspections, 2, 'the pending file cache is inspected once per resolution');
   assert.ok(changes.some(change => change.kinds.includes('food-entry') && change.dates.includes('2026-09-30')),
     'the recovered food record notifies the dashboard');
   for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
-  assert.equal(scans, 2, 'settled metadata bursts keep the index warm');
+  assert.equal(scans, 1, 'settled metadata bursts keep the index warm');
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
   assert.deepEqual(h.updateCalls, []);
@@ -432,7 +652,7 @@ test('startup metadata reconciliation restores saved activity and food together'
   assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
   assert.equal(h.service.getDailyActivityTotals('2026-09-29').entryCount, 1);
   assert.equal(h.service.getDailyActivityTotals('2026-09-29').durationMinutes, 30);
-  assert.equal(scans, 2);
+  assert.equal(scans, 1);
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
   assert.deepEqual(h.updateCalls, []);
@@ -468,7 +688,7 @@ test('partially cached startup food is retained while resolved adds missing reco
   assert.equal(h.service.getDailyFoodTotals('2026-09-30').entryCount, 2);
   assert.equal(h.service.getDailyFoodTotals('2026-09-30').calories, 300);
   for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
-  assert.equal(scans, 2);
+  assert.equal(scans, 1);
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
   assert.deepEqual(h.updateCalls, []);
@@ -2721,7 +2941,7 @@ function addStartupRecords(h) {
   return workout;
 }
 
-test('an incomplete warm startup hydrates indexed workouts only after metadata reconciliation', async () => {
+test('an incomplete warm startup hydrates known workouts without waiting for unrelated metadata', async () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const workout = addStartupRecords(h);
   const getCache = h.plugin.app.metadataCache.getFileCache;
@@ -2736,16 +2956,71 @@ test('an incomplete warm startup hydrates indexed workouts only after metadata r
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(scans, 1);
   assert.equal(h.service.isWorkoutIndexSettled(), true, 'an unrelated cache gap does not block controls');
-  assert.deepEqual(h.cachedReadCalls, [], 'known workout bodies wait for the pending reconciliation');
+  assert.deepEqual(h.cachedReadCalls, [workout.path], 'known workout bodies hydrate despite unrelated pending metadata');
   cacheReady = true;
   h.emitMetadata('resolved');
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(scans, 2);
-  assert.deepEqual(h.cachedReadCalls, [workout.path], 'reconciliation hydrates the workout exactly once');
+  assert.equal(scans, 1, 'pending cache resolution does not enumerate the vault again');
+  assert.deepEqual(h.cachedReadCalls, [workout.path], 'reconciliation does not reread the known workout');
   assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
   for (let index = 0; index < 10; index++) h.emitMetadata('resolved');
-  assert.equal(scans, 2);
+  assert.equal(scans, 1);
   assert.deepEqual(h.cachedReadCalls, [workout.path]);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('unrelated missing metadata does not prevent scoped hydration of indexed workouts', async () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  h.addLegacyFile('Inbox/unrelated.md', 'Ordinary note.');
+  const ready = h.addFrontmatterFile('Inbox/ready-session.md', {
+    tpsId: 'ready-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Ready workout', status: 'active',
+  });
+  const later = h.addFrontmatterFile('Inbox/later-session.md', {
+    tpsId: 'later-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Later workout', status: 'active',
+  });
+  for (const file of [ready, later]) {
+    h.contents.set(file.path, writeWorkoutDataToNoteContent(h.contents.get(file.path), JSON.stringify({
+      version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 8 }] }],
+    })));
+  }
+  const getCache = h.plugin.app.metadataCache.getFileCache;
+  let laterReady = false, scans = 0;
+  h.plugin.app.metadataCache.getFileCache = file => file.path === 'Inbox/unrelated.md'
+    || (file.path === later.path && !laterReady) ? null : getCache(file);
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.cachedReadCalls, [ready.path], 'known workout body hydrates despite an unrelated null cache');
+  assert.equal(h.service.getWorkoutSnapshot('ready-session').exercises[0].sets[0].reps, 8);
+  assert.equal(h.service.isWorkoutIndexSettled(), true);
+  laterReady = true;
+  h.emitMetadata('resolved');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.cachedReadCalls, [ready.path, later.path], 'newly indexed workout hydrates without rereading its sibling');
+  assert.equal(h.service.getWorkoutSnapshot('later-session').exercises[0].sets[0].reps, 8);
+  assert.equal(scans, 1);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('a pending workout indexed from changed source does not reread its supplied body', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const workout = h.addFrontmatterFile('Inbox/changed-session.md', {
+    tpsId: 'changed-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Changed workout', status: 'active',
+  });
+  const source = writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
+    version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 8 }] }],
+  }));
+  h.contents.set(workout.path, source);
+  h.plugin.app.metadataCache.getFileCache = () => null;
+  h.service.setup();
+  h.emitMetadata('changed', workout, source, { frontmatter: h.frontmatters.get(workout) });
+  assert.equal(h.service.getWorkoutSnapshot('changed-session').exercises[0].sets[0].reps, 8);
+  assert.deepEqual(h.cachedReadCalls, [], 'the changed event already supplied the authoritative body');
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.updateCalls, []);
   h.service.dispose();

@@ -1,6 +1,6 @@
 {
   "name": "tps-health",
-  "version": "3.9.2",
+  "version": "3.9.3",
   "description": "Daily-note backed food, recipe, and workout logging for the TPS system.",
   "main": "main.js",
   "scripts": {
