@@ -996,7 +996,21 @@ export class HealthNativeRecordService {
       // The indexed source supersedes reads started before this event. A late
       // cachedRead result must not replace its newer frontmatter or body data.
       const hadPendingRead = this.refreshGenerations.delete(file.path);
-      this.indexFile(file, cache?.frontmatter ?? null, data);
+      let frontmatter: Record<string, unknown> | null = cache?.frontmatter ?? null;
+      if (!frontmatter && data) {
+        const source = getFrontMatterInfo(data);
+        if (source.exists) {
+          try {
+            const parsed = parseYaml(source.frontmatter);
+            frontmatter = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? parsed as Record<string, unknown>
+              : null;
+          } catch {
+            // Invalid source frontmatter has no safe native-record identity.
+          }
+        }
+      }
+      this.indexFile(file, frontmatter, data);
       if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {

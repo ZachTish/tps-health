@@ -315,6 +315,58 @@ function addProviderFood(h, path = 'Inbox/provider-food.md') {
   });
 }
 
+test('metadata changes use their saved source when cached frontmatter is absent', async () => {
+  const h = createHarness();
+  const food = await h.service.createFoodEntry({
+    id: 'changed-food', createdDate: '2026-09-29T12:00:00.000Z', completedDate: '2026-09-29T12:00:00.000Z',
+    item: { id: 'changed-food', name: 'Lunch', source: 'manual' }, quantity: 1, unit: 'serving',
+    nutritionOverride: { calories: 210, proteinG: 12 },
+  });
+  const activity = await h.service.createActivityEntry({
+    id: 'changed-activity', activity: 'Walk', activityType: 'walking',
+    startedAt: '2026-09-29T13:00:00.000Z', completedDate: '2026-09-29T13:30:00.000Z',
+    durationMinutes: 30, source: 'manual',
+  });
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  const reads = h.readCalls.length;
+  const cachedReads = h.cachedReadCalls.length;
+  const updates = h.updateCalls.length;
+  const creates = h.createCalls.length;
+  const displayed = [];
+  h.service.onRecordsChanged(() => displayed.push({
+    calories: h.service.getDailyFoodTotals('2026-09-29').calories,
+    activityMinutes: h.service.getDailyActivityTotals('2026-09-29').durationMinutes,
+  }));
+
+  for (const record of [food, activity]) {
+    h.emitMetadata('changed', record.file, h.contents.get(record.path), {});
+  }
+  assert.deepEqual(displayed, [
+    { calories: 210, activityMinutes: 30 },
+    { calories: 210, activityMinutes: 30 },
+  ], 'subscribed Daily Note widgets must never observe an empty index after saved changes');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.deepEqual(h.service.getDailyFoodEntries('2026-09-29').map(entry => entry.id), ['changed-food']);
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').durationMinutes, 30);
+  assert.deepEqual(h.service.getDailyActivityEntries('2026-09-29').map(entry => entry.id), ['changed-activity']);
+
+  h.contents.set(food.path, 'Food body without frontmatter.');
+  h.frontmatters.delete(food.file);
+  h.emitMetadata('changed', food.file, h.contents.get(food.path), {});
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0,
+    'removing the saved frontmatter must remove the indexed food');
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').entryCount, 1);
+
+  assert.equal(scans, 0, 'a scoped metadata change must not scan the vault');
+  assert.equal(h.readCalls.length, reads);
+  assert.equal(h.cachedReadCalls.length, cachedReads);
+  assert.equal(h.updateCalls.length, updates);
+  assert.equal(h.createCalls.length, creates);
+  h.service.dispose();
+});
+
 test('an initialized MetadataCache reconciles food missed by an incomplete startup scan', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const food = h.addFrontmatterFile('Inbox/food-sept-30.md', {
@@ -352,6 +404,35 @@ test('an initialized MetadataCache reconciles food missed by an incomplete start
     'the recovered food record notifies the dashboard');
   for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
   assert.equal(scans, 2, 'settled metadata bursts keep the index warm');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('startup metadata reconciliation restores saved activity and food together', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  addProviderFood(h);
+  h.addFrontmatterFile('Inbox/provider-activity.md', {
+    tpsId: 'provider-activity', tpsSchemaVersion: 1, kind: 'activity-entry',
+    title: 'Synthetic walk', completedDate: '2026-09-29T13:30:00.000Z', durationMinutes: 30,
+  });
+  let cacheReady = false;
+  let scans = 0;
+  h.plugin.app.metadataCache.getFileCache = file => cacheReady
+    ? { frontmatter: h.frontmatters.get(file) } : null;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getMarkdownFiles(); };
+  h.service.setup();
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').entryCount, 0);
+
+  cacheReady = true;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').entryCount, 1);
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').durationMinutes, 30);
+  assert.equal(scans, 2);
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
   assert.deepEqual(h.updateCalls, []);
