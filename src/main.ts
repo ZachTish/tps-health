@@ -647,6 +647,7 @@ export default class TPSHealthPlugin extends Plugin {
   private workoutSetChipField: StateField<DecorationSet> | null = null;
   private readonly foodLogTimings = new FoodLogTimings();
   private dailyNoteSettingsSnapshot: CoreDailyNoteSettings = { format: "YYYY-MM-DD", folder: "" };
+  private dailyNoteSettingsReady: Promise<CoreDailyNoteSettings> | null = null;
   private settingsSavePromise: Promise<void> | null = null;
   private settingsSavePending = false;
   private readonly uncertainSettingsSaveKeys = new Set<string>();
@@ -759,7 +760,6 @@ export default class TPSHealthPlugin extends Plugin {
         await this.saveData(settingsPersistencePayload(this.settings));
       }
     }
-    await this.getDailyNoteSettings();
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
@@ -1011,52 +1011,68 @@ export default class TPSHealthPlugin extends Plugin {
     this.registerEditorExtension(createFoodLogChipExtension(this));
     if (typeof (this as any).registerMarkdownCodeBlockProcessor === "function") {
       const registerNativeDailySection = (language: string, section: NativeDailyDashboardSection) => {
-        this.registerMarkdownCodeBlockProcessor(language, async (source, el, ctx) => {
+        this.registerMarkdownCodeBlockProcessor(language, (source, el, ctx) => {
           const display = parseNativeDailyDisplayOptions(source, { macroStyle: this.settings.macroBlockStyle, nutrientRows: this.settings.macroNutrientRows });
           if (display.kind === "invalid") {
             renderNativeDailyDashboardMessage(el, display.message);
             return;
           }
-          const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
-          const containingDateContext = file instanceof TFile ? await this.getDailyNoteDateContext(file) : null;
-          const frontmatter = file instanceof TFile
-            ? this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined
-            : undefined;
-          const filter = resolveNativeDailyDateFilter(display.filterSource, {
-            todayIso: invariantMomentIsoDate(window.moment()),
-            fileName: file instanceof TFile ? file.basename : "",
-            filePath: file instanceof TFile ? file.path : ctx.sourcePath,
-            fileDateIso: containingDateContext?.dateIso,
-            properties: frontmatter,
-          });
-          if (filter.kind === "invalid") {
-            logger.flowWarn("NativeDailyDashboard", "date-filter:invalid", {
-              sourcePath: ctx.sourcePath,
-              section,
-              message: filter.message,
+          const render = () => {
+            const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
+            const containingDateContext = file instanceof TFile
+              ? this.dailyNoteDateContextFromSettings(file, this.currentDailyNoteSettings().settings)
+              : null;
+            const frontmatter = file instanceof TFile
+              ? this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined
+              : undefined;
+            const filter = resolveNativeDailyDateFilter(display.filterSource, {
+              todayIso: invariantMomentIsoDate(window.moment()),
+              fileName: file instanceof TFile ? file.basename : "",
+              filePath: file instanceof TFile ? file.path : ctx.sourcePath,
+              fileDateIso: containingDateContext?.dateIso,
+              properties: frontmatter,
             });
-            renderNativeDailyDashboardMessage(el, filter.message);
-            return;
+            if (filter.kind === "invalid") {
+              logger.flowWarn("NativeDailyDashboard", "date-filter:invalid", {
+                sourcePath: ctx.sourcePath,
+                section,
+                message: filter.message,
+              });
+              renderNativeDailyDashboardMessage(el, filter.message);
+              return;
+            }
+            if (filter.kind === "resolved") {
+              logger.flow("NativeDailyDashboard", "date-filter:resolved", {
+                sourcePath: ctx.sourcePath,
+                section,
+                dateIso: filter.dateIso,
+              });
+            }
+            const dateContext = filter.kind === "resolved"
+              ? this.foodLogDateContextForIsoDate(filter.dateIso)
+              : containingDateContext;
+            if (!dateContext) {
+              renderNativeDailyDashboardMessage(el, "This Health section needs a Daily Note context or a Bases-style date filter.");
+              return;
+            }
+            if (!this.nativeRecordService?.isEnabled()) {
+              renderNativeDailyDashboardMessage(el, "Enable Native Markdown records in TPS Health to use this section.");
+              return;
+            }
+            ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext, section, display.options, source));
+          };
+          if (!display.filterSource && this.dailyNoteSettingsReady
+            && !this.currentDailyNoteSettings().runtimeComplete) {
+            const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
+            const frontmatter = file instanceof TFile
+              ? this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined
+              : undefined;
+            if (!dailyNoteDateIsoFromFrontmatter(frontmatter)) {
+              renderNativeDailyDashboardMessage(el, "Loading Daily Notes settings…");
+              return this.dailyNoteSettingsReady.then(render);
+            }
           }
-          if (filter.kind === "resolved") {
-            logger.flow("NativeDailyDashboard", "date-filter:resolved", {
-              sourcePath: ctx.sourcePath,
-              section,
-              dateIso: filter.dateIso,
-            });
-          }
-          const dateContext = filter.kind === "resolved"
-            ? this.foodLogDateContextForIsoDate(filter.dateIso)
-            : containingDateContext;
-          if (!dateContext) {
-            renderNativeDailyDashboardMessage(el, "This Health section needs a Daily Note context or a Bases-style date filter.");
-            return;
-          }
-          if (!this.nativeRecordService?.isEnabled()) {
-            renderNativeDailyDashboardMessage(el, "Enable Native Markdown records in TPS Health to use this section.");
-            return;
-          }
-          ctx.addChild(new TPSHealthNativeDailyDashboardChild(el, this, dateContext, section, display.options, source));
+          render();
         });
       };
       registerNativeDailySection("tps-health-macros", "macros");
@@ -1121,6 +1137,14 @@ export default class TPSHealthPlugin extends Plugin {
       void this.resumePendingFoodDescribeWorkflow("layout-ready");
     });
     this.scheduleWorkoutActionBars();
+    const settingsRead = this.getDailyNoteSettings().catch((error) => {
+      logger.flowWarn("DailyNote", "settings:startup-read-failed", { error: logger.errorSummary(error) });
+      return this.dailyNoteSettingsSnapshot;
+    });
+    this.dailyNoteSettingsReady = settingsRead;
+    void settingsRead.then(() => {
+      if (this.dailyNoteSettingsReady === settingsRead) this.dailyNoteSettingsReady = null;
+    });
 
   }
 
@@ -7613,7 +7637,30 @@ export default class TPSHealthPlugin extends Plugin {
 
   private async getDailyNoteDateContext(file: TFile | null | undefined): Promise<FoodLogDateContext | null> {
     if (!(file instanceof TFile)) return null;
-    const { format, folder } = await this.getDailyNoteSettings();
+    return this.dailyNoteDateContextFromSettings(file, await this.getDailyNoteSettings());
+  }
+
+  private currentDailyNoteSettings(): { settings: CoreDailyNoteSettings; runtimeComplete: boolean } {
+    let { format, folder } = this.dailyNoteSettingsSnapshot;
+    let hasRuntimeFormat = false;
+    let hasRuntimeFolder = false;
+    try {
+      const options = this.coreDailyNoteOptions();
+      if (typeof options?.format === "string" && options.format.trim()) {
+        format = options.format.trim();
+        hasRuntimeFormat = true;
+      }
+      if (typeof options?.folder === "string") {
+        folder = normalizeCoreDailyNoteFolder(options.folder.trim());
+        hasRuntimeFolder = true;
+      }
+    } catch {
+      // The settings resolved at startup remain the read-only fallback.
+    }
+    return { settings: { format, folder }, runtimeComplete: hasRuntimeFormat && hasRuntimeFolder };
+  }
+
+  private dailyNoteDateContextFromSettings(file: TFile, { format, folder }: CoreDailyNoteSettings): FoodLogDateContext | null {
     const normalizedFolder = normalizePath(folder).replace(/^\/+|\/+$/g, "");
     const normalizedPath = normalizePath(file.path).replace(/^\/+/, "").replace(/\.md$/i, "");
     const folderPrefix = normalizedFolder ? `${normalizedFolder}/` : "";
@@ -8686,9 +8733,7 @@ export default class TPSHealthPlugin extends Plugin {
     let hasRuntimeTemplate = false;
 
     try {
-      const dailyNotesPlugin = (this.app as any).internalPlugins?.getPluginById?.("daily-notes")
-        || (this.app as any).internalPlugins?.plugins?.["daily-notes"];
-      const options = dailyNotesPlugin?.enabled === false ? null : dailyNotesPlugin?.instance?.options;
+      const options = this.coreDailyNoteOptions();
       if (typeof options?.format === "string" && options.format.trim()) {
         format = options.format.trim();
         hasRuntimeFormat = true;
@@ -8709,25 +8754,27 @@ export default class TPSHealthPlugin extends Plugin {
       // Fall through to persisted config/plugin settings.
     }
 
-    try {
-      const configDir = (this.app.vault as any)?.configDir || ".obsidian";
-      const raw = await this.app.vault.adapter.read(normalizePath(`${configDir}/daily-notes.json`));
-      const parsed = JSON.parse(raw);
-      if (!hasRuntimeFormat && typeof parsed?.format === "string" && parsed.format.trim()) {
-        format = parsed.format.trim();
-        formatSource = "daily-notes-config";
+    if (!hasRuntimeFormat || !hasRuntimeFolder || (includeCreation && !hasRuntimeTemplate)) {
+      try {
+        const configDir = (this.app.vault as any)?.configDir || ".obsidian";
+        const raw = await this.app.vault.adapter.read(normalizePath(`${configDir}/daily-notes.json`));
+        const parsed = JSON.parse(raw);
+        if (!hasRuntimeFormat && typeof parsed?.format === "string" && parsed.format.trim()) {
+          format = parsed.format.trim();
+          formatSource = "daily-notes-config";
+        }
+        if (!hasRuntimeFolder && typeof parsed?.folder === "string") {
+          folder = parsed.folder.trim();
+          folderSource = "daily-notes-config";
+        }
+        if (!hasRuntimeTemplate && typeof parsed?.template === "string" && parsed.template.trim()) {
+          template = parsed.template.trim();
+          templateSource = "daily-notes-config";
+        }
+      } catch (error) {
+        logger.flow("DailyNote", "settings:config-read-failed", { error: logger.errorSummary(error) });
+        // Daily Notes may not have a persisted config yet.
       }
-      if (!hasRuntimeFolder && typeof parsed?.folder === "string") {
-        folder = parsed.folder.trim();
-        folderSource = "daily-notes-config";
-      }
-      if (!hasRuntimeTemplate && typeof parsed?.template === "string" && parsed.template.trim()) {
-        template = parsed.template.trim();
-        templateSource = "daily-notes-config";
-      }
-    } catch (error) {
-      logger.flow("DailyNote", "settings:config-read-failed", { error: logger.errorSummary(error) });
-      // Daily Notes may not have a persisted config yet.
     }
 
     const resolved: CoreDailyNoteSettings = {
@@ -8745,6 +8792,12 @@ export default class TPSHealthPlugin extends Plugin {
       ...templateFormats,
     });
     return { ...resolved, template, ...templateFormats };
+  }
+
+  private coreDailyNoteOptions(): { format?: unknown; folder?: unknown; template?: unknown } | null {
+    const dailyNotesPlugin = (this.app as any).internalPlugins?.getPluginById?.("daily-notes")
+      || (this.app as any).internalPlugins?.plugins?.["daily-notes"];
+    return dailyNotesPlugin?.enabled === false ? null : dailyNotesPlugin?.instance?.options ?? null;
   }
 
   private async getCoreTemplateFormats(): Promise<{ templateDateFormat: string; templateTimeFormat: string }> {
@@ -9422,7 +9475,7 @@ export default class TPSHealthPlugin extends Plugin {
     else if (action === "recipe") new CustomFoodModal(this.app, this, "recipe", "", true, undefined, context).open();
     else { const setting = (this.app as any).setting; setting?.open(); setting?.openTabById(this.manifest.id); }
   }
-  mountDashboardDay(container: HTMLElement, date: string, onRendered: () => void): MarkdownRenderChild {
+  mountDashboardDay(container: HTMLElement, date: string, onRendered: (indexing: boolean) => void): MarkdownRenderChild {
     return new TPSHealthNativeDailyDashboardChild(container, this, this.dashboardDateContext(date), "overview",
       { macroStyle: this.settings.macroBlockStyle, foodList: "expanded", nutrientRows: "expanded" },
       "foods: expanded\nnutrients: expanded", { dates: healthWeekDates(date), onRendered });
@@ -12755,7 +12808,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     private section: NativeDailyDashboardSection,
     private display: NativeDailyDisplayOptions,
     private displaySource: string = "",
-    private dashboard?: { dates: string[]; onRendered(): void },
+    private dashboard?: { dates: string[]; onRendered(indexing: boolean): void },
   ) {
     super(containerEl);
   }
@@ -12783,6 +12836,8 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       scheduleRefresh();
     });
     if (unsubscribe) this.register(unsubscribe);
+    const unsubscribeStatus = this.plugin.nativeRecordService?.onDailyIndexStatusChanged(scheduleRefresh);
+    if (unsubscribeStatus) this.register(unsubscribeStatus);
     if (this.section !== "macros") {
       this.register(this.plugin.onActiveWorkoutStateChanged(scheduleRefresh));
     }
@@ -12804,8 +12859,15 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     });
     if (parsed.kind === "valid") this.display = parsed.options;
     try {
+      const indexStatus = this.plugin.nativeRecordService?.getDailyIndexStatus() ?? "ready";
+      if (indexStatus === "loading") {
+        this.syncActiveWorkoutTimer(null);
+        renderNativeDailyDashboardMessage(this.containerEl, "Loading saved Health records…");
+        return;
+      }
       const activeWorkout = this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
+        indexing: indexStatus === "partial",
         expandedActivity: Boolean(this.dashboard),
         disclosures: this.disclosures,
         components: (container, entry) => renderNativeDailyComponents(container, this.plugin, entry, this.disclosures),
@@ -12825,6 +12887,13 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         editActivityEntry: (entry) => this.plugin.openNativeActivityEntryEditor(entry),
         removeActivityEntry: (entry) => void this.plugin.removeNativeDailyEntry(entry),
       };
+      const showIndexing = () => {
+        if (actions.indexing) this.containerEl.createDiv({
+          cls: "tps-health-native-daily-index-status",
+          text: "Indexing remaining notes; totals may change.",
+          attr: { role: "status" },
+        });
+      };
       if (this.section === "activity") {
         const activityTotals = this.plugin.nativeRecordService?.getDailyActivityTotals(this.dateContext.dateIso) ?? {
           dateIso: this.dateContext.dateIso,
@@ -12839,11 +12908,19 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
           this.plugin.nativeRecordService?.getDailyActivityEntries(this.dateContext.dateIso) ?? [],
           actions,
         );
+        showIndexing();
         this.syncActiveWorkoutTimer(activeWorkout);
         return;
       }
       const totals = await this.plugin.getDailyFoodMacroTotals(this.dateContext.dateIso);
       if (generation !== this.renderGeneration) return;
+      const currentStatus = this.plugin.nativeRecordService?.getDailyIndexStatus() ?? "ready";
+      if (currentStatus === "loading") {
+        this.syncActiveWorkoutTimer(null);
+        renderNativeDailyDashboardMessage(this.containerEl, "Loading saved Health records…");
+        return;
+      }
+      actions.indexing = currentStatus === "partial";
       const model = buildNativeDailyDashboardModel(
         totals,
         this.plugin.getMetricRenderConfigs(),
@@ -12854,6 +12931,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       const foodEntries = this.plugin.nativeRecordService?.getDailyFoodEntries(this.dateContext.dateIso) ?? [];
       if (this.section === "macros") {
         renderNativeDailyMacros(this.containerEl, model, foodEntries, this.display, actions);
+        showIndexing();
         this.syncActiveWorkoutTimer(null);
         return;
       }
@@ -12866,8 +12944,9 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         actions,
         this.section === "overview" ? dailyEnergyEstimate(this.plugin.settings, totals) : undefined,
       );
+      showIndexing();
       this.syncActiveWorkoutTimer(activeWorkout);
-      this.dashboard?.onRendered();
+      this.dashboard?.onRendered(currentStatus === "partial");
     } catch (error) {
       if (generation !== this.renderGeneration) return;
       logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateContext.dateIso });
@@ -12891,6 +12970,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 }
 
 interface NativeDailyDashboardActions {
+  indexing?: boolean;
   expandedActivity?: boolean;
   disclosures: Map<string, boolean>;
   components(container: HTMLElement, entry: NativeDailyFoodEntrySnapshot): void;
@@ -12964,11 +13044,11 @@ function renderNativeDailyMacrosBlock(
   heading.createSpan({ cls: "tps-health-native-daily-title", text: "Macros" });
   heading.createSpan({
     cls: "tps-health-native-daily-summary",
-    text: model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
+    text: actions.indexing && !model.entryCount ? "Checking food records" : model.entryCount === 1 ? "1 food entry" : `${model.entryCount} food entries`,
   });
   if (display.showCalories !== false) header.createSpan({
     cls: "tps-health-native-daily-calories",
-    text: `${formatNativeDailyMacroValue(model.calories)} kcal`,
+    text: actions.indexing && !model.entryCount ? "— kcal" : `${formatNativeDailyMacroValue(model.calories)} kcal`,
   });
 
   const actionBar = header.createDiv({
@@ -12992,19 +13072,21 @@ function renderNativeDailyMacrosBlock(
     });
   }
 
-  const groups = splitNativeDailyMetrics(model.metrics);
-  if (display.macroStyle === "rings") {
-    renderNativeDailyMetricRings(root, groups.primary, foodEntries, actions);
-  } else {
-    renderNativeDailyMetrics(root, groups.primary, "Daily macro totals", foodEntries, actions);
+  if (!actions.indexing || model.entryCount) {
+    const groups = splitNativeDailyMetrics(model.metrics);
+    if (display.macroStyle === "rings") {
+      renderNativeDailyMetricRings(root, groups.primary, foodEntries, actions);
+    } else {
+      renderNativeDailyMetrics(root, groups.primary, "Daily macro totals", foodEntries, actions);
+    }
+    if (groups.other.length && display.nutrientRows !== "hidden") {
+      const nutrients = root.createEl("details", { cls: "tps-health-native-daily-nutrients" });
+      rememberDailyDisclosure(nutrients, "nutrients", actions.disclosures, display.nutrientRows === "expanded");
+      nutrients.createEl("summary", { text: "Nutrients" });
+      renderNativeDailyMetrics(nutrients, groups.other, "Other tracked nutrients", foodEntries, actions);
+    }
   }
-  if (groups.other.length && display.nutrientRows !== "hidden") {
-    const nutrients = root.createEl("details", { cls: "tps-health-native-daily-nutrients" });
-    rememberDailyDisclosure(nutrients, "nutrients", actions.disclosures, display.nutrientRows === "expanded");
-    nutrients.createEl("summary", { text: "Nutrients" });
-    renderNativeDailyMetrics(nutrients, groups.other, "Other tracked nutrients", foodEntries, actions);
-  }
-  if (!model.entryCount) root.createDiv({ cls: "tps-health-native-daily-empty", text: "No food logged yet." });
+  if (!model.entryCount) root.createDiv({ cls: "tps-health-native-daily-empty", text: actions.indexing ? "Checking remaining notes for food entries." : "No food logged yet." });
   if (model.entryCount) {
     renderNativeDailyFoodEntries(root, foodEntries, display.foodList === "expanded", actions, reviewFoodButton);
   }
@@ -13233,11 +13315,11 @@ function renderNativeDailyActivityBlock(
   activityHeading.createSpan({ cls: "tps-health-native-daily-title", text: "Activity" });
   activityHeading.createSpan({
     cls: "tps-health-native-daily-summary",
-    text: model.entryCount === 1 ? "1 activity" : `${model.entryCount} activities`,
+    text: actions.indexing && !model.entryCount ? "Checking activity records" : model.entryCount === 1 ? "1 activity" : `${model.entryCount} activities`,
   });
   activityHeader.createSpan({
     cls: "tps-health-native-daily-calories",
-    text: `${formatNativeDailyMetricValue(model.durationMinutes)} min`,
+    text: actions.indexing && !model.entryCount ? "— min" : `${formatNativeDailyMetricValue(model.durationMinutes)} min`,
   });
   const activityActions = activityHeader.createDiv({
     cls: "tps-health-native-daily-actions",
@@ -13288,7 +13370,7 @@ function renderNativeDailyActivityBlock(
     activity.createDiv({ cls: "tps-health-dashboard-activity-facts", text: `${formatNativeDailyMetricValue(model.steps)} logged steps · ${formatNativeDailyMetricValue(model.caloriesBurned)} logged activity kcal` });
   }
   if (!model.entryCount) {
-    activity.createDiv({ cls: "tps-health-native-daily-empty", text: "No activity logged for this day yet." });
+    activity.createDiv({ cls: "tps-health-native-daily-empty", text: actions.indexing ? "Checking remaining notes for activity entries." : "No activity logged for this day yet." });
   } else {
     renderNativeDailyMetrics(activity, model.metrics, "Daily activity totals");
     renderNativeDailyActivityEntries(activity, entries, actions, reviewActivityButton);

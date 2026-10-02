@@ -315,6 +315,57 @@ function addProviderFood(h, path = 'Inbox/provider-food.md') {
   });
 }
 
+test('daily index signals an empty day only after provider and metadata are ready', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: false });
+  let available = false;
+  h.plugin.getGcmNativeRecordsApi = () => available ? h.api : null;
+  h.service.setup();
+  const statuses = [];
+  h.service.onDailyIndexStatusChanged(() => statuses.push(h.service.getDailyIndexStatus()));
+  assert.equal(h.service.getDailyIndexStatus(), 'loading');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
+  available = true;
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyIndexStatus(), 'loading', 'provider alone does not prove cache readiness');
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyIndexStatus(), 'ready');
+  assert.deepEqual(statuses, ['ready'], 'an empty day still wakes its mounted block');
+  h.emitMetadata('resolved');
+  assert.deepEqual(statuses, ['ready'], 'repeat resolution does not cause redundant renders');
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.deepEqual(statuses, ['ready'], 'a ready-to-ready provider refresh does not rerender an empty day');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
+test('known food stays visible while 256 unrelated metadata paths remain unavailable', () => {
+  const h = createHarness({ deferSetup: true, metadataInitialized: true });
+  const food = addProviderFood(h);
+  for (let index = 0; index < 256; index++) h.addLegacyFile(`Inbox/pending-${index}.md`, 'Ordinary note.');
+  const getCache = h.plugin.app.metadataCache.getFileCache;
+  let scans = 0;
+  const getMarkdownFiles = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return getMarkdownFiles(); };
+  h.plugin.app.metadataCache.getFileCache = file => file === food ? getCache(file) : null;
+  h.service.setup();
+  assert.equal(h.service.getDailyIndexStatus(), 'partial');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  const statuses = [];
+  h.service.onDailyIndexStatusChanged(() => statuses.push(h.service.getDailyIndexStatus()));
+  for (let index = 0; index < 50; index++) h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyIndexStatus(), 'partial');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 210);
+  assert.equal(scans, 1, 'repeated resolution checks pending files without another vault scan');
+  assert.deepEqual(statuses, [], 'unchanged partial readiness does not rerender the block');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
 test('staggered metadata readiness indexes pending food without repeated vault scans', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const food = addProviderFood(h);
@@ -1526,6 +1577,128 @@ test('editing consumed time moves an older food record out of its redundant lega
   assert.equal(h.service.getDailyFoodTotals('2026-09-29').entryCount, 0);
   assert.equal(h.service.getDailyFoodTotals('2026-09-28').calories, 210);
   assert.deepEqual(changes.at(-1).dates.sort(), ['2026-09-28', '2026-09-29']);
+  h.service.dispose();
+});
+
+test('daily queries stay date-scoped across ten years of records and current mutations', async () => {
+  const h = createHarness({ deferSetup: true });
+  for (let index = 0; index < 10_050; index++) {
+    const historicalDay = new Date(Date.UTC(2018, 0, 1 + index % 3650)).toISOString().slice(0, 10);
+    const activity = index % 2 === 0;
+    h.addFrontmatterFile(`Inbox/history-${index}.md`, activity ? {
+      tpsId: `history-activity-${index}`, tpsSchemaVersion: 1, kind: 'activity-entry',
+      title: `Activity ${index}`, completedDate: `${historicalDay}T12:00:00`, durationMinutes: 10,
+    } : {
+      tpsId: `history-food-${index}`, tpsSchemaVersion: 1, kind: 'food-entry',
+      title: `Food ${index}`, completedDate: `${historicalDay}T12:00:00`, calories: 100,
+      quantity: 1, unit: 'serving',
+    });
+  }
+  const first = h.addFrontmatterFile('Inbox/current-a.md', {
+    tpsId: 'current-a', tpsSchemaVersion: 1, kind: 'food-entry', title: 'A food',
+    completedDate: '2032-01-03T12:00:00', calories: 100, quantity: 1, unit: 'serving',
+  });
+  const second = h.addFrontmatterFile('Inbox/current-b.md', {
+    tpsId: 'current-b', tpsSchemaVersion: 1, kind: 'food-entry', title: 'B food',
+    completedDate: '2032-01-03T12:00:00', calories: 200, quantity: 1, unit: 'serving',
+  });
+  const movement = h.addFrontmatterFile('Inbox/current-activity.md', {
+    tpsId: 'current-activity', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
+    completedDate: '2032-01-03T13:00:00', durationMinutes: 30,
+  });
+  const workout = h.addFrontmatterFile('Inbox/current-workout.md', {
+    tpsId: 'current-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
+    scheduled: '2032-01-03T14:00:00', timeEstimate: 20, status: 'complete',
+  });
+  h.service.setup();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  h.readCalls.length = h.cachedReadCalls.length = 0;
+  let lookups = 0, fullKindReads = 0;
+  const originalGet = h.service.recordsByPath.get;
+  const originalKindRecords = h.service.getKindRecords;
+  h.service.recordsByPath.get = function (path) { lookups++; return originalGet.call(this, path); };
+  h.service.getKindRecords = function (kind) { fullKindReads++; return originalKindRecords.call(this, kind); };
+  for (let day = 1; day <= 7; day++) {
+    const date = `2032-01-0${day}`;
+    const target = day === 3;
+    assert.equal(h.service.getDailyFoodTotals(date).calories, target ? 300 : 0);
+    assert.deepEqual(h.service.getDailyFoodEntries(date).map(entry => entry.id), target ? ['current-a', 'current-b'] : []);
+    assert.equal(h.service.getDailyActivityTotals(date).durationMinutes, target ? 50 : 0);
+    assert.deepEqual(h.service.getDailyActivityEntries(date).map(entry => entry.id), target ? ['current-activity', 'current-workout'] : []);
+  }
+  assert.equal(fullKindReads, 0, 'seven-day reads never materialize every record of a kind');
+  assert.equal(lookups, 26, 'seven-day reads inspect only the four records indexed to the selected week');
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  const firstEntry = h.service.getDailyFoodEntries('2032-01-03').find(entry => entry.id === 'current-a');
+  await h.service.updateDailyFoodEntry(first, { ...firstEntry, completedDate: '2032-01-04T12:00:00' });
+  assert.equal(h.service.getDailyFoodTotals('2032-01-03').calories, 200);
+  assert.equal(h.service.getDailyFoodTotals('2032-01-04').calories, 100);
+  assert.equal(h.service.pathsByDate.get('2032-01-03').has(first.path), false);
+  assert.deepEqual(changes.at(-1).dates, ['2032-01-03', '2032-01-04']);
+  const activityEntry = h.service.getDailyActivityEntries('2032-01-03').find(entry => entry.id === 'current-activity');
+  await h.service.updateDailyActivityEntry(movement, { ...activityEntry, completedDate: '2032-01-04T13:00:00' });
+  assert.equal(h.service.getDailyActivityTotals('2032-01-03').durationMinutes, 20);
+  assert.equal(h.service.getDailyActivityTotals('2032-01-04').durationMinutes, 30);
+  const nextWorkout = { ...h.frontmatters.get(workout), scheduled: '2032-01-04T14:00:00' };
+  h.frontmatters.set(workout, nextWorkout);
+  h.emitMetadata('changed', workout, undefined, { frontmatter: nextWorkout });
+  assert.equal(h.service.getDailyActivityTotals('2032-01-03').durationMinutes, 0);
+  assert.equal(h.service.getDailyActivityTotals('2032-01-04').durationMinutes, 50);
+  await h.service.archiveDailyEntry(first, 'food-entry');
+  assert.equal(h.service.getDailyFoodTotals('2032-01-04').entryCount, 0);
+  assert.equal(h.service.pathsByDate.get('2032-01-04').has(first.path), false);
+
+  const oldPath = second.path;
+  const renamed = await h.api.rename(second, 'current-b-renamed');
+  h.contents.set(renamed.path, h.contents.get(oldPath));
+  h.contents.delete(oldPath);
+  h.emitVault('rename', second, oldPath);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.service.getDailyFoodEntries('2032-01-03')[0].path, renamed.path);
+  assert.equal(h.service.pathsByDate.get('2032-01-03').has(oldPath), false,
+    'renaming removes the old path even though Obsidian has already mutated its TFile');
+  const currentCache = h.plugin.app.metadataCache.getFileCache;
+  h.plugin.app.metadataCache.getFileCache = file => file === second ? null : currentCache(file);
+  h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
+  h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+  assert.equal(h.service.getDailyFoodTotals('2032-01-03').calories, 200,
+    'a provider rebuild preserves a record whose metadata is temporarily unavailable');
+  h.plugin.app.metadataCache.getFileCache = currentCache;
+  h.emitMetadata('resolved');
+  assert.equal(h.service.getDailyFoodTotals('2032-01-03').calories, 200);
+  h.files.delete(second.path);
+  h.emitVault('delete', second);
+  assert.equal(h.service.getDailyFoodTotals('2032-01-03').entryCount, 0);
+  assert.equal(h.service.pathsByDate.has('2032-01-03'), false, 'deleted paths leave no empty date bucket');
+  h.service.dispose();
+});
+
+test('date buckets retain the distinct activity totals and entry date rules', () => {
+  const h = createHarness();
+  const activity = h.addFrontmatterFile('Inbox/activity-dates.md', {
+    tpsId: 'activity-dates', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
+    workoutDate: '2032-01-03', completedDate: '2032-01-04T12:00:00', durationMinutes: 10,
+  });
+  const workout = h.addFrontmatterFile('Inbox/workout-dates.md', {
+    tpsId: 'workout-dates', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
+    scheduled: '2032-01-03T10:00:00', completedDate: '2032-01-04T10:30:00',
+    timeEstimate: 30, status: 'complete',
+  });
+  const changes = [];
+  h.service.onRecordsChanged(change => changes.push(change));
+  h.service.indexFile(activity, h.frontmatters.get(activity));
+  h.service.indexFile(workout, h.frontmatters.get(workout));
+  assert.equal(h.service.getDailyActivityTotals('2032-01-03').durationMinutes, 30);
+  assert.equal(h.service.getDailyActivityTotals('2032-01-04').durationMinutes, 10);
+  assert.deepEqual(h.service.getDailyActivityEntries('2032-01-03').map(entry => entry.id), ['activity-dates']);
+  assert.deepEqual(h.service.getDailyActivityEntries('2032-01-04').map(entry => entry.id), ['workout-dates']);
+  assert.deepEqual(changes.map(change => change.dates), [
+    ['2032-01-04', '2032-01-03'], ['2032-01-03', '2032-01-04'],
+  ], 'both dates that a dashboard can read receive invalidation');
   h.service.dispose();
 });
 
@@ -3068,6 +3241,7 @@ test('warm setup indexes and hydrates once even when onLayoutReady calls synchro
     assert.equal(scans, 1);
     assert.deepEqual(h.cachedReadCalls, [workout.path]);
     assert.equal(h.service.isWorkoutIndexSettled(), true, 'complete public caches still support warm mobile loading');
+    assert.equal(h.service.getDailyIndexStatus(), 'ready', 'the same public coverage unblocks daily blocks without another resolved event');
     h.service.refreshConfiguration();
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(scans, 2, 'explicit settings refresh retains its full rebuild');
@@ -3183,6 +3357,67 @@ test('fresh-create errors never fall through to a second food write',async()=>{
  const entry=freshFoodEntry();
  await assert.rejects(h.service.createFoodEntry(entry),/Storage unavailable/);
  assert.equal(calls,1);assert.equal(h.createCalls.length,0);assert.equal(entry.id,'uncommitted-food-id');
+});
+
+test('new activity uses one fresh GCM identity without a cold vault scan', async () => {
+  const h = createHarness();
+  for (let index = 0; index < 10_000; index++) h.addLegacyFile(`Inbox/unrelated-${index}.md`, 'Body');
+  const create = h.api.create;
+  let coldScans = 0, freshCalls = 0;
+  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.create = async () => { coldScans++; h.plugin.app.vault.getMarkdownFiles(); throw Error('Scanning create must not run'); };
+  h.api.createFresh = async function (kind, properties, options) {
+    freshCalls++;
+    assert.equal(this, h.api);
+    assert.equal(Object.hasOwn(options, 'id'), false);
+    assert.equal(options.cause.surface, 'health-activity-log');
+    return create.call(this, kind, properties, { ...options, id: 'persisted-activity-id' });
+  };
+  const entry = {
+    id: 'uncommitted-activity-id', activity: 'Walk', activityType: 'walking',
+    startedAt: '2026-09-29T12:00:00', completedDate: '2026-09-29T12:30:00',
+    durationMinutes: 30, source: 'manual',
+  };
+  const record = await h.service.createActivityEntry(entry);
+  assert.equal(freshCalls, 1);
+  assert.equal(coldScans, 0);
+  assert.equal(record.id, 'persisted-activity-id');
+  assert.equal(entry.id, record.id, 'the activity returned to callers uses the persisted identity');
+  assert.equal(h.service.getDailyActivityTotals('2026-09-29').durationMinutes, 30);
+  assert.deepEqual(h.readCalls, []);
+  assert.deepEqual(h.cachedReadCalls, []);
+  h.service.dispose();
+});
+
+test('activity creation keeps the supplied ID without a complete fresh contract and does not retry failures', async () => {
+  for (const capability of [false, true]) {
+    const h = createHarness();
+    h.api.capabilities = { freshIdentityCreates: capability };
+    const entry = {
+      id: 'legacy-activity-id', activity: 'Walk', activityType: 'walking',
+      startedAt: '2026-09-29T12:00:00', completedDate: '2026-09-29T12:30:00',
+      durationMinutes: 30, source: 'manual',
+    };
+    const record = await h.service.createActivityEntry(entry);
+    assert.equal(record.id, entry.id);
+    assert.equal(h.createCalls.length, 1);
+    assert.equal(h.createCalls[0].options.id, entry.id);
+    h.service.dispose();
+  }
+  const h = createHarness();
+  let freshCalls = 0;
+  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.createFresh = async () => { freshCalls++; throw Error('Storage unavailable'); };
+  const entry = {
+    id: 'uncommitted-activity-id', activity: 'Walk', activityType: 'walking',
+    startedAt: '2026-09-29T12:00:00', completedDate: '2026-09-29T12:30:00',
+    durationMinutes: 30, source: 'manual',
+  };
+  await assert.rejects(h.service.createActivityEntry(entry), /Storage unavailable/);
+  assert.equal(freshCalls, 1);
+  assert.equal(h.createCalls.length, 0);
+  assert.equal(entry.id, 'uncommitted-activity-id');
+  h.service.dispose();
 });
 
 

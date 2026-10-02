@@ -5283,9 +5283,18 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
   .tps-health-dashboard-view { padding: 12px; }
   .tps-health-dashboard-dates { width: 100%; }
   .tps-health-dashboard-dates input { min-width: 0; flex: 1; font-size: 16px; }
-  .tps-health-dashboard-actions button { flex: 1 1 120px; }
+  .tps-health-dashboard-actions { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 6px; scroll-snap-type: x proximity; }
+  .tps-health-dashboard-actions button { flex: 0 0 auto; scroll-snap-align: start; }
   .tps-health-dashboard-week { padding: 10px; }
-  .tps-health-dashboard-table :is(th, td) { padding: 6px 3px; font-size: var(--font-ui-smaller); }
+  .tps-health-dashboard-table { overflow: visible; }
+  .tps-health-dashboard-table :is(table, tbody) { display: block; }
+  .tps-health-dashboard-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+  .tps-health-dashboard-table tbody { display: grid; gap: 8px; }
+  .tps-health-dashboard-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); }
+  .tps-health-dashboard-table tbody th { grid-column: 1 / -1; border: 0; padding: 0 0 4px; }
+  .tps-health-dashboard-table tbody th button { width: 100%; text-align: left; }
+  .tps-health-dashboard-table tbody td { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; border: 0; padding: 2px 0; text-align: left; overflow-wrap: anywhere; }
+  .tps-health-dashboard-table tbody td::before { content: attr(data-label); color: var(--text-muted); font-size: var(--font-ui-smaller); }
 }
 .tps-health-dashboard-view .tps-health-native-daily button { min-height: 44px; height: auto; }
 .tps-health-dashboard-view .tps-health-native-daily :is(.tps-health-native-daily-action, .tps-health-native-daily-row-action) { min-width: 44px; width: 44px; }

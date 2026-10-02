@@ -73,6 +73,7 @@ interface IndexedHealthRecord {
   frontmatter: Record<string, unknown>;
   id: string;
   kind: NativeHealthKind;
+  dailyDates: string[];
 }
 
 export interface NativeWorkoutSetSnapshot {
@@ -851,6 +852,24 @@ const dateKey = (value: unknown): string => {
   return raw ? isoDateKey(raw) : '';
 };
 
+function indexedDailyDates(kind: NativeHealthKind, frontmatter: Record<string, unknown>, settings: TPSHealthSettings): string[] {
+  const fm = frontmatter;
+  if (kind === 'food-entry') return [dateKey(fm.completedDate || fm.date)].filter(Boolean);
+  if (kind === 'activity-entry') return [...new Set([
+    dateKey(fm.date || fm.completedDate),
+    dateKey(fm.date || fm.workoutDate || fm.completedDate || fm.startedAt || fm.endedAt),
+  ].filter(Boolean))];
+  if (kind === 'workout-session') {
+    const startedAt = workoutStartedAt(fm, settings);
+    const endedAt = workoutEndedAt(fm, settings);
+    return [...new Set([
+      dateKey(fm.date || fm.workoutDate || startedAt || endedAt),
+      dateKey(fm.date || fm.workoutDate || fm.completedDate || startedAt || endedAt),
+    ].filter(Boolean))];
+  }
+  return [dateKey(fm.date || fm.workoutDate || fm.completedDate || fm.startedAt || fm.endedAt)].filter(Boolean);
+}
+
 function wikilinkPath(value: unknown): string {
   const raw = String(value || '').trim();
   const match = raw.match(/^\[\[([^\]|#^]+)(?:[|#^][^\]]*)?\]\]$/u);
@@ -952,15 +971,18 @@ export class HealthNativeRecordService {
   readonly version = TPS_HEALTH_NATIVE_RECORDS_VERSION;
   private readonly recordsByPath = new Map<string, IndexedHealthRecord>();
   private readonly pathsByKind = new Map<NativeHealthKind, Set<string>>();
+  private readonly pathsByDate = new Map<string, Set<string>>();
   private readonly entryPathsByFoodPath = new Map<string, Set<string>>();
   private readonly foodDefinitionsByPath = new Map<string, Record<string, unknown>>();
   private readonly workoutDataByPath = new Map<string, StoredWorkoutExercise[]>();
   private readonly changeListeners = new Set<(change: NativeHealthRecordChange) => void>();
+  private readonly dailyIndexStatusListeners = new Set<() => void>();
   private readonly refreshGenerations = new Map<string, symbol>();
   private readonly foodProjectionTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
   private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
+  private metadataResolved = false;
   private readonly pendingMetadataPaths = new Map<string, TFile>();
   private indexedProvider: NativeRecordsApi | null = null;
   private indexedProviderConfiguration = '';
@@ -976,6 +998,7 @@ export class HealthNativeRecordService {
     // Metadata can already be settled before layout. Only body hydration waits
     // for the workspace; the metadata-ready owner schedules that work once.
     this.workoutIndexReady = metadataInitialized;
+    this.metadataResolved = metadataInitialized;
     this.plugin.registerEvent(this.plugin.app.workspace.on('tps:gcm-api-changed' as any, (payload: unknown) => {
       const event = payload as { source?: string; available?: boolean } | null;
       if (this.disposed || event?.source !== 'tps-global-context-menu') return;
@@ -983,10 +1006,14 @@ export class HealthNativeRecordService {
       if (api === this.indexedProvider && (!api
         || this.providerConfiguration(api) === this.indexedProviderConfiguration)) return;
       // A provider reload invalidates old reads, not the accepted food data.
+      const previousStatus = this.getDailyIndexStatus();
       this.refreshGenerations.clear();
       this.indexedProvider = null;
-      if (api) this.refreshConfiguration();
-      else this.plugin.scheduleWorkoutActionBars();
+      if (api) this.refreshConfiguration(previousStatus);
+      else {
+        this.plugin.scheduleWorkoutActionBars();
+        this.notifyDailyIndexStatusChanged(previousStatus);
+      }
     }));
     this.rebuild();
     if (this.workoutIndexReady) this.hydrateWorkoutBodiesAfterLayout();
@@ -1000,6 +1027,7 @@ export class HealthNativeRecordService {
       if (vault.getAbstractFileByPath(file.path) !== file) return;
       // An event without either source or cache has not established removal.
       if (!cache && typeof data !== 'string') return;
+      const previousStatus = this.getDailyIndexStatus();
       const hadPendingRead = this.refreshGenerations.delete(file.path);
       const wasPending = this.pendingMetadataPaths.delete(file.path);
       let frontmatter: Record<string, unknown> | null = cache?.frontmatter ?? null;
@@ -1021,9 +1049,12 @@ export class HealthNativeRecordService {
         && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
         this.hydrateWorkoutBodiesAfterLayout([file]);
       }
+      this.notifyDailyIndexStatusChanged(previousStatus);
       if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.registerEvent(metadataCache.on('resolved', () => {
+      const previousStatus = this.getDailyIndexStatus();
+      this.metadataResolved = true;
       // The first cold resolution discovers files added during startup. Later
       // resolutions inspect only paths whose cache was absent in that scan.
       if (!this.workoutIndexReady) {
@@ -1033,6 +1064,7 @@ export class HealthNativeRecordService {
       } else if (this.pendingMetadataPaths.size > 0) {
         this.reconcilePendingMetadata();
       }
+      this.notifyDailyIndexStatusChanged(previousStatus);
       this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.registerEvent(vault.on('create', (file) => {
@@ -1056,6 +1088,7 @@ export class HealthNativeRecordService {
         // file that has since appeared at the same path.
         const current = vault.getAbstractFileByPath(file.path);
         if (current instanceof TFile && current !== file) return;
+        const previousStatus = this.getDailyIndexStatus();
         this.pendingMetadataPaths.delete(file.path);
         const hadPendingRead = this.refreshGenerations.delete(file.path);
         const deleted = this.recordsByPath.get(file.path);
@@ -1065,6 +1098,7 @@ export class HealthNativeRecordService {
         this.foodDefinitionsByPath.delete(file.path);
         this.workoutDataByPath.delete(file.path);
         this.removePath(file.path);
+        this.notifyDailyIndexStatusChanged(previousStatus);
         if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
         if (legacyChildren.length) void this.trashLegacyWorkoutChildren(deleted!, legacyChildren, 'health-workout-delete');
       }
@@ -1073,6 +1107,7 @@ export class HealthNativeRecordService {
       // A stale rename must not move a different file now occupying oldPath.
       const current = vault.getAbstractFileByPath(oldPath);
       if (current instanceof TFile && current !== file) return;
+      const previousStatus = this.getDailyIndexStatus();
       const wasPending = this.pendingMetadataPaths.delete(oldPath);
       if (wasPending && file instanceof TFile) this.pendingMetadataPaths.set(file.path, file);
       this.refreshGenerations.delete(oldPath);
@@ -1083,6 +1118,7 @@ export class HealthNativeRecordService {
       this.workoutDataByPath.delete(oldPath);
       if (workoutData && file instanceof TFile) this.workoutDataByPath.set(file.path, workoutData);
       this.removePath(oldPath);
+      this.notifyDailyIndexStatusChanged(previousStatus);
       // Obsidian does not emit metadata changed on rename. Preserve that
       // explicit refresh for Health files without reading unrelated notes.
       if (file instanceof TFile && wasHealthSource) void this.refreshFile(file);
@@ -1091,6 +1127,24 @@ export class HealthNativeRecordService {
 
   isEnabled(): boolean {
     return this.plugin.settings.storageMode === 'native-records';
+  }
+
+  getDailyIndexStatus(): 'loading' | 'partial' | 'ready' {
+    if (this.disposed) return 'loading';
+    if (!this.metadataResolved || !this.indexedProvider) {
+      return this.recordsByPath.size > 0 ? 'partial' : 'loading';
+    }
+    return this.pendingMetadataPaths.size > 0 ? 'partial' : 'ready';
+  }
+
+  onDailyIndexStatusChanged(listener: () => void): () => void {
+    this.dailyIndexStatusListeners.add(listener);
+    return () => this.dailyIndexStatusListeners.delete(listener);
+  }
+
+  private notifyDailyIndexStatusChanged(previousStatus: 'loading' | 'partial' | 'ready'): void {
+    if (previousStatus === this.getDailyIndexStatus()) return;
+    for (const listener of this.dailyIndexStatusListeners) listener();
   }
 
   async waitForWorkoutIndexSettled(timeoutMs = 3000): Promise<boolean> {
@@ -1118,8 +1172,9 @@ export class HealthNativeRecordService {
     this.foodProjectionGenerations.clear();
   }
 
-  refreshConfiguration(): void {
+  refreshConfiguration(previousStatus = this.getDailyIndexStatus()): void {
     this.rebuild();
+    this.notifyDailyIndexStatusChanged(previousStatus);
     this.hydrateWorkoutBodiesAfterLayout();
     this.plugin.scheduleWorkoutActionBars();
   }
@@ -1279,7 +1334,8 @@ export class HealthNativeRecordService {
       now: new Date(entry.startedAt),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('activity-entry', properties) : undefined,
       cause: { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-activity-log' },
-    });
+    }, true);
+    entry.id = record.id;
     this.trackHandle(record);
     return record;
   }
@@ -1933,7 +1989,7 @@ export class HealthNativeRecordService {
   }
 
   getDailyFoodTotals(dateIso: string): NutritionTotals & { entryCount: number } {
-    const records = this.getKindRecords('food-entry').filter((record) => (
+    const records = this.getKindDateRecords('food-entry', dateIso).filter((record) => (
       record.frontmatter.archived !== true && dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso
     ));
     const totals: NutritionTotals = {
@@ -1948,7 +2004,7 @@ export class HealthNativeRecordService {
   }
 
   getDailyFoodEntries(dateIso: string): NativeDailyFoodEntrySnapshot[] {
-    return this.getFoodEntriesForPaths(this.getKindRecords('food-entry')
+    return this.getFoodEntriesForPaths(this.getKindDateRecords('food-entry', dateIso)
       .filter(record => dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso)
       .map(record => record.file.path))
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
@@ -1982,8 +2038,8 @@ export class HealthNativeRecordService {
   }
 
   getDailyActivityEntries(dateIso: string): NativeDailyActivityEntrySnapshot[] {
-    return this.getKindRecords('activity-entry')
-      .concat(this.getKindRecords('workout-session'))
+    return this.getKindDateRecords('activity-entry', dateIso)
+      .concat(this.getKindDateRecords('workout-session', dateIso))
       .filter((record) => (
         record.frontmatter.archived !== true
         && dateKey(
@@ -2095,10 +2151,10 @@ export class HealthNativeRecordService {
   }
 
   getDailyActivityTotals(dateIso: string): NativeDailyActivityTotals {
-    const activityRecords = this.getKindRecords('activity-entry').filter((record) => (
+    const activityRecords = this.getKindDateRecords('activity-entry', dateIso).filter((record) => (
       record.frontmatter.archived !== true && dateKey(record.frontmatter.date || record.frontmatter.completedDate) === dateIso
     ));
-    const workoutRecords = this.getKindRecords('workout-session').filter((record) => (
+    const workoutRecords = this.getKindDateRecords('workout-session', dateIso).filter((record) => (
       record.frontmatter.archived !== true && dateKey(
         record.frontmatter.date || record.frontmatter.workoutDate
         || workoutStartedAt(record.frontmatter, this.plugin.settings)
@@ -2722,6 +2778,7 @@ export class HealthNativeRecordService {
       frontmatter: session.frontmatter,
       id: session.id,
       kind: 'workout-session' as const,
+      dailyDates: indexedDailyDates('workout-session', session.frontmatter, this.plugin.settings),
     });
     return this.getKindRecords('workout-exercise')
       .filter((record) => record.frontmatter.archived !== true && this.recordBelongsToWorkout(record, resolved));
@@ -2763,6 +2820,10 @@ export class HealthNativeRecordService {
     }
     if (this.plugin.app.workspace?.layoutReady && files.length > 0 && this.pendingMetadataPaths.size === 0) {
       this.workoutIndexReady = true;
+      // On warm mobile loads, public cache coverage can prove the initial
+      // index complete even when `initialized` is absent and `resolved` fired
+      // before Health registered its listener.
+      this.metadataResolved = true;
     }
   }
 
@@ -2851,16 +2912,18 @@ export class HealthNativeRecordService {
     const projected = kind === 'food-entry'
       ? this.projectFoodEntry(rawFrontmatter, file.path)
       : null;
-    const record = {
+    const record: IndexedHealthRecord = {
       file,
       frontmatter: projected?.frontmatter || rawFrontmatter,
       id: recordId,
       kind,
+      dailyDates: indexedDailyDates(kind, projected?.frontmatter || rawFrontmatter, this.plugin.settings),
     };
     this.recordsByPath.set(file.path, record);
     const paths = this.pathsByKind.get(kind) || new Set<string>();
     paths.add(file.path);
     this.pathsByKind.set(kind, paths);
+    this.addDailyPath(record);
     if (kind === 'food-entry') {
       const foodPath = this.resolveFoodSourcePath(foodReference(record.frontmatter), file.path);
       if (foodPath) {
@@ -2890,6 +2953,7 @@ export class HealthNativeRecordService {
     const record = this.recordsByPath.get(path);
     this.recordsByPath.delete(path);
     if (!record) return;
+    this.removeDailyPath(record, path);
     if (record.kind === 'food-entry') {
       const foodPath = this.resolveFoodSourcePath(foodReference(record.frontmatter), record.file.path);
       const entries = foodPath ? this.entryPathsByFoodPath.get(foodPath) : null;
@@ -3007,7 +3071,16 @@ export class HealthNativeRecordService {
       if (!previous || previous.kind !== 'food-entry') continue;
       const projected = this.projectFoodEntry(previous.frontmatter, entryPath);
       if (!projected) continue;
-      const current = { ...previous, frontmatter: projected.frontmatter };
+      const current = {
+        ...previous,
+        frontmatter: projected.frontmatter,
+        dailyDates: indexedDailyDates(previous.kind, projected.frontmatter, this.plugin.settings),
+      };
+      if (previous.dailyDates.join('|') !== current.dailyDates.join('|')
+        || (previous.frontmatter.archived === true) !== (current.frontmatter.archived === true)) {
+        this.removeDailyPath(previous);
+        this.addDailyPath(current);
+      }
       this.recordsByPath.set(entryPath, current);
       this.emitChange(entryPath, previous, current);
       if (projected.needsPersist) this.scheduleFoodEntryProjection(entryPath);
@@ -3063,19 +3136,10 @@ export class HealthNativeRecordService {
 
   private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {
     const kinds = [...new Set([previous?.kind, current?.kind].filter((kind): kind is NativeHealthKind => !!kind))];
-    const recordDate = (record: IndexedHealthRecord): string => dateKey(
-      (record.kind === 'food-entry' && record.frontmatter.completedDate)
-      || record.frontmatter.date
-      || record.frontmatter.workoutDate
-      || record.frontmatter.completedDate
-      || (record.kind === 'workout-session'
-        ? workoutStartedAt(record.frontmatter, this.plugin.settings) || workoutEndedAt(record.frontmatter, this.plugin.settings)
-        : record.frontmatter.startedAt || record.frontmatter.endedAt),
-    );
     const dates = [...new Set([
-      previous && recordDate(previous),
-      current && recordDate(current),
-    ].filter((date): date is string => !!date))];
+      ...(previous?.dailyDates || []),
+      ...(current?.dailyDates || []),
+    ])];
     if (!kinds.length) return;
     if (kinds.includes('workout-session') || kinds.includes('workout-exercise')) {
       this.plugin.scheduleWorkoutActionBars();
@@ -3086,6 +3150,29 @@ export class HealthNativeRecordService {
 
   private getKindRecords(kind: NativeHealthKind): IndexedHealthRecord[] {
     return [...(this.pathsByKind.get(kind) || [])].map((path) => this.recordsByPath.get(path)).filter((record): record is IndexedHealthRecord => !!record);
+  }
+
+  private getKindDateRecords(kind: NativeHealthKind, dateIso: string): IndexedHealthRecord[] {
+    return [...(this.pathsByDate.get(dateIso) || [])]
+      .map((path) => this.recordsByPath.get(path))
+      .filter((record): record is IndexedHealthRecord => !!record && record.kind === kind);
+  }
+
+  private addDailyPath(record: IndexedHealthRecord): void {
+    if (record.frontmatter.archived === true || record.kind === 'workout-exercise') return;
+    for (const date of record.dailyDates) {
+      const paths = this.pathsByDate.get(date) || new Set<string>();
+      paths.add(record.file.path);
+      this.pathsByDate.set(date, paths);
+    }
+  }
+
+  private removeDailyPath(record: IndexedHealthRecord, path = record.file.path): void {
+    for (const date of record.dailyDates) {
+      const paths = this.pathsByDate.get(date);
+      paths?.delete(path);
+      if (paths?.size === 0) this.pathsByDate.delete(date);
+    }
   }
 
   private trackHandle(handle: NativeRecordHandle): void {

@@ -29,11 +29,38 @@ test('week reads only seven indexed days, preserves absent/zero intake, and neve
  assert.equal(week[5].consumedKcal,0);assert.equal(week[5].differenceKcal,-2400);
  assert.equal(week[0].estimatedBurnKcal,2400);assert.equal(week[0].differenceKcal,-400);
 });
-function harness(enabled=true){
+test('week rows retain accessible table headers and expose mobile card labels',async()=>{
+ const h=harness();await h.view.onOpen();
+ const table=h.view.contentEl.all().find(e=>e.tag==='table');
+ assert.deepEqual(table.all().filter(e=>e.tag==='thead').flatMap(e=>e.all()).filter(e=>e.tag==='th').map(e=>e.text),['Day','Intake','Est. burn','Difference','Activity']);
+ const rows=table.all().filter(e=>e.tag==='tbody').flatMap(e=>e.children).filter(e=>e.tag==='tr');
+ assert.equal(rows.length,7);
+ for(const row of rows)assert.deepEqual(row.children.filter(e=>e.tag==='td').map(e=>e.attrs['data-label']),['Intake','Est. burn','Difference','Activity']);
+ const css=readFileSync('styles.css','utf8');
+ assert.match(css,/\.tps-health-dashboard-actions \{ flex-wrap: nowrap; overflow-x: auto;/);
+ assert.match(css,/\.tps-health-dashboard-table tbody tr \{ display: grid;/);
+ assert.match(css,/\.tps-health-dashboard-table tbody td::before \{ content: attr\(data-label\)/);
+ await h.view.onClose();
+});
+function harness(enabled=true,indexing=false,knownFood=false){
  const mounted=[],actions=[];let unloads=0,weekReads=0;
- const view=new HealthDashboardView({}, {dashboardEnabled:()=>enabled,mountDashboardDay(container,date,rendered){const c={date,load(){rendered();},unload(){unloads++;}};mounted.push(c);return c;},dashboardWeek(date){weekReads++;return healthDashboardWeek({getDailyFoodTotals:()=>({entryCount:0,calories:0}),getDailyActivityTotals:()=>({entryCount:0,steps:0,durationMinutes:0})},{energyBmrKcal:null,energyActivityFactor:1.2},date);},dashboardAction:(...args)=>actions.push(args)});
+ const view=new HealthDashboardView({}, {dashboardEnabled:()=>enabled,mountDashboardDay(container,date,rendered){const c={date,load(){rendered(indexing);},unload(){unloads++;}};mounted.push(c);return c;},dashboardWeek(date){weekReads++;return healthDashboardWeek({getDailyFoodTotals:day=>({entryCount:knownFood&&day===date?1:0,calories:210}),getDailyActivityTotals:()=>({entryCount:0,steps:0,durationMinutes:0})},{energyBmrKcal:null,energyActivityFactor:1.2},date);},dashboardAction:(...args)=>actions.push(args)});
  return {view,mounted,actions,counts:()=>({unloads,weekReads})};
 }
+test('partial seven-day comparison displays known intake and never claims a definitive empty week',async()=>{
+ const known=harness(true,true,true);await known.view.onOpen();
+ const knownText=known.view.contentEl.all().map(e=>e.text).join(' ');
+ assert.match(knownText,/Indexing remaining notes; seven-day totals may change/u);
+ assert.match(knownText,/1 of 7 days with known food logs/u);
+ assert.ok(known.view.contentEl.all().some(e=>e.tag==='td'&&e.attrs['data-label']==='Intake'&&e.text==='210'));
+ assert.equal(known.counts().weekReads,1,'partial status mounts the week instead of leaving it blank');
+ await known.view.onClose();
+ const empty=harness(true,true);await empty.view.onOpen();
+ const emptyText=empty.view.contentEl.all().map(e=>e.text).join(' ');
+ assert.match(emptyText,/Checking seven days for food logs/u);
+ assert.doesNotMatch(emptyText,/0 of 7 days with food logs/u);
+ await empty.view.onClose();
+});
 test('date navigation replaces and unloads one day component, restores focus and routes exact action date',async()=>{
  const h=harness();await h.view.onOpen();assert.equal(h.mounted.length,1);
  const date=h.view.contentEl.querySelector('[aria-label="Health date"]');date.value='2026-09-12';date.events.change();

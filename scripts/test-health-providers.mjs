@@ -12195,6 +12195,187 @@ test("Health startup keeps macro blocks without registering a Macros Base or cre
   assert.equal(typeof plugin.openMacrosBase, "undefined");
 });
 
+test("daily macros register at cold startup when core Daily Notes settings are already available", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "/");
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  let configReads = 0;
+  fake.app.vault.adapter.read = () => {
+    configReads += 1;
+    return new Promise(() => {});
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "registerWorkoutTaskCompletionTracking", "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ storageMode: "native-records" });
+  plugin.saveData = async () => {};
+  const blocks = [];
+  plugin.registerMarkdownCodeBlockProcessor = language => blocks.push(language);
+  let timeout;
+  try {
+    await Promise.race([
+      plugin.onload(),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("startup waited for a redundant Daily Notes disk read")), 500); }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+  assert.ok(blocks.includes("tps-health-macros"));
+  assert.equal(configReads, 0);
+});
+
+test("daily macros register before a stalled first Daily Notes config read and mount when it finishes", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.files.set("Daily/2026-10-02.md", "# Saved Daily Note\n");
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  let finishRead;
+  let configReads = 0;
+  fake.app.vault.adapter.read = () => {
+    configReads++;
+    return new Promise(resolve => { finishRead = resolve; });
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "registerWorkoutTaskCompletionTracking", "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ storageMode: "native-records" });
+  plugin.saveData = async () => {};
+  const processors = new Map();
+  plugin.registerMarkdownCodeBlockProcessor = (language, callback) => processors.set(language, callback);
+  let timeout;
+  try {
+    await Promise.race([
+      plugin.onload(),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("first config read blocked plugin readiness")), 500); }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+  assert.equal(configReads, 1);
+  assert.ok(processors.has("tps-health-macros"));
+  assert.equal(plugin.nativeRecordService.isEnabled(), true, "the index is ready before block registration");
+
+  const children = [], messages = [];
+  const el = {
+    empty() {}, addClass() {},
+    createDiv() { return { createDiv({ text }) { messages.push(text); } }; },
+  };
+  const render = processors.get("tps-health-macros")("", el, {
+    sourcePath: "Daily/2026-10-02.md", addChild: child => children.push(child),
+  });
+  assert.deepEqual(messages, ["Loading Daily Notes settings…"]);
+  assert.equal(children.length, 0);
+  finishRead('{"folder":"Daily","format":"YYYY-MM-DD"}');
+  await render;
+  assert.equal(children.length, 1);
+  assert.equal(children[0].dateContext.dateIso, "2026-10-02");
+  assert.equal(configReads, 1, "the pending read is shared with the first block mount");
+});
+
+test("daily macros use changed Core Daily Notes folder and format on the next mount", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.files.set("First/2026-10-02.md", "# Saved Daily Note\n");
+  fake.files.set("Second/2026/10/03.md", "# Saved Daily Note\n");
+  configureFakeCoreDailyNotes(fake.app, "First");
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  let configReads = 0;
+  fake.app.vault.adapter.read = () => { configReads++; throw new Error("no config read expected"); };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "registerWorkoutTaskCompletionTracking", "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ storageMode: "native-records" });
+  plugin.saveData = async () => {};
+  const processors = new Map();
+  plugin.registerMarkdownCodeBlockProcessor = (language, callback) => processors.set(language, callback);
+  await plugin.onload();
+  const mountedDates = [];
+  const el = { empty() {}, addClass() {}, createDiv() { throw Error("a valid Daily Note should mount"); } };
+  const render = path => processors.get("tps-health-macros")("", el, {
+    sourcePath: path, addChild: child => mountedDates.push(child.dateContext.dateIso),
+  });
+  await render("First/2026-10-02.md");
+  const core = fake.app.internalPlugins.getPluginById("daily-notes");
+  core.instance.options = { folder: "Second", format: "YYYY/MM/DD" };
+  await render("Second/2026/10/03.md");
+  assert.deepEqual(mountedDates, ["2026-10-02", "2026-10-03"]);
+  assert.equal(configReads, 0, "mounting uses current runtime options synchronously");
+  plugin.settings.storageMode = "legacy";
+  const disabledMessages = [];
+  const disabledEl = {
+    empty() {}, addClass() {},
+    createDiv() { return { createDiv({ text }) { disabledMessages.push(text); } }; },
+  };
+  await processors.get("tps-health-macros")("", disabledEl, {
+    sourcePath: "Second/2026/10/03.md", addChild: child => mountedDates.push(child.dateContext.dateIso),
+  });
+  assert.deepEqual(mountedDates, ["2026-10-02", "2026-10-03"], "legacy mode does not mount the native child");
+  assert.deepEqual(disabledMessages, ["Enable Native Markdown records in TPS Health to use this section."]);
+});
+
+test("daily macros mount from startup settings without waiting for another mobile config read", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.files.set("2026-10-02.md", "---\ntitle: October 2nd, 2026\n---\n");
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  let configReads = 0;
+  fake.app.vault.adapter.read = () => {
+    configReads += 1;
+    return configReads === 1
+      ? Promise.resolve('{"folder":"/","format":"YYYY-MM-DD"}')
+      : new Promise(() => {});
+  };
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.manifest = { id: "tps-health" };
+  for (const method of ["registerEditorSuggest", "registerMarkdownPostProcessor", "register",
+    "registerWorkoutTaskCompletionTracking", "refreshGcmFoodLogButtonRegistration",
+    "registerGcmFoodLogButtonTapFallback", "registerInlineFoodLogMenuHandler",
+    "scheduleGcmMenuRefresh", "scheduleWorkoutActionBars"]) plugin[method] = () => {};
+  plugin.loadData = async () => ({ storageMode: "native-records" });
+  plugin.saveData = async () => {};
+  const processors = new Map();
+  plugin.registerMarkdownCodeBlockProcessor = (language, callback) => processors.set(language, callback);
+  await plugin.onload();
+  await plugin.dailyNoteSettingsReady;
+
+  const children = [];
+  const messages = [];
+  const el = {
+    empty() {}, addClass() {},
+    createDiv() { return { createDiv({ text }) { messages.push(text); } }; },
+  };
+  const render = processors.get("tps-health-macros")("", el, {
+    sourcePath: "2026-10-02.md",
+    addChild: child => children.push(child),
+  });
+  assert.equal(children.length, 1, `the saved Daily Note should mount before any further disk read: ${messages.join('; ')}`);
+  assert.equal(children[0].dateContext.dateIso, "2026-10-02");
+  assert.equal(configReads, 1, "rendering should reuse the Daily Notes settings loaded at startup");
+  await render;
+});
+
 test('nutrient goal saves persist, refresh presentation and roll back on failure', async () => {
  installDeterministicBrowserGlobals();
  const {default:Plugin}=await importPluginWithObsidianStub();
@@ -12406,7 +12587,7 @@ test('daily dashboard unload invalidates pending successes and errors before det
     let resolve, reject, changed, reads = 0; const cleanup = [];
     const promise = new Promise((ok, fail) => { resolve=ok; reject=fail; });
     const plugin = { settings: {}, app: { workspace: { on:()=>({}) } }, getActiveNativeWorkoutPresentation:()=>null,
-      getDailyFoodMacroTotals:()=>{reads++;return promise;}, nativeRecordService:{onRecordsChanged:fn=>{changed=fn;return ()=>{changed=null;};}}, onActiveWorkoutStateChanged:()=>()=>{} };
+      getDailyFoodMacroTotals:()=>{reads++;return promise;}, nativeRecordService:{getDailyIndexStatus:()=> 'ready', onDailyIndexStatusChanged:()=>()=>{}, onRecordsChanged:fn=>{changed=fn;return ()=>{changed=null;};}}, onActiveWorkoutStateChanged:()=>()=>{} };
     const child = new Child({ empty(){throw Error('Detached render');} },plugin,{dateIso:'2026-09-27'},'overview',{});
     child.register=fn=>cleanup.push(fn);child.registerEvent=()=>{};
     child.onload();assert.equal(reads,1);assert.equal(typeof changed,'function');
@@ -12415,4 +12596,87 @@ test('daily dashboard unload invalidates pending successes and errors before det
     for(let i=0;i<5;i++)await Promise.resolve();
     assert.equal(child.activeWorkoutTimer,null);
   }
+});
+
+test('daily Macros waits for hydration, shows known partial totals, and reveals true zero when settled', async () => {
+  installDeterministicBrowserGlobals();
+  const queued = [];
+  globalThis.window.setTimeout = callback => { queued.push(callback); return queued.length; };
+  globalThis.window.clearTimeout = () => {};
+  const { TPSHealthNativeDailyDashboardChild: Child } = await importPluginWithObsidianStub();
+  const makeEl = (tag = 'div', options = {}) => {
+    const el = {
+      tag, text: options.text || '', children: [], dataset: {}, style: { setProperty() {} },
+      empty() { this.text = ''; this.children = []; },
+      addClass() {}, setAttr() {}, setText(value) { this.text = value; this.children = []; },
+      addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+      createDiv(childOptions) { return this.createEl('div', childOptions); },
+      createSpan(childOptions) { return this.createEl('span', childOptions); },
+      createEl(childTag, childOptions = {}) {
+        const child = makeEl(childTag, childOptions);
+        this.children.push(child);
+        return child;
+      },
+    };
+    return el;
+  };
+  const visibleText = el => [el.text, ...el.children.map(visibleText)].filter(Boolean).join(' ');
+  const container = makeEl();
+  let status = 'loading', changed, statusChanged, reads = 0;
+  let entries = [];
+  let totals = { dateIso: '2026-09-29', entryCount: 0, calories: 0 };
+  const plugin = {
+    settings: { macroBlockStyle: 'table', macroNutrientRows: 'hidden' },
+    app: { workspace: { on: () => ({}) }, vault: { getAbstractFileByPath: () => null } },
+    nativeRecordService: {
+      getDailyIndexStatus: () => status,
+      onDailyIndexStatusChanged: listener => { statusChanged = listener; return () => { statusChanged = null; }; },
+      onRecordsChanged: listener => { changed = listener; return () => { changed = null; }; },
+      getDailyFoodEntries: () => entries,
+    },
+    getActiveNativeWorkoutPresentation: () => null,
+    getMetricRenderConfigs: () => [],
+    getDailyFoodMacroTotals: async () => { reads++; return totals; },
+  };
+  const child = new Child(container, plugin, { dateIso: '2026-09-29' }, 'macros',
+    { macroStyle: 'table', foodList: 'collapsed', nutrientRows: 'hidden' });
+  const cleanup = [];
+  child.register = callback => cleanup.push(callback);
+  child.registerEvent = () => {};
+  const flush = async () => {
+    while (queued.length) {
+      queued.shift()();
+      for (let index = 0; index < 3; index++) await Promise.resolve();
+    }
+  };
+  child.onload();
+  assert.match(visibleText(container), /Loading saved Health records/u);
+  assert.doesNotMatch(visibleText(container), /0 food entries|0 kcal|No food logged yet/u);
+  assert.equal(reads, 0, 'loading never reads an incomplete zero total');
+
+  status = 'partial';
+  entries = [{ id: 'saved-food', path: 'Inbox/provider-food.md', title: 'Synthetic food',
+    calories: 210, quantity: 1, unit: 'serving', proteinG: 12, carbsG: 27, fatG: 6 }];
+  totals = { ...totals, entryCount: 1, calories: 210 };
+  statusChanged();
+  await flush();
+  assert.match(visibleText(container), /1 food entry/u);
+  assert.match(visibleText(container), /210 kcal/u);
+  assert.match(visibleText(container), /Indexing remaining notes; totals may change/u);
+
+  entries = [];
+  totals = { ...totals, entryCount: 0, calories: 0 };
+  changed({ dates: ['2026-09-29'], kinds: ['food-entry'] });
+  await flush();
+  assert.match(visibleText(container), /Checking food records/u);
+  assert.doesNotMatch(visibleText(container), /0 food entries|0 kcal|No food logged yet/u);
+
+  status = 'ready';
+  statusChanged();
+  await flush();
+  assert.match(visibleText(container), /0 food entries/u);
+  assert.match(visibleText(container), /0 kcal/u);
+  assert.match(visibleText(container), /No food logged yet/u);
+  assert.doesNotMatch(visibleText(container), /Indexing remaining notes/u);
+  cleanup.forEach(callback => callback());
 });

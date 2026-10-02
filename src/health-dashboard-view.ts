@@ -32,7 +32,7 @@ export function healthDashboardWeek(index: HealthDashboardIndex, settings: Energ
 }
 export interface HealthDashboardHost {
   dashboardEnabled(): boolean;
-  mountDashboardDay(container: HTMLElement, date: string, onRendered: () => void): Component;
+  mountDashboardDay(container: HTMLElement, date: string, onRendered: (indexing: boolean) => void): Component;
   dashboardWeek(date: string): ReturnType<typeof healthDashboardWeek>;
   dashboardAction(action: "food" | "activity" | "workout" | "recipe" | "settings", date: string): void;
 }
@@ -86,18 +86,21 @@ export class HealthDashboardView extends ItemView {
     } else {
       const daily = root.createDiv({ cls: "tps-health-dashboard-day" });
       const week = root.createEl("section", { cls: "tps-health-dashboard-week", attr: { "aria-label": "Seven-day comparison" } });
-      this.day = this.host.mountDashboardDay(daily, this.dateIso, () => this.renderWeek(week));
+      this.day = this.host.mountDashboardDay(daily, this.dateIso, indexing => this.renderWeek(week, indexing));
       this.addChild(this.day);
     }
     if (focusLabel) root.querySelector<HTMLElement>(`[aria-label="${focusLabel}"]`)?.focus();
   }
 
-  private renderWeek(container: HTMLElement): void {
+  private renderWeek(container: HTMLElement, indexing: boolean): void {
     container.empty();
     const days = this.host.dashboardWeek(this.dateIso);
     container.createEl("h2", { text: "Seven days ending " + this.dateIso });
+    if (indexing) container.createEl("p", { cls: "tps-health-dashboard-index-status", text: "Indexing remaining notes; seven-day totals may change.", attr: { role: "status" } });
     const logged = days.filter(day => day.consumedKcal != null);
-    container.createEl("p", { text: `${logged.length} of 7 days with food logs · ${format(days.reduce((sum, day) => sum + day.activity.durationMinutes, 0))} logged activity minutes · ${format(days.reduce((sum, day) => sum + day.activity.steps, 0))} steps` });
+    container.createEl("p", { text: indexing
+      ? `${logged.length ? `${logged.length} of 7 days with known food logs` : "Checking seven days for food logs"} · Activity totals may change.`
+      : `${logged.length} of 7 days with food logs · ${format(days.reduce((sum, day) => sum + day.activity.durationMinutes, 0))} logged activity minutes · ${format(days.reduce((sum, day) => sum + day.activity.steps, 0))} steps` });
     const wrap = container.createDiv({ cls: "tps-health-dashboard-table" });
     const table = wrap.createEl("table");
     table.createEl("caption", { text: "Logged intake and full-day burn estimates (kcal)" });
@@ -109,8 +112,13 @@ export class HealthDashboardView extends ItemView {
       const cell = row.createEl("th", { attr: { scope: "row" } });
       const select = cell.createEl("button", { text: dashboardDate(day.dateIso)!.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" }), attr: { type: "button", "aria-label": `View ${day.dateIso}`, "aria-current": day.dateIso === this.dateIso ? "date" : "false" } });
       select.addEventListener("click", () => { this.dateIso = day.dateIso; this.showDay("Health date"); });
-      for (const value of [day.consumedKcal == null ? "—" : format(day.consumedKcal), day.estimatedBurnKcal == null ? "—" : format(day.estimatedBurnKcal), day.differenceKcal == null ? "—" : `${day.differenceKcal > 0 ? "+" : ""}${format(day.differenceKcal)}`, day.activity.entryCount ? `${format(day.activity.durationMinutes)} min` : "—"]) row.createEl("td", { text: value });
+      for (const [label, value] of [
+        ["Intake", day.consumedKcal == null ? "—" : format(day.consumedKcal)],
+        ["Est. burn", day.estimatedBurnKcal == null ? "—" : format(day.estimatedBurnKcal)],
+        ["Difference", day.differenceKcal == null ? "—" : `${day.differenceKcal > 0 ? "+" : ""}${format(day.differenceKcal)}`],
+        ["Activity", day.activity.entryCount ? `${format(day.activity.durationMinutes)} min` : "—"],
+      ]) row.createEl("td", { text: value, attr: { "data-label": label } });
     }
-    container.createEl("p", { cls: "tps-health-dashboard-note", text: "— means no logged data or no configured estimate. Difference is logged intake minus estimated burn. Estimates use your current BMR and activity factor, including typical exercise; activity calories are not added again." });
+    container.createEl("p", { cls: "tps-health-dashboard-note", text: `${indexing ? "— means no known logged data yet or no configured estimate while indexing continues. " : "— means no logged data or no configured estimate. "}Difference is logged intake minus estimated burn. Estimates use your current BMR and activity factor, including typical exercise; activity calories are not added again.` });
   }
 }
