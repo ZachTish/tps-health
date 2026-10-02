@@ -2862,7 +2862,9 @@ export class HealthNativeRecordService {
       if (this.disposed || !this.indexedProvider) return;
       for (const file of ready) {
         const record = this.recordsByPath.get(file.path);
-        if (record?.kind === 'workout-session' && record.file === file && !this.pendingMetadataPaths.has(file.path)) {
+        if (record?.kind === 'workout-session' && record.file === file
+          && !this.pendingMetadataPaths.has(file.path)
+          && !Object.prototype.hasOwnProperty.call(record.frontmatter, 'session')) {
           void this.refreshFile(file);
         }
       }

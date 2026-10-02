@@ -1197,6 +1197,60 @@ test('startup metadata restores food records and hydrates legacy workout bodies 
   harness.service.dispose();
 });
 
+test('startup reads only legacy workout bodies while modern sessions stay current from metadata', async () => {
+  const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: false });
+  const modern = [];
+  for (let index = 0; index < 128; index += 1) {
+    modern.push(h.addFrontmatterFile(`Inbox/modern-workout-${index}.md`, {
+      tpsId: `modern-workout-${index}`, tpsSchemaVersion: 1, kind: 'workout-session',
+      title: `Modern workout ${index}`, status: 'complete',
+      session: workoutSessionPropertyValue([{
+        id: `exercise-${index}`, name: 'Squat', sets: [{ id: `set-${index}`, reps: 5 }],
+      }]),
+    }));
+  }
+  const legacy = h.addFrontmatterFile('Inbox/legacy-workout.md', {
+    tpsId: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy workout',
+  });
+  h.contents.set(legacy.path, writeWorkoutDataToNoteContent(h.contents.get(legacy.path), JSON.stringify({
+    version: 1, exercises: [{ id: 'legacy-exercise', name: 'Row', sets: [{ id: 'legacy-set', reps: 8 }] }],
+  })));
+
+  let writes = 0;
+  h.plugin.app.vault.process = async () => { writes += 1; };
+  h.plugin.app.fileManager.processFrontMatter = async () => { writes += 1; };
+  h.service.setup();
+  h.plugin.app.metadataCache.initialized = true;
+  h.emitMetadata('resolved');
+  assert.deepEqual(h.cachedReadCalls, [], 'workout body reads wait until layout is ready');
+  h.finishLayout();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.readCalls, [], 'startup does not request authoritative disk reads');
+  assert.equal(h.cachedReadCalls.length, 1, 'modern nested sessions need no source reads');
+  assert.deepEqual(h.cachedReadCalls, [legacy.path]);
+  assert.equal(writes, 0);
+  assert.deepEqual(h.updateCalls, []);
+  assert.equal(h.service.getWorkoutSnapshot(modern[42].path).exercises[0].sets[0].reps, 5);
+  assert.equal(h.service.getWorkoutSnapshot(legacy.path).exercises[0].sets[0].reps, 8);
+
+  const updated = {
+    ...h.frontmatters.get(modern[42]),
+    session: workoutSessionPropertyValue([{
+      id: 'exercise-42', name: 'Squat', sets: [{ id: 'set-42', reps: 9 }],
+    }]),
+  };
+  h.frontmatters.set(modern[42], updated);
+  h.emitMetadata('changed', modern[42], undefined, { frontmatter: updated });
+  assert.equal(h.service.getWorkoutSnapshot(modern[42].path).exercises[0].sets[0].reps, 9,
+    'a later metadata edit replaces the modern session without a body read');
+  for (let index = 0; index < 20; index += 1) h.emitMetadata('resolved');
+  assert.deepEqual(h.cachedReadCalls, [legacy.path]);
+  assert.deepEqual(h.readCalls, []);
+  assert.equal(writes, 0);
+  assert.deepEqual(h.updateCalls, []);
+  h.service.dispose();
+});
+
 test('an externally created Health record is discovered by its metadata event without a competing source read', async () => {
   const harness = createHarness({ layoutReady: false });
   harness.finishLayout();
