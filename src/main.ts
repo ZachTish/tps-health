@@ -8703,7 +8703,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async updateGcmFoodLogButtonVisibility(): Promise<void> {
-    const dateContext = await this.getActiveDailyNoteDateContext();
+    const enabled = this.settings.showFoodLogButtonInGcm;
+    const dateContext = enabled ? await this.getActiveDailyNoteDateContext() : null;
     const visible = this.settings.showFoodLogButtonInGcm && Boolean(dateContext);
     const candidates = Array.from(document.querySelectorAll<HTMLElement>(
       '[data-tps-gcm-external-action-id="tps-health:food-log"]',
@@ -8715,7 +8716,9 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("GCM", "food-log-action:visibility", {
       visible,
       candidates: candidates.length,
-      ...await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext),
+      ...(this.settings.showFoodLogButtonInGcm
+        ? await this.summarizeDailyNoteDateContext(this.app.workspace.getActiveFile(), dateContext)
+        : { reason: "disabled" }),
     });
   }
 
@@ -12865,7 +12868,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         renderNativeDailyDashboardMessage(this.containerEl, "Loading saved Health records…");
         return;
       }
-      const activeWorkout = this.plugin.getActiveNativeWorkoutPresentation();
+      const activeWorkout = this.section === "macros" ? null : this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
         indexing: indexStatus === "partial",
         expandedActivity: Boolean(this.dashboard),

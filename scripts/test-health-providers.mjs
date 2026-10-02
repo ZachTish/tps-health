@@ -5560,6 +5560,60 @@ test("Health startup and navigation never rewrite or sweep food log sources", as
   plugin.nativeRecordService.dispose();
 });
 
+test("disabled GCM food action hides stale controls without reading Daily Notes settings", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const TFile = globalThis.__TPSHealthTestTFile;
+  fake.app.workspace.getActiveFile = () => new TFile("Daily/2026-08-15.md");
+  let configReads = 0;
+  fake.app.vault.adapter.read = async path => {
+    configReads++;
+    assert.equal(path, ".obsidian/daily-notes.json");
+    return JSON.stringify({ format: "YYYY-MM-DD", folder: "Daily" });
+  };
+  const button = {
+    hidden: false, ariaHidden: false,
+    toggleClass(name, hidden) { assert.equal(name, "tps-health-gcm-hidden"); this.hidden = hidden; },
+    toggleAttribute(name, hidden) { assert.equal(name, "aria-hidden"); this.ariaHidden = hidden; },
+  };
+  document.querySelectorAll = selector => {
+    assert.equal(selector, '[data-tps-gcm-external-action-id="tps-health:food-log"]');
+    return [button];
+  };
+  const pending = [];
+  window.setTimeout = callback => { pending.push(callback); return pending.length; };
+  const plugin = new TPSHealthPlugin(fake.app);
+  let menuRefreshes = 0;
+  plugin.getGcmApi = () => ({ overlays: { scheduleMenus: () => { menuRefreshes++; } } });
+  plugin.settings.showFoodLogButtonInGcm = false;
+  for (let index = 0; index < 20; index++) plugin.scheduleGcmMenuRefresh();
+  for (const callback of pending.splice(0)) await callback();
+  assert.equal(menuRefreshes, 20, "disabled navigation still refreshes GCM menus");
+  assert.equal(configReads, 0, "disabled navigation never resolves Daily Notes from disk");
+  assert.equal(button.hidden, true, "a stale food action remains hidden");
+  assert.equal(button.ariaHidden, true);
+
+  plugin.settings.showFoodLogButtonInGcm = true;
+  plugin.scheduleGcmMenuRefresh();
+  await pending.shift()();
+  assert.equal(menuRefreshes, 21);
+  assert.equal(configReads, 2, "enabled visibility still resolves the date and its diagnostic context");
+  assert.equal(button.hidden, false, "the enabled action appears on a valid Daily Note");
+  assert.equal(button.ariaHidden, false);
+
+  let releaseDateContext;
+  plugin.getActiveDailyNoteDateContext = () => new Promise(resolve => { releaseDateContext = resolve; });
+  const inFlight = plugin.updateGcmFoodLogButtonVisibility();
+  plugin.settings.showFoodLogButtonInGcm = false;
+  releaseDateContext({ dateIso: "2026-08-15" });
+  await inFlight;
+  assert.equal(button.hidden, true, "disabling during date resolution must hide the stale action");
+  assert.equal(button.ariaHidden, true);
+  assert.equal(configReads, 2, "an in-flight disable skips the later diagnostic config read");
+  assert.deepEqual(fake.writes, []);
+});
+
 test("GCM food action retries reuse one Health lifecycle listener", async () => {
   installDeterministicBrowserGlobals();
   const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
@@ -12679,4 +12733,72 @@ test('daily Macros waits for hydration, shows known partial totals, and reveals 
   assert.match(visibleText(container), /No food logged yet/u);
   assert.doesNotMatch(visibleText(container), /Indexing remaining notes/u);
   cleanup.forEach(callback => callback());
+});
+
+test('Macros-only renders skip workout-history resolution while Activity retains active controls', async () => {
+  installDeterministicBrowserGlobals();
+  window.setInterval = () => 1;
+  window.clearInterval = () => {};
+  const { TPSHealthNativeDailyDashboardChild: Child } = await importPluginWithObsidianStub();
+  const makeEl = (tag = 'div', options = {}) => ({
+    tag, text: options.text || '', children: [], dataset: {}, style: { setProperty() {} },
+    empty() { this.text = ''; this.children = []; },
+    addClass() {}, setAttr() {}, setText(value) { this.text = value; this.children = []; },
+    addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+    createDiv(childOptions) { return this.createEl('div', childOptions); },
+    createSpan(childOptions) { return this.createEl('span', childOptions); },
+    createEl(childTag, childOptions = {}) {
+      const child = makeEl(childTag, childOptions);
+      this.children.push(child);
+      return child;
+    },
+  });
+  const visibleText = el => [el.text, ...el.children.map(visibleText)].filter(Boolean).join(' ');
+  const workouts = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `workout-${index}`, path: `Workouts/workout-${index}.md`,
+  }));
+  let visited = 0, resolutions = 0;
+  const plugin = {
+    settings: { macroBlockStyle: 'table', macroNutrientRows: 'hidden' },
+    app: { workspace: { on: () => ({}) }, vault: { getAbstractFileByPath: () => null } },
+    nativeRecordService: {
+      getDailyIndexStatus: () => 'ready', onDailyIndexStatusChanged: () => () => {},
+      onRecordsChanged: () => () => {},
+      getDailyFoodEntries: () => [], getDailyActivityEntries: () => [],
+      getDailyActivityTotals: () => ({ dateIso: '2026-08-15', entryCount: 0, durationMinutes: 0, steps: 0, caloriesBurned: 0 }),
+    },
+    onActiveWorkoutStateChanged: () => () => {},
+    getActiveNativeWorkoutPresentation: () => {
+      resolutions++;
+      let found = null;
+      for (const workout of workouts) {
+        visited++;
+        if (workout.id === 'workout-9999') found = workout;
+      }
+      return { ...found, title: 'Active Lift', startedAt: '2026-08-15T12:00:00Z' };
+    },
+    getMetricRenderConfigs: () => [],
+    getDailyFoodMacroTotals: async () => ({ dateIso: '2026-08-15', entryCount: 0, calories: 0 }),
+  };
+  const createChild = section => {
+    const container = makeEl();
+    const child = new Child(container, plugin, { dateIso: '2026-08-15' }, section,
+      { macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden' });
+    child.register = () => {};
+    child.registerEvent = () => {};
+    child.onload();
+    return container;
+  };
+  const macros = createChild('macros');
+  for (let index = 0; index < 4; index++) await Promise.resolve();
+  assert.match(visibleText(macros), /Macros/u);
+  assert.equal(resolutions, 0, 'a Macros-only block never resolves active workout state');
+  assert.equal(visited, 0, 'a Macros-only block never visits the 10,000 workout records');
+
+  const activity = createChild('activity');
+  assert.equal(resolutions, 1, 'Activity still resolves the active workout once');
+  assert.equal(visited, 10_000);
+  assert.match(visibleText(activity), /Active Lift/u);
+  assert.match(visibleText(activity), /Resume/u);
+  assert.match(visibleText(activity), /Finish/u);
 });
