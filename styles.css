@@ -5268,6 +5268,14 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
 .tps-health-dashboard-view button { white-space: normal; }
 .tps-health-dashboard-view :is(button, input, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 .tps-health-dashboard-day-label, .tps-health-dashboard-note { color: var(--text-muted); }
+.tps-health-dashboard-glance { min-width: 0; margin-block: 12px 20px; }
+.tps-health-dashboard-glance-loading { margin: 0; color: var(--text-muted); }
+.tps-health-dashboard-glance h2 { margin: 0 0 8px; font-size: var(--font-ui-medium); }
+.tps-health-dashboard-glance-days { display: flex; flex-wrap: nowrap; gap: 8px; min-width: 0; width: 100%; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.tps-health-dashboard-glance-day { display: flex; flex: 1 0 160px; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; padding: 8px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); text-align: left; scroll-snap-align: start; }
+.tps-health-dashboard-glance-day[aria-current=date] { border-color: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--interactive-accent); }
+.tps-health-dashboard-glance-date { font-weight: 600; }
+.tps-health-dashboard-glance-facts { color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.3; }
 .tps-health-dashboard-day .tps-health-native-daily-stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start; }
 .tps-health-dashboard-day .tps-health-energy-overview { grid-column: 1 / -1; }
 .tps-health-dashboard-day .tps-health-native-daily { min-width: 0; margin: 0; }
@@ -5285,6 +5293,7 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
   .tps-health-dashboard-dates input { min-width: 0; flex: 1; font-size: 16px; }
   .tps-health-dashboard-actions { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 6px; scroll-snap-type: x proximity; }
   .tps-health-dashboard-actions button { flex: 0 0 auto; scroll-snap-align: start; }
+  .tps-health-dashboard-glance-day { flex: 0 0 min(42vw, 160px); scroll-snap-align: start; }
   .tps-health-dashboard-week { padding: 10px; }
   .tps-health-dashboard-table { overflow: visible; }
   .tps-health-dashboard-table :is(table, tbody) { display: block; }

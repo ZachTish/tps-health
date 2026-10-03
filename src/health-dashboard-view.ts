@@ -84,17 +84,38 @@ export class HealthDashboardView extends ItemView {
     if (!this.host.dashboardEnabled()) {
       root.createEl("p", { text: "This dashboard uses Health's native food, activity and workout records. Choose Atomic notes in Health settings → Daily logging → Health storage to use it. Legacy notes are not imported automatically." });
     } else {
+      const glance = root.createEl("section", { cls: "tps-health-dashboard-glance", attr: { "aria-label": "Seven-day glance" } });
+      glance.createEl("p", { cls: "tps-health-dashboard-glance-loading", text: "Loading recent Health records…", attr: { role: "status" } });
       const daily = root.createDiv({ cls: "tps-health-dashboard-day" });
       const week = root.createEl("section", { cls: "tps-health-dashboard-week", attr: { "aria-label": "Seven-day comparison" } });
-      this.day = this.host.mountDashboardDay(daily, this.dateIso, indexing => this.renderWeek(week, indexing));
+      this.day = this.host.mountDashboardDay(daily, this.dateIso, indexing => this.renderWeek(glance, week, indexing));
       this.addChild(this.day);
     }
     if (focusLabel) root.querySelector<HTMLElement>(`[aria-label="${focusLabel}"]`)?.focus();
   }
 
-  private renderWeek(container: HTMLElement, indexing: boolean): void {
+  private renderWeek(glance: HTMLElement, container: HTMLElement, indexing: boolean): void {
+    glance.empty();
     container.empty();
     const days = this.host.dashboardWeek(this.dateIso);
+    const selectDate = (dateIso: string) => { this.dateIso = dateIso; this.showDay("Health date"); };
+    glance.createEl("h2", { text: "Last seven days" });
+    const glanceDays = glance.createDiv({ cls: "tps-health-dashboard-glance-days", attr: { role: "group", "aria-label": "Choose a health day" } });
+    for (const day of [...days].reverse()) {
+      const intake = day.consumedKcal == null
+        ? indexing ? "Food pending" : "No food log"
+        : `${format(day.consumedKcal)} kcal`;
+      const activity = day.activity.entryCount
+        ? `${format(day.activity.durationMinutes)} min activity`
+        : indexing ? "Activity pending" : "No activity";
+      const choice = glanceDays.createEl("button", { cls: "tps-health-dashboard-glance-day", attr: {
+        type: "button", "aria-label": `View ${day.dateIso}: ${intake}, ${activity}`,
+        "aria-current": day.dateIso === this.dateIso ? "date" : "false",
+      } });
+      choice.createSpan({ cls: "tps-health-dashboard-glance-date", text: dashboardDate(day.dateIso)!.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" }) });
+      choice.createSpan({ cls: "tps-health-dashboard-glance-facts", text: `${intake} · ${activity}` });
+      choice.addEventListener("click", () => selectDate(day.dateIso));
+    }
     container.createEl("h2", { text: "Seven days ending " + this.dateIso });
     if (indexing) container.createEl("p", { cls: "tps-health-dashboard-index-status", text: "Indexing remaining notes; seven-day totals may change.", attr: { role: "status" } });
     const logged = days.filter(day => day.consumedKcal != null);
@@ -111,7 +132,7 @@ export class HealthDashboardView extends ItemView {
       const row = body.createEl("tr");
       const cell = row.createEl("th", { attr: { scope: "row" } });
       const select = cell.createEl("button", { text: dashboardDate(day.dateIso)!.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" }), attr: { type: "button", "aria-label": `View ${day.dateIso}`, "aria-current": day.dateIso === this.dateIso ? "date" : "false" } });
-      select.addEventListener("click", () => { this.dateIso = day.dateIso; this.showDay("Health date"); });
+      select.addEventListener("click", () => selectDate(day.dateIso));
       for (const [label, value] of [
         ["Intake", day.consumedKcal == null ? "—" : format(day.consumedKcal)],
         ["Est. burn", day.estimatedBurnKcal == null ? "—" : format(day.estimatedBurnKcal)],
