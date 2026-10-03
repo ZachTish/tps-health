@@ -114,7 +114,6 @@ export interface StartWorkoutInput {
   planPath?: string;
   createPlanNote?: boolean;
   cooldownDays?: number;
-  logTarget?: WorkoutLogTarget;
   startedAt?: string;
   dailyNoteDate?: string;
   openFile?: boolean;
@@ -265,7 +264,6 @@ export interface TPSHealthApi {
   getActiveWorkout(): ActiveWorkoutState | null;
   getSettings(): TPSHealthSettings;
   getDailyRollup(): Promise<DailyRollup>;
-  updateDailyRollup(): Promise<DailyRollup>;
   getMetricRenderConfigs(): HealthMetricRenderConfig[];
   getMetricRenderConfig(propertyKey: string): HealthMetricRenderConfig | null;
   getPropertyCatalog(): HealthPropertyCatalog;

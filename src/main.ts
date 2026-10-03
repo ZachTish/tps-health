@@ -673,13 +673,11 @@ export default class TPSHealthPlugin extends Plugin {
   private processingWorkoutFiles = new Set<string>();
   private startWorkoutInFlight: Promise<string> | null = null;
   private gcmWorkoutTimerReconcileInFlight: Promise<void> | null = null;
-  private workoutMutationQueues = new Map<string, Promise<unknown>>();
   private recipeMutationQueues = new Map<string, Promise<unknown>>();
   private foodIdentityMutationQueues = new Map<string, Promise<unknown>>();
   private dailyNoteEnsureInFlight = new Map<string, Promise<TFile>>();
   private dailyNoteCreateInFlight = new Map<string, Promise<TFile>>();
   private failedOwnedDailyNoteCreates = new Map<string, string>();
-  private markdownMutationQueues = new Map<TFile, Promise<unknown>>();
   private finishPromptWorkoutFiles = new Set<string>();
   private readonly workoutSurfaceInstanceKey = id("workout-surface");
   private workoutActionBarRefreshTimer: number | null = null;
@@ -710,6 +708,10 @@ export default class TPSHealthPlugin extends Plugin {
     const storedSettings = await this.loadData();
     this.settingsPersistenceBlockedByFutureSchema = isFutureTPSHealthSettings(storedSettings);
     this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {});
+    if (this.settings.storageMode === "legacy") {
+      logger.flowWarn("Settings", "inline-history:review-needed");
+      new Notice("TPS Health now saves whole-note records. Earlier inline logs remain in their notes; use Daily logging → Earlier inline logs to preview and copy them.", 12000);
+    }
     configureCustomNutrients(this.settings.customNutrients);
     logger.setLoggingEnabled(this.settings.enableLogging);
     const legacyUsdaApiKey = legacyUsdaApiKeyValue(storedSettings);
@@ -894,28 +896,14 @@ export default class TPSHealthPlugin extends Plugin {
     this.addCommand({
       id: "preview-native-record-import",
       name: "Native records: Preview legacy Health import",
-      callback: () => this.traceCommand("preview-native-record-import", async () => {
-        const plan = await this.nativeRecordService.planLegacyImport();
-        new Notice(
-          `Legacy Health import preview: ${plan.candidates} records (${plan.foodEntries} food, ${plan.activityEntries} activity, ${plan.workoutSessions} workouts, ${plan.workoutExercises} exercise groups); ${plan.existing} already exist; ${plan.unresolvedLines} unresolved. No files were changed.`,
-          12000,
-        );
-      }),
+      callback: () => this.traceCommand("preview-native-record-import", () => this.previewLegacyHealthImport()),
     });
     this.addCommand({
       id: "import-native-health-records",
       name: "Native records: Copy legacy Health logs",
       checkCallback: (checking) => {
         if (!this.nativeRecordService?.isEnabled()) return false;
-        if (!checking) void this.traceCommand("import-native-health-records", async () => {
-          const plan = await this.nativeRecordService.planLegacyImport();
-          const message = `Create ${plan.candidates - plan.existing} native Health records from legacy logs? Existing notes will not be edited or deleted.`;
-          if (typeof window.confirm === "function" && !window.confirm(message)) return;
-          const result = await this.nativeRecordService.importLegacyRecords((name, existingPath) => (
-            this.ensureExerciseDefinitionForWorkout(name, existingPath).then((exercise) => exercise.sourcePath || "")
-          ));
-          new Notice(`Native Health import: ${result.created} created, ${result.skipped} already present, ${result.failed} failed. Legacy source files were preserved.`, 12000);
-        });
+        if (!checking) void this.traceCommand("import-native-health-records", () => this.copyLegacyHealthLogs());
         return true;
       },
     });
@@ -1002,10 +990,7 @@ export default class TPSHealthPlugin extends Plugin {
         return true;
       },
     });
-    this.registerEditorSuggest(new FoodLogEditorSuggest(this.app, this));
     this.registerEditorExtension(createRecipeIngredientEditorExtension(this));
-    this.registerEditorExtension(createWorkoutDailyMarkerProtectionExtension());
-    this.registerEditorExtension(createWorkoutDailyHeaderExtension(this));
     this.workoutSetChipField = createWorkoutSetChipExtension(this);
     this.registerEditorExtension(this.workoutSetChipField);
     this.registerEditorExtension(createFoodLogChipExtension(this));
@@ -1098,7 +1083,6 @@ export default class TPSHealthPlugin extends Plugin {
       workoutReadingObserver.observe(this.app.workspace.containerEl, { childList: true, subtree: true });
       this.register(() => workoutReadingObserver.disconnect());
     }
-    this.registerWorkoutTaskCompletionTracking();
     this.refreshGcmFoodLogButtonRegistration();
     this.registerGcmFoodLogButtonTapFallback();
     this.registerInlineFoodLogMenuHandler();
@@ -1126,10 +1110,9 @@ export default class TPSHealthPlugin extends Plugin {
         if (this.nativeRecordService?.isEnabled() && this.getActiveWorkoutState()) {
           this.activeWorkoutFile();
         }
-        await this.repairActiveDailyWorkoutBlock();
         await this.ensureGcmWorkoutTimer();
       })().catch((error) => {
-        logger.flowError("Workout", "daily-boundary-repair:failed", error, {
+        logger.flowError("Workout", "layout-ready:failed", error, {
           path: this.settings.activeWorkoutDailyNotePath,
           workoutId: this.settings.activeWorkoutId,
         });
@@ -1146,6 +1129,43 @@ export default class TPSHealthPlugin extends Plugin {
       if (this.dailyNoteSettingsReady === settingsRead) this.dailyNoteSettingsReady = null;
     });
 
+  }
+
+  async previewLegacyHealthImport(): Promise<void> {
+    const plan = await this.nativeRecordService.planLegacyImport();
+    new Notice(
+      `Inline Health import preview: ${plan.candidates} records (${plan.foodEntries} food, ${plan.activityEntries} activity, ${plan.workoutSessions} workouts, ${plan.workoutExercises} exercise groups); ${plan.existing} already exist; ${plan.unresolvedLines} unresolved. No files were changed.`,
+      12000,
+    );
+  }
+
+  async copyLegacyHealthLogs(): Promise<void> {
+    const plan = await this.nativeRecordService.planLegacyImport();
+    const message = `Copy ${plan.candidates - plan.existing} inline Health records into individual notes? Original lines stay in place. ${plan.unresolvedLines} unresolved lines will need manual review.`;
+    if (typeof window.confirm === "function" && !window.confirm(message)) return;
+    const result = await this.nativeRecordService.importLegacyRecords((name, existingPath) => (
+      this.ensureExerciseDefinitionForWorkout(name, existingPath).then((exercise) => exercise.sourcePath || "")
+    ));
+    new Notice(`Inline Health import: ${result.created} notes created, ${result.skipped} already present, ${result.failed} failed, ${result.unresolvedLines} unresolved lines. Original notes were preserved.`, 12000);
+  }
+
+  async acknowledgeLegacyHealthHistory(): Promise<void> {
+    if (this.settings.storageMode !== "legacy") return;
+    if (this.settingsPersistenceBlockedByFutureSchema) {
+      this.notifySettingsPersistenceBlocked();
+      return;
+    }
+    const message = "Hide the earlier inline log warning? This does not copy, change, or remove any records. Review the preview and unresolved lines first.";
+    if (typeof window.confirm === "function" && !window.confirm(message)) return;
+    this.settings.storageMode = "native-records";
+    try {
+      await this.saveSettings();
+    } catch (error) {
+      this.settings.storageMode = "legacy";
+      throw error;
+    }
+    logger.flow("Settings", "inline-history:review-acknowledged");
+    new Notice("Inline history warning hidden. Earlier lines remain in their original notes.");
   }
 
   async saveSettings() {
@@ -2236,42 +2256,19 @@ export default class TPSHealthPlugin extends Plugin {
       device: String(input.device || "").trim() || undefined,
       note: String(input.note || "").trim() || undefined,
     };
-    if (this.nativeRecordService?.isEnabled()) {
-      logger.flow("ActivityLog", "write:start", {
-        activity: entry.activity,
-        activityType: entry.activityType,
-        source: entry.source,
-        storage: "native-records",
-      });
-      const record = await this.nativeRecordService.createActivityEntry(entry);
-      logger.flow("ActivityLog", "write:done", {
-        activityId: entry.id,
-        activityType: entry.activityType,
-        source: entry.source,
-        recordPath: record.path,
-        storage: "native-records",
-      });
-      new Notice(`Logged ${entry.activity}`);
-      return entry;
-    }
-    const dailyFile = await this.getOrCreateDailyNoteForDate(input.dailyNoteDate || completedDate);
-    entry.dailyNotePath = dailyFile.path;
     logger.flow("ActivityLog", "write:start", {
       activity: entry.activity,
       activityType: entry.activityType,
       source: entry.source,
-      dailyNotePath: entry.dailyNotePath,
-      hasDuration: entry.durationMinutes != null,
-      hasDistance: entry.distance != null,
-      hasSteps: entry.steps != null,
-      hasCalories: entry.caloriesBurned != null,
+      storage: "native-records",
     });
-    await this.insertIntoDailyNote(activityEntryLine(entry), undefined, dailyFile);
+    const record = await this.nativeRecordService.createActivityEntry(entry);
     logger.flow("ActivityLog", "write:done", {
       activityId: entry.id,
       activityType: entry.activityType,
       source: entry.source,
-      dailyNotePath: entry.dailyNotePath,
+      recordPath: record.path,
+      storage: "native-records",
     });
     new Notice(`Logged ${entry.activity}`);
     return entry;
@@ -2303,6 +2300,10 @@ export default class TPSHealthPlugin extends Plugin {
       });
       let opened = false;
       if (activeNativeWorkout && input.openFile !== false) opened = await this.openActiveWorkout();
+      if (active.dailyNotePath) {
+        new Notice("An earlier inline workout is still marked active. Review its Daily Note before starting a whole-note workout.", 12000);
+        throw new Error("An earlier inline workout is still marked active.");
+      }
       new Notice(opened
         ? "Opened the active workout. Finish or discard it before starting another one."
         : "Finish or discard the active workout before starting another one.");
@@ -2316,6 +2317,13 @@ export default class TPSHealthPlugin extends Plugin {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const captured = this.getActiveWorkoutState();
       if (!captured) return null;
+      if (captured.dailyNotePath) {
+        logger.flowWarn("Workout", "active-state:legacy-inline-preserved", {
+          workoutId: captured.id,
+          path: captured.dailyNotePath,
+        });
+        return null;
+      }
       if (!this.nativeRecordService.isWorkoutIndexSettled()) {
         logger.flowWarn("Workout", "active-state:index-not-settled", {
           workoutId: captured.id,
@@ -2401,140 +2409,7 @@ export default class TPSHealthPlugin extends Plugin {
     const plan = await this.resolveWorkoutPlanForStart(input);
     const title = input.title || `${plan?.name || "Workout"} ${window.moment(startedAt).format("YYYY-MM-DD HH.mm")}`;
     const cooldownDays = input.cooldownDays ?? plan?.cooldownDays ?? this.settings.defaultWorkoutCooldownDays;
-    if (this.nativeRecordService?.isEnabled()) {
-      return this.startNativeWorkout({ input, startedAt, dailyNoteDate, plan, title, cooldownDays });
-    }
-    const requestedLogTarget = normalizeWorkoutLogTarget(input.logTarget || this.settings.workoutLogTarget);
-    const logTarget: WorkoutLogTarget = requestedLogTarget === "daily-note" ? "daily-note" : "both";
-    const workoutId = id("workout");
-    logger.flow("Workout", "start:resolved", {
-      title,
-      logTarget,
-      planPath: plan?.sourcePath || "",
-      dailyNoteDate,
-      cooldownDays,
-    });
-    let path = "";
-    let dailyNotePath = "";
-    // Resolve the authoritative Daily Note before creating any workout
-    // artifacts. A delegated Daily Note failure must never leave an orphaned
-    // session note that looks active but has no durable active-workout state.
-    const dailyFile = await this.getOrCreateDailyNoteForDate(dailyNoteDate);
-    try {
-      if (logTarget === "both") {
-        const fileName = buildNativeHealthRecordFileName("workout-session", {
-          title,
-          workoutDate: isoDateKey(dailyNoteDate),
-          startedAt,
-        });
-        path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutsFolder, `${sanitizeFileName(fileName)}.md`));
-        await this.ensureFolder(this.settings.workoutsFolder);
-        const template = await this.readWorkoutTemplate();
-        const body = template
-          ? this.renderWorkoutSessionTemplate(template, { title, startedAt, plan, cooldownDays, workoutId })
-          : this.defaultWorkoutTemplate(title, startedAt, plan, cooldownDays, workoutId);
-        await this.app.vault.create(path, body);
-        await this.ensureWorkoutSessionFrontmatter(path, title, startedAt, plan, cooldownDays, workoutId);
-        logger.flow("Workout", "start:note-created", {
-          workoutId,
-          path,
-          planPath: plan?.sourcePath || "",
-          template: Boolean(template),
-        });
-      }
-      const insertedDailyFile = await this.insertWorkoutSessionIntoDailyNote(workoutSessionLine({
-        id: workoutId,
-        title,
-        startedAt,
-        path: path || undefined,
-        plan,
-        cooldownDays,
-        status: "active",
-        estimatedDurationMinutes: this.settings.defaultWorkoutEstimateMinutes,
-      }), dailyNoteDate, dailyFile);
-      dailyNotePath = insertedDailyFile.path;
-    } catch (error) {
-      await this.rollbackStartedWorkoutArtifacts(workoutId, path, dailyFile, "start-write-failed");
-      throw error;
-    }
-    this.settings.activeWorkoutPath = path;
-    this.settings.activeWorkoutId = workoutId;
-    this.settings.activeWorkoutTarget = logTarget;
-    this.settings.activeWorkoutDailyNotePath = dailyNotePath;
-    this.settings.activeWorkoutPlanPath = plan?.sourcePath || "";
-    this.settings.activeWorkoutTitle = title;
-    this.settings.activeWorkoutStartedAt = startedAt;
-    this.settings.activeWorkoutCooldownDays = cooldownDays;
-    this.settings.lastSetEndedAt = "";
-    this.settings.activeWorkoutSetCount = 0;
-    try {
-      await this.saveSettings();
-    } catch (error) {
-      applyActiveWorkoutState(this.settings, null);
-      await this.rollbackStartedWorkoutArtifacts(workoutId, path, dailyFile, "start-state-save-failed");
-      throw error;
-    }
-    this.emitActiveWorkoutStateChanged();
-    logger.flow("Workout", "start:state-saved", {
-      workoutId,
-      path,
-      dailyNotePath,
-      logTarget,
-      planPath: plan?.sourcePath || "",
-    });
-    await this.ensureGcmWorkoutTimer();
-    if (plan?.sourcePath) {
-      const preloadFailures: string[] = [];
-      if (path) {
-        try {
-          await this.applyWorkoutPlanToSession(path, plan.sourcePath);
-        } catch (error) {
-          preloadFailures.push("workout note");
-          logger.flowWarn("WorkoutPlan", "apply-session-after-start:failed", {
-            workoutId,
-            path,
-            planPath: plan.sourcePath,
-            error: logger.errorSummary(error),
-          });
-        }
-      }
-      try {
-        await this.applyWorkoutPlanToDailyNote(dailyNotePath, workoutId, plan.sourcePath);
-      } catch (error) {
-        preloadFailures.push("Daily Note");
-        logger.flowWarn("WorkoutPlan", "apply-daily-after-start:failed", {
-          workoutId,
-          dailyNotePath,
-          planPath: plan.sourcePath,
-          error: logger.errorSummary(error),
-        });
-      }
-      if (preloadFailures.length) new Notice(`Started workout, but its plan could not be preloaded in the ${preloadFailures.join(" and ")}.`);
-    }
-    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    const dailyTarget = dailyNotePath ? this.app.vault.getAbstractFileByPath(dailyNotePath) : null;
-    let openResult: WorkoutOpenResult = {
-      requested: input.openFile !== false,
-      opened: false,
-      route: input.openFile === false ? "skipped" : "missing-file",
-      reason: input.openFile === false ? "openFile=false" : dailyNotePath ? "daily note was not found in vault" : "no daily workout path was created",
-    };
-    if (file instanceof TFile) await this.cacheWorkoutFile(file);
-    if (input.openFile !== false && dailyTarget instanceof TFile) openResult = await this.openWorkoutFile(dailyTarget);
-    logger.flow("Workout", "start:done", {
-      workoutId,
-      path,
-      dailyNotePath,
-      logTarget,
-      openRequested: openResult.requested,
-      opened: openResult.opened,
-      openRoute: openResult.route,
-      openReason: openResult.reason || "",
-    });
-    new Notice("Started workout");
-    // Preserve the public API's existing return value when a dedicated workout
-    // note was requested, while the UI always opens the canonical Daily Note.
-    return path || dailyNotePath;
+    return this.startNativeWorkout({ input, startedAt, dailyNoteDate, plan, title, cooldownDays });
   }
 
   private async startNativeWorkout(context: {
@@ -2558,7 +2433,7 @@ export default class TPSHealthPlugin extends Plugin {
     }, workoutId);
     this.settings.activeWorkoutPath = record.path;
     this.settings.activeWorkoutId = record.id;
-    this.settings.activeWorkoutTarget = "both";
+    this.settings.activeWorkoutTarget = "session-note";
     this.settings.activeWorkoutDailyNotePath = "";
     this.settings.activeWorkoutPlanPath = context.plan?.sourcePath || "";
     this.settings.activeWorkoutTitle = context.title;
@@ -2598,86 +2473,12 @@ export default class TPSHealthPlugin extends Plugin {
       new Notice("No active workout");
       return;
     }
-    const path = active.path;
-    const dailyNotePath = active.dailyNotePath;
-    const workoutId = active.id;
-    if (this.nativeRecordService?.isEnabled()) {
-      await this.finishNativeWorkout(path, workoutId, input);
+    if (active.dailyNotePath) {
+      logger.flowWarn("Workout", "finish:legacy-inline-readonly", { workoutId: active.id, path: active.dailyNotePath });
+      new Notice("This earlier inline workout is read-only in TPS Health. Its Daily Note has not been changed.", 12000);
       return;
     }
-    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (path && !(file instanceof TFile)) {
-      logger.flowWarn("Workout", "finish:missing-active-file", { path });
-      await this.clearActiveWorkoutState();
-      new Notice("Active workout file was missing. Cleared the stale workout state.");
-      return;
-    }
-    const endedAt = input.endedAt || isoNow();
-    const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
-    const startedAt = workoutStartedAt(fm, this.settings) || this.settings.activeWorkoutStartedAt;
-    const durationSeconds = workoutDurationSeconds(startedAt, endedAt);
-    const durationMinutes = durationSeconds != null ? Math.max(1, Math.round(durationSeconds / 60)) : undefined;
-    const cooldownDays = input.cooldownDays ?? numberOrUndefined(fm.cooldownDays) ?? this.settings.activeWorkoutCooldownDays ?? this.settings.defaultWorkoutCooldownDays;
-    const nextEligibleDate = cooldownDays > 0 ? addDaysIsoDate(endedAt, cooldownDays) : undefined;
-    logger.flow("Workout", "finish:resolved", {
-      workoutId,
-      path,
-      dailyNotePath,
-      startedAt,
-      endedAt,
-      durationSeconds,
-      cooldownDays,
-      nextEligibleDate: nextEligibleDate || "",
-    });
-    if (file instanceof TFile) {
-      const normalizedSetCount = await this.normalizeWorkoutNoteSetTasks(file, fm, endedAt);
-      await this.processHealthFrontmatter(file, (frontmatter) => {
-        frontmatter.kind = frontmatter.kind || "workout";
-        frontmatter.workoutId = frontmatter.workoutId || workoutId;
-        frontmatter.runKind = frontmatter.runKind || "run";
-        frontmatter.runType = frontmatter.runType || "workout";
-        frontmatter.workflowType = frontmatter.workflowType || "workout";
-        frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
-        frontmatter.status = "complete";
-        frontmatter.workoutDate = frontmatter.workoutDate || isoDateKey(startedAt || endedAt);
-        frontmatter.cssclasses = withCssClass(frontmatter.cssclasses, "tps-health-workout");
-        const temporalUpdates = workoutTemporalPropertyUpdates(this.settings, frontmatter, {
-          startedAt,
-          endedAt,
-          durationMinutes,
-          terminal: true,
-        });
-        for (const [key, value] of Object.entries(temporalUpdates)) {
-          if (value == null) delete frontmatter[key];
-          else frontmatter[key] = value;
-        }
-        const setCount = Math.max(this.settings.activeWorkoutSetCount || 0, normalizedSetCount);
-        if (setCount > 0) frontmatter.setCount = setCount;
-        frontmatter.allDay = false;
-        frontmatter.cooldownDays = cooldownDays;
-        frontmatter.targetGapDays = cooldownDays;
-        if (nextEligibleDate) frontmatter.nextEligibleDate = nextEligibleDate;
-        else delete frontmatter.nextEligibleDate;
-      });
-      logger.flow("Workout", "finish:frontmatter-done", {
-        path: file.path,
-        workoutId,
-        endedAt,
-        nextEligibleDate: nextEligibleDate || "",
-      });
-    }
-    if (dailyNotePath && workoutId) await this.completeDailyWorkoutLine(dailyNotePath, workoutId, endedAt, nextEligibleDate);
-    const planPath = typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : this.settings.activeWorkoutPlanPath;
-    if (planPath) await this.updateWorkoutPlanCompletion(planPath, endedAt, cooldownDays, path || dailyNotePath, nextEligibleDate);
-    await this.stopGcmWorkoutTimer(this.getActiveWorkoutState(), endedAt);
-    await this.clearActiveWorkoutState();
-    logger.flow("Workout", "finish:done", {
-      workoutId,
-      path,
-      dailyNotePath,
-      planPath: planPath || "",
-    });
-    new Notice("Finished workout");
+    await this.finishNativeWorkout(active.path, active.id, input);
   }
 
   private async finishNativeWorkout(path: string, workoutId: string, input: FinishWorkoutInput): Promise<void> {
@@ -2750,8 +2551,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   openDiscardWorkoutConfirmation(): void {
-    if (!this.getActiveWorkoutState()) {
+    const active = this.getActiveWorkoutState();
+    if (!active) {
       new Notice("No active workout");
+      return;
+    }
+    if (active.dailyNotePath) {
+      new Notice("This earlier inline workout is read-only in TPS Health. Review its Daily Note manually.", 12000);
       return;
     }
     new DiscardWorkoutPromptModal(this.app, async () => this.discardWorkout()).open();
@@ -2764,90 +2570,64 @@ export default class TPSHealthPlugin extends Plugin {
       new Notice("No active workout");
       return;
     }
+    if (active.dailyNotePath) {
+      logger.flowWarn("Workout", "discard:legacy-inline-readonly", { workoutId: active.id, path: active.dailyNotePath });
+      new Notice("This earlier inline workout is read-only in TPS Health. Its Daily Note has not been changed.", 12000);
+      return;
+    }
     logger.flow("Workout", "discard:start", {
       workoutId: active.id,
       path: active.path,
       dailyNotePath: active.dailyNotePath,
       setCount: active.setCount,
     });
-    if (this.nativeRecordService?.isEnabled()) {
-      if (!this.nativeRecordService.isWorkoutIndexSettled()) {
-        new Notice("TPS Health is still indexing workout records. Try discarding the workout again in a moment.");
-        return;
-      }
-      const resolution = this.nativeRecordService.resolveWorkoutSession({ id: active.id, path: active.path });
-      if (resolution.state === "ambiguous") {
-        logger.flowWarn("Workout", "discard:ambiguous-native-record", {
-          workoutId: active.id,
-          path: active.path,
-          matches: resolution.matches,
-          reason: resolution.reason || "duplicate-id",
-        });
-        new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before discarding it.", 12000);
-        return;
-      }
-      if (resolution.state === "missing" && active.path && this.app.vault.getAbstractFileByPath(active.path) instanceof TFile) {
-        logger.flowWarn("Workout", "discard:present-native-record-unindexed", { workoutId: active.id, path: active.path });
-        new Notice("The active workout file is present, but its record has not loaded. Try discarding it again in a moment.");
-        return;
-      }
-      const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
-      if (!(file instanceof TFile)) {
-        const cleared = await this.clearActiveWorkoutStateIfCurrent(active, `discard-native-${resolution.state}`);
-        if (!cleared) {
-          logger.flowWarn("Workout", "discard:stale-clear-skipped", { workoutId: active.id, path: active.path, state: resolution.state });
-          new Notice("The active workout changed before stale state could be cleared. No workout was modified.");
-          return;
-        }
-        logger.flowWarn("Workout", "discard:missing-native-record-cleared", { workoutId: active.id, path: active.path, state: resolution.state });
-        new Notice(resolution.state === "terminal"
-          ? "The workout was already finished. Cleared its stale active state."
-          : "The active workout record was missing. Cleared its stale active state.");
-        return;
-      }
-      const reconciled = await this.reconcileResolvedNativeWorkout(active, resolution);
-      const resolvedActive = this.getActiveWorkoutState();
-      if (!reconciled || !resolvedActive || resolvedActive.id !== resolution.id || resolvedActive.path !== resolution.path) {
-        logger.flowWarn("Workout", "discard:active-state-changed", { workoutId: active.id, path: resolution.path });
-        new Notice("The active workout changed before it could be discarded. No workout was modified.");
-        return;
-      }
-      await this.stopGcmWorkoutTimer(resolvedActive);
-      await this.nativeRecordService.discardWorkout(file);
-      await this.clearActiveWorkoutStateIfCurrent(resolvedActive, "discard-native-workout");
-      logger.flow("Workout", "discard:done", { workoutId: resolvedActive.id, path: resolution.path, storage: "native-records" });
-      new Notice("Discarded workout");
+    if (!this.nativeRecordService.isWorkoutIndexSettled()) {
+      new Notice("TPS Health is still indexing workout records. Try discarding the workout again in a moment.");
       return;
     }
-    await this.stopGcmWorkoutTimer(active);
-    if (active.dailyNotePath && active.id) {
-      const dailyFile = this.app.vault.getAbstractFileByPath(active.dailyNotePath);
-      if (dailyFile instanceof TFile) {
-        await this.serializeWorkoutMutation(dailyFile.path, "discard-daily-workout", async () => {
-          const content = await this.readWorkoutMutationContent(dailyFile, "discard-daily-workout");
-          const placement = this.settings.workoutDailyNotePlacement || DEFAULT_SETTINGS.workoutDailyNotePlacement;
-          const updated = removeWorkoutDailyBlockContent(content, active.id, placement);
-          if (updated !== content) await this.writeWorkoutMutationContent(dailyFile, updated, "discard-daily-workout");
-        });
-      } else {
-        logger.flowWarn("Workout", "discard:daily-note-missing", { workoutId: active.id, dailyNotePath: active.dailyNotePath });
-      }
+    const resolution = this.nativeRecordService.resolveWorkoutSession({ id: active.id, path: active.path });
+    if (resolution.state === "ambiguous") {
+      logger.flowWarn("Workout", "discard:ambiguous-native-record", {
+        workoutId: active.id,
+        path: active.path,
+        matches: resolution.matches,
+        reason: resolution.reason || "duplicate-id",
+      });
+      new Notice("TPS Health found conflicting records for the active workout. Resolve the duplicate TPS ID before discarding it.", 12000);
+      return;
     }
-    const workoutFile = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-    let workoutNoteTrashFailed = false;
-    if (workoutFile instanceof TFile && workoutFile.path !== active.dailyNotePath) {
-      try {
-        await this.app.vault.trash(workoutFile, false);
-        this.workoutFileSnapshots.delete(workoutFile.path);
-        logger.flow("Workout", "discard:workout-note-trashed", { workoutId: active.id, path: workoutFile.path });
-      } catch (error) {
-        workoutNoteTrashFailed = true;
-        logger.flowWarn("Workout", "discard:workout-note-trash-failed", { workoutId: active.id, path: workoutFile.path, error: logger.errorSummary(error) });
-      }
+    if (resolution.state === "missing" && active.path && this.app.vault.getAbstractFileByPath(active.path) instanceof TFile) {
+      logger.flowWarn("Workout", "discard:present-native-record-unindexed", { workoutId: active.id, path: active.path });
+      new Notice("The active workout file is present, but its record has not loaded. Try discarding it again in a moment.");
+      return;
     }
-    await this.clearActiveWorkoutState();
-    logger.flow("Workout", "discard:done", { workoutId: active.id, dailyNotePath: active.dailyNotePath, workoutNoteTrashFailed });
-    new Notice(workoutNoteTrashFailed ? "Discarded workout. The dedicated workout note could not be moved to trash." : "Discarded workout");
+    const file = resolution.state === "active" ? this.app.vault.getAbstractFileByPath(resolution.path) : null;
+    if (!(file instanceof TFile)) {
+      const cleared = await this.clearActiveWorkoutStateIfCurrent(active, `discard-native-${resolution.state}`);
+      if (!cleared) {
+        logger.flowWarn("Workout", "discard:stale-clear-skipped", { workoutId: active.id, path: active.path, state: resolution.state });
+        new Notice("The active workout changed before stale state could be cleared. No workout was modified.");
+        return;
+      }
+      logger.flowWarn("Workout", "discard:missing-native-record-cleared", { workoutId: active.id, path: active.path, state: resolution.state });
+      new Notice(resolution.state === "terminal"
+        ? "The workout was already finished. Cleared its stale active state."
+        : "The active workout record was missing. Cleared its stale active state.");
+      return;
+    }
+    const reconciled = await this.reconcileResolvedNativeWorkout(active, resolution);
+    const resolvedActive = this.getActiveWorkoutState();
+    if (!reconciled || !resolvedActive || resolvedActive.id !== resolution.id || resolvedActive.path !== resolution.path) {
+      logger.flowWarn("Workout", "discard:active-state-changed", { workoutId: active.id, path: resolution.path });
+      new Notice("The active workout changed before it could be discarded. No workout was modified.");
+      return;
+    }
+    await this.stopGcmWorkoutTimer(resolvedActive);
+    await this.nativeRecordService.discardWorkout(file);
+    await this.clearActiveWorkoutStateIfCurrent(resolvedActive, "discard-native-workout");
+    logger.flow("Workout", "discard:done", { workoutId: resolvedActive.id, path: resolution.path, storage: "native-records" });
+    new Notice("Discarded workout");
+    return;
   }
 
   private async clearActiveWorkoutState(): Promise<void> {
@@ -2863,6 +2643,10 @@ export default class TPSHealthPlugin extends Plugin {
     if (!active) {
       logger.flowWarn("WorkoutPlan", "template-from-active:no-active", { finishAfterSave: true });
       new Notice("No active workout");
+      return undefined;
+    }
+    if (active.dailyNotePath) {
+      new Notice("This earlier inline workout is read-only in TPS Health. Review its Daily Note manually.", 12000);
       return undefined;
     }
     const path = await this.createWorkoutTemplateFromState(active, {
@@ -2895,6 +2679,9 @@ export default class TPSHealthPlugin extends Plugin {
     options: { skipCatalogBuild?: boolean } = {},
   ): Promise<void> {
     const active = this.getActiveWorkoutState();
+    if (active?.dailyNotePath) {
+      throw new Error("Earlier inline workouts are read-only. Review the Daily Note manually.");
+    }
     const exerciseName = exercise.trim();
     if (!exerciseName || exerciseName === "Exercise") {
       if (active) new WorkoutExercisePickerModal(this.app, this, active.dailyNotePath || active.path, active.id).open();
@@ -3031,23 +2818,12 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async addSetForExerciseToWorkoutFile(
-    filePath: string,
-    exercise: string,
-    after?: WorkoutSetLineSource,
-    options: { focusAfter?: boolean; skipCatalogBuild?: boolean } = {},
+    _filePath: string,
+    _exercise: string,
+    _after?: WorkoutSetLineSource,
+    _options: { focusAfter?: boolean; skipCatalogBuild?: boolean } = {},
   ): Promise<ExerciseItem | null> {
-    const exerciseName = exercise.trim();
-    const savedExercise = exerciseName && exerciseName !== "Exercise"
-      ? await this.findOrCreateExercise({ name: exerciseName }, options)
-      : null;
-    await this.serializeWorkoutMutation(filePath, "add-exercise-set", () => this.addSetForExerciseToWorkoutFileNow(
-      filePath,
-      savedExercise?.name || exercise,
-      after,
-      options,
-      savedExercise?.sourcePath,
-    ));
-    return savedExercise;
+    throw new Error("Inline workout rows are read-only in whole-note Health storage.");
   }
 
   private async addSetForExerciseToWorkoutFileNow(filePath: string, exercise: string, after: WorkoutSetLineSource | undefined, options: { focusAfter?: boolean }, exercisePath?: string): Promise<void> {
@@ -3107,20 +2883,9 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private async serializeWorkoutMutation<T>(filePath: string, operation: string, mutation: () => Promise<T>): Promise<T> {
-    const queuedBehindExisting = this.workoutMutationQueues.has(filePath);
-    const previous = this.workoutMutationQueues.get(filePath) || Promise.resolve();
-    logger.flow("WorkoutSet", "mutation:queued", { path: filePath, operation, queuedBehindExisting });
-    const run = previous.catch(() => undefined).then(async () => {
-      logger.flow("WorkoutSet", "mutation:start", { path: filePath, operation });
-      return mutation();
-    });
-    this.workoutMutationQueues.set(filePath, run);
-    try {
-      return await run;
-    } finally {
-      if (this.workoutMutationQueues.get(filePath) === run) this.workoutMutationQueues.delete(filePath);
-    }
+  private async serializeWorkoutMutation<T>(filePath: string, operation: string, _mutation: () => Promise<T>): Promise<T> {
+    logger.flowWarn("WorkoutSet", "legacy-inline-write:blocked", { path: filePath, operation });
+    throw new Error("Inline workout rows are read-only in whole-note Health storage.");
   }
 
   private workoutViewsForFile(file: TFile): MarkdownView[] {
@@ -3812,92 +3577,14 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async logSet(set: LogSetInput): Promise<WorkoutSet> {
-    if (this.nativeRecordService?.isEnabled()) return this.logSetNow(set);
-    const mutationPath = this.settings.activeWorkoutPath || this.settings.activeWorkoutDailyNotePath;
-    if (!mutationPath) return this.logSetNow(set);
-    return this.serializeWorkoutMutation(mutationPath, "log-active-set", () => this.logSetNow(set));
-  }
-
-  private async logSetNow(set: LogSetInput): Promise<WorkoutSet> {
-    const path = this.settings.activeWorkoutPath;
-    const dailyNotePath = this.settings.activeWorkoutDailyNotePath;
-    if (!path && !dailyNotePath) {
-      logger.flowWarn("WorkoutSet", "log:no-active-workout", { exercise: set.exercise });
-      new Notice("Start a workout before logging sets");
-      throw new Error("Start a workout before logging sets");
+    const active = this.getActiveWorkoutState();
+    if (!active?.path || active.dailyNotePath) {
+      logger.flowWarn("WorkoutSet", active?.dailyNotePath ? "log:legacy-inline-readonly" : "log:no-active-workout", { exercise: set.exercise });
+      throw new Error(active?.dailyNotePath
+        ? "Earlier inline workouts are read-only in TPS Health."
+        : "Start a workout before logging sets.");
     }
-    if (this.nativeRecordService?.isEnabled()) return this.logNativeWorkoutSet(set, path);
-    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (path && !(file instanceof TFile)) {
-      logger.flowWarn("WorkoutSet", "log:missing-active-file", { path, exercise: set.exercise });
-      await this.clearActiveWorkoutState();
-      new Notice("Active workout file was missing. Cleared the stale workout state.");
-      throw new Error("Active workout file was missing");
-    }
-    const endedAt = set.completedDate || isoNow();
-    const previousEnd = this.settings.lastSetEndedAt ? Date.parse(this.settings.lastSetEndedAt) : NaN;
-    const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
-    const startedTimestamp = Date.parse(startedAt);
-    if (set.createExerciseNote === false) {
-      logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "active-workout" });
-    }
-    const exercise = await this.ensureExerciseDefinitionForWorkout(set.exercise, set.exercisePath || "");
-    const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
-      ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
-      : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
-    const timeSincePreviousSetSeconds = Number.isFinite(previousEnd)
-      ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
-      : undefined;
-    const fm = file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter || {} : {};
-    const savedSet: WorkoutSet = {
-      ...set,
-      id: id("set"),
-      createdDate: set.createdDate || startedAt,
-      completedDate: endedAt,
-      startedAt,
-      endedAt,
-      restSeconds,
-      restStartedAt: set.restStartedAt || endedAt,
-      exercisePath: exercise?.sourcePath,
-      workoutPath: path || dailyNotePath || undefined,
-      workoutPlanPath: typeof fm.workoutPlanPath === "string" ? fm.workoutPlanPath : this.settings.activeWorkoutPlanPath || undefined,
-      setType: set.setType || exercise?.defaultSetType || "normal",
-    };
-    const logTarget = normalizeWorkoutLogTarget(this.settings.activeWorkoutTarget || this.settings.workoutLogTarget);
-    const sessionSetLine = workoutSetLine(savedSet, {
-      notation: this.settings.workoutSetNotation,
-      includeExercise: true,
-    });
-    const setCount = (this.settings.activeWorkoutSetCount || 0) + 1;
-    logger.flow("WorkoutSet", "log:resolved", {
-      exercise: savedSet.exercise,
-      exercisePath: savedSet.exercisePath || "",
-      workoutPath: savedSet.workoutPath || "",
-      logTarget,
-      setCount,
-      restSeconds,
-      storage: "bullet",
-    });
-    if ((logTarget === "session-note" || logTarget === "both") && file instanceof TFile) {
-      await this.appendLoggedSetToWorkoutNote(file, savedSet, sessionSetLine, setCount, timeSincePreviousSetSeconds);
-    }
-    if ((logTarget === "daily-note" || logTarget === "both") && dailyNotePath && this.settings.activeWorkoutId) {
-      await this.appendNestedToDailyWorkout(dailyNotePath, this.settings.activeWorkoutId, workoutSetLine(savedSet), logTarget === "daily-note");
-    }
-    this.settings.lastSetEndedAt = endedAt;
-    this.settings.activeWorkoutSetCount = setCount;
-    await this.saveSettings();
-    logger.flow("WorkoutSet", "log:done", {
-      setId: savedSet.id,
-      exercise: savedSet.exercise,
-      exercisePath: savedSet.exercisePath || "",
-      workoutPath: savedSet.workoutPath || "",
-      logTarget,
-      setCount,
-      restSeconds,
-    });
-    new Notice("Logged set");
-    return savedSet;
+    return this.logNativeWorkoutSet(set, active.path);
   }
 
   private async logNativeWorkoutSet(set: LogSetInput, sessionPath: string): Promise<WorkoutSet> {
@@ -4053,11 +3740,10 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flowWarn("FoodLog", "write:unsupported-unit", { unit, servingUnit: loggedItem.servingUnit });
         throw new Error(`Choose a supported unit for ${loggedItem.name}.`);
       }
-      const consumedAt = completedDate || isoNow();
       const entry: FoodLogEntry = {
         id: id("food"),
         createdDate: isoNow(),
-        completedDate: consumedAt,
+        completedDate: completedDate || isoNow(),
         item: loggedItem,
         nutritionOverride: multiplyNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
         quantity: resolvedServing.servings,
@@ -4066,92 +3752,26 @@ export default class TPSHealthPlugin extends Plugin {
         servingUnit: resolvedServing.inputUnit,
         amount: resolvedServing.amount,
         amountUnit: resolvedServing.amountUnit,
-        section,
         tags: normalizeFoodLogTags(options.tags),
       };
-      const target = targetOverride || this.settings.foodLogTarget;
-      if (this.nativeRecordService?.isEnabled()) {
-        logger.flow("FoodLog", "write:resolved", {
-          food: loggedItem.name,
-          source: loggedItem.source,
-          sourcePath: loggedItem.sourcePath || "",
-          target: "native-records",
-          requestedQuantity: quantity,
-          requestedUnit: unit,
-          servings: resolvedServing.servings,
-          amount: resolvedServing.amount ?? "",
-          amountUnit: resolvedServing.amountUnit || "",
-        });
-        const record = await timing.measure("native-entry", () => this.nativeRecordService.createFoodEntry(entry));
-        this.markFoodUsageIndexDirty();
-        logger.flow("FoodLog", "write:done", {
-          foodId: entry.id,
-          food: loggedItem.name,
-          recordPath: record.path,
-          storage: "native-records",
-        });
-        new Notice("Logged food");
-        return entry;
-      }
-      const dailyFile = await timing.measure("daily-note", () => this.getOrCreateDailyNoteForDate(consumedAt));
-      entry.dailyNotePath = dailyFile.path;
       logger.flow("FoodLog", "write:resolved", {
         food: loggedItem.name,
         source: loggedItem.source,
         sourcePath: loggedItem.sourcePath || "",
-        target,
-        dailyNotePath: dailyFile.path,
-        section: section || this.settings.defaultFoodLogSection || "",
+        target: "native-records",
         requestedQuantity: quantity,
         requestedUnit: unit,
         servings: resolvedServing.servings,
         amount: resolvedServing.amount ?? "",
         amountUnit: resolvedServing.amountUnit || "",
-        portionRoute: options.amountGrams ? "described-gram-override" : "native-serving",
       });
-      let writtenFile: TFile;
-      if (target === "daily-note") {
-        writtenFile = await timing.measure("write-entry", () => this.insertIntoDailyNote(foodEntryLine(entry), section || this.settings.defaultFoodLogSection, dailyFile));
-      } else if (target === "single-file") {
-        writtenFile = await timing.measure("write-entry", () => this.insertIntoFoodLogFile(foodEntryLine(entry), section || this.settings.defaultFoodLogSection));
-      } else {
-        logger.flowWarn("FoodLog", "write:unsupported-target", { target });
-        throw new Error(`Unsupported food log target: ${target}`);
-      }
-      logger.flow("FoodLog", "write:inserted", {
-        foodId: entry.id,
-        food: loggedItem.name,
-        target,
-        path: writtenFile.path,
-        dailyNotePath: dailyFile.path,
-      });
+      const record = await timing.measure("native-entry", () => this.nativeRecordService.createFoodEntry(entry));
       this.markFoodUsageIndexDirty();
-      let rollupUpdated = false;
-      if (this.settings.automaticDailyRollups) {
-        try {
-          await timing.measure("daily-rollup", () => this.updateDailyRollupForFile(dailyFile));
-          rollupUpdated = true;
-        } catch (error) {
-          logger.flowError("FoodLog", "post-write:rollup-failed", error, { path: dailyFile.path, foodId: entry.id, target });
-          new Notice("Food was logged, but TPS Health could not refresh the daily rollup.", 10000);
-        }
-      }
-      if (options.focusAfterLog !== false) {
-        try {
-          await timing.measure("focus-entry", () => this.focusLineBeforeInsertedDailyLog(dailyFile, `[foodId:: ${entry.id}]`));
-        } catch (error) {
-          logger.flowError("FoodLog", "post-write:focus-failed", error, { path: dailyFile.path, foodId: entry.id, target });
-          new Notice("Food was logged, but TPS Health could not focus the new entry.", 10000);
-        }
-      } else {
-        logger.flow("FoodLog", "focus:skipped", { path: dailyFile.path, foodId: entry.id, target });
-      }
       logger.flow("FoodLog", "write:done", {
         foodId: entry.id,
         food: loggedItem.name,
-        target,
-        dailyNotePath: dailyFile.path,
-        rollupUpdated,
+        recordPath: record.path,
+        storage: "native-records",
       });
       new Notice("Logged food");
       return entry;
@@ -6318,7 +5938,9 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async getDailyRollup(): Promise<DailyRollup> {
-    const file = await this.getOrCreateDailyNote();
+    const path = await this.getTodayDailyNotePath();
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return this.calculateFoodTotals("", path);
     const content = await this.readDailyFoodRollupContent(file);
     const totals = this.calculateFoodTotals(content, file.path);
     logger.flow("Rollup", "read", { path: file.path, calories: totals.calories, proteinG: totals.proteinG });
@@ -6331,48 +5953,13 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async updateDailyRollup(): Promise<DailyRollup> {
-    const file = await this.getOrCreateDailyNote();
-    return this.updateDailyRollupForFile(file);
+    logger.flowWarn("Rollup", "legacy-inline-write:blocked");
+    throw new Error("Daily Note rollups are read-only in whole-note Health storage.");
   }
 
   async updateDailyRollupForFile(file: TFile): Promise<DailyRollup> {
-    logger.flow("Rollup", "update:start", { path: file.path, target: this.settings.foodLogTarget, goals: this.settings.healthGoals.length });
-    const content = await this.app.vault.read(file);
-    const totals = await this.calculateFoodTotals(await this.readDailyFoodRollupContent(file, content), file.path);
-    const cleaned = removeLegacyRollupBlock(content, this.settings.rollupHeading);
-    if (cleaned !== content) {
-      logger.flow("Rollup", "legacy-block:removed", { path: file.path, heading: this.settings.rollupHeading });
-      await this.app.vault.modify(file, cleaned);
-    }
-    await this.processHealthFrontmatter(file, (frontmatter) => {
-      delete frontmatter.tpsHealthCalories;
-      delete frontmatter.tpsHealthProteinG;
-      delete frontmatter.tpsHealthCarbsG;
-      delete frontmatter.tpsHealthFatG;
-      delete frontmatter.tpsHealthFiberG;
-      delete frontmatter.tpsHealthSugarG;
-      delete frontmatter.tpsHealthAlcoholG;
-      delete frontmatter.tpsHealthSodiumMg;
-      delete frontmatter.tpsHealthUpdatedAt;
-      const goalKeys = new Set(this.settings.healthGoals.map((goal) => goal.propertyKey));
-      for (const key of FOOD_ROLLUP_PROPERTY_KEYS) {
-        if (!goalKeys.has(key)) delete frontmatter[key];
-      }
-      for (const goal of this.settings.healthGoals) {
-        const value = foodRollupValue(totals, goal.propertyKey);
-        if (value != null) frontmatter[goal.propertyKey] = isExtraNutrientKey(goal.propertyKey) ? value : round(value);
-        else if (isExtraNutrientKey(goal.propertyKey)) delete frontmatter[goal.propertyKey];
-      }
-      frontmatter.healthUpdatedAt = isoNow();
-    });
-    logger.flow("Rollup", "updated", {
-      path: file.path,
-      calories: totals.calories,
-      proteinG: totals.proteinG,
-      carbsG: totals.carbsG,
-      fatG: totals.fatG,
-    });
-    return totals;
+    logger.flowWarn("Rollup", "legacy-inline-write:blocked", { path: file.path });
+    throw new Error("Daily Note rollups are read-only in whole-note Health storage.");
   }
 
   calculateFoodTotals(content: string, dailyNotePath?: string): NutritionTotals {
@@ -6385,135 +5972,25 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private async readDailyFoodRollupContent(dailyFile: TFile, existingDailyContent?: string): Promise<string> {
-    const dailyContent = existingDailyContent ?? await this.app.vault.read(dailyFile);
+    const dailyContent = existingDailyContent ?? await this.app.vault.cachedRead(dailyFile);
     if (this.settings.foodLogTarget !== "single-file") {
       logger.flow("Rollup", "content:daily-note", { path: dailyFile.path, bytes: dailyContent.length });
       return dailyContent;
     }
-    const logFile = await this.getFoodLogFile(false);
+    const logFile = this.getFoodLogFile();
     if (!logFile) {
       logger.flowWarn("Rollup", "content:single-file-missing", { path: dailyFile.path, logPath: this.settings.foodLogFilePath });
       return dailyContent;
     }
-    const logContent = await this.app.vault.read(logFile);
+    const logContent = await this.app.vault.cachedRead(logFile);
     logger.flow("Rollup", "content:single-file", { path: dailyFile.path, logPath: logFile.path, dailyBytes: dailyContent.length, logBytes: logContent.length });
     return `${dailyContent}\n${logContent}`;
   }
 
-  private async insertIntoDailyNote(line: string, section?: string, targetFile?: TFile): Promise<TFile> {
-    const file = targetFile || await this.getOrCreateDailyNote();
-    if (section?.trim()) return this.appendToDailyHeading(section.trim(), line, file);
-    await this.serializeMarkdownMutation(file, async () => {
-      logger.flow("NoteWrite", "daily-note:insert-front", { path: file.path });
-      const content = await this.app.vault.read(file);
-      const insertAt = frontmatterEndIndex(content);
-      const before = content.slice(0, insertAt);
-      const after = content.slice(insertAt).replace(/^\n*/, "");
-      const prefix = before ? `${before.replace(/\n*$/, "\n")}\n` : "";
-      await this.app.vault.modify(file, `${prefix}${line}\n${after ? `\n${after}` : ""}`);
-    });
-    return file;
-  }
-
-  private async appendToDailyHeading(heading: string, line: string, targetFile?: TFile): Promise<TFile> {
-    const file = targetFile || await this.getOrCreateDailyNote();
-    await this.serializeMarkdownMutation(file, async () => {
-      const content = await this.app.vault.read(file);
-      const marker = `## ${heading}`;
-      if (!content.includes(marker)) {
-        logger.flow("NoteWrite", "daily-heading:create", { path: file.path, heading });
-        await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
-        return;
-      }
-      logger.flow("NoteWrite", "daily-heading:append", { path: file.path, heading });
-      const index = content.indexOf(marker) + marker.length;
-      const before = content.slice(0, index);
-      const after = content.slice(index);
-      await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
-    });
-    return file;
-  }
-
-  private async insertIntoFoodLogFile(line: string, section?: string): Promise<TFile> {
-    const file = await this.getFoodLogFile(true);
-    if (!file) throw new Error("Food log file is not available");
-    if (section?.trim()) return this.appendToHeading(file, section.trim(), line);
-    await this.serializeMarkdownMutation(file, async () => {
-      logger.flow("NoteWrite", "food-log-file:append", { path: file.path });
-      await this.app.vault.append(file, `${line}\n`);
-    });
-    return file;
-  }
-
-  private async getFoodLogFile(create: boolean): Promise<TFile | null> {
+  private getFoodLogFile(): TFile | null {
     const path = normalizePath((this.settings.foodLogFilePath || DEFAULT_SETTINGS.foodLogFilePath).trim());
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) return existing;
-    if (!create) return null;
-    const folder = path.split("/").slice(0, -1).join("/");
-    if (folder) await this.ensureFolder(folder);
-    logger.flow("NoteWrite", "food-log-file:create", { path });
-    return this.app.vault.create(path, "");
-  }
-
-  private async appendToHeading(file: TFile, heading: string, line: string): Promise<TFile> {
-    await this.serializeMarkdownMutation(file, async () => {
-      const content = await this.app.vault.read(file);
-      const marker = `## ${heading}`;
-      if (!content.includes(marker)) {
-        logger.flow("NoteWrite", "heading:create", { path: file.path, heading });
-        await this.app.vault.modify(file, `${content.trimEnd()}\n\n${marker}\n\n${line}\n`);
-        return;
-      }
-      logger.flow("NoteWrite", "heading:append", { path: file.path, heading });
-      const index = content.indexOf(marker) + marker.length;
-      const before = content.slice(0, index);
-      const after = content.slice(index);
-      await this.app.vault.modify(file, `${before}${after.startsWith("\n") ? "" : "\n"}\n${line}${after}`);
-    });
-    return file;
-  }
-
-  private async serializeMarkdownMutation<T>(file: TFile, operation: () => Promise<T>): Promise<T> {
-    const previous = this.markdownMutationQueues.get(file) || Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
-    this.markdownMutationQueues.set(file, current);
-    try {
-      return await current;
-    } finally {
-      if (this.markdownMutationQueues.get(file) === current) {
-        this.markdownMutationQueues.delete(file);
-      }
-    }
-  }
-
-  private async focusLineBeforeInsertedDailyLog(file: TFile, marker: string): Promise<void> {
-    await sleep(120);
-    const content = await this.app.vault.cachedRead(file);
-    const lineIndex = content.split(/\r?\n/).findIndex((line) => line.includes(marker));
-    if (lineIndex < 0) {
-      logger.flowWarn("FoodLog", "focus:marker-missing", { path: file.path });
-      return;
-    }
-    const cursorLine = Math.max(0, lineIndex - 1);
-    logger.flow("FoodLog", "focus:start", { path: file.path, line: cursorLine });
-    try {
-      const leaf = this.app.workspace.getLeaf(false);
-      await leaf.openFile(file, { active: true } as any);
-      const view = leaf.view as MarkdownView;
-      const editor = view?.editor;
-      if (!editor) {
-        logger.flowWarn("FoodLog", "focus:no-editor", { path: file.path, line: cursorLine, viewType: leaf?.view?.getViewType?.() || "" });
-        return;
-      }
-      editor.setCursor({ line: cursorLine, ch: 0 });
-      editor.scrollIntoView?.({ from: { line: cursorLine, ch: 0 }, to: { line: cursorLine, ch: 0 } }, true);
-      editor.focus?.();
-      logger.flow("FoodLog", "focus:done", { path: file.path, line: cursorLine });
-    } catch (error) {
-      logger.flowError("FoodLog", "focus:failed", error, { path: file.path, line: cursorLine });
-      throw error;
-    }
+    return existing instanceof TFile ? existing : null;
   }
 
   private async insertWorkoutSessionIntoDailyNote(line: string, dateValue?: string, resolvedFile?: TFile): Promise<TFile> {
@@ -6726,9 +6203,8 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  async updateWorkoutSetLine(source: WorkoutSetLineSource, draft: Partial<WorkoutSet> & { completed?: boolean; performed?: boolean }): Promise<void> {
-    await this.switchRenderedWorkoutToLivePreview(source.filePath);
-    await this.serializeWorkoutMutation(source.filePath, "update-set", () => this.updateWorkoutSetLineNow(source, draft));
+  async updateWorkoutSetLine(_source: WorkoutSetLineSource, _draft: Partial<WorkoutSet> & { completed?: boolean; performed?: boolean }): Promise<void> {
+    throw new Error("Inline workout rows are read-only in whole-note Health storage.");
   }
 
   private async updateWorkoutSetLineNow(source: WorkoutSetLineSource, draft: Partial<WorkoutSet> & { completed?: boolean; performed?: boolean }): Promise<void> {
@@ -8037,6 +7513,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private ensureWorkoutActionBar(view: MarkdownView | null, file: TFile, source: "view" | "active-workout" | "active-view" = "view"): HTMLElement | null {
+    if (this.getActiveWorkoutState()?.dailyNotePath) return null;
     const mobileFloating = this.shouldFloatWorkoutActionBar();
     const host = view?.contentEl || (view as any)?.containerEl as HTMLElement | undefined;
     if (!mobileFloating && !host) {
@@ -8175,7 +7652,7 @@ export default class TPSHealthPlugin extends Plugin {
   private resolveMobileWorkoutActionBarTarget(): { view: MarkdownView; file: TFile; source: "active-view" } | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const active = this.getActiveWorkoutState();
-    if (!active || !view?.file || ![active.path, active.dailyNotePath].includes(view.file.path)) return null;
+    if (!active || active.dailyNotePath || !view?.file || view.file.path !== active.path) return null;
     if (view.getMode() === "source" && (view.getState().source === true
       || !view.contentEl.querySelector(".markdown-source-view.is-live-preview"))) return null;
     const snapshot = this.nativeRecordService?.isEnabled() ? this.nativeRecordService.getWorkoutSnapshot(view.file.path) : null;
@@ -9448,7 +8925,7 @@ export default class TPSHealthPlugin extends Plugin {
         logFoodByBarcode: { barcode: "012345678905", quantity: 0.5, unit: "serving" },
         logFoodByFoodPath: { foodPath: "Health/Foods/Example Protein Bar.md", quantity: 0.5, unit: "serving" },
         logActivity: { activity: "Walking", activityType: "walking", durationMinutes: 30, distance: 1.5, distanceUnit: "mi", steps: 3200, source: "manual" },
-        startWorkout: { plan: "Push Day", logTarget: "both", cooldownDays: 3 },
+        startWorkout: { plan: "Push Day", cooldownDays: 3 },
         logSet: { exercise: "Bench Press", reps: 8, weight: 185, weightUnit: "lb", rpe: 8 },
       },
     };
@@ -9574,7 +9051,6 @@ export default class TPSHealthPlugin extends Plugin {
         nativeRecordPropertyAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordPropertyAliases).map(([key, values]) => [key, [...(values || [])]])),
       }),
       getDailyRollup: () => this.traceApiCall("getDailyRollup", {}, () => this.getDailyRollup()),
-      updateDailyRollup: () => this.traceApiCall("updateDailyRollup", {}, () => this.updateDailyRollup()),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
       getPropertyCatalog: () => buildHealthPropertyCatalog(this.settings),
@@ -9671,50 +9147,14 @@ export default class TPSHealthPlugin extends Plugin {
     return null;
   }
 
-  async completeInlineFoodLog(editor: Editor): Promise<void> {
-    const cursor = editor.getCursor();
-    const targetLine = cursor.line;
-    const lineText = editor.getLine(targetLine);
-    const parsed = parseInlineFoodDraft(lineText);
-    if (!parsed) {
-      logger.flowWarn("InlineFood", "complete:no-draft", { line: targetLine });
-      new Notice("Place the cursor on a food line like: - ramen [protein: 35]");
-      return;
-    }
-    logger.flow("InlineFood", "complete:start", { line: targetLine, query: parsed.query, quantity: parsed.quantity, unit: parsed.unit });
-    const completed = await this.createCompletedInlineFoodLine(parsed);
-    if (!completed) {
-      logger.flowWarn("InlineFood", "complete:no-match", { line: targetLine, query: parsed.query });
-      new Notice(`No food match for "${parsed.query}"`);
-      return;
-    }
-    editor.replaceRange(completed, { line: targetLine, ch: 0 }, { line: targetLine, ch: lineText.length });
-    if (this.settings.automaticDailyRollups) await this.updateDailyRollup();
-    logger.flow("InlineFood", "complete:done", { line: targetLine, query: parsed.query });
-  }
-
   async openFoodLogEntryMenu(event: MouseEvent, entry: FoodLogBaseEntry): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
-    const selectedEntries = await this.getSelectedFoodLogEntries(entry);
-    logger.flow("FoodLogEntry", "menu:open", { path: entry.file.path, line: entry.lineNumber, selected: selectedEntries.length });
+    logger.flow("FoodLogEntry", "menu:legacy-readonly", { path: entry.file.path, line: entry.lineNumber });
     const menu = new Menu();
-    if (selectedEntries.length > 1) {
-      menu.addItem((item) => item
-        .setTitle(`Create recipe from ${selectedEntries.length} selected logs`)
-        .setIcon("chef-hat")
-        .onClick(() => new FoodLogRecipeModal(this.app, this, selectedEntries).open()));
-    }
+    menu.addItem((item) => item.setTitle("Earlier inline log (read-only)").setDisabled(true));
     menu.addItem((item) => item
-      .setTitle("Adjust serving consumed")
-      .setIcon("utensils")
-      .onClick(() => this.openAdjustFoodLogServing(entry)));
-    menu.addItem((item) => item
-      .setTitle("Change consumed date/time")
-      .setIcon("calendar-clock")
-      .onClick(() => this.openChangeFoodLogConsumedDate(entry)));
-    menu.addItem((item) => item
-      .setTitle("Edit food macros/title")
+      .setTitle("Edit linked food note")
       .setIcon("pencil")
       .onClick(() => this.openEditFoodNoteModal(entry)));
     menu.addItem((item) => item
@@ -9725,10 +9165,6 @@ export default class TPSHealthPlugin extends Plugin {
       .setTitle("Open log line")
       .setIcon("list")
       .onClick(() => void this.openFoodLogSourceLine(entry)));
-    menu.addItem((item) => item
-      .setTitle(selectedEntries.length > 1 ? `Delete ${selectedEntries.length} selected logs` : "Delete food log entry")
-      .setIcon("trash-2")
-      .onClick(() => void this.deleteFoodLogEntries(selectedEntries)));
     menu.showAtMouseEvent(event);
   }
 
@@ -9754,106 +9190,6 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     logger.flowWarn("FoodLogEntry", "menu-from-line:no-match", { path: file.path, line: lineNumber });
-  }
-
-  private async getSelectedFoodLogEntries(fallback: FoodLogBaseEntry): Promise<FoodLogBaseEntry[]> {
-    const byId = new Map<string, FoodLogBaseEntry>();
-    const add = (entry: FoodLogBaseEntry) => {
-      if (entry.file.path === fallback.file.path) byId.set(entry.id, entry);
-    };
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (view?.file === fallback.file) {
-      const editor = view.editor as Editor & { getCursor(scope?: string): EditorPosition };
-      const from = editor.getCursor("from");
-      const to = editor.getCursor("to");
-      if (from && to && (from.line !== to.line || from.ch !== to.ch)) {
-        const start = Math.min(from.line, to.line);
-        const end = Math.max(from.line, to.line);
-        for (let lineNumber = start; lineNumber <= end; lineNumber++) {
-          const line = editor.getLine(lineNumber);
-          if (isFoodLogLine(line)) add(createFoodLogBaseEntry(this, fallback.file, lineNumber, line));
-        }
-      }
-    }
-    const visibleSelection = window.getSelection?.()?.toString() || "";
-    if (visibleSelection.trim()) {
-      const normalizedSelection = normalizeFoodLogVisibleText(visibleSelection);
-      const lines = (await this.app.vault.cachedRead(fallback.file)).split("\n");
-      for (let index = 0; index < lines.length; index++) {
-        const line = lines[index];
-        if (!isFoodLogLine(line)) continue;
-        const summary = normalizeFoodLogVisibleText(foodLogVisibleSummary(line));
-        if (summary && normalizedSelection.includes(summary)) add(createFoodLogBaseEntry(this, fallback.file, index, line));
-      }
-    }
-    if (!byId.size) add(fallback);
-    const selected = Array.from(byId.values()).sort((a, b) => a.lineNumber - b.lineNumber);
-    logger.flow("FoodLogEntry", "selection:resolved", { path: fallback.file.path, fallbackLine: fallback.lineNumber, selected: selected.length });
-    return selected;
-  }
-
-  openAdjustFoodLogServing(entry: FoodLogBaseEntry, afterSave?: () => void): void {
-    const food = foodLogSnapshotItem(entry, this.foodItemForFoodLogEntry(entry));
-    new FoodLogAdjustModal(this.app, this, entry, food, async (updatedLine) => {
-      await this.replaceFoodLogEntryLine(entry, updatedLine);
-      afterSave?.();
-    }).open();
-  }
-
-  openChangeFoodLogConsumedDate(entry: FoodLogBaseEntry): void {
-    new FoodLogConsumedDateModal(this.app, this, entry).open();
-  }
-
-  async updateFoodLogEntryConsumedDate(entry: FoodLogBaseEntry, consumedDateInput: string): Promise<void> {
-    const completedDate = resolveBatchFoodCompletedDate(consumedDateInput, null) || isoNow();
-    const targetDailyFile = await this.getOrCreateDailyNoteForDate(completedDate);
-    const content = await this.app.vault.read(entry.file);
-    const lines = content.split("\n");
-    const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
-    if (currentIndex < 0) {
-      logger.flowWarn("FoodLogEntry", "date-change:line-missing", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
-      throw new Error("Food log line moved or changed before its consumed date could be updated.");
-    }
-
-    const currentLine = lines[currentIndex];
-    const oldDailyNotePath = readStringField(currentLine, "dailyNotePath") || entry.file.path;
-    const oldPath = normalizePath(oldDailyNotePath);
-    const sourcePath = normalizePath(entry.file.path);
-    const targetPath = normalizePath(targetDailyFile.path);
-    let updatedLine = upsertFoodLogCommentField(currentLine, "completedDate", completedDate);
-    updatedLine = upsertFoodLogCommentField(updatedLine, "dailyNotePath", targetDailyFile.path);
-
-    logger.flow("FoodLogEntry", "date-change:start", {
-      path: entry.file.path,
-      line: currentIndex,
-      name: entry.name,
-      oldDailyNotePath,
-      targetDailyNotePath: targetDailyFile.path,
-      completedDate,
-    });
-
-    const sourceIsConfiguredLogFile = sourcePath === normalizePath(this.settings.foodLogFilePath || DEFAULT_SETTINGS.foodLogFilePath);
-    const shouldMoveDailyLine = !sourceIsConfiguredLogFile && oldPath === sourcePath && sourcePath !== targetPath;
-    if (!shouldMoveDailyLine) {
-      entry.line = currentLine;
-      entry.lineNumber = currentIndex;
-      await this.replaceFoodLogEntryLine(entry, updatedLine, "Updated consumed date");
-      logger.flow("FoodLogEntry", "date-change:done", { path: entry.file.path, line: currentIndex, moved: false, targetDailyNotePath: targetDailyFile.path });
-      return;
-    }
-
-    lines.splice(currentIndex, 1);
-    await this.app.vault.modify(entry.file, lines.join("\n"));
-    await this.insertIntoDailyNote(updatedLine, this.settings.defaultFoodLogSection, targetDailyFile);
-    if (this.settings.automaticDailyRollups) {
-      const rollupPaths = new Set([oldPath, targetPath]);
-      for (const path of rollupPaths) {
-        const file = this.app.vault.getAbstractFileByPath(path);
-        if (file instanceof TFile) await this.updateDailyRollupForFile(file);
-      }
-    }
-    new Notice("Updated consumed date");
-    logger.flow("FoodLogEntry", "date-change:done", { path: entry.file.path, line: currentIndex, moved: true, targetDailyNotePath: targetDailyFile.path });
   }
 
   foodItemForFoodLogEntry(entry: FoodLogBaseEntry): FoodItem | null {
@@ -9912,43 +9248,6 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowError("Food", "note-open:failed", error, { path: file.path, leafMode: leafMode === false ? "current" : leafMode });
       throw error;
     }
-  }
-
-  async replaceFoodLogEntryLine(entry: FoodLogBaseEntry, updatedLine: string, noticeMessage = "Updated food serving"): Promise<void> {
-    const content = await this.app.vault.read(entry.file);
-    const lines = content.split("\n");
-    const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
-    if (currentIndex < 0) {
-      logger.flowWarn("FoodLogEntry", "line:replace-missing", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
-      throw new Error("Food log line moved or changed before it could be updated.");
-    }
-    entry.lineNumber = currentIndex;
-    entry.line = lines[currentIndex];
-    const oldDailyNotePath = readStringField(entry.line, "dailyNotePath") || entry.file.path;
-    lines[entry.lineNumber] = updatedLine;
-    logger.flow("FoodLogEntry", "line:replace", { path: entry.file.path, line: entry.lineNumber, name: entry.name });
-    await this.app.vault.modify(entry.file, lines.join("\n"));
-    const dailyNotePath = readStringField(updatedLine, "dailyNotePath") || entry.file.path;
-    const rollupPaths = new Set([normalizePath(oldDailyNotePath), normalizePath(dailyNotePath)]);
-    let rollupUpdated = false;
-    if (this.settings.automaticDailyRollups) {
-      for (const path of rollupPaths) {
-        const dailyFile = this.app.vault.getAbstractFileByPath(path);
-        if (dailyFile instanceof TFile) {
-          await this.updateDailyRollupForFile(dailyFile);
-          rollupUpdated = true;
-        }
-      }
-    }
-    logger.flow("FoodLogEntry", "line:replace-done", {
-      path: entry.file.path,
-      line: entry.lineNumber,
-      name: entry.name,
-      dailyNotePath,
-      oldDailyNotePath,
-      rollupUpdated,
-    });
-    new Notice(noticeMessage);
   }
 
   private async readRecipeMutationContent(file: TFile, operation: string): Promise<string> {
@@ -10199,108 +9498,16 @@ export default class TPSHealthPlugin extends Plugin {
     await this.updateFoodNote(file, food, type);
   }
 
-  async deleteFoodLogEntries(entries: FoodLogBaseEntry[], afterDelete?: () => void): Promise<void> {
-    const uniqueEntries = Array.from(new Map(entries.map((entry) => [entry.id, entry])).values());
-    if (!uniqueEntries.length) {
-      logger.flowWarn("FoodLogEntry", "delete:empty");
-      return;
-    }
-    const count = uniqueEntries.length;
-    const message = count === 1
-      ? `Delete "${uniqueEntries[0].name}" from the food log?`
-      : `Delete ${count} selected food log entries?`;
-    if (typeof window.confirm === "function" && !window.confirm(message)) {
-      logger.flow("FoodLogEntry", "delete:cancelled", { count });
-      return;
-    }
-    logger.flow("FoodLogEntry", "delete:start", { count });
-
-    const entriesByFile = new Map<string, { file: TFile; entries: FoodLogBaseEntry[] }>();
-    for (const entry of uniqueEntries) {
-      const group = entriesByFile.get(entry.file.path) || { file: entry.file, entries: [] };
-      group.entries.push(entry);
-      entriesByFile.set(entry.file.path, group);
-    }
-
-    const dailyNotePaths = new Set<string>();
-    let deletedCount = 0;
-    for (const { file, entries: fileEntries } of entriesByFile.values()) {
-      const content = await this.app.vault.read(file);
-      const lines = content.split("\n");
-      const sortedEntries = [...fileEntries].sort((a, b) => b.lineNumber - a.lineNumber);
-      for (const entry of sortedEntries) {
-        const currentIndex = this.findFoodLogEntryLineIndex(lines, entry);
-        if (currentIndex < 0) {
-          logger.flowWarn("FoodLogEntry", "delete:line-missing", { path: file.path, line: entry.lineNumber, name: entry.name });
-          throw new Error("Food log line moved or changed before it could be deleted.");
-        }
-        const line = lines[currentIndex];
-        dailyNotePaths.add(readStringField(line, "dailyNotePath") || file.path);
-        lines.splice(currentIndex, 1);
-        deletedCount += 1;
-      }
-      await this.app.vault.modify(file, lines.join("\n"));
-    }
-
-    if (this.settings.automaticDailyRollups) {
-      for (const path of dailyNotePaths) {
-        const dailyFile = this.app.vault.getAbstractFileByPath(path);
-        if (dailyFile instanceof TFile) await this.updateDailyRollupForFile(dailyFile);
-      }
-    }
-    new Notice(deletedCount === 1 ? "Deleted food log entry" : `Deleted ${deletedCount} food log entries`);
-    logger.flow("FoodLogEntry", "delete:done", { deleted: deletedCount, files: entriesByFile.size, rollupTargets: dailyNotePaths.size });
-    afterDelete?.();
-  }
-
-  private findFoodLogEntryLineIndex(lines: string[], entry: FoodLogBaseEntry): number {
-    if (lines[entry.lineNumber] === entry.line) return entry.lineNumber;
-    const id = readStringField(entry.line, "foodId");
-    if (id) {
-      const idIndex = lines.findIndex((line) => isFoodLogLine(line) && readStringField(line, "foodId") === id);
-      if (idIndex >= 0) return idIndex;
-    }
-    return lines.findIndex((line) => line === entry.line);
-  }
-
   async openFoodLogSourceLine(entry: FoodLogBaseEntry): Promise<void> {
     logger.flow("FoodLogEntry", "source-line:open-start", { path: entry.file.path, line: entry.lineNumber });
-    try {
-      const leaf = this.app.workspace.getLeaf(false);
-      await leaf.openFile(entry.file);
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (view?.file === entry.file) {
-        view.editor.setCursor({ line: entry.lineNumber, ch: 0 });
-        view.editor.scrollIntoView({ from: { line: entry.lineNumber, ch: 0 }, to: { line: entry.lineNumber, ch: 0 } }, true);
-        logger.flow("FoodLogEntry", "source-line:open-done", { path: entry.file.path, line: entry.lineNumber });
-      } else {
-        logger.flowWarn("FoodLogEntry", "source-line:no-active-view", { path: entry.file.path, line: entry.lineNumber });
-      }
-    } catch (error) {
-      logger.flowError("FoodLogEntry", "source-line:open-failed", error, { path: entry.file.path, line: entry.lineNumber });
-      throw error;
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.openFile(entry.file);
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (view?.file === entry.file) {
+      view.editor.setCursor({ line: entry.lineNumber, ch: 0 });
+      view.editor.scrollIntoView({ from: { line: entry.lineNumber, ch: 0 }, to: { line: entry.lineNumber, ch: 0 } }, true);
     }
-  }
-
-  async createCompletedInlineFoodLine(parsed: InlineFoodDraft, selected?: FoodItem): Promise<string | null> {
-    const item = selected || (await this.searchFoods(parsed.query))[0];
-    if (!item) return null;
-    const saved = await this.findOrCreateFoodNote(item);
-    const nutritionOverride = nutritionFromInlineOverrides(parsed.overrides);
-    const resolvedServing = resolveFoodLogServing(saved, parsed.quantity, parsed.unit || preferredFoodLogUnit(saved));
-    const entry: FoodLogEntry = {
-      id: id("food"),
-      createdDate: isoNow(),
-      item: saved,
-      quantity: resolvedServing.servings,
-      unit: "serving",
-      servingQuantity: resolvedServing.inputQuantity,
-      servingUnit: resolvedServing.inputUnit,
-      amount: resolvedServing.amount,
-      amountUnit: resolvedServing.amountUnit,
-      nutritionOverride: hasInlineNutritionOverrides(parsed.overrides) ? nutritionOverride : undefined,
-    };
-    return foodEntryLine(entry);
+    logger.flow("FoodLogEntry", "source-line:open-done", { path: entry.file.path, line: entry.lineNumber });
   }
 
   private getActiveInlineFoodDraft(): InlineFoodDraft | null {
@@ -10377,237 +9584,6 @@ function foodLogSnapshotItem(entry: FoodLogBaseEntry, linkedFood: FoodItem | nul
     servingMl: readNumber(entry.line, "foodServingMl") ?? linkedFood?.servingMl,
     nutrition: multiplyNutrition(entry.nutrition, 1 / loggedServings),
   };
-}
-
-class FoodLogConsumedDateModal extends Modal {
-
-  constructor(
-    app: App,
-    private plugin: TPSHealthPlugin,
-    private entry: FoodLogBaseEntry,
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    logger.flow("FoodLogBase", "date-change:open", { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber });
-    this.contentEl.empty();
-    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
-    this.contentEl.addClass("tps-health-modal");
-    this.contentEl.createEl("h2", { text: "Change consumed date" });
-    this.contentEl.createEl("p", { text: this.entry.name, cls: "tps-health-status" });
-    let consumedDateInput = foodLogDateTimeLocalFromTimestamp(readStringField(this.entry.line, "completedDate") || "");
-    let inputEl: HTMLInputElement | null = null;
-    new Setting(this.contentEl)
-      .setName("Consumed date/time")
-      .addText((text) => {
-        configureFoodLogDateTimeInput(text.inputEl);
-        inputEl = text.inputEl;
-        text.setValue(consumedDateInput).onChange((value) => consumedDateInput = value.trim());
-      });
-    new Setting(this.contentEl).setClass("tps-health-modal-actions")
-      .addButton((button) => button
-        .setButtonText("Now")
-        .onClick(() => {
-          consumedDateInput = foodLogDateTimeLocalNow();
-          if (inputEl) inputEl.value = consumedDateInput;
-        }))
-      .addButton((button) => button
-        .setButtonText("Save")
-        .setCta()
-        .onClick(async () => {
-          try {
-            logger.flow("FoodLogBase", "date-change:submit", { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber, inputDate: foodLogDateInputDate(consumedDateInput) });
-            await this.plugin.updateFoodLogEntryConsumedDate(this.entry, consumedDateInput);
-            this.close();
-          } catch (error) {
-            logger.flowError("FoodLogBase", "date-change:failed", error, { name: this.entry.name, path: this.entry.file.path, line: this.entry.lineNumber });
-            throw error;
-          }
-        }));
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
-}
-
-class FoodLogAdjustModal extends Modal {
-
-  constructor(
-    app: App,
-    private plugin: TPSHealthPlugin,
-    private entry: FoodLogBaseEntry,
-    private item: FoodItem,
-    private onSave: (updatedLine: string) => Promise<void>,
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    logger.flow("FoodLogBase", "adjust:open", { name: this.item.name, sourcePath: this.item.sourcePath || "" });
-    this.contentEl.empty();
-    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame", "tps-health-food-log-frame");
-    this.contentEl.addClass("tps-health-modal");
-    this.contentEl.createEl("h2", { text: this.item.name });
-    let quantity = readNumber(this.entry.line, "qty") ?? readNumber(this.entry.line, "servings") ?? 1;
-    let unit = readStringField(this.entry.line, "unit") || preferredFoodLogUnit(this.item);
-    const summaryEl = this.contentEl.createDiv({ cls: "tps-health-log-summary" });
-    const servingEl = summaryEl.createDiv({ cls: "tps-health-log-serving" });
-    const nutritionEl = summaryEl.createDiv({ cls: "tps-health-log-nutrition" });
-    const updatePreview = () => {
-      const resolved = resolveFoodLogServing(this.item, quantity, unit);
-      const parts = [`${round(quantity)} ${unit}`];
-      if (resolved.servings !== quantity || normalizeServingUnit(unit) !== "serving") parts.push(`${round(resolved.servings)} serving${resolved.servings === 1 ? "" : "s"}`);
-      if (resolved.amount != null && resolved.amountUnit) parts.push(`${resolved.amount} ${resolved.amountUnit}`);
-      servingEl.setText(parts.join(" = "));
-      renderMacroPills(nutritionEl, multiplyNutrition(this.item.nutrition || {}, resolved.servings));
-    };
-    updatePreview();
-    new Setting(this.contentEl).setName("Amount consumed").addText((text) => text.setValue(String(quantity)).onChange((value) => {
-      quantity = Number(value) || 1;
-      updatePreview();
-    }));
-    new Setting(this.contentEl).setName("Unit").addDropdown((dropdown) => {
-      const unitOptions = new Set(foodLogUnitOptions(this.item));
-      unitOptions.add(unit);
-      for (const option of unitOptions) dropdown.addOption(option, foodLogUnitOptionLabel(this.item, option));
-      dropdown.setValue(unit).onChange((value) => {
-        unit = value;
-        updatePreview();
-      });
-    });
-    const actions = new Setting(this.contentEl).setClass("tps-health-modal-actions");
-    if (this.item.sourcePath) actions.addButton((button) => button
-        .setButtonText("Open food note")
-        .onClick(async () => {
-          const file = this.item.sourcePath ? this.plugin.app.vault.getAbstractFileByPath(this.item.sourcePath) : null;
-          if (file instanceof TFile) {
-            logger.flow("FoodLogBase", "adjust:food-note-open", { path: file.path });
-            try {
-              await this.plugin.app.workspace.getLeaf(false).openFile(file);
-              logger.flow("FoodLogBase", "adjust:food-note-open-done", { path: file.path });
-            } catch (error) {
-              logger.flowError("FoodLogBase", "adjust:food-note-open-failed", error, { path: file.path });
-              throw error;
-            }
-          } else {
-            logger.flowWarn("FoodLogBase", "adjust:food-note-missing", { sourcePath: this.item.sourcePath || "", name: this.item.name });
-          }
-        }));
-    actions.addButton((button) => button
-        .setButtonText("Save")
-        .setCta()
-        .onClick(async () => {
-          if (!Number.isFinite(quantity) || quantity <= 0) {
-            logger.flowWarn("FoodLogBase", "adjust:invalid-amount", { name: this.item.name, quantity, unit });
-            new Notice("Amount must be greater than 0");
-            return;
-          }
-          const resolved = resolveFoodLogServing(this.item, quantity, unit);
-          logger.flow("FoodLogBase", "adjust:submit", { name: this.item.name, quantity, unit, servings: resolved.servings });
-          const updated: FoodLogEntry = {
-            id: readStringField(this.entry.line, "foodId") || this.entry.id,
-            createdDate: readStringField(this.entry.line, "createdDate") || isoNow(),
-            completedDate: readStringField(this.entry.line, "completedDate"),
-            item: this.item,
-            quantity: resolved.servings,
-            unit: "serving",
-            servingQuantity: resolved.inputQuantity,
-            servingUnit: resolved.inputUnit,
-            amount: resolved.amount,
-            amountUnit: resolved.amountUnit,
-            note: readStringField(this.entry.line, "note"),
-            tags: normalizeFoodLogTags(readStringField(this.entry.line, "tags")),
-            dailyNotePath: readStringField(this.entry.line, "dailyNotePath"),
-          };
-          try {
-            await this.onSave(foodEntryLine(updated));
-            logger.flow("FoodLogBase", "adjust:done", { name: this.item.name, quantity, unit, servings: resolved.servings });
-            this.close();
-          } catch (error) {
-            logger.flowError("FoodLogBase", "adjust:failed", error, { name: this.item.name, sourcePath: this.item.sourcePath || "" });
-            throw error;
-          }
-        }));
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
-}
-
-class FoodLogRecipeModal extends Modal {
-  private recipeName = "";
-
-  constructor(app: App, private plugin: TPSHealthPlugin, private entries: FoodLogBaseEntry[]) {
-    super(app);
-    this.recipeName = entries.map((entry) => entry.name).slice(0, 3).join(" + ");
-  }
-
-  onOpen(): void {
-    logger.flow("FoodLogBase", "recipe:create-open", { selected: this.entries.length });
-    this.contentEl.empty();
-    this.modalEl.addClass("tps-keyboard-aware-modal", "tps-health-modal-frame");
-    this.contentEl.addClass("tps-health-modal");
-    this.contentEl.createEl("h2", { text: "Create recipe" });
-    this.contentEl.createDiv({ cls: "tps-health-status", text: `${this.entries.length} logged foods selected` });
-    renderMacroPills(this.contentEl.createDiv({ cls: "tps-health-selection-macros" }), sumFoodLogNutrition(this.entries));
-    const list = this.contentEl.createDiv({ cls: "tps-health-selection" });
-    for (const entry of this.entries) {
-      const row = list.createDiv({ cls: "tps-health-selection-row" });
-      const copy = row.createDiv({ cls: "tps-health-selection-copy" });
-      copy.createDiv({ cls: "tps-health-selection-name", text: entry.name });
-      copy.createDiv({ cls: "tps-health-selection-meta", text: entry.serving });
-      renderMacroPills(copy.createDiv({ cls: "tps-health-selection-line-macros" }), entry.nutrition);
-    }
-    new Setting(this.contentEl)
-      .setName("Recipe name")
-      .addText((text) => text
-        .setPlaceholder("Protein snack plate")
-        .setValue(this.recipeName)
-        .onChange((value) => this.recipeName = value.trim()));
-    const recipeNameInput = this.contentEl.querySelector<HTMLInputElement>('.setting-item input[type="text"]');
-    recipeNameInput?.addEventListener("focus", () => scrollHealthModalInputIntoView(recipeNameInput));
-    new Setting(this.contentEl).addButton((button) => button
-      .setButtonText("Create recipe")
-      .setCta()
-      .onClick(() => void this.createRecipe()));
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
-
-  private async createRecipe(): Promise<void> {
-    const name = this.recipeName.trim() || this.entries.map((entry) => entry.name).slice(0, 3).join(" + ");
-    logger.flow("FoodLogBase", "recipe:create-submit", { selected: this.entries.length, name });
-    if (!this.entries.length) {
-      logger.flowWarn("FoodLogBase", "recipe:create-empty");
-      return;
-    }
-    const ingredients = this.entries
-      .map((entry) => recipeIngredientLineFromFoodLogEntry(this.plugin, entry))
-      .join("\n");
-    try {
-      const saved = await this.plugin.createFoodFromInput({
-        type: "recipe",
-        name,
-        servingAmount: 1,
-        servingUnit: "serving",
-        recipeServings: 1,
-        ingredients,
-      });
-      logger.flow("FoodLogBase", "recipe:create-done", { name: saved.name, sourcePath: saved.sourcePath || "", selected: this.entries.length });
-      new Notice(`Created recipe ${saved.name}.`);
-      this.close();
-      logger.flow("FoodLogBase", "recipe:log-modal-open", { name: saved.name, sourcePath: saved.sourcePath || "", selected: this.entries.length });
-      new FoodLogModal(this.app, this.plugin, saved).open();
-    } catch (error) {
-      logger.flowError("FoodLogBase", "recipe:create-failed", error, { selected: this.entries.length, name });
-      throw error;
-    }
-  }
 }
 
 class BatchFoodRecipeModal extends FoodInputModal {
@@ -12779,11 +11755,7 @@ class TPSHealthRenderedControlsChild extends MarkdownRenderChild {
       void renderFoodLogChips(this.containerEl, this.plugin, this.ctx).catch((error) => {
         logger.flowError("RenderedControls", "food-log:failed", error, { sourcePath: this.ctx.sourcePath });
       });
-      renderWorkoutSetChips(this.containerEl, this.plugin, this.ctx);
       renderNativeWorkoutSurfaceInReadingView(this.containerEl, this.plugin, this.ctx.sourcePath);
-      void renderDailyWorkoutHeaders(this.containerEl, this.plugin, this.ctx).catch((error) => {
-        logger.flowError("RenderedControls", "daily-workout:failed", error, { sourcePath: this.ctx.sourcePath });
-      });
     } catch (error) {
       logger.flowError("RenderedControls", "postprocessor:failed", error, { sourcePath: this.ctx.sourcePath });
     }
@@ -14759,41 +13731,15 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
 
 function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
   if (!state.field(editorLivePreviewField, false)) return Decoration.none;
-  const builder = new RangeSetBuilder<Decoration>();
   const filePath = state.field(editorInfoField, false)?.file?.path || "";
-  const documentContent = state.doc.toString();
-  const dailyWorkoutDocument = documentContent.split("\n").some(isWorkoutDailyMarkerLine);
   const nativeWorkout = !!filePath && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(filePath);
-  if (!filePath || (!nativeWorkout && !isWorkoutLikeMarkdownPath(plugin, filePath) && !dailyWorkoutDocument)) return Decoration.none;
-  const hasWorkoutSets = docHasWorkoutSetLine(documentContent);
-  const documentLines = documentContent.split("\n");
-  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
-    const line = state.doc.line(lineNumber);
-    if (!hasWorkoutSets && /^##\s+Sets\s*$/i.test(line.text.trim())) {
-      builder.add(line.to, line.to, Decoration.widget({
-        widget: new WorkoutSetEmptyWidget(plugin, filePath),
-        block: true,
-        side: 1,
-      }));
-      continue;
-    }
-    if (line.from === line.to || selectionTouchesLineInState(state, line.from, line.to)) continue;
-    const chip = workoutSetChipDataFromLine(line.text);
-    if (!chip) continue;
-    if (dailyWorkoutDocument && !dailyWorkoutIdForLine(documentLines, line.number - 1)) continue;
-    Object.assign(chip, workoutSetPresentation(documentLines, line.number - 1, chip));
-    builder.add(line.from, line.to, Decoration.replace({
-      widget: new WorkoutSetChipWidget(plugin, chip, { filePath, lineNumber: line.number - 1, line: line.text }),
-      block: true,
-    }));
-  }
-  if (nativeWorkout) {
-    builder.add(state.doc.length, state.doc.length, Decoration.widget({
-      widget: new NativeWorkoutSurfaceWidget(plugin, filePath),
-      block: true,
-      side: 100,
-    }));
-  }
+  if (!nativeWorkout) return Decoration.none;
+  const builder = new RangeSetBuilder<Decoration>();
+  builder.add(state.doc.length, state.doc.length, Decoration.widget({
+    widget: new NativeWorkoutSurfaceWidget(plugin, filePath),
+    block: true,
+    side: 100,
+  }));
   return builder.finish();
 }
 
@@ -15502,79 +14448,6 @@ function selectionTouchesLine(view: EditorView, from: number, to: number): boole
     (range.from >= from && range.from <= to) ||
     (range.to >= from && range.to <= to) ||
     (range.from <= from && range.to >= to));
-}
-
-class FoodLogEditorSuggest extends EditorSuggest<InlineFoodSuggestion> {
-  constructor(app: App, private plugin: TPSHealthPlugin) {
-    super(app);
-  }
-
-  onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
-    const line = editor.getLine(cursor.line);
-    const parsed = parseInlineFoodDraft(line);
-    if (!parsed || parsed.query.length < 2) return null;
-    if (!lineHasFoodDraftProperties(line) && !parsed.hasExplicitAmount && !parsed.sourcePath) return null;
-    return {
-      start: { line: cursor.line, ch: 0 },
-      end: { line: cursor.line, ch: line.length },
-      query: parsed.query,
-    };
-  }
-
-  async getSuggestions(context: EditorSuggestContext): Promise<InlineFoodSuggestion[]> {
-    const line = context.editor.getLine(context.start.line);
-    const draft = parseInlineFoodDraft(line);
-    if (!draft) return [];
-    if (!lineHasFoodDraftProperties(line) && !draft.hasExplicitAmount && !draft.sourcePath) return [];
-    if (draft.sourcePath) {
-      const file = this.app.vault.getAbstractFileByPath(draft.sourcePath);
-      if (file instanceof TFile) {
-        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-        return [{ draft, item: this.plugin.foodFromFrontmatter(file, fm) }];
-      }
-      logger.flowWarn("InlineFood", "suggest:source-missing", { sourcePath: draft.sourcePath });
-    }
-    const items = await this.plugin.searchLocalFoods(draft.query);
-    return items.slice(0, 8).map((item) => ({ draft, item }));
-  }
-
-  renderSuggestion(suggestion: InlineFoodSuggestion, el: HTMLElement): void {
-    el.addClass("tps-health-inline-suggestion");
-    const header = el.createDiv({ cls: "tps-health-inline-suggestion-header" });
-    header.createDiv({ cls: "tps-health-inline-suggestion-title", text: suggestion.item.name });
-    const nutrition = suggestion.item.nutrition || {};
-    el.createDiv({
-      cls: "tps-health-inline-suggestion-meta",
-      text: [
-        suggestion.item.brand,
-        suggestion.item.source,
-        [suggestion.item.servingAmount ? round(suggestion.item.servingAmount) : "", suggestion.item.servingUnit || "serving"].filter(Boolean).join(" "),
-      ].filter(Boolean).join(" • "),
-    });
-    renderMacroPills(header.createDiv({ cls: "tps-health-inline-suggestion-macros" }), nutrition);
-  }
-
-  async selectSuggestion(suggestion: InlineFoodSuggestion): Promise<void> {
-    const lineNumber = this.context?.start.line;
-    if (lineNumber == null) {
-      logger.flowWarn("InlineFood", "suggest:select-missing-line", { query: suggestion.draft.query, name: suggestion.item.name });
-      return;
-    }
-    const completed = await this.plugin.createCompletedInlineFoodLine(suggestion.draft, suggestion.item);
-    if (!completed) {
-      logger.flowWarn("InlineFood", "suggest:select-no-completion", { line: lineNumber, query: suggestion.draft.query, name: suggestion.item.name });
-      return;
-    }
-    const editor = this.context?.editor;
-    if (!editor) {
-      logger.flowWarn("InlineFood", "suggest:select-no-editor", { line: lineNumber, query: suggestion.draft.query, name: suggestion.item.name });
-      return;
-    }
-    const current = editor.getLine(lineNumber);
-    editor.replaceRange(completed, { line: lineNumber, ch: 0 }, { line: lineNumber, ch: current.length });
-    if (this.plugin.settings.automaticDailyRollups) await this.plugin.updateDailyRollup();
-    logger.flow("InlineFood", "suggest:select-done", { line: lineNumber, query: suggestion.draft.query, name: suggestion.item.name });
-  }
 }
 
 class BarcodeScannerModal extends Modal {
@@ -17173,7 +16046,6 @@ class StartWorkoutModal extends Modal {
 
     let title = "";
     let plan = "";
-    let createWorkoutNote = normalizeWorkoutLogTarget(this.plugin.settings.workoutLogTarget) !== "daily-note";
     let cooldownDays = this.plugin.settings.defaultWorkoutCooldownDays;
     let openFile = true;
     let workoutDate = this.selectedWorkoutDate || "";
@@ -17250,13 +16122,6 @@ class StartWorkoutModal extends Modal {
         .onChange((value) => title = value.trim()));
 
     new Setting(options)
-      .setName("Also create a workout note")
-      .setDesc("The live workout always appears in the Daily Note.")
-      .addToggle((toggle) => toggle
-        .setValue(createWorkoutNote)
-        .onChange((value) => createWorkoutNote = value));
-
-    new Setting(options)
       .setName("Cooldown days")
       .setDesc("Used when this workout is finished.")
       .addText((text) => text
@@ -17267,7 +16132,7 @@ class StartWorkoutModal extends Modal {
         }));
 
     new Setting(options)
-      .setName("Open Daily Note")
+      .setName("Open workout note")
       .addToggle((toggle) => toggle
         .setValue(openFile)
         .onChange((value) => openFile = value));
@@ -17276,26 +16141,23 @@ class StartWorkoutModal extends Modal {
       .addButton((button) => button
         .setButtonText("Start empty")
         .onClick(async () => {
-          const logTarget: WorkoutLogTarget = createWorkoutNote ? "both" : "daily-note";
-          logger.flow("WorkoutModal", "start-blank:submit", { title, cooldownDays, logTarget, workoutDate, openFile });
+          logger.flow("WorkoutModal", "start-blank:submit", { title, cooldownDays, workoutDate, openFile });
           try {
             const path = await this.plugin.startWorkout({
               title: title || undefined,
               cooldownDays,
-              logTarget,
               startedAt: workoutDate ? timestampForDate(workoutDate) : undefined,
               dailyNoteDate: workoutDate || undefined,
               openFile,
             });
             logger.flow("WorkoutModal", "start-blank:done", {
               path: path || "",
-              logTarget,
               workoutDate,
               openedExercisePicker: false,
             });
             this.close();
           } catch (error) {
-            logger.flowError("WorkoutModal", "start-blank:failed", error, { title, cooldownDays, logTarget, workoutDate, openFile });
+            logger.flowError("WorkoutModal", "start-blank:failed", error, { title, cooldownDays, workoutDate, openFile });
             const message = logger.errorSummary(error);
             status.setText(`Could not start workout: ${message}`);
             new Notice(`Could not start workout: ${message}`);
@@ -17309,22 +16171,20 @@ class StartWorkoutModal extends Modal {
           .onClick(async () => {
           const planPath = await resolveSelectedPlanPath();
           if (plan && !planPath) return;
-          const logTarget: WorkoutLogTarget = createWorkoutNote ? "both" : "daily-note";
-          logger.flow("WorkoutModal", "start:submit", { title, plan, cooldownDays, logTarget, workoutDate, openFile });
+          logger.flow("WorkoutModal", "start:submit", { title, plan, cooldownDays, workoutDate, openFile });
           try {
             const path = await this.plugin.startWorkout({
               title: title || undefined,
               planPath,
               cooldownDays,
-              logTarget,
               startedAt: workoutDate ? timestampForDate(workoutDate) : undefined,
               dailyNoteDate: workoutDate || undefined,
               openFile,
             });
-            logger.flow("WorkoutModal", "start:done", { title, plan, path: path || "", logTarget, workoutDate });
+            logger.flow("WorkoutModal", "start:done", { title, plan, path: path || "", workoutDate });
             this.close();
           } catch (error) {
-            logger.flowError("WorkoutModal", "start:failed", error, { title, plan, cooldownDays, logTarget, workoutDate, openFile });
+            logger.flowError("WorkoutModal", "start:failed", error, { title, plan, cooldownDays, workoutDate, openFile });
             const message = logger.errorSummary(error);
             status.setText(`Could not start workout: ${message}`);
             new Notice(`Could not start workout: ${message}`);
@@ -18847,7 +17707,7 @@ class DiscardWorkoutPromptModal extends Modal {
     this.contentEl.addClass("tps-health-modal");
     this.contentEl.createEl("h2", { text: "Discard workout?" });
     this.contentEl.createEl("p", {
-      text: "This removes the running workout and its sets from the Daily Note. A dedicated workout note is moved to Obsidian trash so it remains recoverable.",
+      text: "This archives the active workout note and clears the active session. Reusable exercise notes stay in place.",
       cls: "tps-health-status",
     });
     let discarding = false;

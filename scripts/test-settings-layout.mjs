@@ -50,17 +50,11 @@ test("Health settings keep only the three intentional optional disclosures", () 
 
 test("Every active user preference remains bound and exerciseTag is editable", () => {
   const preferenceKeys = [
-    "foodLogTarget",
-    "foodLogFilePath",
-    "defaultFoodLogSection",
-    "automaticDailyRollups",
     "includeBrandedFoodSearch",
     "calorieGoal",
     "proteinGoalG",
     "activityGoalMinutes",
     "healthGoals",
-    "workoutLogTarget",
-    "workoutDailyNotePlacement",
     "workoutStartPropertyKey",
     "workoutIntervalMode",
     "workoutIntervalPropertyKey",
@@ -124,19 +118,14 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /setButtonText\("Open Daily Notes settings"\)/);
   assert.match(settingsSource, /openTabById\?\.\("daily-notes"\)/);
   assert.match(settingsSource, /setButtonText\("Open connections"\)/);
-  assert.match(settingsSource, /\.setName\("Also create a dedicated workout note"\)/);
-  assert.match(settingsSource, /\.setName\("Workout position in Daily Note"\)/);
-  assert.match(settingsSource, /\.addOption\("after-frontmatter", "Top, after properties"\)/);
-  assert.match(settingsSource, /\.addOption\("before-first-h2", "Above the first level-2 heading"\)/);
-  assert.match(settingsSource, /\.addOption\("bottom", "Bottom of note"\)/);
   assert.match(settingsSource, /addWorkoutPropertyKey\(\s*"Workout start property"/);
   assert.match(settingsSource, /\.setName\("Workout interval style"\)/);
   assert.match(settingsSource, /\.addOption\("duration", "Duration in minutes"\)/);
   assert.match(settingsSource, /\.addOption\("end", "Ending datetime"\)/);
   assert.match(settingsSource, /addWorkoutPropertyKey\(\s*"Workout interval property"/);
   assert.match(settingsSource, /\.setName\("Workout controls"\)/);
-  assert.match(settingsSource, /\.addOption\("inline", "Inline with workout"\)/);
-  assert.match(settingsSource, /\.addOption\("floating", "Floating over note"\)/);
+  assert.match(settingsSource, /\.addOption\("inline", "In workout card"\)/);
+  assert.match(settingsSource, /\.addOption\("floating", "In floating note bar"\)/);
   assert.match(settingsSource, /workout-controls:changed/);
   assert.match(settingsSource, /this\.addMappingSetting\(calendarProperties/);
   assert.match(settingsSource, /controller\.openConnectionSettings\(section\)/);
@@ -193,14 +182,23 @@ test("USDA rerenders retain disclosure, scroll, and reachable focus", () => {
   assert.match(connectionSource, /\[data-tps-health-usda-secret-index="\$\{index\}"\] input/);
 });
 
-test("Food log file is shown only for the single-file owner and the selector keeps focus", () => {
+test("Daily logging offers only whole-note records and explicit historical import", () => {
   const dailySource = settingsSource.slice(
     settingsSource.indexOf("private renderDailyLoggingPage"),
     settingsSource.indexOf("private renderFoodGoalsPage"),
   );
-  assert.match(dailySource, /this\.plugin\.settings\.foodLogTarget === "single-file"/);
-  assert.match(dailySource, /this\.redisplayPreservingContext\("\[data-tps-health-food-log-target\] select"\)/);
-  assert.match(dailySource, /dataset\.tpsHealthFoodLogTarget = "true"/);
+  assert.match(dailySource, /setName\("Earlier inline logs need review"\)/);
+  assert.match(dailySource, /setButtonText\("Mark reviewed"\)/);
+  assert.match(dailySource, /setButtonText\("Preview import"\)/);
+  assert.match(dailySource, /setButtonText\("Copy into notes"\)/);
+  for (const retired of ["Health storage", "Food log target", "Food log file", "Default food log section", "Automatic daily rollups"]) {
+    assert.ok(!dailySource.includes(`setName("${retired}")`), retired);
+  }
+  const workoutSource = settingsSource.slice(settingsSource.indexOf("private renderWorkoutsPage"), settingsSource.indexOf("private renderNoteLibraryPage"));
+  for (const retired of ["Also create a dedicated workout note", "Workout position in Daily Note"]) {
+    assert.ok(!workoutSource.includes(`setName("${retired}")`), retired);
+  }
+  assert.match(workoutSource, /setName\("Workout controls"\)/);
 });
 
 test("Health settings mobile CSS is namespaced and keeps controls usable", () => {

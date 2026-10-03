@@ -2833,16 +2833,16 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /const linkedSetIds = set\.dropSetGroupId[\s\S]*?candidate\.dropSetGroupId === set\.dropSetGroupId/u, 'direct add extends an existing drop chain');
 });
 
-test('native Health storage is explicit and removes Daily Note writes only in native mode', () => {
+test('whole-note storage is mandatory while legacy import remains explicit and copy-only', () => {
   assert.match(typesSource, /storageMode: HealthStorageMode/u);
-  assert.match(typesSource, /storageMode: "legacy"/u);
-  assert.match(settingsSource, /Atomic notes/u);
+  assert.match(typesSource, /storageMode: "native-records"/u);
+  assert.doesNotMatch(settingsSource, /addOption\("legacy", "Atomic lines"\)/u);
   assert.match(mainSource, /this\.nativeRecordService\.createFoodEntry\(entry\)/u);
   assert.match(mainSource, /this\.nativeRecordService\.createActivityEntry\(entry\)/u);
   assert.match(mainSource, /this\.plugin\.nativeRecordService\?\.isEnabled\(\)/u);
   assert.match(mainSource, /Record duration, distance, steps, or calories for this activity\./u);
   assert.match(mainSource, /return this\.startNativeWorkout/u);
-  assert.match(mainSource, /return this\.logNativeWorkoutSet\(set, path\)/u);
+  assert.match(mainSource, /return this\.logNativeWorkoutSet\(set, active\.path\)/u);
   assert.match(mainSource, /storage: "native-record-index"/u);
   assert.match(mainSource, /Preview legacy Health import/u);
   assert.match(mainSource, /Copy legacy Health logs/u);
@@ -2855,8 +2855,11 @@ test('native Health storage is explicit and removes Daily Note writes only in na
   assert.match(mainSource, /const capturedActiveWorkout = \{[\s\S]*?id: this\.settings\.activeWorkoutId[\s\S]*?path: this\.settings\.activeWorkoutPath/u);
   assert.match(mainSource, /resolveActiveWorkoutAfterFilenameMigration\(\{[\s\S]*?current: \{ id: this\.settings\.activeWorkoutId[\s\S]*?getWorkoutSnapshot\(capturedWorkoutId\)/u);
   assert.match(mainSource, /persistActiveWorkoutFilenameMigration\(capturedActiveWorkout, reconciledActiveWorkout\)/u);
-  assert.match(mainSource, /buildNativeHealthRecordFileName\("workout-session", \{[\s\S]*?workoutDate: isoDateKey\(dailyNoteDate\)[\s\S]*?startedAt/u);
-  assert.match(settingsSource, /nativeRecords API v6 owns the note's single tpsId and readable filename/u);
+  assert.match(mainSource, /createWorkoutSession\(\{[\s\S]*?workoutDate: isoDateKey\(context\.dailyNoteDate\)/u);
+  assert.match(settingsSource, /setButtonText\("Preview import"\)/u);
+  assert.match(settingsSource, /setButtonText\("Copy into notes"\)/u);
+  const { service } = createHarness({ settings: { storageMode: 'legacy' } });
+  assert.equal(service.isEnabled(), true, 'a persisted inline setting cannot re-enable line writers');
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {

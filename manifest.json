@@ -1,9 +1,9 @@
 {
   "id": "tps-health",
   "name": "TPS Health",
-  "version": "3.11.0",
+  "version": "4.0.0",
   "minAppVersion": "1.12.0",
-  "description": "Daily-note backed food, recipe, and workout logging for the TPS system.",
+  "description": "Whole-note food, activity, and workout records for the TPS system.",
   "author": "Zach Tisherman",
   "authorUrl": "https://github.com/StartAutomating",
   "isDesktopOnly": false

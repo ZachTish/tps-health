@@ -8,7 +8,7 @@ import { App, Notice, FuzzySuggestModal, PluginSettingTab, Setting, TFolder, Tex
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition } from "./settings-normalization";
-import { DEFAULT_SETTINGS, FoodLogTarget, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 import {
   DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
@@ -242,21 +242,33 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
         this.plugin.app.workspace.trigger("tps-health:appearance-changed");
       }));
-    const architecture = createSettingsGroup(
+    const records = createSettingsGroup(
       page,
-      "Data architecture",
-      "Existing logs are not moved or deleted when storage changes.",
+      "Health records",
+      "New food, activity, and workout logs are saved as individual Markdown notes.",
     );
-    new Setting(architecture)
-      .setName("Health storage")
-      .setDesc("Native records writes one atomic Markdown note per food, activity, or workout. TPS Global Context Menu nativeRecords API v6 owns the note's single tpsId and readable filename. Reload after changing this setting.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("legacy", "Atomic lines")
-        .addOption("native-records", "Atomic notes")
-        .setValue(this.plugin.settings.storageMode)
-        .onChange(async (value) => {
-          this.plugin.settings.storageMode = value === "native-records" ? "native-records" : "legacy";
-          await this.plugin.saveSettings();
+    if (this.plugin.settings.storageMode === "legacy") {
+      new Setting(records)
+        .setName("Earlier inline logs need review")
+        .setDesc("Your previous storage setting used lines inside notes. Those lines remain in their original notes, but whole-note dashboards count only copied records. Preview and copy them explicitly below; nothing is imported on startup.")
+        .addButton((button) => button
+          .setButtonText("Mark reviewed")
+          .onClick(async () => {
+            await this.plugin.acknowledgeLegacyHealthHistory();
+            this.redisplayPreservingContext();
+          }));
+    }
+    new Setting(records)
+      .setName("Earlier inline logs")
+      .setDesc("Preview food, activity, and workout lines before copying them into whole-note records. Original notes are preserved; unresolved lines need manual review.")
+      .addButton((button) => button
+        .setButtonText("Preview import")
+        .onClick(() => void this.plugin.previewLegacyHealthImport()))
+      .addButton((button) => button
+        .setButtonText("Copy into notes")
+        .onClick(async () => {
+          await this.plugin.copyLegacyHealthLogs();
+          this.redisplayPreservingContext();
         }));
 
     const dailyNotes = createSettingsGroup(
@@ -274,57 +286,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           setting?.openTabById?.("daily-notes");
         }));
 
-    const foodLogging = createSettingsGroup(
-      page,
-      "Food log storage",
-    );
-    const foodLogTarget = new Setting(foodLogging)
-      .setName("Food log target")
-      .setDesc("Where consumed-food instance lines are written. Single file keeps all food logs together and links each entry to its scheduled daily note.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("daily-note", "Daily note")
-        .addOption("single-file", "Single file")
-        .setValue(this.plugin.settings.foodLogTarget)
-        .onChange(async (value) => {
-          this.plugin.settings.foodLogTarget = value as FoodLogTarget;
-          await this.plugin.saveSettings();
-          this.redisplayPreservingContext("[data-tps-health-food-log-target] select");
-        }));
-    foodLogTarget.settingEl.dataset.tpsHealthFoodLogTarget = "true";
-
-    if (this.plugin.settings.foodLogTarget === "single-file") {
-      new Setting(foodLogging)
-        .setName("Food log file")
-        .setDesc("Canonical file used for all consumed-food instance lines.")
-        .addText((text) => text
-          .setPlaceholder("Health/Food Log.md")
-          .setValue(this.plugin.settings.foodLogFilePath)
-          .onChange(async (value) => {
-            this.plugin.settings.foodLogFilePath = value.trim() || DEFAULT_SETTINGS.foodLogFilePath;
-            await this.plugin.saveSettings();
-          }));
-    }
-
-    new Setting(foodLogging)
-      .setName("Default food log section")
-      .setDesc("Optional. Blank inserts food logs immediately after daily-note frontmatter.")
-      .addText((text) => text
-        .setPlaceholder("Food Log")
-        .setValue(this.plugin.settings.defaultFoodLogSection)
-        .onChange(async (value) => {
-          this.plugin.settings.defaultFoodLogSection = value.trim();
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(foodLogging)
-      .setName("Automatic daily rollups")
-      .setDesc("Recalculate calories and macros into daily note frontmatter after food is logged.")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.automaticDailyRollups)
-        .onChange(async (value) => {
-          this.plugin.settings.automaticDailyRollups = value;
-          await this.plugin.saveSettings();
-        }));
   }
 
   private renderFoodGoalsPage(page: HTMLElement): void {
@@ -400,39 +361,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderWorkoutsPage(page: HTMLElement): void {
-    const storage = createSettingsGroup(
-      page,
-      "Workout placement",
-      "Every workout gets a live section in its Core Daily Note. A dedicated workout note is optional.",
-    );
-    new Setting(storage)
-      .setName("Also create a dedicated workout note")
-      .setDesc("Keeps a separate workout file in addition to the live Daily Note section.")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.workoutLogTarget !== "daily-note")
-        .onChange(async (value) => {
-          this.plugin.settings.workoutLogTarget = value ? "both" : "daily-note";
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(storage)
-      .setName("Workout position in Daily Note")
-      .addDropdown((dropdown) => dropdown
-        .addOption("after-frontmatter", "Top, after properties")
-        .addOption("before-first-h2", "Above the first level-2 heading")
-        .addOption("bottom", "Bottom of note")
-        .setValue(this.plugin.settings.workoutDailyNotePlacement)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutDailyNotePlacement = value as typeof this.plugin.settings.workoutDailyNotePlacement;
-          await this.plugin.saveSettings();
-        }));
-
+    const storage = createSettingsGroup(page, "Workout controls", "Each workout is stored in one session note.");
     new Setting(storage)
       .setName("Workout controls")
-      .setDesc("Inline keeps session actions in the workout card. Floating moves Add Exercise and Finish into the persistent note bar; exercise and set-specific actions stay beside their targets.")
+      .setDesc("Choose where workout actions appear. Each workout still saves as one note.")
       .addDropdown((dropdown) => dropdown
-        .addOption("inline", "Inline with workout")
-        .addOption("floating", "Floating over note")
+        .addOption("inline", "In workout card")
+        .addOption("floating", "In floating note bar")
         .setValue(this.plugin.settings.workoutControlPlacement)
         .onChange(async (value) => {
           this.plugin.settings.workoutControlPlacement = value as WorkoutControlPlacement;

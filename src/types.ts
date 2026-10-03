@@ -313,7 +313,7 @@ export interface WorkoutSession {
 
 export const DEFAULT_SETTINGS: TPSHealthSettings = {
   settingsVersion: TPS_HEALTH_SCHEMA_VERSION,
-  storageMode: "legacy",
+  storageMode: "native-records",
   workoutsFolder: "Health/Workouts",
   workoutPlansFolder: "Health/Workout Plans",
   exercisesFolder: "Health/Exercises",

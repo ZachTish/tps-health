@@ -353,9 +353,9 @@ test('concurrent header renders recheck the existing header after the source awa
   assert.equal(f.counts.headerRenders, 1);
 });
 
-test('postprocessor retains its existing async error reporting for eligible content', async () => {
+test('postprocessor reports an eligible historical food read failure', async () => {
   const f = fixture({ items: [item('Food')], headings: [item('Workout')], read: () => Promise.reject(new Error('synthetic read failure')) });
   f.child().onload();
   await settle();
-  assert.equal(f.counts.errors, 2);
+  assert.equal(f.counts.errors, 1);
 });

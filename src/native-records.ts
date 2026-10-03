@@ -1126,7 +1126,9 @@ export class HealthNativeRecordService {
   }
 
   isEnabled(): boolean {
-    return this.plugin.settings.storageMode === 'native-records';
+    // The persisted legacy value only marks an install that needs an explicit
+    // copy-only history review. New writes always use whole-note records.
+    return true;
   }
 
   getDailyIndexStatus(): 'loading' | 'partial' | 'ready' {
