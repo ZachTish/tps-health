@@ -490,6 +490,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.addLibraryFolderSetting(folders, "foodsFolder", "Foods destination", "New food notes are created here. Recipes and meals use their separate destination. Existing food notes remain where they are.");
     this.addLibraryFolderSetting(folders, "recipesFolder", "Recipes destination", "New recipe and meal notes are created here. Existing notes are not moved.");
 
+    if (this.plugin.getGcmApi()?.frontmatterKinds?.version === 2) {
+      const classification = createSettingsGroup(page, "Note classification", "TPS GCM owns the visible kind paths and their earlier read aliases. Health uses these settings for food, recipes, meals, exercises, plans, and logged records; it does not add identity tags.");
+      new Setting(classification)
+        .setName("Configure kinds in TPS GCM")
+        .setDesc("Choose each kind's list path and review existing notes in GCM. Reusable note destinations remain above.")
+        .addButton(button => button.setButtonText("Open GCM settings").onClick(() => this.openPluginSettings("tps-global-context-menu")));
+    } else {
     const identification = createSettingsGroup(
       page,
       "Identification & tags",
@@ -609,6 +616,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.recipeTag = value.trim();
           await this.plugin.saveSettings();
         }));
+    }
 
     const templates = this.createOptionalDisclosure(
       page,

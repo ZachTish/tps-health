@@ -3790,6 +3790,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async createFoodNoteFromItem(item: FoodItem, type: FoodNoteType = "food", replaceAliases = false): Promise<FoodItem> {
+    this.requireConfiguredKindWriter(type);
     const folder = isRecipeLikeFoodType(type) ? this.settings.recipesFolder : this.settings.foodsFolder;
     await this.ensureFolder(folder);
     const path = await this.uniquePath(buildVaultDestinationPath(folder, `${sanitizeFileName(item.name)}.md`));
@@ -3817,8 +3818,8 @@ export default class TPSHealthPlugin extends Plugin {
 
   private defaultFoodNoteTemplate(item: FoodItem, type: FoodNoteType, tag: string): string {
     const nutrition = item.nutrition || {};
-    const writesMetadata = foodIdentificationWritesMetadata(this.settings.foodIdentificationMode);
-    const writesTag = foodIdentificationWritesTag(this.settings.foodIdentificationMode);
+    const writesMetadata = !this.configuredKindCodec() && foodIdentificationWritesMetadata(this.settings.foodIdentificationMode);
+    const writesTag = !this.configuredKindCodec() && foodIdentificationWritesTag(this.settings.foodIdentificationMode);
     return [
       "---",
       writesMetadata ? yamlScalarLine(foodFrontmatterKey(this.settings), foodFrontmatterValue(this.settings, type)) : "",
@@ -3911,7 +3912,9 @@ export default class TPSHealthPlugin extends Plugin {
     const withNutritionBasis = Object.keys(templateUpdates).length
       ? updateYamlFrontmatterContent(withCanonicalIngredients, templateUpdates)
       : withCanonicalIngredients;
-    return ensureFoodIdentityTagInContent(withNutritionBasis, tag, type, this.settings);
+    return this.configuredKindCodec()
+      ? withNutritionBasis
+      : ensureFoodIdentityTagInContent(withNutritionBasis, tag, type, this.settings);
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
@@ -3986,7 +3989,8 @@ export default class TPSHealthPlugin extends Plugin {
       this.settings.foodFrontmatterFoodValue,
       this.settings.foodFrontmatterRecipeValue,
       this.settings.foodFrontmatterMealValue,
-      ["food", "recipe", "meal"].map(kind => this.getGcmApi()?.frontmatterKinds?.definition(kind)),
+      this.getGcmApi()?.frontmatterKinds?.snapshot?.()
+        || ["food", "recipe", "meal"].map(kind => this.getGcmApi()?.frontmatterKinds?.definition(kind)),
     ]);
   }
 
@@ -4007,6 +4011,9 @@ export default class TPSHealthPlugin extends Plugin {
     const folders = [this.settings.foodsFolder, this.settings.recipesFolder]
       .map((folder) => normalizePath(folder || ""))
       .filter(Boolean);
+    if ([this.settings.foodsFolder, this.settings.recipesFolder]
+      .some(folder => normalizeVaultDestinationFolder(folder, VAULT_ROOT_DESTINATION) === VAULT_ROOT_DESTINATION)
+      && !normalized.includes("/")) return true;
     return folders.some((folder) => normalized === `${folder}.md` || normalized.startsWith(`${folder}/`))
       || Boolean(this.localFoodIndex?.items.some((item) => item.sourcePath === normalized));
   }
@@ -4269,7 +4276,11 @@ export default class TPSHealthPlugin extends Plugin {
     }
 
     await this.processHealthFrontmatter(file, (frontmatter) => {
+      const original = { ...frontmatter };
       const updated = foodFrontmatter(normalized, type, this.settings);
+      if (this.configuredKindCodec() && updated[foodFrontmatterKey(this.settings)] === foodFrontmatterValue(this.settings, type)) {
+        delete updated[foodFrontmatterKey(this.settings)];
+      }
       if (!replaceAliases) delete updated.aliases;
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
@@ -4284,8 +4295,8 @@ export default class TPSHealthPlugin extends Plugin {
         if (!normalized.ingredients.trim()) delete frontmatter.ingredientStatement;
       }
       for (const key of FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
-      applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
-      this.applyAtomicHealthFrontmatter(frontmatter, file, type, normalized.name);
+      if (!this.configuredKindCodec()) applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
+      this.applyAtomicHealthFrontmatter(frontmatter, file, type, normalized.name, original);
     });
 
     if (recipeLike && recipeContent != null) {
@@ -4714,18 +4725,25 @@ export default class TPSHealthPlugin extends Plugin {
       ? await this.serializeRecipeMutation(file.path, "food-note-update", updateNote)
       : await updateNote();
     const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings);
+    const codec = this.configuredKindCodec();
+    const legacyKey = foodFrontmatterKey(this.settings);
+    const legacyValue = foodFrontmatterValue(this.settings, type);
+    if (codec && itemFrontmatter[legacyKey] === legacyValue) delete itemFrontmatter[legacyKey];
     const explicitAliases = aliasesFromFrontmatter(item.aliases);
     if (!replaceAliases) delete itemFrontmatter.aliases;
     else if (explicitAliases?.length) itemFrontmatter.aliases = explicitAliases;
     else delete itemFrontmatter.aliases;
-    const updatedFrontmatter = {
-      ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}),
-      ...itemFrontmatter,
-    };
+    const originalFrontmatter = { ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}) };
+    const updatedFrontmatter = { ...originalFrontmatter, ...itemFrontmatter };
     for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
-    applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
-    const updated = this.foodFromFrontmatter(file, updatedFrontmatter);
+    let returnedFrontmatter = updatedFrontmatter;
+    if (codec) {
+      if (originalFrontmatter[legacyKey] === legacyValue) delete originalFrontmatter[legacyKey];
+      if (updatedFrontmatter[legacyKey] === legacyValue) delete updatedFrontmatter[legacyKey];
+      returnedFrontmatter = codec.encode({ ...updatedFrontmatter, kind: type }, originalFrontmatter);
+    } else applyFoodIdentityFrontmatterMode(updatedFrontmatter, isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag, type, this.settings);
+    const updated = this.foodFromFrontmatter(file, returnedFrontmatter);
     logger.flow("Food", "upsert:merge", { path: file.path, name: item.name, type, duplicateStrategy: duplicateStrategy || "legacy", openRequested, openReason });
     if (openRequested) await this.openPath(file.path);
     return updated;
@@ -4944,6 +4962,7 @@ export default class TPSHealthPlugin extends Plugin {
       normalizeHealthTag(this.settings.exerciseTag || ""),
       this.foodIndexSettingsSignature(),
       this.settings.workoutFrontmatterKey, this.settings.exerciseFrontmatterValue,
+      this.getGcmApi()?.frontmatterKinds?.readDefinitions?.("exercise"),
     ]);
   }
 
@@ -5043,6 +5062,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async createExercise(input: CreateExerciseInput): Promise<ExerciseItem> {
+    this.requireConfiguredKindWriter("exercise");
     const folder = normalizePath(this.settings.exercisesFolder || DEFAULT_SETTINGS.exercisesFolder).replace(/^\/+|\/+$/g, "");
     await this.ensureFolder(folder);
     const path = await this.uniquePath(buildVaultDestinationPath(folder, `${sanitizeFileName(input.name)}.md`));
@@ -5138,9 +5158,12 @@ export default class TPSHealthPlugin extends Plugin {
       return this.createExercise(input);
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      Object.assign(frontmatter, exerciseFrontmatter(input));
+      const original = { ...frontmatter };
+      const updated = exerciseFrontmatter(input);
+      if (this.configuredKindCodec()) delete updated.kind;
+      Object.assign(frontmatter, updated);
       for (const key of EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
-      this.applyAtomicHealthFrontmatter(frontmatter, file, "exercise", input.name);
+      this.applyAtomicHealthFrontmatter(frontmatter, file, "exercise", input.name, original);
     });
     logger.flow("Exercise", "upsert:merge", { path: file.path, name: input.name });
     return this.exerciseFromFrontmatter(file, {
@@ -5200,6 +5223,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async createWorkoutPlan(input: CreateWorkoutPlanInput): Promise<WorkoutPlanItem> {
+    this.requireConfiguredKindWriter("workout-plan");
     await this.ensureFolder(this.settings.workoutPlansFolder);
     const path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutPlansFolder, `${sanitizeFileName(input.name)}.md`));
     const template = await this.readWorkoutPlanTemplate();
@@ -5234,8 +5258,11 @@ export default class TPSHealthPlugin extends Plugin {
       return this.createWorkoutPlan(input);
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      Object.assign(frontmatter, workoutPlanFrontmatter(input));
-      this.applyAtomicHealthFrontmatter(frontmatter, file, "workout-plan", input.name);
+      const original = { ...frontmatter };
+      const updated = workoutPlanFrontmatter(input);
+      if (this.configuredKindCodec()) delete updated.kind;
+      Object.assign(frontmatter, updated);
+      this.applyAtomicHealthFrontmatter(frontmatter, file, "workout-plan", input.name, original);
     });
     logger.flow("WorkoutPlan", "upsert:merge", { path: file.path, name: input.name });
     return this.workoutPlanFromFrontmatter(file, {
@@ -7180,6 +7207,20 @@ export default class TPSHealthPlugin extends Plugin {
     return await this.app.fileManager.processFrontMatter(file, mutator);
   }
 
+  private configuredKindCodec(): HealthKindCodec | null {
+    const codec = this.getGcmApi()?.frontmatterKinds;
+    return codec?.version === 2 ? codec as HealthKindCodec : null;
+  }
+
+  private requireConfiguredKindWriter(kind: string): void {
+    const codec = this.configuredKindCodec();
+    if (!codec) return; // Older GCM installations keep their existing Health settings behavior.
+    if (!codec.definition(kind) || codec.writerEnabled?.(kind) !== true) {
+      throw new Error(`Configure and enable the ${kind} kind writer in TPS GCM before creating this Health note.`);
+    }
+    codec.encode({ kind }, {});
+  }
+
   private async ensureAtomicHealthNote(file: TFile, kind: string, title: string): Promise<void> {
     await this.processHealthFrontmatter(file, (frontmatter) => {
       this.applyAtomicHealthFrontmatter(frontmatter, file, kind, title);
@@ -7191,6 +7232,7 @@ export default class TPSHealthPlugin extends Plugin {
     file: TFile,
     kind: string,
     title: string,
+    existingRaw?: Record<string, unknown>,
   ): void {
     const normalizedKind = String(kind || "").trim();
     const normalizedTitle = String(title || file.basename).replace(/\s+/gu, " ").trim() || file.basename;
@@ -7200,27 +7242,41 @@ export default class TPSHealthPlugin extends Plugin {
       if (existingId) identity.setInternalId(frontmatter, existingId);
       else identity.ensureInternalIdInFrontmatter(frontmatter);
     }
-    const existingKindKey = this.findHealthFrontmatterKey(frontmatter, "kind");
-    const existingKind = existingKindKey ? String(frontmatter[existingKindKey] || "").trim() : "";
-    if (normalizedKind === "workout-plan" || normalizedKind === "exercise") applyLibraryIdentity(this.settings, frontmatter, normalizedKind);
-    else if (normalizedKind === "food" || normalizedKind === "recipe" || normalizedKind === "meal") {
-      applyFoodIdentityFrontmatterMode(frontmatter, normalizedKind === "food" ? this.settings.customFoodTag : this.settings.recipeTag, normalizedKind, this.settings);
-    } else this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
-    const classifier = this.getGcmApi()?.frontmatterKinds;
-    if (classifier?.definition?.(normalizedKind)) {
-      const encoded = classifier.encode({ ...frontmatter, kind: normalizedKind });
-      // Encoding a tag deliberately omits kind. Object.assign alone retained
-      // the property just written by the library builder.
-      if (!Object.prototype.hasOwnProperty.call(encoded, "kind")) {
-        this.deleteHealthFrontmatterValue(frontmatter, "kind");
-        const libraryKey = normalizedKind === "exercise" || normalizedKind === "workout-plan"
-          ? libraryIdentity(this.settings, normalizedKind).key : foodFrontmatterKey(this.settings);
-        const libraryValue = normalizedKind === "exercise" || normalizedKind === "workout-plan"
-          ? libraryIdentity(this.settings, normalizedKind).value : ["food", "recipe", "meal"].includes(normalizedKind) ? foodFrontmatterValue(this.settings, normalizedKind as FoodNoteType) : normalizedKind;
-        if (encoded[libraryKey] === libraryValue) delete encoded[libraryKey];
-        if (frontmatter[libraryKey] === libraryValue) delete frontmatter[libraryKey];
-      }
+    const classifier = this.configuredKindCodec();
+    if (classifier) {
+      this.requireConfiguredKindWriter(normalizedKind);
+      const original = { ...(existingRaw || frontmatter) };
+      const legacyIdentity = normalizedKind === "exercise" || normalizedKind === "workout-plan"
+        ? libraryIdentity(this.settings, normalizedKind)
+        : ["food", "recipe", "meal"].includes(normalizedKind)
+          ? { key: foodFrontmatterKey(this.settings), value: foodFrontmatterValue(this.settings, normalizedKind as FoodNoteType) }
+          : null;
+      if (legacyIdentity && frontmatter[legacyIdentity.key] === legacyIdentity.value) delete frontmatter[legacyIdentity.key];
+      if (legacyIdentity && original[legacyIdentity.key] === legacyIdentity.value) delete original[legacyIdentity.key];
+      const encoded = classifier.encode({ ...frontmatter, kind: normalizedKind }, original);
+      for (const key of Object.keys(frontmatter)) if (!Object.prototype.hasOwnProperty.call(encoded, key)) delete frontmatter[key];
       Object.assign(frontmatter, encoded);
+    } else {
+      const existingKindKey = this.findHealthFrontmatterKey(frontmatter, "kind");
+      const existingKind = existingKindKey ? String(frontmatter[existingKindKey] || "").trim() : "";
+      if (normalizedKind === "workout-plan" || normalizedKind === "exercise") applyLibraryIdentity(this.settings, frontmatter, normalizedKind);
+      else if (normalizedKind === "food" || normalizedKind === "recipe" || normalizedKind === "meal") {
+        applyFoodIdentityFrontmatterMode(frontmatter, normalizedKind === "food" ? this.settings.customFoodTag : this.settings.recipeTag, normalizedKind, this.settings);
+      } else this.setHealthFrontmatterValue(frontmatter, "kind", normalizedKind || existingKind || "note");
+      const legacyClassifier = this.getGcmApi()?.frontmatterKinds;
+      if (legacyClassifier?.definition?.(normalizedKind)) {
+        const encoded = legacyClassifier.encode({ ...frontmatter, kind: normalizedKind });
+        if (!Object.prototype.hasOwnProperty.call(encoded, "kind")) {
+          this.deleteHealthFrontmatterValue(frontmatter, "kind");
+          const libraryKey = normalizedKind === "exercise" || normalizedKind === "workout-plan"
+            ? libraryIdentity(this.settings, normalizedKind).key : foodFrontmatterKey(this.settings);
+          const libraryValue = normalizedKind === "exercise" || normalizedKind === "workout-plan"
+            ? libraryIdentity(this.settings, normalizedKind).value : ["food", "recipe", "meal"].includes(normalizedKind) ? foodFrontmatterValue(this.settings, normalizedKind as FoodNoteType) : normalizedKind;
+          if (encoded[libraryKey] === libraryValue) delete encoded[libraryKey];
+          if (frontmatter[libraryKey] === libraryValue) delete frontmatter[libraryKey];
+        }
+        Object.assign(frontmatter, encoded);
+      }
     }
     const titleKey = this.findHealthFrontmatterKey(frontmatter, "title");
     const nameKey = this.findHealthFrontmatterKey(frontmatter, "name");
@@ -8408,7 +8464,9 @@ export default class TPSHealthPlugin extends Plugin {
       return;
     }
     await this.processHealthFrontmatter(file, (frontmatter) => {
-      applyLibraryIdentity(this.settings, frontmatter, "workout-plan");
+      if (this.configuredKindCodec()) {
+        this.applyAtomicHealthFrontmatter(frontmatter, file, "workout-plan", String(frontmatter.title || file.basename));
+      } else applyLibraryIdentity(this.settings, frontmatter, "workout-plan");
       frontmatter.workflowKind = frontmatter.workflowKind || "workflow";
       frontmatter.workflowType = frontmatter.workflowType || "workout";
       frontmatter.recurrenceMode = frontmatter.recurrenceMode || "completion-triggered";
@@ -8475,6 +8533,7 @@ export default class TPSHealthPlugin extends Plugin {
     }
 
     const workoutPlanName = (input.name || state.title || "Workout Template").trim() || "Workout Template";
+    this.requireConfiguredKindWriter("workout-plan");
     const cooldownDays = Number.isFinite(input.cooldownDays as number)
       ? Math.max(0, Math.round(input.cooldownDays as number))
       : Number.isFinite(state.cooldownDays)
@@ -8487,7 +8546,8 @@ export default class TPSHealthPlugin extends Plugin {
     await this.ensureFolder(this.settings.workoutPlansFolder);
     const path = await this.uniquePath(buildVaultDestinationPath(this.settings.workoutPlansFolder, `${sanitizeFileName(workoutPlanName)}.md`));
     const body = this.defaultWorkoutPlanTemplateFromSession(workoutPlanName, cooldownDays, defaultRestSeconds, layoutEntries);
-    await this.app.vault.create(path, body);
+    const file = await this.app.vault.create(path, body);
+    await this.ensureAtomicHealthNote(file, "workout-plan", workoutPlanName);
     logger.flow("WorkoutPlan", "template-from-active:create", {
       path,
       name: workoutPlanName,
@@ -8622,7 +8682,7 @@ export default class TPSHealthPlugin extends Plugin {
   ): string {
     return [
 	      "---",
-	      yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
+	      this.configuredKindCodec() ? "" : yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
 	      `title: \"${escapeYamlString(name)}\"`,
 	      `cooldownDays: ${cooldownDays}`,
 	      `defaultRestSeconds: ${defaultRestSeconds}`,
@@ -8814,7 +8874,7 @@ export default class TPSHealthPlugin extends Plugin {
   private defaultWorkoutPlanTemplate(input: CreateWorkoutPlanInput): string {
     return [
 	      "---",
-	      yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
+	      this.configuredKindCodec() ? "" : yamlScalarLine(libraryIdentity(this.settings, "workout-plan").key, libraryIdentity(this.settings, "workout-plan").value),
 	      `title: "${escapeYamlString(input.name)}"`,
 	      input.cooldownDays != null ? `cooldownDays: ${input.cooldownDays}` : "",
 	      input.defaultRestSeconds != null ? `defaultRestSeconds: ${input.defaultRestSeconds}` : "",
@@ -8846,10 +8906,10 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private defaultExerciseTemplate(input: CreateExerciseInput): string {
-    const configuredTag = normalizeHealthTag(this.settings.exerciseTag);
+    const configuredTag = this.configuredKindCodec() ? "" : normalizeHealthTag(this.settings.exerciseTag);
     return [
       "---",
-      yamlScalarLine(libraryIdentity(this.settings, "exercise").key, libraryIdentity(this.settings, "exercise").value),
+      this.configuredKindCodec() ? "" : yamlScalarLine(libraryIdentity(this.settings, "exercise").key, libraryIdentity(this.settings, "exercise").value),
       `title: "${escapeYamlString(input.name)}"`,
       input.category ? `category: ${input.category}` : "",
       input.primaryMuscles?.length ? `primaryMuscles: [${input.primaryMuscles.map((v) => `"${escapeYamlString(v)}"`).join(", ")}]` : "",
@@ -18650,15 +18710,28 @@ function foodFrontmatterValue(
 }
 
 function configuredFoodFrontmatterType(fm: any, settings: TPSHealthSettings, codec?: HealthKindCodec): FoodNoteType | null {
-  if (codec) {
+  const configuredValue = String(fm?.[foodFrontmatterKey(settings)] ?? "").trim();
+  const legacyType = (["food", "recipe", "meal"] as FoodNoteType[])
+    .find(type => configuredValue === foodFrontmatterValue(settings, type)) || null;
+  if (codec?.version === 2 && codec.matches) {
+    const matched = (["food", "recipe", "meal"] as FoodNoteType[])
+      .filter(type => codec.definition(type) && codec.matches!(fm || {}, type));
+    if (matched.length === 1) return matched[0];
+    if (matched.length > 1) {
+      // A single user-chosen visible kind path can describe all three library
+      // types. Existing recipe structure distinguishes the two special cases;
+      // no second taxonomy property or tag is written for this purpose.
+      if (legacyType && matched.includes(legacyType)) return legacyType;
+      if (matched.includes("meal") && String(fm?.servingUnit || "").trim().toLowerCase() === "meal") return "meal";
+      if (matched.includes("recipe") && (Array.isArray(fm?.ingredients) || fm?.recipeServings != null)) return "recipe";
+      if (matched.includes("food")) return "food";
+      return null;
+    }
+  } else if (codec) {
     const kind = codec.decode(fm).kind;
     if (["food", "recipe", "meal"].includes(kind) && codec.definition(kind)) return kind;
   }
-  const configuredValue = String(fm?.[foodFrontmatterKey(settings)] ?? "").trim();
-  for (const type of ["food", "recipe", "meal"] as FoodNoteType[]) {
-    if (configuredValue === foodFrontmatterValue(settings, type)) return type;
-  }
-  return null;
+  return legacyType;
 }
 
 function foodIdentificationWritesMetadata(mode: HealthEntityIdentificationMode | undefined): boolean {
@@ -18715,8 +18788,10 @@ function recipeServingsForFood(item: FoodItem, type: FoodNoteType): number {
 function isFoodLikeMarkdownFile(plugin: TPSHealthPlugin, file: TFile, cache?: any): boolean {
   const resolvedCache = cache || plugin.app.metadataCache.getFileCache(file);
   const fm = resolvedCache?.frontmatter || {};
+  const codec = plugin.getGcmApi()?.frontmatterKinds;
+  if (codec?.version === 2 && configuredFoodFrontmatterType(fm, plugin.settings, codec)) return true;
   return healthEntityMatches(plugin.settings.foodIdentificationMode, {
-    metadata: configuredFoodFrontmatterType(fm, plugin.settings, plugin.getGcmApi()?.frontmatterKinds) != null,
+    metadata: configuredFoodFrontmatterType(fm, plugin.settings, codec) != null,
     folder: fileIsInConfiguredFolder(file.path, plugin.settings.foodsFolder) ||
       fileIsInConfiguredFolder(file.path, plugin.settings.recipesFolder),
     tag: hasConfiguredTag(resolvedCache, plugin.settings.customFoodTag) ||

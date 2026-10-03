@@ -2,13 +2,23 @@ import { migrateWorkoutTiming } from './workout-timing-migration';
 import type { TPSHealthSettings } from './types';
 import { DEFAULT_HEALTH_NATIVE_RECORD_KINDS, DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES, configuredNativePropertyKey, HEALTH_NATIVE_RECORD_KIND_KEYS, HEALTH_NATIVE_RECORD_PROPERTY_KEYS } from './native-record-schema';
 
-export interface HealthKindCodec { definition(kind: string): unknown; decode(fields: Record<string, any>): Record<string, any>; encode(fields: Record<string, any>): Record<string, any> }
+export interface HealthKindCodec {
+  version?: number;
+  definition(kind: string): unknown;
+  matches?(fields: Record<string, unknown>, kind: string): boolean;
+  writerEnabled?(kind: string): boolean;
+  decode(fields: Record<string, any>, expectedKind?: string): Record<string, any>;
+  encode(fields: Record<string, any>, existingRaw?: Record<string, unknown>): Record<string, any>;
+}
 export type LibraryKind = 'workout-plan' | 'exercise';
 export function libraryIdentity(settings: TPSHealthSettings, kind: LibraryKind): { key: string; value: string } {
   return { key: settings.workoutFrontmatterKey || 'kind', value: (kind === 'exercise' ? settings.exerciseFrontmatterValue : settings.workoutPlanFrontmatterValue) || kind };
 }
 export function matchesLibraryIdentity(settings: TPSHealthSettings, fm: Record<string, unknown>, kind: LibraryKind, codec?: HealthKindCodec): boolean {
-  if (codec?.definition(kind)) return codec.decode(fm).kind === kind;
+  if (codec?.definition(kind)) {
+    if (codec.version === 2 && codec.matches?.(fm, kind)) return true;
+    if (codec.version !== 2) return codec.decode(fm).kind === kind;
+  }
   const identity = libraryIdentity(settings, kind);
   return fm[identity.key] === identity.value;
 }

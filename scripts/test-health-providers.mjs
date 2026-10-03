@@ -10112,6 +10112,64 @@ test('tag-classified library creation and lookup use the complete GCM tag withou
  assert.equal((await plugin.searchExercises('Tag press'))[0]?.sourcePath,exercise.sourcePath);
 });
 
+test('GCM v2 owns root-level Health kinds without adding identity tags or a subtype property', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, foodNoteTypeFromFrontmatter } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings.foodsFolder = '/';
+  plugin.settings.recipesFolder = '/';
+  plugin.settings.exercisesFolder = '/';
+  plugin.settings.workoutPlansFolder = '/';
+  plugin.settings.foodIdentificationMode = 'tag';
+  const paths = { food: 'entity/food', recipe: 'entity/food', meal: 'entity/food', exercise: 'entity/exercise', 'workout-plan': 'entity/workout-plan' };
+  const codec = {
+    version: 2,
+    definition: kind => paths[kind] ? { kindList: { key: 'kind', value: paths[kind] } } : null,
+    writerEnabled: () => true,
+    matches: (fm, kind) => Array.isArray(fm.kind) && fm.kind.includes(paths[kind]),
+    decode: fm => ({ ...fm }),
+    encode: (fm, original = {}) => {
+      const { kind, ...fields } = fm;
+      return { ...fields, kind: [...new Set([...(Array.isArray(original.kind) ? original.kind : []), paths[kind]])] };
+    },
+    snapshot: () => paths,
+  };
+  fake.app.plugins.plugins['tps-global-context-menu'] = { api: { frontmatterKinds: codec } };
+  const food = await plugin.createFoodNoteFromItem({ name: 'Root food', servingAmount: 1, servingUnit: 'serving', nutrition: { calories: 100 } }, 'food');
+  const recipe = await plugin.createFoodNoteFromItem({ name: 'Root recipe', servingAmount: 100, servingUnit: 'g', recipeServings: 25, recipeTotalGrams: 2500, ingredients: '- 1 g oats', nutrition: { calories: 25 } }, 'recipe');
+  const meal = await plugin.createFoodNoteFromItem({ name: 'Root meal', servingAmount: 1, servingUnit: 'meal', recipeServings: 1, ingredients: '- 1 g oats', nutrition: { calories: 100 } }, 'meal');
+  const exercise = await plugin.createExercise({ name: 'Root press' });
+  const plan = await plugin.createWorkoutPlan({ name: 'Root plan' });
+  for (const [entry, kind] of [[food, 'food'], [recipe, 'recipe'], [meal, 'meal'], [exercise, 'exercise'], [plan, 'workout-plan']]) {
+    assert.ok(!entry.sourcePath.includes('/'), 'configured root destinations create root files');
+    const content = fake.files.get(entry.sourcePath);
+    const fm = parseFrontmatter(content);
+    assert.deepEqual(fm.kind, [paths[kind]]);
+    assert.equal(fm.tags, undefined);
+    assert.equal(fm.entityKind, undefined);
+    assert.doesNotMatch(content, /^#tps\//m);
+    if (['food', 'recipe', 'meal'].includes(kind)) {
+      assert.equal(foodNoteTypeFromFrontmatter(fm, fake.app.vault.getAbstractFileByPath(entry.sourcePath), plugin.settings, codec), kind);
+    }
+  }
+  assert.equal((await plugin.searchLocalFoods('Root food')).some(item => item.sourcePath === food.sourcePath), true);
+  assert.equal((await plugin.searchExercises('Root press')).some(item => item.sourcePath === exercise.sourcePath), true);
+  assert.equal((await plugin.searchWorkoutPlans('Root plan')).some(item => item.sourcePath === plan.sourcePath), true);
+  fake.files.set('Templates/Root food.md', '---\nkind: {{kind}}\ntitle: "{{name}}"\n---\nCustom body');
+  plugin.settings.foodTemplatePath = 'Templates/Root food.md';
+  const templated = await plugin.createFoodNoteFromItem({ name: 'Root templated food', servingAmount: 1, servingUnit: 'serving' }, 'food');
+  assert.deepEqual(parseFrontmatter(fake.files.get(templated.sourcePath)).kind, ['entity/food']);
+  assert.equal(parseFrontmatter(fake.files.get(templated.sourcePath)).tags, undefined, 'legacy tag mode adds no tag to a custom template');
+  const fm = { kind: ['entity/food', 'manual/other'], title: 'Root food' };
+  plugin.applyAtomicHealthFrontmatter(fm, { basename: 'Root food' }, 'food', 'Root food');
+  assert.deepEqual(fm.kind, ['entity/food', 'manual/other'], 'editing preserves unrelated kind-list values');
+  codec.writerEnabled = kind => kind !== 'food';
+  const before = fake.writes.length;
+  await assert.rejects(plugin.createFoodNoteFromItem({ name: 'Blocked food', servingAmount: 1, servingUnit: 'serving' }, 'food'), /Configure and enable the food kind writer/);
+  assert.equal(fake.writes.length, before, 'disabled mapping refuses creation before writing a file');
+});
+
 async function recipeYieldFixture() {
   installDeterministicBrowserGlobals();
   const { default: Plugin, resolveFoodLogServing, foodEntryLine } = await importPluginWithObsidianStub();

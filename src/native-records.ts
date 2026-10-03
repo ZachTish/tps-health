@@ -1227,11 +1227,16 @@ export class HealthNativeRecordService {
     freshIdentity = false,
   ): Promise<NativeRecordHandle> {
     const api = this.requireApi();
+    const configuredKind = configuredNativeKind(this.plugin.settings, kind);
+    const classifier = this.plugin.getGcmApi?.()?.frontmatterKinds;
+    if (classifier?.version === 2 && (!classifier.definition?.(configuredKind) || classifier.writerEnabled?.(configuredKind) !== true)) {
+      throw new Error(`Configure and enable the ${configuredKind} kind writer in TPS GCM before creating this Health record.`);
+    }
     const useFreshIdentity = freshIdentity && api.capabilities?.freshIdentityCreates === true && typeof api.createFresh === 'function';
     const createOptions = { ...options };
     if (useFreshIdentity) delete createOptions.id;
     const created = await (useFreshIdentity ? api.createFresh! : api.create).call(api,
-      configuredNativeKind(this.plugin.settings, kind),
+      configuredKind,
       encodeNativeRecordProperties(this.plugin.settings, properties),
       createOptions,
     );
@@ -2491,7 +2496,6 @@ export class HealthNativeRecordService {
               sodiumMg: legacyNumber(fields.sodium),
               ...extraNutrition(fields),
               note: fields.note,
-              tags: ['health', 'food-log'],
             },
           });
           continue;
@@ -2524,7 +2528,6 @@ export class HealthNativeRecordService {
               sourceId: fields.sourceId,
               device: fields.device,
               note: fields.note,
-              tags: isWorkout ? ['health', 'workout'] : ['health', 'activity'],
             },
           });
           continue;
@@ -2554,7 +2557,6 @@ export class HealthNativeRecordService {
                 setCount: 0,
                 totalReps: 0,
                 totalVolume: 0,
-                tags: ['health', 'workout-exercise'],
               },
             };
             exerciseGroups.set(key, candidate);
@@ -2949,6 +2951,7 @@ export class HealthNativeRecordService {
   private providerConfiguration(api: NativeRecordsApi): string {
     return JSON.stringify([
       api.getStorageProfile?.(), api.getKindPropertyKeys?.(),
+      this.plugin.getGcmApi?.()?.frontmatterKinds?.snapshot?.(),
       ...[...HEALTH_KINDS].map(kind => api.getStorageProfile?.(configuredNativeKind(this.plugin.settings, kind))),
     ]);
   }

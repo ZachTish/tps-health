@@ -315,6 +315,30 @@ function addProviderFood(h, path = 'Inbox/provider-food.md') {
   });
 }
 
+test('GCM v2 native kind writer settings gate new food records before a write', async () => {
+  const h = createHarness();
+  let enabled = false;
+  h.plugin.getGcmApi = () => ({ frontmatterKinds: {
+    version: 2,
+    definition: kind => kind === 'food-entry' ? { kindList: { key: 'kind', value: 'transaction/food' } } : null,
+    writerEnabled: () => enabled,
+    snapshot: () => ({ 'food-entry': { writerEnabled: enabled } }),
+  } });
+  const entry = {
+    id: 'configured-kind-food', createdDate: '2026-09-29T12:00:00.000Z', completedDate: '2026-09-29T12:00:00.000Z',
+    item: { id: 'configured-kind-food', name: 'Lunch', source: 'manual' }, quantity: 1, unit: 'serving',
+    nutritionOverride: { calories: 210 },
+  };
+  await assert.rejects(h.service.createFoodEntry(entry), /Configure and enable the food-entry kind writer/);
+  assert.equal(h.createCalls.length, 0);
+  enabled = true;
+  await h.service.createFoodEntry(entry);
+  assert.equal(h.createCalls.length, 1);
+  assert.equal(h.createCalls[0].kind, 'food-entry', 'GCM receives the configured internal kind identifier');
+  assert.deepEqual(h.createCalls[0].properties.tags || [], [], 'Health adds no classification tags');
+  h.service.dispose();
+});
+
 test('daily index signals an empty day only after provider and metadata are ready', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: false });
   let available = false;
