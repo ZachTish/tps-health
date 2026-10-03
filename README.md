@@ -1,5 +1,11 @@
 # TPS Health
 
+## 4.1.1 — Daily Note context follows GCM mappings
+
+When a Daily Note is recognized by frontmatter rather than the Core Daily Notes folder and filename, Health reads its identity from GCM's configured `dailynote` classification and its date from GCM's configured Scheduled custom-property key. A nested kind list and a renamed date key therefore supply the Macros and Activity blocks with the correct day. A different kind or an old date field does not override the configured current mapping. Without GCM kind API v2, the older scalar `kind: dailynote` and `date`/`scheduled` reader remains available. The settings remain owned by GCM; Health adds no persisted setting, scan, or note writer for this change.
+
+This backward-compatible patch keeps the Obsidian **1.12.0** minimum. The focused regression covers a frontmatter Daily Note outside Core Daily Notes' configured folder, a nested configurable kind path and date key, conflicting old date metadata, wrong-kind rejection, and the pre-v2 legacy reader. Full-suite, test-vault reload, and artifact hashes are recorded in [4.1.1 release notes](release-notes/4.1.1.md). Physical iPhone behavior remains unverified.
+
 ## 4.1.0 — GCM-owned kind mappings
 
 When TPS GCM exposes `frontmatterKinds` API v2, its configured kind definitions own the classification written by Health. Food, recipe, meal, exercise, workout-plan, food-entry, activity-entry, workout-session, and workout-exercise writers check that the corresponding GCM mapping is enabled before creating a file or record. Health's default reusable-note templates add no identity tag or parallel scalar kind field; a tag is written only if the user deliberately chooses a tag classification in GCM or supplies one in a custom template. GCM preserves unrelated values of the configured kind list during edits. Earlier scalar/tag identities remain readable through GCM's configurable aliases and Health's existing legacy readers; no automatic note migration or cleanup runs.

@@ -1052,7 +1052,7 @@ export default class TPSHealthPlugin extends Plugin {
             const frontmatter = file instanceof TFile
               ? this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined
               : undefined;
-            if (!dailyNoteDateIsoFromFrontmatter(frontmatter)) {
+            if (!dailyNoteDateIsoFromFrontmatter(frontmatter, this.getGcmApi()?.frontmatterKinds)) {
               renderNativeDailyDashboardMessage(el, "Loading Daily Notes settings…");
               return this.dailyNoteSettingsReady.then(render);
             }
@@ -7122,7 +7122,7 @@ export default class TPSHealthPlugin extends Plugin {
         ...summarizeDateContext(dateContext),
       };
     }
-    const frontmatterDateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter);
+    const frontmatterDateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter, this.getGcmApi()?.frontmatterKinds);
     if (frontmatterDateIso) {
       return {
         hasDateContext: !!dateContext,
@@ -7179,7 +7179,7 @@ export default class TPSHealthPlugin extends Plugin {
         };
       }
     }
-    const dateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter);
+    const dateIso = dailyNoteDateIsoFromFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter, this.getGcmApi()?.frontmatterKinds);
     if (!dateIso) return null;
     const parsed = window.moment(dateIso, "YYYY-MM-DD", true);
     const today = window.moment();
@@ -22276,10 +22276,17 @@ function renderCoreDailyNoteTemplate(
     .replace(/\{\{title\}\}/g, title);
 }
 
-function dailyNoteDateIsoFromFrontmatter(frontmatter: Record<string, unknown> | null | undefined): string {
-  const kind = String(frontmatter?.kind || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
-  if (kind !== "dailynote") return "";
-  for (const key of ["date", "scheduled"] as const) {
+function dailyNoteDateIsoFromFrontmatter(frontmatter: Record<string, unknown> | null | undefined, codec?: HealthKindCodec): string {
+  if (!frontmatter) return "";
+  const currentMapping = codec?.version === 2;
+  if (currentMapping) {
+    if (!codec?.definition("dailynote") || codec.matches?.(frontmatter, "dailynote") !== true) return "";
+  } else {
+    const kind = String(frontmatter.kind || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+    if (kind !== "dailynote") return "";
+  }
+  const dateKeys = currentMapping ? [codec.propertyKey?.("scheduled")].filter((key): key is string => !!key) : ["date", "scheduled"];
+  for (const key of dateKeys) {
     const value = frontmatter?.[key];
     if (typeof value !== "string") continue;
     const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})(?:$|[T\s])/);

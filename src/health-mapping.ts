@@ -6,6 +6,7 @@ export interface HealthKindCodec {
   version?: number;
   definition(kind: string): unknown;
   matches?(fields: Record<string, unknown>, kind: string): boolean;
+  propertyKey?(id: string): string | null;
   writerEnabled?(kind: string): boolean;
   decode(fields: Record<string, any>, expectedKind?: string): Record<string, any>;
   encode(fields: Record<string, any>, existingRaw?: Record<string, unknown>): Record<string, any>;

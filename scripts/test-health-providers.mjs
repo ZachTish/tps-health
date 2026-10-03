@@ -172,7 +172,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing };`,
+            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
             loader: "ts",
           };
         });
@@ -8667,6 +8667,28 @@ test("daily note destinations follow Core Daily Notes without Health-owned overr
     format: "ddd, MMM DD YYYY",
     folder: "Persisted Daily",
   }, "persisted Core settings must remain available before the Core plugin runtime is ready");
+});
+
+test("Daily Note frontmatter context follows GCM's configured kind list and date key", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin, dailyNoteDateIsoFromFrontmatter } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const codec = {
+    version: 2,
+    definition: kind => kind === "dailynote" ? { kindList: { key: "category", value: "note/journal" } } : null,
+    matches: (fm, kind) => kind === "dailynote" && Array.isArray(fm.category) && fm.category.includes("note/journal"),
+    propertyKey: id => id === "scheduled" ? "when" : null,
+  };
+  fake.app.plugins.plugins["tps-global-context-menu"] = { api: { frontmatterKinds: codec } };
+  const plugin = new TPSHealthPlugin(fake.app);
+  const file = new globalThis.__TPSHealthTestTFile("Inbox/Journal entry.md");
+  const frontmatter = { category: ["note/journal"], when: "2026-08-15T09:00:00", date: "2026-08-14" };
+  fake.app.metadataCache.getFileCache = () => ({ frontmatter });
+  assert.equal(dailyNoteDateIsoFromFrontmatter(frontmatter, codec), "2026-08-15");
+  assert.equal(plugin.dailyNoteDateContextFromSettings(file, { folder: "Daily Notes", format: "YYYY-MM-DD" })?.dateIso, "2026-08-15", "a Daily Note outside the configured folder still supplies dashboard context");
+  assert.equal(dailyNoteDateIsoFromFrontmatter({ ...frontmatter, category: ["note/reference"] }, codec), "", "another configured kind cannot masquerade as a Daily Note");
+  assert.equal(dailyNoteDateIsoFromFrontmatter({ ...frontmatter, when: undefined }, codec), "", "the old date key must not override a configured current key");
+  assert.equal(dailyNoteDateIsoFromFrontmatter({ kind: "dailynote", date: "2026-08-15" }), "2026-08-15", "older GCM installations retain the legacy reader");
 });
 
 test("Daily Note creation delegates to GCM dailyNotes v2 and treats a null result as authoritative", async () => {
