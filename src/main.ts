@@ -14,7 +14,7 @@ import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interactio
 import { FoodLogTimings, type FoodLogTiming } from "./food-log-timings";
 import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
-import { EditorState, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
@@ -11654,10 +11654,19 @@ function createFoodLogChipExtension(plugin: TPSHealthPlugin) {
       return buildFoodLogChipDecorations(plugin, state);
     },
     update(decorations, transaction) {
-      if (transaction.docChanged || transaction.selection) {
-        return buildFoodLogChipDecorations(plugin, transaction.state);
-      }
-      return decorations;
+      if (!transaction.docChanged && !transaction.selection) return decorations;
+      const selectionTouchesFood = Boolean(transaction.selection) && (
+        selectionTouchesMatchingEditorLine(transaction.startState, isFoodLogLine)
+        || selectionTouchesMatchingEditorLine(transaction.state, isFoodLogLine)
+      );
+      if (transaction.docChanged) {
+        if (!selectionTouchesFood
+          && !(decorations.size && editorChangeTouchesLineBreak(transaction))
+          && !changedEditorLinesMatch(transaction, isFoodLogLine)) {
+          return decorations.map(transaction.changes);
+        }
+      } else if (!selectionTouchesFood) return decorations;
+      return buildFoodLogChipDecorations(plugin, transaction.state);
     },
     provide: (field) => EditorView.decorations.from(field),
   });
@@ -11688,10 +11697,17 @@ function createRecipeIngredientEditorExtension(plugin: TPSHealthPlugin) {
       return buildRecipeIngredientEditorDecorations(plugin, state);
     },
     update(decorations, transaction) {
-      if (transaction.docChanged || transaction.selection) {
-        return buildRecipeIngredientEditorDecorations(plugin, transaction.state);
+      if (!transaction.docChanged && !transaction.selection) return decorations;
+      if (!decorations.size) {
+        const file = plugin.app.workspace.getActiveFile();
+        const recipePath = file instanceof TFile && isRecipeLikeMarkdownFile(plugin, file.path);
+        if (!recipePath && (!transaction.docChanged || !changedEditorLinesMatch(transaction, (line) => {
+          const recipeTag = plugin.settings.recipeTag || "";
+          return /^(kind|type):\s*(recipe|meal)\s*$/i.test(line.trim())
+            || Boolean(recipeTag && line.includes(recipeTag));
+        }))) return decorations;
       }
-      return decorations;
+      return buildRecipeIngredientEditorDecorations(plugin, transaction.state);
     },
     provide: (field) => EditorView.decorations.from(field),
   });
@@ -11699,8 +11715,7 @@ function createRecipeIngredientEditorExtension(plugin: TPSHealthPlugin) {
 
 function buildRecipeIngredientEditorDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
   if (!state.field(editorLivePreviewField, false)) return Decoration.none;
-  const content = state.doc.toString();
-  const sourcePath = recipeEditorSourcePath(plugin, content);
+  const sourcePath = recipeEditorSourcePath(plugin, state);
   if (!sourcePath) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
   let addPosition = state.doc.length;
@@ -11725,11 +11740,51 @@ function buildRecipeIngredientEditorDecorations(plugin: TPSHealthPlugin, state: 
   return builder.finish();
 }
 
-function recipeEditorSourcePath(plugin: TPSHealthPlugin, content: string): string {
+function recipeEditorSourcePath(plugin: TPSHealthPlugin, state: EditorState): string {
   const activeFile = plugin.app.workspace.getActiveFile();
   if (!(activeFile instanceof TFile)) return "";
   if (isRecipeLikeMarkdownFile(plugin, activeFile.path)) return activeFile.path;
-  return markdownContentLooksLikeRecipe(content, plugin) ? activeFile.path : "";
+  return markdownContentLooksLikeRecipe(state.doc.toString(), plugin) ? activeFile.path : "";
+}
+
+function changedEditorLinesMatch(transaction: Transaction, matches: (line: string) => boolean): boolean {
+  let found = false;
+  const scan = (doc: EditorState["doc"], from: number, to: number): void => {
+    if (found) return;
+    const first = doc.lineAt(from).number;
+    const last = doc.lineAt(to).number;
+    for (let number = first; number <= last; number++) {
+      if (matches(doc.line(number).text)) {
+        found = true;
+        return;
+      }
+    }
+  };
+  transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    scan(transaction.startState.doc, fromA, toA);
+    scan(transaction.state.doc, fromB, toB);
+  });
+  return found;
+}
+
+function editorChangeTouchesLineBreak(transaction: Transaction): boolean {
+  let touched = false;
+  transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (transaction.startState.doc.lineAt(fromA).number !== transaction.startState.doc.lineAt(toA).number
+      || transaction.state.doc.lineAt(fromB).number !== transaction.state.doc.lineAt(toB).number) touched = true;
+  });
+  return touched;
+}
+
+function selectionTouchesMatchingEditorLine(state: EditorState, matches: (line: string) => boolean): boolean {
+  for (const range of state.selection.ranges) {
+    const first = state.doc.lineAt(range.from).number;
+    const last = state.doc.lineAt(range.to).number;
+    for (let number = first; number <= last; number++) {
+      if (matches(state.doc.line(number).text)) return true;
+    }
+  }
+  return false;
 }
 
 function markdownContentLooksLikeRecipe(content: string, plugin: TPSHealthPlugin): boolean {
