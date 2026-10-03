@@ -1,6 +1,6 @@
 # TPS Health
 
-## Unreleased — GCM-owned kind mappings
+## 4.1.0 — GCM-owned kind mappings
 
 When TPS GCM exposes `frontmatterKinds` API v2, its configured kind definitions own the classification written by Health. Food, recipe, meal, exercise, workout-plan, food-entry, activity-entry, workout-session, and workout-exercise writers check that the corresponding GCM mapping is enabled before creating a file or record. Health's default reusable-note templates add no identity tag or parallel scalar kind field; a tag is written only if the user deliberately chooses a tag classification in GCM or supplies one in a custom template. GCM preserves unrelated values of the configured kind list during edits. Earlier scalar/tag identities remain readable through GCM's configurable aliases and Health's existing legacy readers; no automatic note migration or cleanup runs.
 
@@ -8,7 +8,7 @@ When TPS GCM exposes `frontmatterKinds` API v2, its configured kind definitions 
 
 Food, recipe, and meal may intentionally share one visible kind-list path. Health selects the existing internal food type from a configured legacy scalar when present, otherwise a meal's `servingUnit: meal`, a recipe's `ingredients` or `recipeServings`, and finally ordinary food. This matches the current root-level v0.2 library shapes without introducing a new subtype property. Files at the vault root are considered for indexing when a reusable-food destination is `/`; the visible GCM classification still decides whether the file is a food note. Existing Health template placeholders and manually authored tags remain intact.
 
-Focused tests cover shared root-level food/recipe/meal classification, exercise and plan discovery, no added identity tags, preservation of an unrelated kind-list value, disabled-writer preflight, native record gating, and settings ownership. The declared suite passed **592 of 593** checks with one optional live-provider skip; TypeScript and the separate build passed with `TPS_NO_DEPLOY=1`. This candidate did not replace the shared test runtime or touch production. Installed UI and cross-plugin migration checks remain part of the coordinated validation; this worktree is not a production release.
+Focused tests cover shared root-level food/recipe/meal classification, exercise and plan discovery, no added identity tags, preservation of an unrelated kind-list value, disabled-writer preflight, native record gating, and settings ownership. The declared suite passed **592 of 593** checks with one optional live-provider skip. Minimum Obsidian remains 1.12.0. The separate final build deployed to the Test Vault; Hot Reload showed the Note library handoff, and a UI food-log action wrote a kind list without an identity tag. The saved Macros total survived dashboard refresh. The QA note was archived, and temporary mapping settings were removed; Health and GCM data.json returned to their starting bytes. Physical iPhone and production-vault behavior remain unverified; hashes are in [4.1.0 release notes](release-notes/4.1.0.md).
 
 ## 4.0.1 — Keep ordinary note editing fluid
 
