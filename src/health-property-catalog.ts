@@ -5,6 +5,7 @@ import type {
   HealthPropertyCatalogScope,
 } from "./api";
 import type { HealthGoal, TPSHealthSettings } from "./types";
+import type { HealthKindCodec } from "./health-mapping";
 import { workoutIntervalMode, workoutIntervalPropertyKey, workoutStartPropertyKey } from "./workout-properties";
 import { configuredNativePropertyKey, readableNativeKinds } from "./native-record-schema";
 import type { CanonicalHealthNativeKind } from "./native-record-schema";
@@ -78,7 +79,7 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('plan-cooldown', 'cooldownDays', 'Cooldown days', 'number', ['workout-plan'], { icon: 'calendar-clock' }),
 ];
 
-function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCatalogEntry[] {
+function nativeRecordProperties(settings: TPSHealthSettings, codec?: HealthKindCodec | null): HealthPropertyCatalogEntry[] {
   const intervalMode = workoutIntervalMode(settings);
   const configurableKinds = new Set<CanonicalHealthNativeKind>([
     'food-entry', 'activity-entry', 'workout-session', 'workout-exercise',
@@ -89,16 +90,19 @@ function nativeRecordProperties(settings: TPSHealthSettings): HealthPropertyCata
       : [kind]
   ));
   return [
-    ...NATIVE_RECORD_PROPERTIES.filter(property => !isExtraNutrientKey(property.key) || settings.healthGoals.some(goal => goal.propertyKey === property.key)).map((property) => ({
-      ...property,
-      key: Object.prototype.hasOwnProperty.call(settings.nativeRecordProperties, property.key)
-        ? configuredNativePropertyKey(settings, property.key as keyof TPSHealthSettings['nativeRecordProperties'])
-        : property.key,
-      scope: {
-        ...property.scope,
-        kinds: configuredKinds(property.scope.kinds || []),
-      },
-    })),
+    ...NATIVE_RECORD_PROPERTIES.filter(property => !isExtraNutrientKey(property.key) || settings.healthGoals.some(goal => goal.propertyKey === property.key)).map((property) => {
+      const kinds = property.scope.kinds || [];
+      const reusableKinds = kinds.filter(kind => kind === 'exercise' || kind === 'workout-plan');
+      return {
+        ...property,
+        key: Object.prototype.hasOwnProperty.call(settings.nativeRecordProperties, property.key)
+          ? configuredNativePropertyKey(settings, property.key as keyof TPSHealthSettings['nativeRecordProperties'])
+          : property.key,
+        scope: reusableKinds.length && codec?.version === 2
+          ? configuredKindScope(codec, reusableKinds)
+          : { ...property.scope, kinds: configuredKinds(kinds) },
+      };
+    }),
     scoped('workout-start', workoutStartPropertyKey(settings), 'Workout start', 'datetime', configuredKinds(['workout-session']), { icon: 'calendar-clock' }),
     scoped(
       'workout-interval',
@@ -156,6 +160,52 @@ function foodScope(settings: TPSHealthSettings): HealthPropertyCatalogScope {
   return scope;
 }
 
+/** GCM owns reusable-note identity when its kind API is active. */
+function configuredKindScope(codec: HealthKindCodec, kinds: string[]): HealthPropertyCatalogScope {
+  const kindKey = codec.propertyKey?.('kind') || 'kind';
+  const paths = new Set<string>();
+  const tags = new Set<string>();
+  const propertyGroups = new Map<string, HealthPropertyCatalogScope['properties']>();
+  for (const kind of kinds) {
+    const definition = codec.definition(kind) as Record<string, any> | null;
+    if (!definition) continue;
+    if (definition.kindList) {
+      if (String(definition.kindList.key).toLowerCase() !== kindKey.toLowerCase()) {
+        throw new Error(`The ${kind} kind list must use GCM's configured Kind property to scope Health fields.`);
+      }
+      paths.add(String(definition.kindList.value));
+    } else if (definition.tag) {
+      tags.add(normalizedTag(definition.tag));
+    } else {
+      const conditions = definition.scalar
+        ? [{ key: String(definition.scalar.key), value: String(definition.scalar.value), operator: 'equals' as const }]
+        : [
+            { key: kindKey, value: String(definition.parentKind), operator: 'equals' as const },
+            { key: String(definition.key), value: String(definition.value), operator: 'equals' as const },
+          ];
+      if (conditions.length === 1 && conditions[0].key.toLowerCase() === kindKey.toLowerCase()) {
+        paths.add(conditions[0].value);
+      } else {
+        propertyGroups.set(JSON.stringify(conditions), conditions);
+      }
+    }
+  }
+  // GCM's catalog scope can OR kinds and tags, but each property group is an
+  // AND. Do not silently publish a scope that can never match.
+  if (propertyGroups.size > 1) {
+    throw new Error('The configured Health kinds need a shared GCM Kind path, tag, or property scope.');
+  }
+  const properties = propertyGroups.values().next().value;
+  const sourceCount = Number(paths.size > 0) + Number(tags.size > 0) + Number(!!properties);
+  if (!sourceCount) throw new Error('Configure the reusable Health kind mappings in TPS GCM first.');
+  return {
+    mode: sourceCount > 1 || tags.size > 1 ? 'any' : 'all',
+    ...(paths.size ? { kinds: [...paths] } : {}),
+    ...(tags.size ? { tags: [...tags] } : {}),
+    ...(properties ? { properties } : {}),
+  };
+}
+
 function rollupIcon(propertyKey: string): string {
   const key = propertyKey.trim().toLowerCase();
   if (key === "consumedcalories" || key === "cal") return "flame";
@@ -185,8 +235,10 @@ function rollupProperty(goal: HealthGoal): HealthPropertyCatalogEntry {
   };
 }
 
-export function buildHealthPropertyCatalog(settings: TPSHealthSettings): HealthPropertyCatalog {
-  const scope = foodScope(settings);
+export function buildHealthPropertyCatalog(settings: TPSHealthSettings, codec?: HealthKindCodec | null): HealthPropertyCatalog {
+  const scope = codec?.version === 2
+    ? configuredKindScope(codec, ['food', 'recipe', 'meal'])
+    : foodScope(settings);
   const rollups = (settings.healthGoals || [])
     .filter((goal) => String(goal?.propertyKey || "").trim())
     .filter((goal) => FOOD_ROLLUP_KEYS.has(goal.propertyKey.trim().toLowerCase()))
@@ -215,7 +267,7 @@ export function buildHealthPropertyCatalog(settings: TPSHealthSettings): HealthP
       },
     })),
     dailyRollups: rollups,
-    nativeRecords: nativeRecordProperties(settings).map((property) => ({
+    nativeRecords: nativeRecordProperties(settings, codec).map((property) => ({
       ...property,
       options: property.options ? [...property.options] : undefined,
       scope: {

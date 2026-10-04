@@ -58,6 +58,50 @@ test('food property catalog follows the configured Health identification mode', 
   });
 });
 
+test('GCM v2 kind paths replace stale Health identifiers in reusable-note scopes', () => {
+  const paths = { food: 'entity/food', recipe: 'entity/food', meal: 'entity/food', exercise: 'entity/exercise', 'workout-plan': 'entity/workout-plan' };
+  const codec = {
+    version: 2,
+    propertyKey: id => id === 'kind' ? 'classification' : null,
+    definition: kind => paths[kind] ? { kindList: { key: 'classification', value: paths[kind] } } : null,
+  };
+  const configured = { ...settings('metadata'), foodFrontmatterKey: 'entityKind', workoutFrontmatterKey: 'entityKind' };
+  let catalog = buildHealthPropertyCatalog(configured, codec);
+  assert.deepEqual(catalog.food[0].scope, {
+    mode: 'all', kinds: ['entity/food'], tags: undefined, paths: undefined, properties: undefined,
+  });
+  assert.deepEqual(catalog.nativeRecords.find(property => property.id === 'exercise-primary-muscles').scope,
+    { mode: 'all', kinds: ['entity/exercise'] });
+  assert.deepEqual(catalog.nativeRecords.find(property => property.id === 'plan-cooldown').scope,
+    { mode: 'all', kinds: ['entity/workout-plan'] });
+  assert.deepEqual(catalog.nativeRecords.find(property => property.id === 'exercise-rest').scope,
+    { mode: 'all', kinds: ['entity/exercise', 'entity/workout-plan'] });
+
+  for (const kind of ['food', 'recipe', 'meal']) paths[kind] = 'entity/nutrition';
+  catalog = buildHealthPropertyCatalog(configured, codec);
+  assert.deepEqual(catalog.food[0].scope.kinds, ['entity/nutrition'], 'catalog follows GCM changes without a Health settings migration');
+  assert.equal(configured.foodFrontmatterKey, 'entityKind', 'legacy fallback settings remain untouched');
+});
+
+test('GCM tag and scalar kind mappings remain configurable; older APIs keep Health scopes', () => {
+  const configured = settings('metadata');
+  const codec = {
+    version: 2,
+    propertyKey: () => 'classification',
+    definition: kind => ({ food: { tag: 'groceries/library' }, recipe: { tag: 'recipes/library' },
+      meal: { tag: 'meals/library' }, exercise: { scalar: { key: 'classification', value: 'exercise' } },
+      'workout-plan': { scalar: { key: 'classification', value: 'routine' } } })[kind] || null,
+  };
+  const catalog = buildHealthPropertyCatalog(configured, codec);
+  assert.equal(catalog.food[0].scope.mode, 'any', 'any of the configured food tags identifies a reusable food note');
+  assert.deepEqual(catalog.food[0].scope.tags, ['groceries/library', 'recipes/library', 'meals/library']);
+  assert.equal(catalog.food[0].scope.properties, undefined);
+  assert.deepEqual(catalog.nativeRecords.find(property => property.id === 'exercise-rest').scope.kinds,
+    ['exercise', 'routine']);
+  assert.deepEqual(buildHealthPropertyCatalog(configured, { ...codec, version: 1 }).food[0].scope.properties,
+    [{ key: 'healthEntity', value: 'pantry-item', operator: 'equals' }]);
+});
+
 test('catalog exposes only the compact user-facing native and reusable fields', () => {
   const catalog = buildHealthPropertyCatalog(settings('tag'));
   const byKey = (key) => catalog.nativeRecords.filter((property) => property.key === key);

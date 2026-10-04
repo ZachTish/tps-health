@@ -1,5 +1,9 @@
 # TPS Health
 
+## 4.2.1 — GCM-scoped Health property catalog
+
+Health's property catalog now takes reusable food, recipe, meal, exercise, and workout-plan scopes from GCM's active kind definitions. Importing those fields into GCM therefore uses the configured Kind list paths or tags instead of Health's saved pre-v2 `entityKind` values. Health still owns nutrient and record-field keys; GCM owns classification. No note, template, or setting is rewritten, and the pre-v2 Health identity settings remain available only when GCM's kind API v2 is absent. If a GCM kind mapping changes after its Health properties were imported, re-import those property definitions in GCM to refresh their saved scopes. GCM's property-scope format cannot express an OR of different multi-property legacy classifications, so the catalog rejects that configuration instead of publishing a scope that would never match. Minimum Obsidian remains **1.12.0**. Validation and hashes are in [4.2.1 release notes](release-notes/4.2.1.md).
+
 ## 4.2.0 — Configurable native activity fields
 
 The **Integrations & advanced → Health record frontmatter** settings now include Activity name, Source record ID, and Flights climbed. These join the existing Activity type, time, distance, Source, Device, and archive field mappings. The physical property keys are saved in `nativeRecordProperties`; `activity`, `sourceId`, and `flightsClimbed` are only defaults. Changing one in Health settings previews affected active and archived notes, asks for confirmation, and moves the existing values before saving the new key. Conflicts stop the change. Health's native codec then writes and reads the configured keys, and the Companion app uses the same settings for future Apple Health imports. The shared record Kind path remains owned by GCM; a Health field-key migration preserves its authored YAML list rather than replacing it with an internal Health record name.

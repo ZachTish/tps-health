@@ -9113,7 +9113,7 @@ export default class TPSHealthPlugin extends Plugin {
       getDailyRollup: () => this.traceApiCall("getDailyRollup", {}, () => this.getDailyRollup()),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
-      getPropertyCatalog: () => buildHealthPropertyCatalog(this.settings),
+      getPropertyCatalog: () => buildHealthPropertyCatalog(this.settings, this.configuredKindCodec()),
       openFoodLogEntryMenuFromLine: (event, filePath, lineNumber, line) => this.openFoodLogEntryMenuFromLine(event, filePath, lineNumber, line),
     };
   }

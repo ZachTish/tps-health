@@ -10158,6 +10158,10 @@ test('GCM v2 owns root-level Health kinds without adding identity tags or a subt
     snapshot: () => paths,
   };
   fake.app.plugins.plugins['tps-global-context-menu'] = { api: { frontmatterKinds: codec } };
+  const catalog = plugin.createApi().getPropertyCatalog();
+  assert.deepEqual(catalog.food.find(property => property.key === 'calories')?.scope.kinds, ['entity/food']);
+  assert.equal(catalog.food.find(property => property.key === 'calories')?.scope.properties, undefined);
+  assert.deepEqual(catalog.nativeRecords.find(property => property.id === 'exercise-primary-muscles')?.scope.kinds, ['entity/exercise']);
   const food = await plugin.createFoodNoteFromItem({ name: 'Root food', servingAmount: 1, servingUnit: 'serving', nutrition: { calories: 100 } }, 'food');
   const recipe = await plugin.createFoodNoteFromItem({ name: 'Root recipe', servingAmount: 100, servingUnit: 'g', recipeServings: 25, recipeTotalGrams: 2500, ingredients: '- 1 g oats', nutrition: { calories: 25 } }, 'recipe');
   const meal = await plugin.createFoodNoteFromItem({ name: 'Root meal', servingAmount: 1, servingUnit: 'meal', recipeServings: 1, ingredients: '- 1 g oats', nutrition: { calories: 100 } }, 'meal');
