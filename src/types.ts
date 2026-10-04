@@ -27,8 +27,8 @@ export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workout
 export type HealthNativeRecordPropertyKey = ExtraNutrientKey
   | "completedDate" | "food" | "quantity" | "unit"
   | "calories" | "proteinG" | "carbsG" | "fatG" | "fiberG" | "sugarG" | "sugarAlcoholG" | "alcoholG" | "sodiumMg"
-  | "note" | "activityType" | "startedAt" | "durationMinutes" | "distance" | "distanceUnit" | "steps"
-  | "caloriesBurned" | "source" | "device" | "status" | "workoutPlan" | "session" | "archived" | "archivedDate";
+  | "note" | "activity" | "activityType" | "startedAt" | "durationMinutes" | "distance" | "distanceUnit" | "steps"
+  | "flightsClimbed" | "caloriesBurned" | "source" | "sourceId" | "device" | "status" | "workoutPlan" | "session" | "archived" | "archivedDate";
 
 export interface HealthGoal {
   propertyKey: string;
@@ -368,14 +368,17 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
     alcoholG: "alcoholG",
     sodiumMg: "sodiumMg",
     note: "note",
+    activity: "activity",
     activityType: "activityType",
     startedAt: "startedAt",
     durationMinutes: "durationMinutes",
     distance: "distance",
     distanceUnit: "distanceUnit",
     steps: "steps",
+    flightsClimbed: "flightsClimbed",
     caloriesBurned: "caloriesBurned",
     source: "source",
+    sourceId: "sourceId",
     device: "device",
     status: "status",
     workoutPlan: "workoutPlan",

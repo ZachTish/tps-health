@@ -120,6 +120,9 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /"Activity entry kind value"/);
   assert.match(settingsSource, /renderNativeFrontmatterSettings/);
   assert.match(settingsSource, /addNativePropertyKeySetting/);
+  for (const [key, label] of [["activity", "Activity name"], ["sourceId", "Source record ID"], ["flightsClimbed", "Flights climbed"]]) {
+    assert.match(settingsSource, new RegExp(`\\["${key}", "${label}"\\]`));
+  }
   assert.match(settingsSource, /setButtonText\("Open GCM settings"\)/);
   assert.match(settingsSource, /foodIdentificationMode === "metadata" \|\| this\.plugin\.settings\.foodIdentificationMode === "metadata-folder-tag"/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(dailyNoteFormat|dailyNoteFolder)/);

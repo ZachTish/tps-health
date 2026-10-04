@@ -790,9 +790,10 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         ["fiberG", "Fiber"], ["sugarG", "Sugar"], ["sugarAlcoholG", "Sugar alcohol"], ["alcoholG", "Alcohol"], ["sodiumMg", "Sodium"],
       ]],
       ["Activity fields", [
-        ["activityType", "Activity type"], ["startedAt", "Activity start"], ["durationMinutes", "Activity duration"],
-        ["distance", "Distance"], ["distanceUnit", "Distance unit"], ["steps", "Steps"],
-        ["caloriesBurned", "Calories burned"], ["source", "Source"], ["device", "Device"],
+        ["activity", "Activity name"], ["activityType", "Activity type"], ["startedAt", "Activity start"],
+        ["durationMinutes", "Activity duration"], ["distance", "Distance"], ["distanceUnit", "Distance unit"],
+        ["steps", "Steps"], ["flightsClimbed", "Flights climbed"], ["caloriesBurned", "Calories burned"],
+        ["source", "Source"], ["sourceId", "Source record ID"], ["device", "Device"],
       ]],
       ["Workout and shared Health fields", [
         ["status", "Workout status"], ["workoutPlan", "Workout plan"], ["session", "Workout session data"],

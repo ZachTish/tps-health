@@ -62,7 +62,11 @@ export function migrateHealthFrontmatter(
       if (scope === 'workout-timing') return kind === 'workoutSession' ? migrateWorkoutTiming(fm, before, after) : fm;
       const physicalKindKey = Object.keys(fm).find(key => key.toLowerCase() === native.kindKey.toLowerCase());
       if (!physicalKindKey) throw new Error('Migrate the shared record key in GCM before changing Health mappings.');
-      move(fm, physicalKindKey, native.kindKey, after.nativeRecordKinds[kind]);
+      // GCM v2 owns the authored kind list. The inspected native.kind is its
+      // internal record name, not a value to write over that list.
+      if (!Array.isArray(fm[physicalKindKey])) {
+        move(fm, physicalKindKey, native.kindKey, after.nativeRecordKinds[kind]);
+      }
       if (kind === 'workoutSession') {
         const timed = migrateWorkoutTiming(fm, before, after);
         for (const key of Object.keys(fm)) delete fm[key];

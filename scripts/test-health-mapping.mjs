@@ -30,6 +30,21 @@ test('native mappings use the shared GCM key and consolidate historical aliases 
   next.nativeRecordKinds.workoutSession='training';next.nativeRecordProperties.calories='energy';
   assert.deepEqual(migrateHealthFrontmatter({entityKind:'session-v1',oldEnergy:250,title:'Upper'},old,next,{kind:'session-v1',kindKey:'entityKind'}),{entityKind:'training',energy:250,title:'Upper'});
 });
+test('activity import fields follow confirmed Health key changes without losing existing values',()=>{
+  const before=defaults(),after=defaults();
+  after.nativeRecordProperties.activity='movementName';
+  after.nativeRecordProperties.sourceId='healthSourceId';
+  after.nativeRecordProperties.flightsClimbed='floors';
+  const source={kind:'activity-entry',activity:'Stairs',sourceId:'sample-1',flightsClimbed:6,source:'apple-health'};
+  const migrated=migrateHealthFrontmatter(source,before,after,{kind:'activity-entry',kindKey:'kind'});
+  assert.deepEqual(migrated,{kind:'activity-entry',movementName:'Stairs',healthSourceId:'sample-1',floors:6,source:'apple-health'});
+  assert.deepEqual(migrateHealthFrontmatter(migrated,after,after,{kind:'activity-entry',kindKey:'kind'}),migrated);
+  assert.throws(()=>migrateHealthFrontmatter({...source,floors:9},before,after,{kind:'activity-entry',kindKey:'kind'}),/different value/);
+  const nested={kind:['transaction/activity'],sourceId:'sample-1',flightsClimbed:6};
+  assert.deepEqual(migrateHealthFrontmatter(nested,before,after,{kind:'activity-entry',kindKey:'kind'}),{
+    kind:['transaction/activity'],healthSourceId:'sample-1',floors:6,
+  });
+});
 test('conflicting properties and ambiguous identities stop migration',()=>{
   const old=defaults(),next=defaults();next.foodFrontmatterKey='entityKind';
   assert.throws(()=>migrateHealthFrontmatter({kind:'food',entityKind:'task'},old,next,null),/different value/);
