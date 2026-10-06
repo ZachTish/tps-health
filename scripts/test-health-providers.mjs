@@ -1547,7 +1547,75 @@ test("food search honors the branded-provider toggle", async () => {
   assert.equal(usdaDataTypes[0].split(",").includes("Branded"), true);
 });
 
-test("local food and usage indexes are reused until explicitly invalidated", async () => {
+test("native food usage reflects each whole-note log without legacy history reads", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  configureFakeCoreDailyNotes(fake.app, "Daily Notes");
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodLogFilePath: "Food Log.md" };
+  for (let day = 1; day <= 64; day++) {
+    fake.files.set(`Daily Notes/2026-07-${String(day).padStart(2, "0")}.md`,
+      "- Historical food [food:: Historical food] [createdDate:: 2026-07-01T08:00:00.000Z]\n");
+  }
+  const entries = [];
+  let queries = 0, scans = 0, reads = 0, settingsReads = 0;
+  plugin.nativeRecordService = {
+    isEnabled: () => true,
+    getFoodUsageEntries: () => { queries++; return entries.map(entry => ({ ...entry })); },
+    createFoodEntry: async entry => {
+      entries.push({ name: entry.item.name, brand: entry.item.brand, barcode: entry.item.barcode,
+        sourcePath: entry.item.sourcePath, completedDate: entry.completedDate });
+      return { path: `Food Entries/${entries.length}.md` };
+    },
+  };
+  // Keep the test focused on usage queries, not logging's independent timing metadata.
+  plugin.measureFoodLogging = (_route, _selected, action) => action({ measure: (_stage, action) => action() });
+  const enumerate = fake.app.vault.getMarkdownFiles.bind(fake.app.vault);
+  fake.app.vault.getMarkdownFiles = () => { scans++; return enumerate(); };
+  fake.app.vault.cachedRead = async () => { reads++; return "- Historical food [food:: Historical food]\n"; };
+  plugin.getDailyNoteSettings = async () => { settingsReads++; return { folder: "Daily Notes" }; };
+  const food = { id: "native-food", name: "Native food", brand: "Synthetic", barcode: "0123456789012",
+    source: "custom-note", sourcePath: "Foods/Native food.md", servingAmount: 1, servingUnit: "serving", nutrition: { calories: 100 } };
+  const beforeLogs = await plugin.getLoggedFoodStats("");
+  const observed = [];
+  for (let log = 1; log <= 3; log++) {
+    await plugin.logFood(food, 1, "serving", undefined, `2026-10-06T0${log}:00:00.000Z`, false);
+    observed.push(await plugin.getLoggedFoodStats(""));
+  }
+  assert.deepEqual({ scans, reads, settingsReads }, { scans: 0, reads: 0, settingsReads: 0 },
+    "reopening quick picks after logs must not enumerate the vault, read Daily Notes, or read daily-note configuration");
+  assert.equal(queries, 4);
+  assert.equal(beforeLogs.size, 0, "unimported inline history is not native recency");
+  observed.forEach((stats, index) => {
+    for (const key of ["path:Foods/Native food.md", "barcode:0123456789012", "name:native food|synthetic", "name:native food"]) {
+      assert.deepEqual(stats.get(key), { count: index + 1, lastLoggedAt: `2026-10-06T0${index + 1}:00:00.000Z` });
+    }
+  });
+});
+
+test("native food usage drives default saved and local ranking without a retained usage snapshot", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodsFolder: "Foods", recipesFolder: "Recipes" };
+  for (const name of ["Synthetic Apple", "Synthetic Yogurt"]) {
+    fake.files.set(`Foods/${name}.md`, `---\nkind: food\ntitle: ${name}\ncalories: 100\n---\n`);
+  }
+  let entries = [{ name: "Synthetic Apple", sourcePath: "Foods/Synthetic Apple.md", completedDate: "2026-10-05T08:00:00.000Z" }];
+  plugin.nativeRecordService = { getFoodUsageEntries: () => entries };
+  const first = await plugin.getSavedFoods();
+  assert.equal(first[0].name, "Synthetic Apple");
+  entries = [{ name: "Synthetic Yogurt", sourcePath: "Foods/Synthetic Yogurt.md", completedDate: "2026-10-06T08:00:00.000Z" }];
+  assert.equal((await plugin.getSavedFoods())[0].name, "Synthetic Yogurt", "an edit is visible without cache invalidation");
+  assert.equal((await plugin.searchLocalFoods("synthetic"))[0].name, "Synthetic Yogurt");
+  assert.deepEqual(first.map(item => item.name), ["Synthetic Apple", "Synthetic Yogurt"], "older returned arrays remain unchanged");
+  entries = [];
+  assert.equal((await plugin.getLoggedFoodStats("")).size, 0, "deletion cannot retain an accepted old usage map");
+});
+
+test("local food catalog is reused while native usage needs no legacy history scan", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -1576,6 +1644,7 @@ test("local food and usage indexes are reused until explicitly invalidated", asy
     "",
   ].join("\n"));
   fake.files.set("Daily Notes/2026-07-26.md", "- Indexed Apple [food:: Indexed Apple] [qty:: 1] [unit:: serving] [createdDate:: 2026-07-26T08:00:00.000Z]\n");
+  plugin.nativeRecordService = { getFoodUsageEntries: () => [{ name: "Indexed Apple", sourcePath: "Health/Foods/Indexed Apple.md", completedDate: "2026-07-26T08:00:00.000Z" }] };
 
   const getMarkdownFiles = fake.app.vault.getMarkdownFiles.bind(fake.app.vault);
   let markdownScans = 0;
@@ -1598,8 +1667,9 @@ test("local food and usage indexes are reused until explicitly invalidated", asy
 
   const firstUsage = await plugin.getLoggedFoodStats("indexed");
   const secondUsage = await plugin.getLoggedFoodStats("apple");
-  assert.equal(firstUsage, secondUsage, "history lookups should reuse the same cached usage map");
-  assert.equal(historyReads, 1, "repeated history lookups should not reread daily notes");
+  assert.deepEqual(firstUsage, secondUsage, "each query projects the same current native usage");
+  assert.notEqual(firstUsage, secondUsage, "usage is not retained in a second cache");
+  assert.equal(historyReads, 0, "history ranking must not reread daily notes");
   const savedFoods = await plugin.getSavedFoods(firstUsage);
   assert.deepEqual(savedFoods.map((item) => item.name), ["Indexed Apple"]);
   assert.ok(savedFoods.every((item) => item.source === "custom-note"), "Saved must never be filled with curated suggestions");
@@ -1621,8 +1691,8 @@ test("local food and usage indexes are reused until explicitly invalidated", asy
   plugin.invalidateFoodSearchIndexes("test");
   assert.ok((await plugin.searchLocalFoods("indexed yogurt")).some((item) => item.name === "Indexed Yogurt"));
   await plugin.getLoggedFoodStats("indexed");
-  assert.equal(markdownScans, 4, "catalog and usage each rebuild once after invalidation");
-  assert.equal(historyReads, 2);
+  assert.equal(markdownScans, 2, "only the food catalog scans, once initially and once after invalidation");
+  assert.equal(historyReads, 0);
 
   const invalidationSource = mainSource.slice(
     mainSource.indexOf("private registerFoodSearchIndexInvalidation"),
@@ -1883,8 +1953,8 @@ test("unbuilt food indexes do no classification work during a startup event burs
   const plugin = new TPSHealthPlugin(fake.app);
   const listeners = new Map();
   fake.app.vault.on = (event, handler) => listeners.set(event, handler);
-  const counts = { catalog: 0, usage: 0, metadata: 0, scans: 0, reads: 0 };
-  for (const [method, count] of [["foodCatalogPathCouldChange", "catalog"], ["foodUsagePathCouldChange", "usage"]]) {
+  const counts = { catalog: 0, metadata: 0, scans: 0, reads: 0 };
+  for (const [method, count] of [["foodCatalogPathCouldChange", "catalog"]]) {
     const original = plugin[method].bind(plugin);
     plugin[method] = (...args) => { counts[count]++; return original(...args); };
   }
@@ -1897,9 +1967,8 @@ test("unbuilt food indexes do no classification work during a startup event burs
     listeners.get("create")(new TFile(`Inbox/Note ${index}.md`));
     listeners.get("create")(new TFile(`Assets/Image ${index}.png`));
   }
-  assert.deepEqual(counts, { catalog: 0, usage: 0, metadata: 0, scans: 0, reads: 0 });
+  assert.deepEqual(counts, { catalog: 0, metadata: 0, scans: 0, reads: 0 });
   assert.equal(plugin.localFoodIndexDirty, true);
-  assert.equal(plugin.foodUsageIndexDirty, true);
   assert.equal(plugin.exerciseSearchIndexGeneration, 512, "Markdown events still invalidate an exercise build");
   assert.equal(fake.writes.length, 0);
 });
@@ -1909,15 +1978,13 @@ test("already-dirty food indexes skip repeated classification after a real inval
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
   plugin.localFoodIndex = { items: [] };
-  plugin.foodUsageIndex = { stats: new Map() };
-  plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = false;
+  plugin.localFoodIndexDirty = false;
   plugin.invalidateFoodSearchIndexes("settings");
-  plugin.foodCatalogPathCouldChange = plugin.foodUsagePathCouldChange = () => assert.fail("dirty indexes need no path classification");
+  plugin.foodCatalogPathCouldChange = () => assert.fail("dirty indexes need no path classification");
   plugin.app.metadataCache.getFileCache = () => assert.fail("dirty indexes need no metadata inspection");
   const TFile = globalThis.__TPSHealthTestTFile;
   for (let index = 0; index < 128; index++) plugin.invalidateFoodSearchIndexes("metadata", new TFile(`Inbox/${index}.md`));
   assert.equal(plugin.localFoodIndexDirty, true);
-  assert.equal(plugin.foodUsageIndexDirty, true);
 });
 
 test("non-Markdown file events leave clean food and exercise indexes unchanged", async () => {
@@ -1929,7 +1996,7 @@ test("non-Markdown file events leave clean food and exercise indexes unchanged",
   fake.app.vault.on = (event, handler) => vaultEvents.set(event, handler);
   fake.app.metadataCache.on = (event, handler) => metadataEvents.set(event, handler);
   plugin.registerFoodSearchIndexInvalidation();
-  plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = plugin.exerciseSearchIndexDirty = false;
+  plugin.localFoodIndexDirty = plugin.exerciseSearchIndexDirty = false;
   plugin.invalidateFoodSearchIndexes = () => assert.fail("a non-Markdown event cannot change a Markdown search index");
   const TFile = globalThis.__TPSHealthTestTFile;
   for (const extension of ["png", "pdf", "base", "ts", "css"]) {
@@ -1940,7 +2007,6 @@ test("non-Markdown file events leave clean food and exercise indexes unchanged",
   }
   assert.equal(plugin.exerciseSearchIndexGeneration, 0);
   assert.equal(plugin.localFoodIndexDirty, false);
-  assert.equal(plugin.foodUsageIndexDirty, false);
 });
 
 test("rename invalidation retains both Markdown extension boundaries and old source paths", async () => {
@@ -1954,15 +2020,14 @@ test("rename invalidation retains both Markdown extension boundaries and old sou
   fake.app.vault.on = (event, handler) => events.set(event, handler);
   plugin.registerFoodSearchIndexInvalidation();
   const TFile = globalThis.__TPSHealthTestTFile;
-  for (const [path, oldPath, catalog, usage] of [
-    ["Archive/Food.txt", "Health/Foods/Food.md", true, false],
-    ["Archive/Day.txt", "Daily Notes/2026-07-26.MD", false, true],
-    ["Health/Foods/Food.md", "Imports/Food.txt", true, false],
+  for (const [path, oldPath, catalog] of [
+    ["Archive/Food.txt", "Health/Foods/Food.md", true],
+    ["Archive/Day.txt", "Daily Notes/2026-07-26.MD", false],
+    ["Health/Foods/Food.md", "Imports/Food.txt", true],
   ]) {
-    plugin.localFoodIndexDirty = plugin.foodUsageIndexDirty = false;
+    plugin.localFoodIndexDirty = false;
     events.get("rename")(new TFile(path), oldPath);
     assert.equal(plugin.localFoodIndexDirty, catalog, oldPath);
-    assert.equal(plugin.foodUsageIndexDirty, usage, oldPath);
   }
 });
 
@@ -2000,57 +2065,29 @@ test("food index invalidation ignores unrelated metadata churn", async () => {
 
   plugin.invalidateFoodSearchIndexes("metadata", new TFile("Projects/Unrelated.md"));
   assert.equal(plugin.localFoodIndexDirty, false, "unrelated note metadata must not force a catalog rescan");
-  assert.equal(plugin.foodUsageIndexDirty, false, "unrelated note metadata must not force a history rescan");
 
   plugin.invalidateFoodSearchIndexes("metadata", new TFile("Daily Notes/2026-07-26.md"));
   assert.equal(plugin.localFoodIndexDirty, false, "daily-note edits must not force a food catalog rescan");
-  assert.equal(plugin.foodUsageIndexDirty, true, "daily-note edits must invalidate usage ranking");
-
-  plugin.foodUsageIndexDirty = false;
   plugin.invalidateFoodSearchIndexes("metadata", new TFile("Health/Foods/Indexed Apple.md"));
   assert.equal(plugin.localFoodIndexDirty, true, "food-note metadata changes must invalidate the catalog");
-  assert.equal(plugin.foodUsageIndexDirty, false, "food-note metadata changes must not invalidate daily usage");
 });
 
-test("usage index coalesces reads and cannot publish a snapshot invalidated mid-scan", async () => {
+test("native food usage requests do not retain partial startup results", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
-  configureFakeCoreDailyNotes(fake.app, "Daily Notes");
   const plugin = new TPSHealthPlugin(fake.app);
-  plugin.settings = {
-    ...plugin.settings,
-    dailyNoteFolder: "Daily Notes",
-    foodLogFilePath: "Food Log.md",
-  };
-  const dailyPath = "Daily Notes/2026-07-26.md";
-  const logLine = "- Indexed Apple [food:: Indexed Apple] [createdDate:: 2026-07-26T08:00:00.000Z]\n";
-  fake.files.set(dailyPath, logLine);
-  let releaseRead;
-  const heldRead = new Promise((resolve) => {
-    releaseRead = resolve;
-  });
-  let reads = 0;
-  const normalRead = fake.app.vault.cachedRead.bind(fake.app.vault);
-  fake.app.vault.cachedRead = async () => {
-    reads += 1;
-    return heldRead;
-  };
-
-  const first = plugin.getLoggedFoodStats("first");
-  const joined = plugin.getLoggedFoodStats("joined");
-  for (let attempt = 0; attempt < 5 && reads === 0; attempt += 1) await Promise.resolve();
-  assert.equal(reads, 1, "concurrent history requests should share one scan");
-  const TFile = globalThis.__TPSHealthTestTFile;
-  plugin.invalidateFoodSearchIndexes("modify", new TFile(dailyPath));
-  releaseRead(logLine);
-  await Promise.all([first, joined]);
-  assert.equal(plugin.foodUsageIndexDirty, true, "a mid-scan edit must keep the usage index dirty");
-
-  fake.app.vault.cachedRead = normalRead;
-  await plugin.getLoggedFoodStats("rebuilt");
-  assert.equal(plugin.foodUsageIndexDirty, false, "the next request should rebuild and publish a clean snapshot");
-  assert.equal(reads, 1, "the held scan should still perform only one underlying read");
+  let entries = [];
+  plugin.nativeRecordService = { getFoodUsageEntries: () => entries };
+  fake.app.vault.cachedRead = () => assert.fail("ranking may not start a legacy read during native index startup");
+  fake.app.vault.getMarkdownFiles = () => assert.fail("ranking may not start a second index");
+  const [first, joined] = await Promise.all([plugin.getLoggedFoodStats("first"), plugin.getLoggedFoodStats("joined")]);
+  assert.equal(first.size, 0);
+  assert.equal(joined.size, 0);
+  entries = [{ name: "Indexed Apple", completedDate: "2026-07-26T08:00:00.000Z" }];
+  const settled = await plugin.getLoggedFoodStats("settled");
+  assert.deepEqual(settled.get("name:indexed apple"), { count: 1, lastLoggedAt: "2026-07-26T08:00:00.000Z" });
+  assert.equal(first.size, 0, "earlier partial results remain immutable instead of becoming a second owner");
 });
 
 test("local search stays offline while combined search invokes providers", async () => {
@@ -8843,8 +8880,8 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /if \(item\.source === "usda" && !item\.brand\) score \+= 18/);
   assert.match(mainSource, /if \(item\.source === "custom-note"\) score \+= 45/);
   assert.match(mainSource, /if \(usage\.count\) score \+= 90 \+ Math\.min\(usage\.count, 10\) \* 10/);
-  assert.match(mainSource, /logger\.flowWarn\("FoodSearch", "usage-read:failed", \{ path: file\.path, error: logger\.errorSummary\(error\) \}\)/);
-  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:done", \{[\s\S]+files: built\.files,[\s\S]+usageKeys: built\.stats\.size,[\s\S]+cached:/);
+  assert.match(mainSource, /logger\.flow\("FoodSearch", "usage:native-index", \{ query, records: entries\.length, usageKeys: stats\.size \}\)/);
+  assert.doesNotMatch(mainSource, /buildFoodUsageIndex|foodUsageIndexInFlight|foodUsageIndexDirty|usage-read:failed/);
   assert.match(mainSource, /if \(item\.source === "open-food-facts"\) score \+= tokens\.length > 1 \? 8 : -18/);
   assert.match(mainSource, /if \(item\.source === "usda" && item\.brand\) score -= 24/);
   assert.match(mainSource, /tokens\.length === 1 && item\.source === "open-food-facts" && !usage\.count/);

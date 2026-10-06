@@ -485,13 +485,6 @@ interface ExerciseSearchIndex {
   recognized: number;
 }
 
-interface FoodUsageIndex {
-  signature: string;
-  stats: Map<string, FoodUsageStats>;
-  files: number;
-  readFailures: number;
-}
-
 interface UsdaCredential {
   apiKey: string;
   identity: string;
@@ -686,11 +679,7 @@ export default class TPSHealthPlugin extends Plugin {
   private exerciseSearchIndexDirty = true;
   private exerciseSearchIndexGeneration = 0;
   private exerciseSearchIndexInFlight: { signature: string; generation: number; promise: Promise<ExerciseSearchIndex> } | null = null;
-  private foodUsageIndex: FoodUsageIndex | null = null;
   private localFoodIndexDirty = true;
-  private foodUsageIndexDirty = true;
-  private foodUsageIndexGeneration = 0;
-  private foodUsageIndexInFlight: { signature: string; generation: number; promise: Promise<FoodUsageIndex> } | null = null;
   private usdaSearchCache = new Map<string, UsdaSearchCacheEntry>();
   private usdaSearchInFlight = new Map<string, Promise<any[]>>();
   private usdaRateLimitedUntil = new Map<UsdaCredentialSource, number>();
@@ -3766,7 +3755,6 @@ export default class TPSHealthPlugin extends Plugin {
         amountUnit: resolvedServing.amountUnit || "",
       });
       const record = await timing.measure("native-entry", () => this.nativeRecordService.createFoodEntry(entry));
-      this.markFoodUsageIndexDirty();
       logger.flow("FoodLog", "write:done", {
         foodId: entry.id,
         food: loggedItem.name,
@@ -3994,13 +3982,6 @@ export default class TPSHealthPlugin extends Plugin {
     ]);
   }
 
-  private foodUsageSettingsSignature(dailyFolder = this.dailyNoteSettingsSnapshot.folder): string {
-    return JSON.stringify([
-      normalizePath(this.settings.foodLogFilePath || ""),
-      normalizePath(dailyFolder || ""),
-    ]);
-  }
-
   private isMarkdownEventFile(file: unknown): file is TFile {
     return Boolean(file && typeof file === "object" && /\.md$/i.test(String((file as any).path || "")));
   }
@@ -4018,38 +3999,22 @@ export default class TPSHealthPlugin extends Plugin {
       || Boolean(this.localFoodIndex?.items.some((item) => item.sourcePath === normalized));
   }
 
-  private foodUsagePathCouldChange(path: string): boolean {
-    const normalized = normalizePath(path || "");
-    if (!normalized) return false;
-    const dailyFolder = normalizePath(this.dailyNoteSettingsSnapshot.folder || "");
-    return normalized === normalizePath(this.settings.foodLogFilePath || "")
-      || isFoodLogBaseDailyNoteFile(normalized, dailyFolder)
-      || /^Dailynotes\//i.test(normalized);
-  }
-
   private invalidateFoodSearchIndexes(reason: string, file?: TFile, oldPath = ""): void {
     const hadCatalog = Boolean(this.localFoodIndex);
-    const hadUsage = Boolean(this.foodUsageIndex);
     // An unbuilt or already-dirty snapshot cannot become any less current.
-    // An in-flight usage build still needs its generation invalidated.
     const invalidateCatalog = !this.localFoodIndexDirty && (!file
       || this.foodCatalogPathCouldChange(file.path)
       || this.foodCatalogPathCouldChange(oldPath)
       || isFoodLikeMarkdownFile(this, file, this.app.metadataCache.getFileCache(file)));
-    const invalidateUsage = (!this.foodUsageIndexDirty || Boolean(this.foodUsageIndexInFlight)) && (!file
-      || this.foodUsagePathCouldChange(file.path)
-      || this.foodUsagePathCouldChange(oldPath));
     if (invalidateCatalog) this.localFoodIndexDirty = true;
     this.exerciseSearchIndexDirty = true;
     this.exerciseSearchIndexGeneration++;
-    if (invalidateUsage) this.markFoodUsageIndexDirty();
-    if ((invalidateCatalog && hadCatalog) || (invalidateUsage && hadUsage)) {
+    if (invalidateCatalog && hadCatalog) {
       logger.flow("FoodIndex", "invalidate", {
         reason,
         path: file?.path || "",
         oldPath,
         catalog: invalidateCatalog,
-        usage: invalidateUsage,
       });
     }
   }
@@ -4117,11 +4082,6 @@ export default class TPSHealthPlugin extends Plugin {
       barcodes: byBarcode.size,
     });
     return this.localFoodIndex;
-  }
-
-  private markFoodUsageIndexDirty(): void {
-    this.foodUsageIndexDirty = true;
-    this.foodUsageIndexGeneration++;
   }
 
   async findOrCreateFoodNote(item: FoodItem): Promise<FoodItem> {
@@ -4472,10 +4432,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async searchLocalFoods(query: string, usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
-    const stats = usageStats
-      || (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === this.foodUsageSettingsSignature()
-        ? this.foodUsageIndex.stats
-        : new Map<string, FoodUsageStats>());
+    const stats = usageStats || await this.getLoggedFoodStats(query);
     const [custom, curated] = await Promise.all([
       this.searchCustomFoods(query),
       Promise.resolve(searchCuratedFoods(query)),
@@ -4484,10 +4441,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async getSavedFoods(usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
-    const stats = usageStats
-      || (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === this.foodUsageSettingsSignature()
-        ? this.foodUsageIndex.stats
-        : new Map<string, FoodUsageStats>());
+    const stats = usageStats || await this.getLoggedFoodStats("");
     const saved = this.getLocalFoodIndex().items
       .filter((item) => item.source === "custom-note" && hasSearchableMacroData(item.nutrition));
     return rankFoodSearchResults("", dedupeFoods(saved), stats);
@@ -4534,90 +4488,20 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async getLoggedFoodStats(query: string): Promise<Map<string, FoodUsageStats>> {
-    const { folder: dailyFolder } = await this.getDailyNoteSettings();
-    const signature = this.foodUsageSettingsSignature(dailyFolder);
-    if (this.foodUsageIndex && !this.foodUsageIndexDirty && this.foodUsageIndex.signature === signature) {
-      logger.flow("FoodSearch", "usage:cache-hit", {
-        query,
-        files: this.foodUsageIndex.files,
-        usageKeys: this.foodUsageIndex.stats.size,
-      });
-      return this.foodUsageIndex.stats;
-    }
-    const generation = this.foodUsageIndexGeneration;
-    const inFlight = this.foodUsageIndexInFlight;
-    if (inFlight && inFlight.signature === signature && inFlight.generation === generation) {
-      logger.flow("FoodSearch", "usage:join-in-flight", { query, generation });
-      return (await inFlight.promise).stats;
-    }
-    const promise = this.buildFoodUsageIndex(signature, dailyFolder);
-    this.foodUsageIndexInFlight = { signature, generation, promise };
-    try {
-      const built = await promise;
-      const current = generation === this.foodUsageIndexGeneration && signature === this.foodUsageSettingsSignature();
-      if (current && built.readFailures === 0) {
-        this.foodUsageIndex = built;
-        this.foodUsageIndexDirty = false;
-      } else {
-        this.foodUsageIndexDirty = true;
-        logger.flowWarn("FoodSearch", "usage:not-cached", {
-          query,
-          reason: current ? "read-failures" : "invalidated-during-scan",
-          generation,
-          currentGeneration: this.foodUsageIndexGeneration,
-          readFailures: built.readFailures,
-        });
-      }
-      logger.flow("FoodSearch", "usage:done", {
-        query,
-        files: built.files,
-        readFailures: built.readFailures,
-        usageKeys: built.stats.size,
-        cached: current && built.readFailures === 0,
-      });
-      return built.stats;
-    } finally {
-      if (this.foodUsageIndexInFlight?.promise === promise) this.foodUsageIndexInFlight = null;
-    }
-  }
-
-  private async buildFoodUsageIndex(signature: string, dailyFolder: string): Promise<FoodUsageIndex> {
     const stats = new Map<string, FoodUsageStats>();
-    const normalizedDailyFolder = normalizePath(dailyFolder || "");
-    const files = this.app.vault.getMarkdownFiles()
-      .filter((file) => file.path === normalizePath(this.settings.foodLogFilePath || "") || isFoodLogBaseDailyNoteFile(file.path, normalizedDailyFolder) || /^Dailynotes\//i.test(file.path));
-    let readFailures = 0;
-    const batchSize = 8;
-    for (let start = 0; start < files.length; start += batchSize) {
-      const batch = files.slice(start, start + batchSize);
-      const contents = await Promise.all(batch.map(async (file) => {
-        try {
-          return { file, content: await this.app.vault.cachedRead(file) };
-        } catch (error) {
-          readFailures++;
-          logger.flowWarn("FoodSearch", "usage-read:failed", { path: file.path, error: logger.errorSummary(error) });
-          return { file, content: "" };
-        }
-      }));
-      for (const { content } of contents) {
-        for (const line of content.split("\n")) {
-          if (!isFoodLogLine(line)) continue;
-          const name = readStringField(line, "food") || foodNameFromFoodLogSummary(line);
-          if (!name) continue;
-          const brand = readStringField(line, "brand");
-          const barcode = readStringField(line, "barcode");
-          const foodPath = readStringField(line, "foodPath");
-          const completed = readStringField(line, "completedDate") || readStringField(line, "createdDate") || "";
-          for (const key of foodUsageKeys({ name, brand, barcode, sourcePath: foodPath } as FoodItem)) {
-            const entry = stats.get(key) || { count: 0, lastLoggedAt: "" };
-            entry.count += 1;
-            if (completed && completed > entry.lastLoggedAt) entry.lastLoggedAt = completed;
-            stats.set(key, entry);
-          }
-        }
+    const entries = this.nativeRecordService?.getFoodUsageEntries() || [];
+    for (const food of entries) {
+      // The usage source is the live whole-note index. Historical inline logs
+      // remain available in their explicit readers/import, not picker scans.
+      for (const key of foodUsageKeys(food)) {
+        const entry = stats.get(key) || { count: 0, lastLoggedAt: "" };
+        entry.count++;
+        if (food.completedDate > entry.lastLoggedAt) entry.lastLoggedAt = food.completedDate;
+        stats.set(key, entry);
       }
     }
-    return { signature, stats, files: files.length, readFailures };
+    logger.flow("FoodSearch", "usage:native-index", { query, records: entries.length, usageKeys: stats.size });
+    return stats;
   }
 
   async logFoodFromInput(input: LogFoodInput): Promise<FoodLogEntry> {
@@ -20357,7 +20241,7 @@ function foodUsageForItem(item: FoodItem, usageStats: Map<string, FoodUsageStats
   return out;
 }
 
-function foodUsageKeys(item: FoodItem): string[] {
+function foodUsageKeys(item: Pick<FoodItem, "name" | "brand" | "barcode" | "sourcePath">): string[] {
   return [
     item.barcode ? `barcode:${normalizeLookup(item.barcode)}` : "",
     item.sourcePath ? `path:${normalizePath(item.sourcePath)}` : "",

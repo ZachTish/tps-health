@@ -278,6 +278,14 @@ export interface NativeDailyFoodEntrySnapshot extends ExtraNutrition {
   linkedFood: boolean;
 }
 
+export interface NativeFoodUsageEntry {
+  name: string;
+  brand?: string;
+  barcode?: string;
+  sourcePath?: string;
+  completedDate: string;
+}
+
 export interface NativeDailyActivityEntrySnapshot {
   id: string;
   path: string;
@@ -2015,6 +2023,23 @@ export class HealthNativeRecordService {
       .filter(record => dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso)
       .map(record => record.file.path))
       .sort((left, right) => left.completedDate.localeCompare(right.completedDate) || left.title.localeCompare(right.title));
+  }
+
+  /** Current whole-note consumption history; library definitions alone are not usage. */
+  getFoodUsageEntries(): NativeFoodUsageEntry[] {
+    return this.getKindRecords('food-entry')
+      .filter(record => record.frontmatter.archived !== true)
+      .map(record => {
+        const food = this.foodDefinitionForEntry(record.frontmatter, record.file.path);
+        const definition = food?.frontmatter;
+        return {
+          name: String(definition?.title || definition?.name || record.frontmatter.title || record.file.basename).trim(),
+          brand: definition?.brand ? String(definition.brand) : undefined,
+          barcode: definition?.barcode ? String(definition.barcode) : undefined,
+          sourcePath: food?.path || this.resolveFoodSourcePath(foodReference(record.frontmatter), record.file.path) || undefined,
+          completedDate: String(record.frontmatter.completedDate || ''),
+        };
+      });
   }
 
   /** Project selected food records from the normalized index, without duplicates or archived records. */

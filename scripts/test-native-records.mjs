@@ -308,6 +308,103 @@ function createHarness(options = {}) {
 }
 
 const providerEvent = available => ({ source: 'tps-global-context-menu', available });
+
+test('native food usage reads only indexed consumption records and preserves linked food identity', async () => {
+  const h = createHarness();
+  try {
+    const definition = h.addFrontmatterFile('Foods/Synthetic food.md', {
+      kind: 'food', title: 'Synthetic food', brand: 'Synthetic brand', barcode: '0123456789012',
+      servingAmount: 1, servingUnit: 'serving', calories: 100,
+    });
+    h.addFrontmatterFile('Foods/Unused food.md', { kind: 'food', title: 'Unused food', calories: 200 });
+    assert.deepEqual(h.service.getFoodUsageEntries(), [], 'food entities without consumption records are not usage');
+    const entry = {
+      id: 'usage-one', createdDate: '2026-10-06T08:00:00.000Z', completedDate: '2026-10-06T08:00:00.000Z',
+      item: { id: 'synthetic', name: 'Original log title', source: 'custom-note', sourcePath: definition.path },
+      quantity: 1, unit: 'serving', nutritionOverride: { calories: 100 },
+    };
+    await h.service.createFoodEntry(entry);
+    await h.service.createFoodEntry({ ...entry, id: 'usage-two', completedDate: '2026-10-06T09:00:00.000Z' });
+    let scans = 0, metadataReads = 0;
+    const enumerate = h.plugin.app.vault.getMarkdownFiles;
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return enumerate(); };
+    const cache = h.plugin.app.metadataCache.getFileCache;
+    h.plugin.app.metadataCache.getFileCache = file => { metadataReads++; return cache(file); };
+    const beforeReads = { direct: h.readCalls.length, cached: h.cachedReadCalls.length };
+    const expected = ['2026-10-06T08:00:00.000Z', '2026-10-06T09:00:00.000Z'].map(completedDate => ({
+      name: 'Synthetic food', brand: 'Synthetic brand', barcode: '0123456789012', sourcePath: definition.path, completedDate,
+    }));
+    const first = h.service.getFoodUsageEntries();
+    assert.deepEqual(first, expected);
+    first[0].name = 'Do not mutate the index';
+    for (let query = 0; query < 32; query++) assert.deepEqual(h.service.getFoodUsageEntries(), expected);
+    assert.deepEqual({ scans, metadataReads, direct: h.readCalls.length - beforeReads.direct, cached: h.cachedReadCalls.length - beforeReads.cached },
+      { scans: 0, metadataReads: 0, direct: 0, cached: 0 }, 'repeated usage reads reuse the existing normalized index and linked definitions');
+  } finally { h.service.dispose(); }
+});
+
+test('native food usage follows current edit rename archive and delete events without retained history', async () => {
+  const h = createHarness();
+  try {
+    const created = await h.service.createFoodEntry({
+      id: 'editable-usage', createdDate: '2026-10-06T08:00:00.000Z', completedDate: '2026-10-06T08:00:00.000Z',
+      item: { id: 'manual', name: 'Manual food', source: 'manual' }, quantity: 1, unit: 'serving', nutritionOverride: { calories: 100 },
+    });
+    assert.equal(h.service.getFoodUsageEntries()[0].name, 'Manual food');
+    const edited = await h.service.updateDailyFoodEntry(created.path, {
+      ...h.service.getDailyFoodEntries('2026-10-06')[0], title: 'Edited food', completedDate: '2026-10-05T09:00:00.000Z',
+    });
+    assert.deepEqual(h.service.getFoodUsageEntries(), [{ name: 'Edited food', brand: undefined, barcode: undefined,
+      sourcePath: undefined, completedDate: '2026-10-05T09:00:00.000Z' }]);
+    const oldPath = edited.file.path;
+    const oldContent = h.contents.get(oldPath);
+    const newPath = 'Inbox/Renamed food log.md';
+    h.files.delete(oldPath); h.contents.delete(oldPath);
+    edited.file.path = newPath; edited.file.name = 'Renamed food log.md'; edited.file.basename = 'Renamed food log';
+    h.files.set(newPath, edited.file); h.contents.set(newPath, oldContent);
+    h.emitVault('rename', edited.file, oldPath);
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(h.service.getFoodUsageEntries().length, 1, 'rename does not double-count the old and new paths');
+    assert.equal(h.service.getFoodUsageEntries()[0].name, 'Edited food');
+    await h.service.archiveDailyEntry(newPath, 'food-entry');
+    assert.deepEqual(h.service.getFoodUsageEntries(), [], 'archived consumption records are excluded');
+    h.frontmatters.get(edited.file).archived = false;
+    h.emitMetadata('changed', edited.file, undefined, { frontmatter: h.frontmatters.get(edited.file) });
+    assert.equal(h.service.getFoodUsageEntries().length, 1, 'unarchive is visible without usage-cache invalidation');
+    await h.plugin.app.vault.trash(edited.file);
+    assert.deepEqual(h.service.getFoodUsageEntries(), [], 'deleted consumption records cannot remain recent');
+  } finally { h.service.dispose(); }
+});
+
+test('native food usage honors mapped entry fields and incrementally edited food definitions', async () => {
+  const h = createHarness({ customKinds: true, settings: {
+    nativeRecordKinds: { foodEntry: 'nutrition-log' },
+    nativeRecordProperties: { completedDate: 'consumedAt', food: 'foodRef', title: 'label' },
+  } });
+  try {
+    const definition = h.addFrontmatterFile('Foods/Mapped food.md', { kind: 'food', name: 'Mapped food', barcode: '1111' });
+    const created = await h.service.createFoodEntry({
+      id: 'mapped-usage', createdDate: '2026-10-06T08:00:00.000Z', completedDate: '2026-10-06T08:00:00.000Z',
+      item: { id: 'mapped', name: 'Log snapshot', source: 'custom-note', sourcePath: definition.path },
+      quantity: 1, unit: 'serving', nutritionOverride: { calories: 100 },
+    });
+    assert.equal(h.createCalls[0].kind, 'nutrition-log');
+    assert.equal(h.createCalls[0].properties.consumedAt, '2026-10-06T08:00:00.000Z');
+    assert.equal(h.createCalls[0].properties.foodRef, '[[Foods/Mapped food]]');
+    assert.deepEqual(h.service.getFoodUsageEntries(), [{ name: 'Mapped food', brand: undefined, barcode: '1111',
+      sourcePath: definition.path, completedDate: '2026-10-06T08:00:00.000Z' }]);
+    h.frontmatters.set(definition, { kind: 'food', title: 'Current food name', brand: 'Current brand', barcode: '2222' });
+    h.emitMetadata('changed', definition, undefined, { frontmatter: h.frontmatters.get(definition) });
+    h.frontmatters.get(created.file).consumedAt = '2026-10-05T08:00:00.000Z';
+    h.emitMetadata('changed', created.file, undefined, { frontmatter: h.frontmatters.get(created.file) });
+    assert.deepEqual(h.service.getFoodUsageEntries(), [{ name: 'Current food name', brand: 'Current brand', barcode: '2222',
+      sourcePath: definition.path, completedDate: '2026-10-05T08:00:00.000Z' }]);
+    h.frontmatters.set(created.file, { kind: 'project', title: 'No longer food' });
+    h.emitMetadata('changed', created.file, undefined, { frontmatter: h.frontmatters.get(created.file) });
+    assert.deepEqual(h.service.getFoodUsageEntries(), [], 'a removed native identity cannot revive old usage');
+  } finally { h.service.dispose(); }
+});
+
 function addProviderFood(h, path = 'Inbox/provider-food.md') {
   return h.addFrontmatterFile(path, {
     tpsId: 'provider-food', tpsSchemaVersion: 1, kind: 'food-entry',

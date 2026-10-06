@@ -1,5 +1,13 @@
 # TPS Health
 
+## 4.2.2 — Use current food entries for picker history
+
+Food picker recency and frequency now come from Health's existing whole-note food-entry index. Previously, opening the picker after each log enumerated the vault and reread historical Daily Notes, yet ignored the new whole-note logs. Linked food identity, edited consumption times, rename, archive and delete now flow from the current index into saved and local food ranking. Library definitions that have never been logged are not usage.
+
+The obsolete picker-history cache, dirty flags and legacy-body scan are removed, with no replacement index, listener, persisted setting or note migration. Historical inline-log totals and the explicit copy/import remain available; old inline history contributes to native picker ranking only after that explicit import. Food logging and authored notes are unchanged. A repeated-log regression drops four vault inventories and 256 legacy body reads to zero. Physical phone timing is not established by these operation counts.
+
+This backward-compatible correction completes the native-only food logging path introduced in 4.0.0. Minimum Obsidian remains 1.12.0. Final suite, Test-vault reload and artifact hashes are recorded in [4.2.2 release notes](release-notes/4.2.2.md).
+
 ## 4.2.1 — GCM-scoped Health property catalog
 
 Health's property catalog now takes reusable food, recipe, meal, exercise, and workout-plan scopes from GCM's active kind definitions. Importing those fields into GCM therefore uses the configured Kind list paths or tags instead of Health's saved pre-v2 `entityKind` values. Health still owns nutrient and record-field keys; GCM owns classification. No note, template, or setting is rewritten, and the pre-v2 Health identity settings remain available only when GCM's kind API v2 is absent. If a GCM kind mapping changes after its Health properties were imported, re-import those property definitions in GCM to refresh their saved scopes. GCM's property-scope format cannot express an OR of different multi-property legacy classifications, so the catalog rejects that configuration instead of publishing a scope that would never match. Minimum Obsidian remains **1.12.0**. Validation and hashes are in [4.2.1 release notes](release-notes/4.2.1.md).

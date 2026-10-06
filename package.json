@@ -1,6 +1,6 @@
 {
   "name": "tps-health",
-  "version": "4.2.1",
+  "version": "4.2.2",
   "description": "Whole-note food, activity, and workout records for the TPS system.",
   "main": "main.js",
   "scripts": {

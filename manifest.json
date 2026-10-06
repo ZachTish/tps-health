@@ -1,7 +1,7 @@
 {
   "id": "tps-health",
   "name": "TPS Health",
-  "version": "4.2.1",
+  "version": "4.2.2",
   "minAppVersion": "1.12.0",
   "description": "Whole-note food, activity, and workout records for the TPS system.",
   "author": "Zach Tisherman",
