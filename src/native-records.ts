@@ -999,6 +999,20 @@ export function deriveNativeFoodEntryProjection(
   };
 }
 
+interface HealthDiscoveryPass {
+  full: boolean;
+  queue: Set<string>;
+  sourceFiles: Set<TFile>;
+  readyWorkouts: TFile[];
+  reconcilePending: boolean;
+  resolved: boolean;
+  completion: Promise<void>;
+  complete: () => void;
+  fail: (error: unknown) => void;
+  previousStatus: 'loading' | 'partial' | 'ready';
+  hadFiles: boolean;
+}
+
 /** Incremental frontmatter index plus the narrow GCM native-record bridge. */
 export class HealthNativeRecordService {
   readonly version = TPS_HEALTH_NATIVE_RECORDS_VERSION;
@@ -1019,6 +1033,9 @@ export class HealthNativeRecordService {
   private readonly pendingMetadataPaths = new Map<string, TFile>();
   private indexedProvider: NativeRecordsApi | null = null;
   private indexedProviderConfiguration = '';
+  // Only the current finite discovery owns continuations. Source events remain
+  // incremental and supersede any cached candidate still queued in this pass.
+  private discoveryPass: HealthDiscoveryPass | null = null;
   private disposed = false;
 
   constructor(private readonly plugin: TPSHealthPlugin) {}
@@ -1040,6 +1057,7 @@ export class HealthNativeRecordService {
         || this.providerConfiguration(api) === this.indexedProviderConfiguration)) return;
       // A provider reload invalidates old reads, not the accepted food data.
       const previousStatus = this.getDailyIndexStatus();
+      this.cancelDiscovery();
       this.refreshGenerations.clear();
       this.indexedProvider = null;
       if (api) this.refreshConfiguration(previousStatus);
@@ -1048,9 +1066,17 @@ export class HealthNativeRecordService {
         this.notifyDailyIndexStatusChanged(previousStatus);
       }
     }));
-    this.rebuild();
-    if (this.workoutIndexReady) this.hydrateWorkoutBodiesAfterLayout();
-    if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') return;
+    const discoverOnSetup = () => {
+      // A known cold cache cannot establish complete inventory yet. Its first
+      // resolved event owns discovery, including files arriving during startup.
+      // Unknown private initialization still permits public warm-cache proof.
+      if ((metadataCache as unknown as { initialized?: boolean })?.initialized !== false
+        || this.plugin.app.workspace?.layoutReady) this.rebuild();
+    };
+    if (typeof metadataCache?.on !== 'function' || typeof vault?.on !== 'function') {
+      discoverOnSetup();
+      return;
+    }
 
     this.plugin.registerEvent(metadataCache.on('changed', (file, data, cache) => {
       // The indexed source supersedes reads started before this event. A late
@@ -1090,17 +1116,21 @@ export class HealthNativeRecordService {
       this.metadataResolved = true;
       // The first cold resolution discovers files added during startup. Later
       // resolutions inspect only paths whose cache was absent in that scan.
-      if (!this.workoutIndexReady) {
-        this.rebuild();
-        this.workoutIndexReady = true;
-        this.hydrateWorkoutBodiesAfterLayout();
+      if (this.discoveryPass) {
+        this.discoveryPass.reconcilePending = true;
+        this.discoveryPass.resolved = true;
+      } else if (!this.workoutIndexReady) {
+        this.rebuild(true, previousStatus);
+        return; // Discovery completion owns readiness and its notification.
       } else if (this.pendingMetadataPaths.size > 0) {
-        this.reconcilePendingMetadata();
+        this.reconcilePendingMetadata(previousStatus);
+        return;
       }
       this.notifyDailyIndexStatusChanged(previousStatus);
       this.plugin.scheduleWorkoutActionBars();
     }));
     this.plugin.registerEvent(vault.on('create', (file) => {
+      if (file instanceof TFile && file.extension === 'md') this.discoveryPass?.queue.add(file.path);
       // A synced active-workout file can arrive before its metadata. Keep its
       // saved pointer guarded without reading every newly discovered note.
       if (this.plugin.app.workspace?.layoutReady && file instanceof TFile
@@ -1154,8 +1184,15 @@ export class HealthNativeRecordService {
       this.notifyDailyIndexStatusChanged(previousStatus);
       // Obsidian does not emit metadata changed on rename. Preserve that
       // explicit refresh for Health files without reading unrelated notes.
-      if (file instanceof TFile && wasHealthSource) void this.refreshFile(file);
+      if (file instanceof TFile) {
+        if (wasHealthSource) {
+          this.discoveryPass?.sourceFiles.add(file);
+          void this.refreshFile(file);
+        } else if (file.extension === 'md') this.discoveryPass?.queue.add(file.path);
+      }
     }));
+    // Register incremental ownership before the first discovery can yield.
+    discoverOnSetup();
   }
 
   isEnabled(): boolean {
@@ -1166,7 +1203,7 @@ export class HealthNativeRecordService {
 
   getDailyIndexStatus(): 'loading' | 'partial' | 'ready' {
     if (this.disposed) return 'loading';
-    if (!this.metadataResolved || !this.indexedProvider) {
+    if (!this.metadataResolved || !this.indexedProvider || this.discoveryPass) {
       return this.recordsByPath.size > 0 ? 'partial' : 'loading';
     }
     return this.pendingMetadataPaths.size > 0 ? 'partial' : 'ready';
@@ -1185,7 +1222,8 @@ export class HealthNativeRecordService {
   async waitForWorkoutIndexSettled(timeoutMs = 3000): Promise<boolean> {
     // A layout save itself emits file events. Let that bounded in-flight work
     // finish before checking identity; never bypass startup or ambiguity guards.
-    if (this.disposed || !this.workoutIndexReady || !this.indexedProvider) return false;
+    if (this.disposed || !this.indexedProvider
+      || (!this.workoutIndexReady && !this.discoveryPass?.full)) return false;
     const deadline = Date.now() + timeoutMs;
     while (!this.disposed && !this.isWorkoutIndexSettled() && Date.now() < deadline) {
       await new Promise<void>(resolve => globalThis.setTimeout(resolve, 50));
@@ -1195,11 +1233,12 @@ export class HealthNativeRecordService {
 
   isWorkoutIndexSettled(): boolean {
     return !this.disposed && this.workoutIndexReady && this.indexedProvider !== null
-      && this.refreshGenerations.size === 0;
+      && !this.discoveryPass?.full && this.refreshGenerations.size === 0;
   }
 
   dispose(): void {
     this.disposed = true;
+    this.cancelDiscovery();
     this.refreshGenerations.clear();
     this.pendingMetadataPaths.clear();
     for (const timer of this.foodProjectionTimers.values()) globalThis.clearTimeout(timer);
@@ -1208,10 +1247,9 @@ export class HealthNativeRecordService {
   }
 
   refreshConfiguration(previousStatus = this.getDailyIndexStatus()): void {
-    this.rebuild();
+    this.refreshGenerations.clear();
+    this.rebuild(false, previousStatus);
     this.notifyDailyIndexStatusChanged(previousStatus);
-    this.hydrateWorkoutBodiesAfterLayout();
-    this.plugin.scheduleWorkoutActionBars();
   }
 
   onRecordsChanged(listener: (change: NativeHealthRecordChange) => void): () => void {
@@ -1299,10 +1337,18 @@ export class HealthNativeRecordService {
     const previous = this.workoutMutationQueues.get(queuePath) || Promise.resolve();
     const run = previous.catch(() => undefined).then(async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        await this.waitForFullDiscovery();
+        if (this.disposed) throw new Error('Health native records are unloaded.');
         const session = await this.resolveRecord({
           path: initialSession.file.path,
           id: initialSession.id,
         });
+        if (this.discoveryPass?.full) {
+          await this.waitForFullDiscovery();
+          if (this.disposed) throw new Error('Health native records are unloaded.');
+          attempt -= 1;
+          continue; // Resolve identity again under the completed index/config.
+        }
         if (!session || session.kind !== 'workout-session') {
           throw new Error('Native workout session was not found.');
         }
@@ -1702,6 +1748,7 @@ export class HealthNativeRecordService {
     expectedStorageState: string | null,
   ): Promise<NativeRecordHandle | null> {
     const beforeContent = await this.plugin.app.vault.read(session.file);
+    if (this.disposed || this.discoveryPass?.full) throw new WorkoutSessionConflictError();
     const currentStorageState = workoutStorageStateFromContent(beforeContent, this.plugin.settings);
     if (currentStorageState !== expectedStorageState) throw new WorkoutSessionConflictError();
     const legacyMarker = workoutDataMarkerState(beforeContent);
@@ -1713,7 +1760,8 @@ export class HealthNativeRecordService {
     let committedFrontmatter: Record<string, unknown> | null = null;
     await this.plugin.app.fileManager.processFrontMatter(session.file, (frontmatter) => {
       const current = frontmatter as Record<string, unknown>;
-      if (workoutStorageState(decodeNativeRecordFrontmatter(this.plugin.settings, current), legacyMarker) !== expectedStorageState) {
+      if (this.disposed || this.discoveryPass?.full
+        || workoutStorageState(decodeNativeRecordFrontmatter(this.plugin.settings, current), legacyMarker) !== expectedStorageState) {
         conflict = true;
         return;
       }
@@ -2041,6 +2089,12 @@ export class HealthNativeRecordService {
       addExtraNutrition(totals, record.frontmatter);
     }
     return { entryCount: records.length, ...totals };
+  }
+
+  async readDailyFoodTotals(dateIso: string): Promise<NutritionTotals & { entryCount: number }> {
+    await this.waitForFullDiscovery();
+    if (this.disposed) throw new Error('Health native records are unloaded.');
+    return this.getDailyFoodTotals(dateIso);
   }
 
   getDailyFoodEntries(dateIso: string): NativeDailyFoodEntrySnapshot[] {
@@ -2843,68 +2897,152 @@ export class HealthNativeRecordService {
     return matches.length === 1 ? this.toHandle(matches[0]) : null;
   }
 
-  private rebuild(): void {
+  private cancelDiscovery(): void {
+    const pass = this.discoveryPass;
+    this.discoveryPass = null;
+    pass?.complete();
+  }
+
+  private rebuild(resolved = false, previousStatus = this.getDailyIndexStatus()): void {
     if (this.disposed) return;
+    this.cancelDiscovery();
     const api = this.readApi();
     this.indexedProvider = api;
     if (!api) return;
     this.indexedProviderConfiguration = this.providerConfiguration(api);
-    const removedPaths = new Set(this.recordsByPath.keys());
     this.pendingMetadataPaths.clear();
     const vault = this.plugin.app.vault;
     if (typeof vault?.getMarkdownFiles !== 'function') return;
-    const files = vault.getMarkdownFiles();
-    for (const file of files) {
-      removedPaths.delete(file.path);
-      const cache = this.plugin.app.metadataCache.getFileCache(file);
-      if (!cache) {
-        // An absent cache is unknown, not evidence that an accepted record was
-        // removed. Keep its projections until this exact file is indexed.
-        this.pendingMetadataPaths.set(file.path, file);
-        continue;
-      }
-      this.indexFile(file, cache.frontmatter ?? null);
-    }
-    // Keep previous records until reconciliation so consumers are also told
-    // about removed records and dates changed while the provider was offline.
-    for (const path of removedPaths) {
-      this.foodDefinitionsByPath.delete(path);
-      this.workoutDataByPath.delete(path);
-      this.removePath(path);
-    }
-    if (this.plugin.app.workspace?.layoutReady && files.length > 0 && this.pendingMetadataPaths.size === 0) {
-      this.workoutIndexReady = true;
-      // On warm mobile loads, public cache coverage can prove the initial
-      // index complete even when `initialized` is absent and `resolved` fired
-      // before Health registered its listener.
-      this.metadataResolved = true;
-    }
+    this.startDiscovery(vault.getMarkdownFiles().map(file => file.path), true, resolved, previousStatus);
   }
 
-  private reconcilePendingMetadata(): void {
-    const vault = this.plugin.app.vault;
-    const readyWorkouts: TFile[] = [];
-    for (const [path, file] of this.pendingMetadataPaths) {
-      const current = vault.getAbstractFileByPath(path);
-      if (!(current instanceof TFile)) {
-        this.pendingMetadataPaths.delete(path);
-        this.foodDefinitionsByPath.delete(path);
-        this.workoutDataByPath.delete(path);
-        this.removePath(path);
-        continue;
+  private reconcilePendingMetadata(previousStatus = this.getDailyIndexStatus()): void {
+    this.startDiscovery(this.pendingMetadataPaths.keys(), false, false, previousStatus);
+  }
+
+  private startDiscovery(files: Iterable<string>, full: boolean, resolved: boolean, previousStatus: 'loading' | 'partial' | 'ready'): void {
+    let complete!: () => void;
+    let fail!: (error: unknown) => void;
+    const completion = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject; });
+    // Startup may have no waiter. Consumers still receive the original error,
+    // while this attached observer prevents an unhandled rejected owner promise.
+    void completion.catch(() => undefined);
+    const queue = new Set(files);
+    const hadFiles = queue.size > 0;
+    // Removed-record reconciliation shares the same bounded queue so events
+    // arriving during any yield are drained before the pass can become ready.
+    if (full) for (const path of this.recordsByPath.keys()) queue.add(path);
+    const pass: HealthDiscoveryPass = {
+      full, queue, sourceFiles: new Set(), readyWorkouts: [],
+      reconcilePending: false, resolved, completion, complete, fail, previousStatus, hadFiles,
+    };
+    this.discoveryPass = pass;
+    void this.runDiscovery(pass).catch(error => {
+      // Completion callbacks can throw after the owner was cleared. Every
+      // pass must settle its own waiters; only the current owner may revoke
+      // shared readiness (never a newer replacement pass).
+      pass.fail(error);
+      if (this.discoveryPass === pass) {
+        const beforeFailure = this.getDailyIndexStatus();
+        this.discoveryPass = null;
+        this.metadataResolved = false;
+        this.workoutIndexReady = false;
+        this.notifyDailyIndexStatusChanged(beforeFailure);
+        this.plugin.scheduleWorkoutActionBars();
       }
-      if (current !== file) this.pendingMetadataPaths.set(path, current);
-      const cache = this.plugin.app.metadataCache.getFileCache(current);
-      if (!cache) continue;
-      this.pendingMetadataPaths.delete(path);
-      this.indexFile(current, cache.frontmatter ?? null);
-      if (this.recordsByPath.get(path)?.kind === 'workout-session') readyWorkouts.push(current);
+      logger.flowError('NativeHealthIndex', 'discovery:failed', error);
+    });
+    if (this.discoveryPass === pass) this.notifyDailyIndexStatusChanged(previousStatus);
+  }
+
+  private async waitForFullDiscovery(): Promise<void> {
+    // A replacement pass can begin while the previous owner is cancelled.
+    // Await only finite work already owned here, never absent future metadata.
+    while (!this.disposed && this.discoveryPass?.full) await this.discoveryPass.completion;
+  }
+
+  private yieldDiscovery(): Promise<void> {
+    const scheduler = (globalThis as unknown as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+    if (typeof scheduler?.yield === 'function') return scheduler.yield();
+    // A message-port task permits input between slices without using the timer
+    // queue (which was heavily throttled in the inactive test Electron host).
+    // This does not prevent a mobile host from suspending the entire process.
+    if (typeof globalThis.MessageChannel === 'function') return new Promise(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.onmessage = null;
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(null);
+    });
+    return new Promise(resolve => globalThis.setTimeout(resolve, 0));
+  }
+
+  private async runDiscovery(pass: HealthDiscoveryPass): Promise<void> {
+    const vault = this.plugin.app.vault;
+    let yielded = false;
+    let sliceStart = performance.now(), sliceFiles = 0;
+    const needsYield = () => ++sliceFiles >= 256 || performance.now() - sliceStart >= 8;
+    const yieldSlice = async () => {
+      yielded = true;
+      await this.yieldDiscovery();
+      sliceStart = performance.now();
+      sliceFiles = 0;
+    };
+    // Coalesce resolved bursts into one catch-up. A new resolved event while
+    // that catch-up yields owns the next finite pending-only pass, not a scan.
+    while (true) {
+      for (const path of pass.queue) {
+        if (this.disposed || this.discoveryPass !== pass) return;
+        pass.queue.delete(path);
+        const current = vault.getAbstractFileByPath(path);
+        if (!(current instanceof TFile)) {
+          this.pendingMetadataPaths.delete(path);
+          this.foodDefinitionsByPath.delete(path);
+          this.workoutDataByPath.delete(path);
+          this.removePath(path);
+        } else if (!pass.sourceFiles.has(current)) {
+          // A superseded queued TFile must not leave the replacement pending
+          // after the current metadata has been accepted.
+          const cache = this.plugin.app.metadataCache.getFileCache(current);
+          if (!cache) {
+            // Missing metadata remains unknown; accepted values stay visible.
+            this.pendingMetadataPaths.set(path, current);
+          } else {
+            this.pendingMetadataPaths.delete(path);
+            this.indexFile(current, cache.frontmatter ?? null, undefined, pass);
+            if (!pass.full && this.recordsByPath.get(path)?.kind === 'workout-session') pass.readyWorkouts.push(current);
+          }
+        }
+        if (needsYield() && (pass.queue.size || (pass.reconcilePending && this.pendingMetadataPaths.size))) await yieldSlice();
+      }
+      if (!pass.reconcilePending) break;
+      pass.reconcilePending = false;
+      for (const path of this.pendingMetadataPaths.keys()) pass.queue.add(path);
     }
-    if (readyWorkouts.length) this.hydrateWorkoutBodiesAfterLayout(readyWorkouts);
+    if (this.disposed || this.discoveryPass !== pass) return;
+    const previousStatus = yielded ? this.getDailyIndexStatus() : pass.previousStatus;
+    this.discoveryPass = null;
+    if (pass.full) {
+      if (pass.resolved) this.workoutIndexReady = true;
+      if (this.plugin.app.workspace?.layoutReady && pass.hadFiles && this.pendingMetadataPaths.size === 0) {
+        // Public cache coverage proves warm mobile readiness even if the
+        // private initialized flag is absent and resolved already fired.
+        this.workoutIndexReady = true;
+        this.metadataResolved = true;
+      }
+    }
+    this.notifyDailyIndexStatusChanged(previousStatus);
+    if (pass.full) this.hydrateWorkoutBodiesAfterLayout();
+    else if (pass.readyWorkouts.length) this.hydrateWorkoutBodiesAfterLayout(pass.readyWorkouts);
+    pass.complete();
+    this.plugin.scheduleWorkoutActionBars();
   }
 
   private hydrateWorkoutBodiesAfterLayout(files?: TFile[]): void {
-    if (!this.workoutIndexReady || !this.indexedProvider) return;
+    if (!this.workoutIndexReady || !this.indexedProvider || this.discoveryPass?.full) return;
     // Metadata readiness owns the full index. Layout only permits the deferred
     // body reads; it must not rebuild an index that `resolved` already finished.
     const workouts = files || [...(this.pathsByKind.get('workout-session') || [])]
@@ -2913,7 +3051,7 @@ export class HealthNativeRecordService {
     const ready = workouts.filter(file => !this.pendingMetadataPaths.has(file.path));
     if (!ready.length) return;
     this.plugin.app.workspace?.onLayoutReady?.(() => {
-      if (this.disposed || !this.indexedProvider) return;
+      if (this.disposed || !this.indexedProvider || this.discoveryPass?.full) return;
       for (const file of ready) {
         const record = this.recordsByPath.get(file.path);
         if (record?.kind === 'workout-session' && record.file === file
@@ -2926,7 +3064,8 @@ export class HealthNativeRecordService {
     });
   }
 
-  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string): void {
+  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string, discovery?: HealthDiscoveryPass): void {
+    if (this.discoveryPass && discovery !== this.discoveryPass) this.discoveryPass.sourceFiles.add(file);
     const api = this.readApi();
     // Provider startup/reload is not evidence that a record was deleted.
     if (!api) return;
@@ -3169,10 +3308,17 @@ export class HealthNativeRecordService {
   private async persistFoodEntryProjection(path: string, generation: number): Promise<void> {
     if (this.foodProjectionGenerations.get(path) !== generation || !this.isEnabled()) return;
     try {
+      await this.waitForFullDiscovery();
+      if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
       const indexed = this.recordsByPath.get(path);
       if (!indexed || indexed.kind !== 'food-entry') return;
-      const current = await this.resolveRecord(indexed.file);
-      if (this.foodProjectionGenerations.get(path) !== generation) return;
+      let current = await this.resolveRecord(indexed.file);
+      while (this.discoveryPass?.full && !this.disposed) {
+        await this.waitForFullDiscovery();
+        if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
+        current = await this.resolveRecord(indexed.file);
+      }
+      if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
       if (!current || current.kind !== 'food-entry') return;
       const projected = this.projectFoodEntry(current.frontmatter, current.path);
       if (!projected?.needsPersist) return;

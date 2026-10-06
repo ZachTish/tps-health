@@ -311,6 +311,566 @@ function createHarness(options = {}) {
 
 const providerEvent = available => ({ source: 'tps-global-context-menu', available });
 
+// Real task scheduling is injected only at the host boundary. These tests count
+// work between continuations instead of depending on machine-speed timings.
+function manualIndexTasks(mode = 'scheduler') {
+  const previousScheduler = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
+  const previousChannel = Object.getOwnPropertyDescriptor(globalThis, 'MessageChannel');
+  const previousTimeout = globalThis.setTimeout;
+  const tasks = [];
+  let yields = 0;
+  let closedPorts = 0;
+  if (mode === 'scheduler') Object.defineProperty(globalThis, 'scheduler', {
+    configurable: true,
+    value: { yield() { yields++; return new Promise(resolve => tasks.push(resolve)); } },
+  });
+  else if (mode === 'channel') {
+    Object.defineProperty(globalThis, 'scheduler', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'MessageChannel', {
+      configurable: true,
+      value: class {
+        port1 = { onmessage: null, close() { closedPorts++; } };
+        port2 = { close() { closedPorts++; }, postMessage: () => {
+          yields++;
+          tasks.push(() => this.port1.onmessage());
+        } };
+      },
+    });
+  } else {
+    Object.defineProperty(globalThis, 'scheduler', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'MessageChannel', { configurable: true, value: undefined });
+    globalThis.setTimeout = (callback, delay, ...args) => {
+      if (delay !== 0) return previousTimeout(callback, delay, ...args);
+      yields++;
+      tasks.push(() => callback(...args));
+      return { testTask: true };
+    };
+  }
+  return {
+    get yields() { return yields; },
+    get pending() { return tasks.length; },
+    get closedPorts() { return closedPorts; },
+    async step() {
+      assert.ok(tasks.length, 'index must release execution to a real task');
+      tasks.shift()();
+      await new Promise(resolve => setImmediate(resolve));
+    },
+    async drain() {
+      for (let count = 0; tasks.length && count < 1000; count++) await this.step();
+      assert.equal(tasks.length, 0, 'finite indexing must finish without a poller');
+    },
+    restore() {
+      globalThis.setTimeout = previousTimeout;
+      if (previousScheduler) Object.defineProperty(globalThis, 'scheduler', previousScheduler);
+      else delete globalThis.scheduler;
+      if (previousChannel) Object.defineProperty(globalThis, 'MessageChannel', previousChannel);
+      else delete globalThis.MessageChannel;
+    },
+  };
+}
+
+function addIndexLoad(h, count = 700) {
+  for (let index = 0; index < count; index++) h.addFrontmatterFile(`Inbox/Index load ${index}.md`, { title: `Ordinary ${index}` });
+}
+
+function indexedFood(h, path, calories = 100, id = path) {
+  return h.addFrontmatterFile(path, {
+    tpsId: id, tpsSchemaVersion: 1, kind: 'food-entry', completedDate: '2026-10-06T12:00:00Z', calories,
+  });
+}
+
+async function waitForIndexPass(h) {
+  for (let count = 0; h.service.discoveryPass && count < 1000; count++) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(Boolean(h.service.discoveryPass), false, 'bounded discovery must finish');
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+test('explicit cold startup waits for the one resolved discovery and finds new startup files', async () => {
+  const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: false });
+  indexedFood(h, 'Inbox/Cold food.md', 100);
+  let scans = 0;
+  h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+  h.service.setup();
+  assert.equal(scans, 0, 'an explicitly unresolved startup must not scan twice');
+  assert.equal(h.service.getDailyIndexStatus(), 'loading');
+  indexedFood(h, 'Inbox/Later cold food.md', 200);
+  h.emitMetadata('resolved');
+  await waitForIndexPass(h);
+  assert.equal(scans, 1);
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 300);
+  assert.equal(h.service.getDailyIndexStatus(), 'ready');
+  h.emitMetadata('resolved');
+  assert.equal(scans, 1);
+  h.service.dispose();
+});
+
+for (const mode of ['scheduler', 'channel', 'timer']) test(`large discovery releases bounded work through the ${mode} task boundary`, async () => {
+  const tasks = manualIndexTasks(mode);
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h, 1024);
+    indexedFood(h, 'Inbox/Last food.md', 210);
+    let inspections = 0, scans = 0;
+    const inspect = h.api.inspect;
+    h.api.inspect = fm => { inspections++; return inspect(fm); };
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+    h.service.setup();
+    assert.ok(inspections > 0 && inspections <= 256, `first task inspected ${inspections} files`);
+    assert.equal(tasks.pending, 1);
+    assert.notEqual(h.service.getDailyIndexStatus(), 'ready');
+    assert.equal(h.service.isWorkoutIndexSettled(), false, 'partial full discovery cannot authorize mutations');
+    const waiting = h.service.waitForWorkoutIndexSettled();
+    while (tasks.pending) {
+      const before = inspections;
+      await tasks.step();
+      assert.ok(inspections - before <= 256, 'each continuation has a hard operation bound');
+    }
+    assert.equal(await waiting, true);
+    assert.equal(scans, 1);
+    assert.equal(inspections, 1025);
+    if (mode === 'channel') assert.equal(tasks.closedPorts, tasks.yields * 2, 'every one-shot task closes both ports');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 210);
+    assert.equal(h.service.getDailyIndexStatus(), 'ready');
+    assert.deepEqual(h.readCalls, []);
+    assert.deepEqual(h.cachedReadCalls, []);
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('newer metadata sources win over queued old caches during cooperative discovery', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    const food = indexedFood(h, 'Inbox/Queued food.md', 100);
+    const workout = h.addFrontmatterFile('Inbox/Queued workout.md', {
+      tpsId: 'queued-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
+    });
+    h.service.setup();
+    assert.equal(tasks.pending, 1);
+    h.emitMetadata('changed', food, 'Current source', { frontmatter: { ...h.frontmatters.get(food), calories: 320 } });
+    const newer = { ...h.frontmatters.get(workout), session: { version: 1, exercises: [
+      { id: 'bench', name: 'Bench', sets: [{ id: 'set', reps: 12 }] },
+    ] } };
+    h.emitMetadata('changed', workout, 'Current workout source', { frontmatter: newer });
+    const removedIdentity = indexedFood(h, 'Inbox/Removed identity.md', 400);
+    h.emitVault('create', removedIdentity);
+    h.emitMetadata('changed', removedIdentity, 'Plain body without frontmatter', { frontmatter: null });
+    await tasks.drain();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 320, 'old cached identity and totals must not return');
+    assert.equal(h.service.getWorkoutSnapshot('queued-workout').exercises[0].sets[0].reps, 12);
+    assert.deepEqual(h.cachedReadCalls, [], 'the supplied modern body must not trigger legacy hydration');
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('create, delete, rename and same-path replacement during a yield use only current files', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    const deleted = indexedFood(h, 'Inbox/Delete queued.md', 100);
+    const renamed = indexedFood(h, 'Inbox/Rename queued.md', 200);
+    const replaced = indexedFood(h, 'Inbox/Replace queued.md', 300);
+    h.service.setup();
+    assert.equal(tasks.pending, 1);
+    h.files.delete(deleted.path);
+    h.emitVault('delete', deleted);
+    const oldPath = renamed.path;
+    h.files.delete(oldPath);
+    renamed.path = 'Inbox/Renamed current.md';
+    h.files.set(renamed.path, renamed);
+    h.emitVault('rename', renamed, oldPath);
+    const replacement = indexedFood(h, replaced.path, 450, 'replacement');
+    h.emitVault('create', replacement);
+    h.emitMetadata('changed', replaced, 'Obsolete source', { frontmatter: h.frontmatters.get(replaced) });
+    const created = indexedFood(h, 'Inbox/Created during scan.md', 50);
+    h.emitVault('create', created);
+    await tasks.drain();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 700);
+    assert.equal(h.service.recordsByPath.has(oldPath), false);
+    assert.equal(h.service.recordsByPath.get(replacement.path).file, replacement);
+    assert.deepEqual(h.readCalls, []);
+    assert.deepEqual(h.cachedReadCalls, [], 'ordinary queued rename requires no body read');
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('resolved bursts during one pass reconcile pending caches without a second inventory', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true, metadataInitialized: false, layoutReady: false });
+  try {
+    const accepted = indexedFood(h, 'Inbox/Accepted pending.md', 100);
+    addIndexLoad(h);
+    let ready = false, scans = 0;
+    const getCache = h.plugin.app.metadataCache.getFileCache;
+    h.plugin.app.metadataCache.getFileCache = file => file === accepted && !ready ? null : getCache(file);
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+    h.service.setup();
+    h.service.indexFile(accepted, h.frontmatters.get(accepted));
+    h.emitMetadata('resolved');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 100, 'unknown cache preserves accepted totals');
+    assert.equal(tasks.pending, 1);
+    ready = true;
+    for (let count = 0; count < 20; count++) h.emitMetadata('resolved');
+    await tasks.drain();
+    assert.equal(scans, 1);
+    assert.equal(h.service.getDailyIndexStatus(), 'ready');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 100);
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('pending-only large reconciliation keeps known workout controls enabled', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    const workout = h.addFrontmatterFile('Inbox/Settled workout.md', {
+      tpsId: 'settled-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
+    });
+    addIndexLoad(h);
+    let ready = false;
+    const getCache = h.plugin.app.metadataCache.getFileCache;
+    h.plugin.app.metadataCache.getFileCache = file => file !== workout && !ready ? null : getCache(file);
+    h.service.setup();
+    await tasks.drain();
+    assert.equal(h.service.isWorkoutIndexSettled(), true);
+    assert.equal(h.service.getDailyIndexStatus(), 'partial');
+    ready = true;
+    h.emitMetadata('resolved');
+    assert.equal(tasks.pending, 1);
+    assert.equal(h.service.isWorkoutIndexSettled(), true, 'unrelated cache resolution does not disable controls');
+    await tasks.drain();
+    assert.equal(h.service.getDailyIndexStatus(), 'ready');
+    assert.deepEqual(h.cachedReadCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('provider/configuration replacement cancels old discovery continuations', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    const food = indexedFood(h, 'Inbox/Provider food.md', 100);
+    h.service.setup();
+    const oldPass = h.service.discoveryPass;
+    assert.ok(oldPass);
+    h.frontmatters.set(food, { ...h.frontmatters.get(food), calories: 500 });
+    const replacement = { ...h.api };
+    h.plugin.getGcmNativeRecordsApi = () => replacement;
+    h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
+    assert.notEqual(h.service.discoveryPass, oldPass);
+    const providerPass = h.service.discoveryPass;
+    assert.equal(h.service.refreshConfiguration(), undefined, 'the public configuration method remains void');
+    assert.notEqual(h.service.discoveryPass, providerPass);
+    await tasks.drain();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 500);
+    assert.equal(h.service.getDailyIndexStatus(), 'ready');
+    assert.deepEqual(h.updateCalls, []);
+    h.emitWorkspace('tps:gcm-api-changed', providerEvent(false));
+    assert.equal(h.service.getDailyIndexStatus(), 'partial');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 500, 'provider absence is not deletion');
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('the async macro API waits for the current full owner across replacement and rejects disposal', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    const food = indexedFood(h, 'Inbox/API food.md', 100);
+    h.service.setup();
+    let returned = false;
+    const result = h.service.readDailyFoodTotals('2026-10-06').then(value => { returned = true; return value; });
+    await Promise.resolve();
+    assert.equal(returned, false);
+    h.frontmatters.set(food, { ...h.frontmatters.get(food), calories: 500 });
+    h.service.refreshConfiguration();
+    await tasks.step(); // The cancelled owner's task is not complete data.
+    assert.equal(returned, false);
+    await tasks.drain();
+    assert.equal((await result).calories, 500);
+    assert.match(mainSource, /const totals = await this\.nativeRecordService\.readDailyFoodTotals\(normalizedDate\)/u);
+    h.service.refreshConfiguration();
+    const unloaded = h.service.readDailyFoodTotals('2026-10-06');
+    h.service.dispose();
+    await assert.rejects(unloaded, /unloaded/u);
+    await tasks.drain();
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('deferred food projection waits for full discovery before using definition snapshots', async () => {
+  const tasks = manualIndexTasks();
+  const h = await createLinkedProjectionHarness();
+  try {
+    const entry = [...h.service.recordsByPath.values()].find(record => record.kind === 'food-entry');
+    const originalFiles = [...h.files.values()];
+    h.files.clear();
+    addIndexLoad(h);
+    for (const file of originalFiles) h.files.set(file.path, file);
+    h.frontmatters.set(h.food, { ...h.frontmatters.get(h.food), calories: 500 });
+    h.frontmatters.set(entry.file, { ...h.frontmatters.get(entry.file), calories: 999 });
+    h.service.foodProjectionGenerations.set(entry.file.path, 1);
+    h.service.refreshConfiguration();
+    const persist = h.service.persistFoodEntryProjection(entry.file.path, 1);
+    await Promise.resolve();
+    assert.equal(h.updateCalls.length, 0, 'a half-rebuilt definition snapshot must not enter the write queue');
+    await tasks.drain();
+    await persist;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.updateCalls.length, 0, 'a newer projection timer superseded the older token');
+    const currentToken = h.service.foodProjectionGenerations.get(entry.file.path);
+    await h.service.persistFoodEntryProjection(entry.file.path, currentToken);
+    assert.equal(h.updateCalls.length, 1);
+    assert.equal(h.updateCalls[0].updates.calories, 500);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('dispose while yielded cannot inspect, notify, hydrate or accept any more files', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    h.addFrontmatterFile('Inbox/Late legacy workout.md', {
+      tpsId: 'late-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+    });
+    let inspections = 0, notifications = 0;
+    const inspect = h.api.inspect;
+    h.api.inspect = fm => { inspections++; return inspect(fm); };
+    h.service.onRecordsChanged(() => notifications++);
+    h.service.onDailyIndexStatusChanged(() => notifications++);
+    h.service.setup();
+    assert.equal(tasks.pending, 1);
+    h.service.dispose();
+    const atDispose = { inspections, notifications };
+    await tasks.drain();
+    assert.deepEqual({ inspections, notifications }, atDispose);
+    assert.deepEqual(h.cachedReadCalls, []);
+    assert.deepEqual(h.updateCalls, []);
+    assert.equal(h.service.isWorkoutIndexSettled(), false);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('a pending legacy workout discovered mid-pass hydrates only from full completion', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    const workout = h.addFrontmatterFile('Inbox/Pending legacy during full.md', {
+      tpsId: 'pending-legacy-full', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+    });
+    h.contents.set(workout.path, writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
+      version: 1, exercises: [{ id: 'bench', name: 'Bench', sets: [{ id: 'set', reps: 8 }] }],
+    })));
+    addIndexLoad(h);
+    const getCache = h.plugin.app.metadataCache.getFileCache;
+    h.plugin.app.metadataCache.getFileCache = file => file === workout ? null : getCache(file);
+    h.service.setup();
+    h.emitMetadata('changed', workout, undefined, { frontmatter: h.frontmatters.get(workout) });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.cachedReadCalls, [], 'the active full pass owns deferred hydration');
+    await tasks.drain();
+    assert.deepEqual(h.cachedReadCalls, [workout.path]);
+    assert.equal(h.service.getWorkoutSnapshot(workout.path).setCount, 1);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+for (const failure of ['inspection', 'scheduler']) test(`${failure} failure releases the discovery owner and rejects its consumers without retry`, async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    indexedFood(h, 'Inbox/Accepted before failure.md', 100);
+    addIndexLoad(h);
+    h.service.setup();
+    const error = new Error(`Synthetic ${failure} failure`);
+    const waiting = assert.rejects(h.service.readDailyFoodTotals('2026-10-06'), error);
+    if (failure === 'inspection') h.api.inspect = () => { throw error; };
+    else globalThis.scheduler.yield = () => Promise.reject(error);
+    await tasks.step();
+    await waiting;
+    assert.equal(h.service.discoveryPass, null);
+    assert.equal(h.service.isWorkoutIndexSettled(), false);
+    assert.equal(h.service.getDailyIndexStatus(), 'partial');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 100, 'a failure cannot erase accepted data');
+    assert.equal(tasks.pending, 0, 'no automatic retry is scheduled');
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('a completion hydration error settles its waiter even after the discovery owner is cleared', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    h.addFrontmatterFile('Inbox/Completion legacy workout.md', {
+      tpsId: 'completion-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+    });
+    const error = new Error('Synthetic completion hydration failure');
+    const statuses = [];
+    h.service.onDailyIndexStatusChanged(() => statuses.push(h.service.getDailyIndexStatus()));
+    h.plugin.app.workspace.onLayoutReady = () => { throw error; };
+    h.service.setup();
+    const waiting = assert.rejects(h.service.readDailyFoodTotals('2026-10-06'), error);
+    await tasks.drain();
+    await waiting;
+    assert.equal(h.service.discoveryPass, null);
+    assert.equal(statuses.at(-1), 'ready', 'proven metadata readiness is delivered even if optional hydration throws');
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('a deferred hydration callback from an earlier pass cannot read during a newer full pass', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: true });
+  try {
+    h.addFrontmatterFile('Inbox/Deferred legacy full owner.md', {
+      tpsId: 'deferred-full-owner', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+    });
+    addIndexLoad(h);
+    h.service.setup();
+    await tasks.drain();
+    h.service.refreshConfiguration();
+    assert.equal(tasks.pending, 1);
+    h.finishLayout();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.cachedReadCalls, [], 'the newer full owner supersedes the earlier layout callback');
+    await tasks.drain();
+    assert.deepEqual(h.cachedReadCalls, ['Inbox/Deferred legacy full owner.md']);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('a resolved event during pending catch-up is drained even without another future event', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    const target = indexedFood(h, 'Inbox/Pending catch-up target.md', 100);
+    addIndexLoad(h);
+    const getCache = h.plugin.app.metadataCache.getFileCache;
+    let ready = false, targetVisits = 0, scans = 0;
+    h.plugin.app.metadataCache.getFileCache = file => {
+      if (file === target) targetVisits++;
+      return file === target && ready ? getCache(file) : null;
+    };
+    h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
+    h.service.setup();
+    await tasks.drain();
+    const before = targetVisits;
+    h.emitMetadata('resolved');
+    h.emitMetadata('resolved');
+    while (targetVisits < before + 2) await tasks.step();
+    assert.equal(tasks.pending, 1, 'the second pending phase is paused');
+    ready = true;
+    h.emitMetadata('resolved');
+    await tasks.drain();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 100);
+    assert.equal(scans, 1);
+    assert.equal(h.service.getDailyIndexStatus(), 'partial', 'unavailable unrelated cache remains unknown');
+    assert.deepEqual(h.updateCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('new files queued during bounded removed-record reconciliation are included before readiness', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness();
+  try {
+    for (let index = 0; index < 700; index++) {
+      const file = indexedFood(h, `Inbox/Removed between providers ${index}.md`, 100);
+      h.service.indexFile(file, h.frontmatters.get(file));
+    }
+    h.files.clear();
+    h.service.refreshConfiguration();
+    assert.equal(tasks.pending, 1, 'removed records are also reconciled in bounded tasks');
+    const created = indexedFood(h, 'Inbox/Created during removal.md', 250);
+    h.emitVault('create', created);
+    const renamed = indexedFood(h, 'Inbox/Pre-rename during removal.md', 50);
+    const oldPath = renamed.path;
+    h.files.delete(oldPath);
+    renamed.path = 'Inbox/Renamed during removal.md';
+    h.files.set(renamed.path, renamed);
+    h.emitVault('rename', renamed, oldPath);
+    await tasks.drain();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 300);
+    assert.equal(h.service.recordsByPath.size, 2);
+    assert.equal(h.service.getDailyIndexStatus(), 'ready');
+    assert.deepEqual(h.cachedReadCalls, []);
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+test('a workout mutation requested during full discovery waits for indexed legacy children', async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness({ deferSetup: true });
+  try {
+    addIndexLoad(h);
+    const workout = h.addFrontmatterFile('Inbox/Legacy gated workout.md', {
+      tpsId: 'legacy-gated', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+    });
+    const child = h.addFrontmatterFile('Inbox/Legacy gated child.md', {
+      tpsId: 'legacy-child', tpsSchemaVersion: 1, kind: 'workout-exercise',
+      workout: '[[Inbox/Legacy gated workout]]', exercise: 'Bench', exercisePath: '[[Health/Exercises/Bench]]',
+      sets: [{ id: 'prior-set', reps: 8, weight: 50 }],
+    });
+    h.service.setup();
+    const mutation = h.service.appendWorkoutSet(workout.path, { id: 'new-set', exercise: 'Bench',
+      exercisePath: 'Health/Exercises/Bench.md', reps: 12 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.readCalls.length, 0, 'no mutation source/legacy read begins before full discovery');
+    assert.equal(h.updateCalls.length, 0);
+    await tasks.drain();
+    await mutation;
+    assert.deepEqual(h.service.getWorkoutSnapshot(workout.path).exercises[0].sets.map(set => set.id), ['prior-set', 'new-set']);
+    assert.ok(h.trashedPaths.includes(child.path), 'existing legacy consolidation remains owned by this real mutation');
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
+for (const boundary of ['resolve', 'source-read', 'atomic-callback']) test(`a full pass beginning at the workout ${boundary} boundary cannot commit a partial mutation`, async () => {
+  const tasks = manualIndexTasks();
+  const h = createHarness();
+  try {
+    const workout = await h.service.createWorkoutSession({ title: 'Gated modern', startedAt: '2026-10-06T12:00:00Z' }, 'gated-modern');
+    addIndexLoad(h);
+    let started = false, pendingBoundary;
+    const startPass = () => {
+      if (started) return false;
+      started = true;
+      h.service.refreshConfiguration();
+      return true;
+    };
+    if (boundary === 'resolve') {
+      const resolve = h.api.resolve;
+      h.api.resolve = async function(reference) {
+        const value = await resolve.call(this, reference);
+        startPass();
+        return value;
+      };
+    } else if (boundary === 'source-read') {
+      const read = h.plugin.app.vault.read;
+      h.plugin.app.vault.read = async file => {
+        const value = await read(file);
+        startPass();
+        return value;
+      };
+    } else {
+      const process = h.plugin.app.fileManager.processFrontMatter;
+      h.plugin.app.fileManager.processFrontMatter = async (file, callback) => {
+        if (startPass()) {
+          await new Promise(resolve => { pendingBoundary = resolve; });
+        }
+        return process(file, callback);
+      };
+    }
+    const mutation = h.service.appendWorkoutSet(workout.path, { id: 'gated-set', exercise: 'Bench',
+      exercisePath: 'Health/Exercises/Bench.md', reps: 10 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started, true);
+    assert.equal(tasks.pending, 1);
+    if (pendingBoundary) pendingBoundary();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.frontmatters.get(workout.file).session.exercises.length, 0, 'a partial full index cannot enter the atomic write');
+    await tasks.drain();
+    await mutation;
+    assert.equal(h.service.getWorkoutSnapshot(workout.path).setCount, 1);
+    assert.equal(h.service.getWorkoutSnapshot(workout.path).exercises[0].sets[0].id, 'gated-set');
+  } finally { h.service.dispose(); tasks.restore(); }
+});
+
 async function createLinkedProjectionHarness(count = 1, definition = {}) {
   const h = createHarness();
   // Model the host's indexed link lookup without the facade's linear search.
@@ -2051,7 +2611,7 @@ test('daily queries stay date-scoped across ten years of records and current mut
     scheduled: '2032-01-03T14:00:00', timeEstimate: 20, status: 'complete',
   });
   h.service.setup();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await waitForIndexPass(h);
   h.readCalls.length = h.cachedReadCalls.length = 0;
   let lookups = 0, fullKindReads = 0;
   const originalGet = h.service.recordsByPath.get;
@@ -3569,7 +4129,7 @@ test('an incomplete warm startup hydrates known workouts without waiting for unr
   h.plugin.app.vault.getMarkdownFiles = () => { scans += 1; return getFiles(); };
 
   h.service.setup();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await waitForIndexPass(h);
   assert.equal(scans, 1);
   assert.equal(h.service.isWorkoutIndexSettled(), true, 'an unrelated cache gap does not block controls');
   assert.deepEqual(h.cachedReadCalls, [workout.path], 'known workout bodies hydrate despite unrelated pending metadata');
@@ -3659,7 +4219,7 @@ for (const order of ['resolved-before-layout', 'layout-before-resolved', 'resolv
     }
     h.plugin.app.metadataCache.initialized = true;
     h.emitMetadata('resolved');
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitForIndexPass(h);
     h.finishLayout();
     await new Promise(resolve => setTimeout(resolve, 0));
     for (let i = 0; i < 10; i++) h.emitMetadata('resolved');
@@ -3680,13 +4240,13 @@ test('warm setup indexes and hydrates once even when onLayoutReady calls synchro
     let scans = 0;
     h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
     h.service.setup();
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitForIndexPass(h);
     assert.equal(scans, 1);
     assert.deepEqual(h.cachedReadCalls, [workout.path]);
     assert.equal(h.service.isWorkoutIndexSettled(), true, 'complete public caches still support warm mobile loading');
     assert.equal(h.service.getDailyIndexStatus(), 'ready', 'the same public coverage unblocks daily blocks without another resolved event');
     h.service.refreshConfiguration();
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitForIndexPass(h);
     assert.equal(scans, 2, 'explicit settings refresh retains its full rebuild');
     assert.deepEqual(h.cachedReadCalls, [workout.path, workout.path]);
     h.service.dispose();
@@ -3699,6 +4259,7 @@ test('metadata already initialized before layout defers only workout hydration',
   let scans = 0;
   h.plugin.app.vault.getMarkdownFiles = () => { scans++; return [...h.files.values()]; };
   h.service.setup();
+  await waitForIndexPass(h);
   h.emitMetadata('resolved');
   assert.equal(scans, 1);
   assert.deepEqual(h.cachedReadCalls, [], 'legacy bodies wait for layout even when metadata is ready');
@@ -3723,7 +4284,7 @@ test('layout with an incomplete or blank metadata cache does not preempt resolve
   assert.equal(h.service.isWorkoutIndexSettled(), false);
   h.plugin.app.metadataCache.getFileCache = getCache;
   h.emitMetadata('resolved');
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await waitForIndexPass(h);
   assert.equal(scans, 1);
   assert.deepEqual(h.cachedReadCalls, [workout.path]);
   assert.equal(h.service.getWorkoutSnapshot('startup-session').exercises[0].sets[0].reps, 8);
@@ -3734,6 +4295,7 @@ test('deferred startup hydration uses current indexed paths and cannot replace a
   const h = createHarness({ layoutReady: false, metadataInitialized: false });
   const workout = addStartupRecords(h);
   h.emitMetadata('resolved');
+  await waitForIndexPass(h);
   const oldContent = h.contents.get(workout.path);
   const currentContent = writeWorkoutDataToNoteContent(oldContent, JSON.stringify({
     version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 12 }] }],
@@ -3756,10 +4318,11 @@ test('deferred startup hydration uses current indexed paths and cannot replace a
   h.service.dispose();
 });
 
-test('a deferred layout callback cannot hydrate after Health is unloaded', () => {
+test('a deferred layout callback cannot hydrate after Health is unloaded', async () => {
   const h = createHarness({ layoutReady: false, metadataInitialized: false });
   addStartupRecords(h);
   h.emitMetadata('resolved');
+  await waitForIndexPass(h);
   h.service.dispose();
   h.plugin.scheduleWorkoutActionBars = () => { throw new Error('Disposed callback must not refresh controls'); };
   h.finishLayout();

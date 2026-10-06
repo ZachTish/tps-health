@@ -8912,7 +8912,7 @@ export default class TPSHealthPlugin extends Plugin {
       throw new Error("Daily food macro totals require a YYYY-MM-DD date.");
     }
     if (this.nativeRecordService?.isEnabled()) {
-      const totals = this.nativeRecordService.getDailyFoodTotals(normalizedDate);
+      const totals = await this.nativeRecordService.readDailyFoodTotals(normalizedDate);
       logger.flow("FoodMacroTotals", "read", {
         dateIso: normalizedDate,
         sourceFiles: 0,
