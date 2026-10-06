@@ -1,5 +1,13 @@
 # TPS Health
 
+## 4.2.3 — Skip workout history during ordinary Reading navigation
+
+Reading-mode tab and layout refreshes now resolve the connected mount target and check Health's current indexed workout membership before projecting a workout. Ordinary notes no longer enumerate workout history, and missing or disconnected targets do no membership or projection work. The same sweep still removes stale surfaces, recognizes newly indexed sessions, refreshes saved sets, and rejects archived or ambiguous snapshots. No cache, watcher, timer, setting, record format, API, or migration is added; actual workout rendering and Live Preview ownership remain unchanged. This is a backward-compatible patch with minimum Obsidian **1.12.0**.
+
+The regression runs 20 ordinary preview leaves through 20 sweeps with 10,000 indexed workouts: workout-record visits fall from **4,000,000 to zero**, retaining 400 constant-time membership checks. Missing/disconnected targets fall from 40 snapshots to zero. All 47 focused Reading, editor-lifecycle, and native-surface checks pass. The versioned full suite passed **605 of 606 checks**, with one existing optional skip and zero failures; TypeScript and a separate build passed. The build deployed only to Obsidian Plugin Test Vault, and a named reload confirmed 4.2.3.
+
+Installed ordinary Reading navigation fell from 42 workout snapshots and 42 full-kind enumerations on 4.2.2 to zero of both on 4.2.3. An isolated Inbox note then gained a workout surface after classification, updated its rendered saved reps from 5 to 6, lost its stale surface when classification was removed, and regained it when classification returned. The fixture was archived with its body preserved; settings and the active-workout state stayed unchanged. These hidden-window service/DOM checks establish operation counts and lifecycle correctness, not foreground click/frame latency, a physical-phone speedup, or resolution of the entire reported multi-second freeze. Physical iPhone, iPad, and Windows latency remain unverified. Artifact hashes and test boundaries are in the [4.2.3 release notes](release-notes/4.2.3.md). Production installation remains the user's separate BRAT update.
+
 ## 4.2.2 — Use current food entries for picker history
 
 Food picker recency and frequency now come from Health's existing whole-note food-entry index. Previously, opening the picker after each log enumerated the vault and reread historical Daily Notes, yet ignored the new whole-note logs. Linked food identity, edited consumption times, rename, archive and delete now flow from the current index into saved and local food ranking. Library definitions that have never been logged are not usage.

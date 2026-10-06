@@ -7665,12 +7665,13 @@ export default class TPSHealthPlugin extends Plugin {
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
       if (!(view instanceof MarkdownView) || !(view.file instanceof TFile) || view.getMode() !== "preview") return;
-      const snapshot = this.nativeRecordService?.getWorkoutSnapshot(view.file.path);
       const container = (leaf as any).containerEl as HTMLElement | undefined;
       const target = container?.querySelector<HTMLElement>(".markdown-preview-view .markdown-preview-sizer");
       if (!target?.isConnected) return;
       const mountTarget = nativeWorkoutReadingMountTarget(target);
       if (!mountTarget) return;
+      const snapshot = this.nativeRecordService?.isWorkoutSession(view.file.path)
+        ? this.nativeRecordService.getWorkoutSnapshot(view.file.path) : null;
       for (const child of Array.from(mountTarget.children)) {
         if (child instanceof HTMLElement && child.matches(".tps-health-native-workout-surface")
           && child.dataset.workoutPath !== snapshot?.path) child.remove();

@@ -359,3 +359,168 @@ test('postprocessor reports an eligible historical food read failure', async () 
   await settle();
   assert.equal(f.counts.errors, 1);
 });
+
+// Run the navigation sweep and index projection themselves, not a replacement
+// eligibility predicate. Minimal host/DOM doubles isolate their operation count.
+function classMethods(tree, className, methodNames) {
+  const declaration = tree.statements.find(node => node.name?.text === className);
+  assert.ok(declaration, `Run the actual ${className} class`);
+  return methodNames.map(name => {
+    const method = declaration.members.find(node => node.name?.text === name);
+    assert.ok(method, `Run the actual ${className}.${name} method`);
+    return method.getText(tree);
+  }).join('\n');
+}
+const nativeSource = readFileSync(new URL('../src/native-records.ts', import.meta.url), 'utf8');
+const nativeAst = ts.createSourceFile('native-records.ts', nativeSource, ts.ScriptTarget.Latest, true);
+const mountTarget = ast.statements.find(node => node.name?.text === 'nativeWorkoutReadingMountTarget');
+assert.ok(mountTarget);
+const sweepCode = await transform(`
+  class Sweep { ${classMethods(ast, 'TPSHealthPlugin', ['ensureNativeWorkoutReadingSurfaces', 'updateNativeWorkoutSurfaces'])} }
+  class Records { ${classMethods(nativeAst, 'HealthNativeRecordService', ['isWorkoutSession', 'getWorkoutSnapshot', 'getKindRecords'])} }
+  ${mountTarget.getText(ast)}
+  globalThis.sweepApi = { Sweep, Records };
+`, { loader: 'ts', target: 'es2020' });
+
+function navigationFixture({ history = 0 } = {}) {
+  const counts = { snapshots: 0, enumerations: 0, visits: 0, membership: 0, renders: 0 };
+  class Element {
+    constructor(className = '') { this.className = className; this.children = []; this.dataset = {}; this.parentElement = null; this.connected = true; }
+    get isConnected() { return this.connected && (!this.parentElement || this.parentElement.isConnected); }
+    matches(selector) {
+      const [classSelector] = selector.split('[');
+      return this.className.split(' ').includes(classSelector.slice(1))
+        && (!selector.includes('[data-workout-path]') || this.dataset.workoutPath !== undefined);
+    }
+    querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
+    closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
+    contains(element) { return element === this || this.children.some(child => child.contains(element)); }
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
+    appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
+  }
+  class TFile { constructor(path) { this.path = path; this.basename = path.split('/').at(-1).replace(/\.md$/, ''); } }
+  class MarkdownView { constructor(file) { this.file = file; } getMode() { return 'preview'; } }
+  const leaves = [];
+  const context = vm.createContext({
+    HTMLElement: Element, TFile, MarkdownView,
+    document: {
+      createElement: () => new Element(),
+      querySelectorAll: selector => leaves.flatMap(leaf => leaf.preview?.isConnected ? leaf.preview.querySelectorAll(selector) : []),
+    },
+    logger: { flow() {} },
+    numberValue: value => Number(value) || 0,
+    workoutStartedAt: fm => fm.scheduled || '', workoutEndedAt: fm => fm.endedAt || '',
+    refreshNativeWorkoutEditor: () => assert.fail('Reading leaves must not refresh editors'),
+  });
+  vm.runInContext(sweepCode.code, context);
+  const plugin = new context.sweepApi.Sweep();
+  const records = new context.sweepApi.Records();
+  records.recordsByPath = new Map();
+  records.pathsByKind = new Map([['workout-session', new Set()]]);
+  records.plugin = { settings: {} };
+  records.isEnabled = () => true;
+  records.workoutExercisesForRead = record => record.frontmatter.exercises || [];
+  for (const [name, counter] of [['getWorkoutSnapshot', 'snapshots'], ['getKindRecords', 'enumerations'], ['isWorkoutSession', 'membership']]) {
+    const actual = records[name];
+    records[name] = function(...args) { counts[counter]++; return actual.apply(this, args); };
+  }
+  plugin.app = { workspace: { iterateAllLeaves: callback => leaves.forEach(callback) } };
+  plugin.nativeRecordService = records;
+  plugin.getActiveWorkoutState = () => null;
+  plugin.renderNativeWorkoutSurfaceElement = (surface, snapshot) => { counts.renders++; surface.rendered = snapshot; };
+  function addWorkout(path, fields = {}) {
+    const frontmatter = { status: 'active', scheduled: '2026-10-06T09:00:00', ...fields };
+    const archived = frontmatter.archived;
+    Object.defineProperty(frontmatter, 'archived', { configurable: true, get() { counts.visits++; return archived; } });
+    const record = { kind: 'workout-session', id: `id:${path}`, file: new TFile(path), frontmatter };
+    records.recordsByPath.set(path, record);
+    records.pathsByKind.get('workout-session').add(path);
+    return record;
+  }
+  function addLeaf(path, { missingTarget = false, connected = true } = {}) {
+    const preview = new Element('markdown-preview-view');
+    preview.connected = connected;
+    const target = preview.appendChild(new Element('markdown-preview-sizer'));
+    const footer = target.appendChild(new Element('mod-footer'));
+    const leaf = { view: new MarkdownView(new TFile(path)), preview, target, footer,
+      containerEl: { querySelector: selector => { assert.equal(selector, '.markdown-preview-view .markdown-preview-sizer'); return missingTarget ? null : target; } } };
+    leaves.push(leaf);
+    return leaf;
+  }
+  function addSurface(leaf, path) {
+    const surface = new Element('tps-health-native-workout-surface');
+    surface.dataset.workoutPath = path;
+    surface.dataset.renderContext = 'reading';
+    leaf.footer.appendChild(surface);
+    return surface;
+  }
+  for (let index = 0; index < history; index++) addWorkout(`History/${index}.md`);
+  return { plugin, records, counts, addLeaf, addWorkout, addSurface, sweep: () => plugin.updateNativeWorkoutSurfaces() };
+}
+
+test('ordinary preview leaves do not enumerate workout history during repeated navigation/layout sweeps', () => {
+  const f = navigationFixture({ history: 10_000 });
+  for (let leaf = 0; leaf < 20; leaf++) f.addLeaf(`Ordinary/${leaf}.md`);
+  for (let sweep = 0; sweep < 20; sweep++) f.sweep();
+  assert.equal(f.counts.visits, 0, 'Ordinary navigation must not inspect any workout record');
+  assert.equal(f.counts.enumerations, 0);
+  assert.equal(f.counts.snapshots, 0);
+  assert.equal(f.counts.membership, 400, 'Use current indexed membership once per mounted preview leaf');
+  assert.equal(f.counts.renders, 0);
+});
+
+test('unmounted and disconnected preview targets do no workout membership or projection work', () => {
+  const f = navigationFixture({ history: 100 });
+  f.addLeaf('History/0.md', { missingTarget: true });
+  f.addLeaf('History/1.md', { connected: false });
+  for (let sweep = 0; sweep < 20; sweep++) f.sweep();
+  assert.equal(f.counts.snapshots, 0);
+  assert.equal(f.counts.enumerations, 0);
+  assert.equal(f.counts.membership, 0);
+  assert.equal(f.counts.renders, 0);
+});
+
+test('Reading sweeps recognize live membership, render updated sets, and clean stale and duplicate surfaces', () => {
+  const f = navigationFixture();
+  const path = 'Inbox/Late workout.md', leaf = f.addLeaf(path);
+  const stale = f.addSurface(leaf, 'Inbox/Previous workout.md');
+  f.sweep();
+  assert.equal(leaf.footer.children.length, 0, 'Nonmembers still remove the preceding note surface');
+  assert.equal(stale.parentElement, null);
+  assert.equal(f.counts.snapshots, 0);
+  const record = f.addWorkout(path, { exercises: [{ id: 'exercise', name: 'Squat', sets: [{ id: 'first', reps: 5, weight: 100 }] }] });
+  f.sweep();
+  const surface = leaf.footer.children[0];
+  assert.equal(surface.dataset.workoutPath, path);
+  assert.equal(surface.dataset.renderContext, 'reading');
+  assert.equal(surface.rendered.setCount, 1);
+  assert.equal(surface.rendered.exercises[0].totalVolume, 500);
+  f.addSurface(leaf, path);
+  record.frontmatter.exercises[0].sets.push({ id: 'second', reps: 8, weight: 100 });
+  f.sweep();
+  assert.equal(leaf.footer.children.length, 1);
+  assert.equal(leaf.footer.children[0], surface, 'Reuse the mounted surface after an index update');
+  assert.equal(surface.rendered.setCount, 2);
+  assert.equal(surface.rendered.exercises[0].totalVolume, 1300);
+  assert.equal(f.counts.renders, 2);
+  record.kind = 'food-entry';
+  f.records.pathsByKind.get('workout-session').delete(path);
+  f.sweep();
+  assert.equal(leaf.footer.children.length, 0, 'Loss of workout membership removes the obsolete surface');
+  f.addWorkout(path);
+  f.sweep();
+  assert.equal(leaf.footer.children.length, 1, 'Restoring membership is recognized without a cached negative');
+});
+
+test('indexed archived or ambiguous workouts still fail closed and remove stale Reading surfaces', () => {
+  for (const archived of [true, false]) {
+    const f = navigationFixture(), path = 'Inbox/Workout.md', leaf = f.addLeaf(path);
+    f.addWorkout(path, { archived });
+    if (!archived) f.addWorkout('Inbox/Conflicting alias.md', { workoutId: path });
+    f.addSurface(leaf, path);
+    f.sweep();
+    assert.equal(leaf.footer.children.length, 0);
+    assert.equal(f.counts.renders, 0);
+    assert.equal(f.counts.snapshots, 1, 'Membership does not bypass the snapshot validity check');
+  }
+});
