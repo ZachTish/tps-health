@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 
 async function loadModule() {
   const result = await build({
-    stdin: {contents: 'export * from "./native-records"; export {configureCustomNutrients} from "./nutrients";', resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader:'ts'},
+    stdin: {contents: 'export * from "./native-records"; export {configureCustomNutrients, CORE_NUTRIENT_KEYS, EXTRA_NUTRIENT_KEYS} from "./nutrients";', resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader:'ts'},
     bundle: true,
     write: false,
     platform: 'node',
@@ -52,6 +52,8 @@ async function loadModule() {
 
 const {
   configureCustomNutrients,
+  CORE_NUTRIENT_KEYS,
+  EXTRA_NUTRIENT_KEYS,
   HealthNativeRecordService,
   buildNativeHealthRecordFileName,
   deriveNativeFoodEntryProjection,
@@ -308,6 +310,269 @@ function createHarness(options = {}) {
 }
 
 const providerEvent = available => ({ source: 'tps-global-context-menu', available });
+
+async function createLinkedProjectionHarness(count = 1, definition = {}) {
+  const h = createHarness();
+  // Model the host's indexed link lookup without the facade's linear search.
+  h.plugin.app.metadataCache.getFirstLinkpathDest = path => h.files.get(String(path).replace(/\.md$/u, '') + '.md') || null;
+  const food = h.addFrontmatterFile('Inbox/Projection food.md', {
+    kind: 'food', title: 'Projection food', servingAmount: 1, servingUnit: 'serving',
+    calories: 200, proteinG: 20, carbsG: 20, fatG: 4, ...definition,
+  });
+  const seed = await h.service.createFoodEntry({
+    id: 'projection-seed', createdDate: '2026-10-06T12:00:00Z', completedDate: '2026-10-06T12:00:00Z',
+    item: { id: 'food', name: 'Original log title', source: 'custom-note', sourcePath: food.path },
+    quantity: 1, unit: 'serving', nutritionOverride: { calories: 200, proteinG: 20, carbsG: 20, fatG: 4 },
+  });
+  for (let index = 1; index < count; index++) {
+    const fm = { ...seed.frontmatter, tpsId: `projection-entry-${index}` };
+    const file = h.addFrontmatterFile(`Inbox/Projection entry ${index}.md`, fm);
+    h.service.indexFile(file, fm);
+  }
+  const counts = { projections: 0, persistence: 0, notifications: 0, scans: 0, metadata: 0 };
+  for (const [method, key] of [['projectFoodEntry', 'projections'], ['scheduleFoodEntryProjection', 'persistence']]) {
+    const original = h.service[method];
+    h.service[method] = function (...args) { counts[key]++; return original.apply(this, args); };
+  }
+  const enumerate = h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles = () => { counts.scans++; return enumerate(); };
+  const cache = h.plugin.app.metadataCache.getFileCache;
+  h.plugin.app.metadataCache.getFileCache = file => { counts.metadata++; return cache(file); };
+  h.service.onRecordsChanged(() => counts.notifications++);
+  const notifyDefinition = (frontmatter = h.frontmatters.get(food)) => {
+    h.frontmatters.set(food, frontmatter);
+    h.emitMetadata('changed', food, h.contents.get(food.path), { frontmatter });
+  };
+  return { ...h, food, seed, counts, notifyDefinition };
+}
+
+test('body-only definition edits and repeated metadata keep consumers fresh without reprojecting 1000 food logs', async () => {
+  const h = await createLinkedProjectionHarness(1000);
+  try {
+    const originalRecords = [...h.service.recordsByPath.values()];
+    const beforeReads = { raw: h.readCalls.length, cached: h.cachedReadCalls.length, writes: h.updateCalls.length };
+    const refreshedBodies = [];
+    h.service.onRecordsChanged(() => refreshedBodies.push(h.contents.get(h.food.path).includes('Recipe component changed')));
+    h.contents.set(h.food.path, h.contents.get(h.food.path) + '\nRecipe component changed.');
+    h.emitVault('modify', h.food);
+    await new Promise(resolve => setImmediate(resolve));
+    h.notifyDefinition();
+    for (let event = 0; event < 20; event++) h.notifyDefinition();
+    assert.equal(h.counts.projections, 0, 'the unchanged serving/nutrient inputs must not be projected for each historical log');
+    assert.deepEqual(h.counts, { projections: 0, persistence: 0, notifications: 22000, scans: 0, metadata: 0 });
+    assert.equal(refreshedBodies.length, 22000, 'body/recipe consumers retain their existing per-entry invalidation');
+    assert.ok(refreshedBodies.every(Boolean));
+    assert.deepEqual({ raw: h.readCalls.length - beforeReads.raw, cached: h.cachedReadCalls.length - beforeReads.cached,
+      writes: h.updateCalls.length - beforeReads.writes }, { raw: 0, cached: 1, writes: 0 });
+    for (const original of originalRecords) assert.equal(h.service.recordsByPath.get(original.file.path), original,
+      'a no-op projection retains the existing indexed record');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 200000);
+  } finally { h.service.dispose(); }
+});
+
+test('all serving inputs still refresh compatible food portions when a definition changes', async () => {
+  const cases = [
+    { field: 'servingAmount', before: { servingAmount: 2, servingUnit: 'capsule' }, after: 4, quantity: 2, unit: 'capsule', calories: 100 },
+    { field: 'servingUnit', before: { servingAmount: 2, servingUnit: 'capsule' }, after: 'serving', quantity: 2, unit: 'serving', calories: 200 },
+    { field: 'servingGrams', before: { servingUnit: 'scoop', servingGrams: 100 }, after: 200, quantity: 100, unit: 'g', calories: 100 },
+    { field: 'servingMl', before: { servingUnit: 'scoop', servingMl: 100 }, after: 200, quantity: 100, unit: 'ml', calories: 100 },
+  ];
+  for (const scenario of cases) {
+    const h = await createLinkedProjectionHarness(1, scenario.before);
+    try {
+      const entry = { ...h.frontmatters.get(h.seed.file), quantity: scenario.quantity, unit: scenario.unit };
+      h.frontmatters.set(h.seed.file, entry);
+      h.service.indexFile(h.seed.file, entry);
+      h.counts.projections = 0;
+      const changed = { ...h.frontmatters.get(h.food), [scenario.field]: scenario.after };
+      h.notifyDefinition(changed);
+      assert.equal(h.counts.projections, 1, scenario.field);
+      assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, scenario.calories, scenario.field);
+      h.notifyDefinition({ ...changed });
+      assert.equal(h.counts.projections, 1, `${scenario.field}: the subsequent unchanged event does not repeat projection`);
+    } finally { h.service.dispose(); }
+  }
+});
+
+test('every built-in core and extra nutrient remains a live projection input and persists the changed values', async () => {
+  const keys = [...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS];
+  const initial = Object.fromEntries(keys.map(key => [key, 2]));
+  const h = await createLinkedProjectionHarness(1, initial);
+  try {
+    for (const key of keys) {
+      const projectionCount = h.counts.projections;
+      const changed = { ...h.frontmatters.get(h.food), [key]: 7 };
+      h.notifyDefinition(changed);
+      assert.equal(h.counts.projections, projectionCount + 1, `${key}: this field alone must invalidate projection`);
+      assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], 7, key);
+      h.notifyDefinition({ ...changed });
+      assert.equal(h.counts.projections, projectionCount + 1, `${key}: the second metadata delivery is unchanged`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const persisted = (await h.api.resolve(h.seed.file)).frontmatter;
+    for (const key of keys) assert.equal(persisted[key], 7, key);
+    assert.equal(h.updateCalls.length, 1, 'one real change retains the existing deferred persistence');
+  } finally { h.service.dispose(); }
+});
+
+test('configured and archived custom nutrient changes, known zero and removal keep their projections', async () => {
+  const keys = ['healthNutrient_projection_active', 'healthNutrient_projection_archived'];
+  configureCustomNutrients(keys.map((key, index) => ({ key, label: `Custom ${index}`, unit: 'mg', archived: index === 1 })));
+  const h = await createLinkedProjectionHarness(1, Object.fromEntries(keys.map(key => [key, 2])));
+  try {
+    h.notifyDefinition({ ...h.frontmatters.get(h.food), [keys[0]]: 6 });
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[0]], 6);
+    const activeCount = h.counts.projections;
+    h.notifyDefinition({ ...h.frontmatters.get(h.food), [keys[1]]: 8 });
+    assert.equal(h.counts.projections, activeCount + 1, 'the archived custom nutrient alone invalidates projection');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[1]], 8);
+    h.notifyDefinition({ ...h.frontmatters.get(h.food), [keys[0]]: 0 });
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[0]], 0, 'known zero remains present');
+    const removed = { ...h.frontmatters.get(h.food) };
+    delete removed[keys[1]];
+    h.notifyDefinition(removed);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[1]], undefined);
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const persisted = (await h.api.resolve(h.seed.file)).frontmatter;
+    assert.equal(persisted[keys[0]], 0);
+    assert.equal(persisted[keys[1]], undefined);
+  } finally { h.service.dispose(); configureCustomNutrients([]); }
+});
+
+test('non-scalar consumed inputs conservatively reproject even when their nested reference is reused', async () => {
+  const calories = [200];
+  const h = await createLinkedProjectionHarness(1, { calories });
+  try {
+    h.notifyDefinition({ ...h.frontmatters.get(h.food) });
+    assert.equal(h.counts.projections, 1);
+    calories[0] = 225;
+    h.notifyDefinition({ ...h.frontmatters.get(h.food) });
+    assert.equal(h.counts.projections, 2);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 225,
+      'a shared nested object cannot be treated as an immutable scalar snapshot');
+  } finally { h.service.dispose(); }
+});
+
+test('scalar type changes are reprojected while identical scalar metadata does no projection work', async () => {
+  const h = await createLinkedProjectionHarness();
+  try {
+    h.notifyDefinition({ ...h.frontmatters.get(h.food), calories: '200' });
+    assert.equal(h.counts.projections, 1, 'coerced numeric equality must not hide an authored type change');
+    h.notifyDefinition({ ...h.frontmatters.get(h.food) });
+    assert.equal(h.counts.projections, 1);
+    assert.equal(h.counts.persistence, 0, 'a type change with the same derived nutrition needs no write');
+  } finally { h.service.dispose(); }
+});
+
+test('the existing custom-nutrient configuration rebuild projects a newly registered key from an unchanged definition', async () => {
+  const key = 'healthNutrient_registered_late';
+  const h = await createLinkedProjectionHarness(2, { [key]: 12 });
+  try {
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], undefined);
+    configureCustomNutrients([{ key, label: 'Registered later', unit: 'mg' }]);
+    h.service.refreshConfiguration();
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], 24,
+      'refreshConfiguration reindexes consumption records with the current registry');
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal((await h.api.resolve(h.seed.file)).frontmatter[key], 12);
+  } finally { h.service.dispose(); configureCustomNutrients([]); }
+});
+
+test('unchanged definition events retain the existing no-notification behavior for invalid or unsupported portions', async () => {
+  const cases = [{ quantity: -1, unit: 'serving' }, { quantity: 'invalid', unit: 'serving' },
+    { quantity: 1, unit: 'unsupported' }, { quantity: 1, unit: 'g' }];
+  for (const portion of cases) {
+    const h = await createLinkedProjectionHarness();
+    try {
+      const invalid = { ...h.frontmatters.get(h.seed.file), ...portion };
+      h.frontmatters.set(h.seed.file, invalid);
+      h.service.indexFile(h.seed.file, invalid);
+      for (const key of Object.keys(h.counts)) h.counts[key] = 0;
+      h.notifyDefinition();
+      assert.equal(h.counts.projections, 0, JSON.stringify(portion));
+      assert.equal(h.counts.notifications, 0, 'an unchanged invalid portion still has no valid projection to notify');
+      assert.equal(h.counts.persistence, 0);
+    } finally { h.service.dispose(); }
+  }
+});
+
+test('definition titles, recipe body and linked path edits stay current without requiring nutrient changes', async () => {
+  const h = await createLinkedProjectionHarness();
+  try {
+    h.notifyDefinition({ ...h.frontmatters.get(h.food), title: 'Current title', ingredients: ['[[Another food]]'] });
+    assert.equal(h.counts.projections, 0);
+    assert.equal(h.counts.notifications, 1);
+    assert.equal(h.service.getFoodUsageEntries()[0].name, 'Current title');
+    const oldPath = h.food.path;
+    const content = h.contents.get(oldPath);
+    h.files.delete(oldPath);
+    h.contents.delete(oldPath);
+    h.food.path = 'Inbox/Renamed projection food.md';
+    h.food.name = 'Renamed projection food.md';
+    h.food.basename = 'Renamed projection food';
+    h.files.set(h.food.path, h.food);
+    h.contents.set(h.food.path, content);
+    h.emitVault('rename', h.food, oldPath);
+    await new Promise(resolve => setImmediate(resolve));
+    const entry = { ...h.frontmatters.get(h.seed.file), food: '[[Inbox/Renamed projection food]]' };
+    h.frontmatters.set(h.seed.file, entry);
+    h.emitMetadata('changed', h.seed.file, '', { frontmatter: entry });
+    assert.equal(h.service.getFoodUsageEntries()[0].sourcePath, h.food.path);
+    assert.equal(h.service.getFoodUsageEntries()[0].name, 'Current title');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 200);
+  } finally { h.service.dispose(); }
+});
+
+test('definition deletion and late replacement reproject from the current source while retaining a saved snapshot in between', async () => {
+  const h = await createLinkedProjectionHarness();
+  try {
+    await h.plugin.app.vault.trash(h.food);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 200, 'deletion retains the existing saved log snapshot');
+    const replacement = h.addFrontmatterFile(h.food.path, {
+      kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 300,
+    });
+    h.emitMetadata('changed', replacement, '', { frontmatter: h.frontmatters.get(replacement) });
+    assert.equal(h.counts.projections, 1, 'a missing previous definition cannot certify equal inputs');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 300);
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, 300);
+  } finally { h.service.dispose(); }
+});
+
+test('a changed host link resolution still projects its new target during an unchanged old-definition event', async () => {
+  const h = await createLinkedProjectionHarness();
+  try {
+    const target = h.addFrontmatterFile('Inbox/Resolved replacement food.md', {
+      kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 350,
+    });
+    h.plugin.app.metadataCache.getFirstLinkpathDest = () => target;
+    h.notifyDefinition();
+    assert.equal(h.counts.projections, 1, 'the old path membership does not authorize skipping a different resolved source');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 350);
+    assert.equal(h.service.getFoodUsageEntries()[0].sourcePath, target.path);
+  } finally { h.service.dispose(); }
+});
+
+test('a food log quantity or linked-source edit still reprojects when its definition inputs are unchanged', async () => {
+  const h = await createLinkedProjectionHarness();
+  try {
+    const quantity = { ...h.frontmatters.get(h.seed.file), quantity: 2 };
+    h.frontmatters.set(h.seed.file, quantity);
+    h.emitMetadata('changed', h.seed.file, '', { frontmatter: quantity });
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 400);
+    const other = h.addFrontmatterFile('Inbox/Other projection food.md', {
+      kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 75,
+    });
+    const source = { ...quantity, food: `[[${other.path.replace(/\.md$/u, '')}]]` };
+    h.frontmatters.set(h.seed.file, source);
+    h.emitMetadata('changed', h.seed.file, '', { frontmatter: source });
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 150);
+    assert.equal(h.service.getFoodUsageEntries()[0].sourcePath, other.path);
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, 150);
+    assert.equal(h.updateCalls.length, 1, 'the existing generation/timer coalesces the two real edits');
+  } finally { h.service.dispose(); }
+});
 
 test('native food usage reads only indexed consumption records and preserves linked food identity', async () => {
   const h = createHarness();

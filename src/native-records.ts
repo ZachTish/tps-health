@@ -926,15 +926,10 @@ function foodMetricServing(food: Record<string, unknown>): { amount: number; uni
   return metricAmount(amount, normalizedUnit(food.servingUnit));
 }
 
-/**
- * Derive a native food-entry's nutrition from its linked food definition and
- * authored consumption amount. The entry never owns an independent macro
- * value; persisted macro fields are only Base-compatible projections.
- */
-export function deriveNativeFoodEntryProjection(
+function foodEntryPortion(
   entry: Record<string, unknown>,
   food: Record<string, unknown>,
-): NativeFoodEntryProjection | null {
+): Pick<NativeFoodEntryProjection, 'servings' | 'amount' | 'amountUnit'> | null {
   if (entry.quantity == null || String(entry.quantity).trim() === '') return null;
   const quantity = Number(entry.quantity);
   if (!Number.isFinite(quantity) || quantity < 0) return null;
@@ -962,6 +957,36 @@ export function deriveNativeFoodEntryProjection(
     return null;
   }
   if (!Number.isFinite(servings) || servings < 0) return null;
+  return { servings, amount, amountUnit };
+}
+
+function foodProjectionInputsUnchanged(
+  previous: Record<string, unknown> | undefined,
+  current: Record<string, unknown>,
+): boolean {
+  if (!previous) return false;
+  for (const key of ['servingAmount', 'servingUnit', 'servingGrams', 'servingMl', ...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS]) {
+    const value = current[key];
+    // The existing shallow definition snapshot cannot prove that a reused
+    // nested value is unchanged. Only exact scalar equality can skip work.
+    if ((value !== null && typeof value === 'object') || typeof value === 'function'
+      || !Object.is(previous[key], value)) return false;
+  }
+  return true;
+}
+
+/**
+ * Derive a native food-entry's nutrition from its linked food definition and
+ * authored consumption amount. The entry never owns an independent macro
+ * value; persisted macro fields are only Base-compatible projections.
+ */
+export function deriveNativeFoodEntryProjection(
+  entry: Record<string, unknown>,
+  food: Record<string, unknown>,
+): NativeFoodEntryProjection | null {
+  const portion = foodEntryPortion(entry, food);
+  if (!portion) return null;
+  const { servings, amount, amountUnit } = portion;
   const nutrition = Object.fromEntries(CORE_NUTRIENT_KEYS.map((key) => (
     [key, stableNumber(numberValue(food[key]) * servings)]
   ))) as NativeFoodEntryProjection['nutrition'];
@@ -2919,8 +2944,9 @@ export class HealthNativeRecordService {
     if (!recordId || schemaVersion !== 1 || !kind || !HEALTH_KINDS.has(kind)) {
       this.workoutDataByPath.delete(file.path);
       if (resolved && this.entryPathsByFoodPath.has(file.path)) {
+        const inputsUnchanged = foodProjectionInputsUnchanged(this.foodDefinitionsByPath.get(file.path), resolved);
         this.foodDefinitionsByPath.set(file.path, { ...resolved });
-        this.refreshLinkedFoodEntries(file.path);
+        this.refreshLinkedFoodEntries(file.path, inputsUnchanged);
       } else this.foodDefinitionsByPath.delete(file.path);
       if (previous) this.emitChange(file.path, previous, null);
       return;
@@ -3097,10 +3123,19 @@ export class HealthNativeRecordService {
     return { frontmatter: next, needsPersist };
   }
 
-  private refreshLinkedFoodEntries(foodPath: string): void {
+  private refreshLinkedFoodEntries(foodPath: string, inputsUnchanged = false): void {
     for (const entryPath of [...(this.entryPathsByFoodPath.get(foodPath) || [])]) {
       const previous = this.recordsByPath.get(entryPath);
       if (!previous || previous.kind !== 'food-entry') continue;
+      if (inputsUnchanged) {
+        const food = this.foodDefinitionForEntry(previous.frontmatter, entryPath);
+        if (food?.path === foodPath) {
+          // Recipe/body/title consumers still need their existing notification.
+          // Portion eligibility preserves the old null-projection behavior.
+          if (foodEntryPortion(previous.frontmatter, food.frontmatter)) this.emitChange(entryPath, previous, previous);
+          continue;
+        }
+      }
       const projected = this.projectFoodEntry(previous.frontmatter, entryPath);
       if (!projected) continue;
       const current = {

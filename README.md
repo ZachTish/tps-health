@@ -1,5 +1,15 @@
 # TPS Health
 
+## 4.2.4 — Skip unchanged linked-food nutrition projections
+
+Editing a food definition's body or delivering the same metadata again no longer recalculates and replaces every linked food-log projection. Health compares the serving fields and current core/extra nutrient inputs against its existing definition snapshot. Exact scalar equality skips the nutrition work; nested values remain conservative. A real serving or nutrient edit still updates the linked logs and uses the existing deferred persistence. Log quantity/source edits retain their own projection path, and the existing configuration rebuild projects newly registered custom nutrients even when the definition is unchanged.
+
+Body, title and recipe-component consumers retain their existing linked-entry notifications. Unsupported or invalid portions retain their prior ineligibility, and a changed host link destination still resolves the current source. No cache, watcher, timer, setting, schema, API or migration is added. This is a backward-compatible patch with minimum Obsidian **1.12.0**.
+
+The actual-service regression runs a body modification, its metadata delivery and 20 repeated deliveries against 1,000 linked logs: **22,000 redundant nutrient projections become zero**, with all 22,000 existing notifications retained, zero persistence schedules/scans/raw reads, and one existing scoped cached read. Every built-in nutrient is changed individually; custom/archived nutrients, serving conversions, invalid portions, definition title/path/deletion/replacement, changed link resolution and log edits remain covered. All 138 native-record checks pass. The versioned full suite passed **617 of 618 checks**, with one existing optional USDA skip and zero failures; TypeScript and separate builds passed. The ordinary build deployed to Obsidian Plugin Test Vault and a named reload confirmed 4.2.4.
+
+Replaying the exact loaded methods on an isolated synthetic service reproduced the same 22,000 → zero projection change, retained notifications and indexed objects, and kept a real nutrient-input change eligible for all 1,000 linked projections/persistence requests. The original service and settings stayed unchanged. Combined Live Preview QA passed 13 phases including six tab switches and two remounts, with observed Macros/Activity widgets, no render errors or note-mutation attempts, and three preserved fixtures archived. The desktop window was hidden and the plugin warm; this functional QA and synthetic scaling test do not establish physical iPhone/iPad/Windows responsiveness, cold-start speed or the cause of the user's entire multi-second stall. Artifacts, boundaries and hashes are in the [4.2.4 release notes](release-notes/4.2.4.md); production installation remains the user's separate BRAT update.
+
 ## 4.2.3 — Skip workout history during ordinary Reading navigation
 
 Reading-mode tab and layout refreshes now resolve the connected mount target and check Health's current indexed workout membership before projecting a workout. Ordinary notes no longer enumerate workout history, and missing or disconnected targets do no membership or projection work. The same sweep still removes stale surfaces, recognizes newly indexed sessions, refreshes saved sets, and rejects archived or ambiguous snapshots. No cache, watcher, timer, setting, record format, API, or migration is added; actual workout rendering and Live Preview ownership remain unchanged. This is a backward-compatible patch with minimum Obsidian **1.12.0**.
@@ -276,7 +286,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [3.8.8](https://github.com/ZachTish/tps-health/releases/tag/3.8.8) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [4.2.4](https://github.com/ZachTish/tps-health/releases/tag/4.2.4) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
