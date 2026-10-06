@@ -4431,8 +4431,8 @@ export default class TPSHealthPlugin extends Plugin {
     logger.flow("WorkoutOpen", "live-preview:done", { path: file.path });
   }
 
-  async searchLocalFoods(query: string, usageStats?: Map<string, FoodUsageStats>): Promise<FoodItem[]> {
-    const stats = usageStats || await this.getLoggedFoodStats(query);
+  async searchLocalFoods(query: string, usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>): Promise<FoodItem[]> {
+    const stats = await (usageStats || this.getLoggedFoodStats(query));
     const [custom, curated] = await Promise.all([
       this.searchCustomFoods(query),
       Promise.resolve(searchCuratedFoods(query)),
@@ -4447,7 +4447,7 @@ export default class TPSHealthPlugin extends Plugin {
     return rankFoodSearchResults("", dedupeFoods(saved), stats);
   }
 
-  async searchFoods(query: string, usageStats?: Map<string, FoodUsageStats>, shouldContinue: () => boolean = () => true): Promise<FoodItem[]> {
+  async searchFoods(query: string, usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>, shouldContinue: () => boolean = () => true): Promise<FoodItem[]> {
     const providerBrandedSearch = this.settings.includeBrandedFoodSearch;
     return logger.timeAsync("FoodSearch", "search", { query, branded: providerBrandedSearch, brandedSetting: this.settings.includeBrandedFoodSearch }, async () => {
       let usdaSearchActive = shouldContinue();
@@ -10091,7 +10091,7 @@ class FoodSearchModal extends FoodInputModal {
     }, FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
   }
 
-  private async runLocalSearch(query: string, token: number): Promise<void> {
+  private async runLocalSearch(query: string, token: number, usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>): Promise<void> {
     const trimmed = query.trim();
     this.resultsEl.empty();
     this.actionsEl.empty();
@@ -10101,7 +10101,14 @@ class FoodSearchModal extends FoodInputModal {
     }
     this.statusEl.setText("Searching saved foods...");
     const start = performance.now();
-    const items = await this.plugin.searchLocalFoods(trimmed);
+    let items: FoodItem[];
+    try {
+      items = await this.plugin.searchLocalFoods(trimmed, usageStats);
+    } catch (error) {
+      if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
+      logger.flowError("FoodModal", "search:local-failed", error, { query: trimmed });
+      return;
+    }
     if (token !== this.searchToken || this.activeFoodLogTab !== "search" || this.completedOnlineToken === token) return;
     logger.flow("FoodModal", "search:local-done", {
       query: trimmed,
@@ -10137,17 +10144,18 @@ class FoodSearchModal extends FoodInputModal {
     this.searchTimer = null;
     this.onlineSearchActive = true;
     if (this.searchButtonEl) this.searchButtonEl.disabled = true;
-    void this.runLocalSearch(trimmed, token);
-    void this.runOnlineSearch(trimmed, token);
+    const usageStats = this.plugin.getLoggedFoodStats(trimmed);
+    void this.runLocalSearch(trimmed, token, usageStats);
+    void this.runOnlineSearch(trimmed, token, usageStats);
   }
 
-  private async runOnlineSearch(query: string, token: number): Promise<void> {
+  private async runOnlineSearch(query: string, token: number, usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>): Promise<void> {
     const trimmed = query.trim();
     this.statusEl.setAttr("aria-busy", "true");
     this.statusEl.setText("Checking USDA and Open Food Facts...");
     const start = performance.now();
     try {
-      const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken && this.activeFoodLogTab === "search");
+      const items = await this.plugin.searchFoods(trimmed, usageStats, () => token === this.searchToken && this.activeFoodLogTab === "search");
       if (token !== this.searchToken || this.activeFoodLogTab !== "search") {
         logger.flow("FoodModal", "search:stale", { query: trimmed, token, activeTab: this.activeFoodLogTab });
         return;

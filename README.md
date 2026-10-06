@@ -1,5 +1,13 @@
 # TPS Health
 
+## 4.2.6 — Share usage history within one food-search submission
+
+An accepted food-search submission now materializes its current whole-note usage history once, sharing that request-local promise between saved-food and combined database ranking. Both searches still start concurrently; online providers need not wait for history to settle. The earlier typed-local stage and its later automatic database submission remain independent fresh reads, as do separate submissions. No history snapshot is retained between requests.
+
+The local branch owns a rejected search promise without adding an error panel or replacing the existing online-error status. Current query/tab guards, completed-online-result precedence, close invalidation, loading/button cleanup, barcode and minimum-length guards remain. No new cache, field, timer, watcher, setting, schema, public API version or migration is added. Minimum Obsidian stays **1.12.0**; this is a backward-compatible performance/error-ownership patch.
+
+Actual modal, plugin normalization and native usage-reader composition across 37, 1,000 and 10,000 synthetic indexed logs reduces each submitted query from two history materializations and twice the record/link visits to one materialization and one visit per log, with zero vault inventories, metadata lookups or source reads. Thirteen added regressions plus 39 existing search checks pass, including independent review. The versioned declared suite passed 653 of 654 checks, with one existing optional USDA skip and no failures; TypeScript and separate builds passed. The ordinary build deployed only to Obsidian Plugin Test Vault and a named reload confirmed 4.2.6 with 182 real records and saved state preserved. An isolated source-modal/installed-API replay verified the same one-read counts, fresh deletion visibility, provider concurrency and shared-error cleanup with no real-service/settings/data changes. Hidden, unfocused Live Preview QA passed 13 phases, six switches and two remounts, retaining observed Macros/Activity rows with no render errors or note-mutation attempts; three fixtures were preserved and archived. These checks do not establish physical-device speed, live modal input latency, cold startup or Reading-mode behavior, and do not explain every multi-second stall. Boundaries and matching artifact digests are in the [4.2.6 release notes](release-notes/4.2.6.md). Production installation remains the user's separate BRAT update.
+
 ## 4.2.5 — Cooperative native-record discovery
 
 Health's initial and explicitly requested native-record discovery now yields between bounded batches instead of inspecting the entire vault in one synchronous task. An explicitly cold metadata cache waits for its first resolved event and takes one current Markdown inventory, avoiding the earlier setup/resolved double scan. Warm and mobile loads with no private cache flag still discover from current public cache coverage. Existing incremental listeners remain the owners of ordinary edits, creations, deletions and renames; settled resolved events do no discovery work.
@@ -296,7 +304,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [4.2.4](https://github.com/ZachTish/tps-health/releases/tag/4.2.4) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [4.2.6](https://github.com/ZachTish/tps-health/releases/tag/4.2.6) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
