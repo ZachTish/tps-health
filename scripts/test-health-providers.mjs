@@ -2138,7 +2138,7 @@ test("local search stays offline while combined search invokes providers", async
   assert.match(mainSource, /private queueSearch\(query: string\): void[\s\S]+this\.runLocalSearch\(query, token\)/);
   assert.match(mainSource, /private submitOnlineSearch\(query: string\): void/);
   assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken/);
-  assert.match(mainSource, /FOOD_ONLINE_SEARCH_DEBOUNCE_MS = 800/);
+  assert.doesNotMatch(mainSource, /FOOD_ONLINE_SEARCH_DEBOUNCE_MS/);
 });
 
 test("Open Food Facts text search coalesces requests, caches results, and caps route fan-out", async () => {
@@ -6126,7 +6126,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /if \(!trimmed \|\| \/\^now\$\/i\.test\(trimmed\)\) return isoNow\(\);/);
   assert.match(mainSource, /this\.resetSearchForNextFood\(enriched\.name\);/);
   assert.match(mainSource, /private resetSearchForNextFood\(addedName: string\): void/);
-  assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*window\.setTimeout\(\(\) => this\.submitOnlineSearch/);
+  assert.match(mainSource, /text\.setValue\(this\.initialDraft\.query\);\s*this\.searchInput = this\.initialDraft\.query;\s*this\.queueSearch\(this\.initialDraft\.query\);\s*\} else if/);
   assert.match(mainSource, /const add = async \(\) => \{[\s\S]+await this\.addSelection\(item\);[\s\S]+action\(addLabel, async \(\) => add\(\)\);/);
   assert.match(mainSource, /const enriched = await this\.plugin\.enrichFoodSearchItem\(item\);\s+this\.closeFromAction\(\);\s+new FoodLogModal/);
   assert.match(mainSource, /titleButton\.addEventListener\("click", async \(\) =>/);

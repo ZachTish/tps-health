@@ -1,5 +1,15 @@
 # TPS Health
 
+## 4.2.7 — Search online when requested
+
+Typing in **Log food** searches saved and built-in foods after the existing 100 ms local debounce. Online databases run only when the user presses **Search** or **Enter**; opening with an initial query also stays local. Local status text explains that action. Barcode submission and the adjacent scanner keep their explicit routes. No provider, setting, schema, classification, API, logging or tray behavior is removed or migrated.
+
+This backward-compatible patch removes the automatic 800 ms provider submission and the opening-query provider timer. Each settled typed query therefore performs one local search/history materialization and zero online submissions; a rapid input burst coalesces to its final local query. An accepted explicit submission still performs one combined search, with the existing shared request-local history, busy guard, stale-result protection, error ownership and loading cleanup. Minimum Obsidian remains **1.12.0**.
+
+The first ten actual-modal input/button/timer regressions reproduced five failures on released 4.2.6, covering typing, bursts, initial queries and composition; explicit Search/Enter, barcode and tab/close guards already passed. Twelve added regressions now include empty-result guidance and both configured providers. The versioned declared suite passed **665 of 666 checks**, with one existing optional live USDA credential skip and no failures; TypeScript, the suite build and a separate build passed with deployment suppressed. Tests use synthetic Obsidian/DOM, catalog/history and provider boundaries, not live service requests or physical-device timings. An ordinary build then deployed 4.2.7 only to Obsidian Plugin Test Vault (`target=test`), and a Health reload loaded the candidate.
+
+Installed foreground QA used the actual Log food command and native modal with all eight active TPS consumers enabled. Opening and typing `apple` produced one local search, two usage-history materializations, zero online submissions and one Markdown inventory on the first flow; the repeated flow had the same search/history counts and zero inventories. The matching 4.2.6 baseline had two local searches, three history materializations and one automatic online submission. Search-button and Enter submissions each retained one local search, one history materialization and one online submission. A temporary `searchFoods` provider boundary returned an empty result to prevent outbound requests; online-result content and real provider responses were therefore not verified. These flows performed zero raw reads, cached reads and note-mutation attempts. The visible status read “2 saved matches · Press Enter or Search to check online databases.” No latency or physical-mobile speed claim is made. The final post-documentation production build passed and reported the test runtime unchanged; public publication is the remaining handoff step; [4.2.7 release notes](release-notes/4.2.7.md) record the tested hashes and BRAT handoff boundary. Production installation remains the user's separate BRAT update.
+
 ## 4.2.6 — Share usage history within one food-search submission
 
 An accepted food-search submission now materializes its current whole-note usage history once, sharing that request-local promise between saved-food and combined database ranking. Both searches still start concurrently; online providers need not wait for history to settle. The earlier typed-local stage and its later automatic database submission remain independent fresh reads, as do separate submissions. No history snapshot is retained between requests.
@@ -312,7 +322,7 @@ Add `ZachTish/tps-health` to BRAT. Use manual updates with `Latest`, or freeze a
 
 ## Log food and workouts
 
-**Log food** searches saved foods and databases together; scanning sits beside search, with Describe and quick-add routes available. The persistent tray keeps unlogged items, and the logger closes through its explicit close button. Categorize food logs with tags instead of a section selector.
+**Log food** searches saved and built-in foods while typing. Press **Search** or **Enter** to include online databases. Scanning sits beside search, with Describe and quick-add routes available. The persistent tray keeps unlogged items, and the logger closes through its explicit close button. Categorize food logs with tags instead of a section selector.
 
 Macros is an inline block that can also live in an ordinary Markdown dashboard page. The Macros Base layout and its creation command/settings action are retired. Appearance options include rings for main macros and compact nutrient rows. Meals/recipes and nutrient totals expand into contributing components.
 

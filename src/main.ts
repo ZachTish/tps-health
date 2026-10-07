@@ -439,7 +439,6 @@ const OPEN_FOOD_FACTS_SEARCH_FIELDS = [
   "ingredients_text",
 ].join(",");
 const FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100;
-const FOOD_ONLINE_SEARCH_DEBOUNCE_MS = 800;
 const BARCODE_IMAGE_MAX_DIMENSION = 1600;
 const FOOD_LABEL_IMAGE_MAX_DIMENSION = 1600;
 const FOOD_LABEL_IMAGE_JPEG_QUALITY = 0.82;
@@ -9958,7 +9957,6 @@ class FoodSearchModal extends FoodInputModal {
           text.setValue(this.initialDraft.query);
           this.searchInput = this.initialDraft.query;
           this.queueSearch(this.initialDraft.query);
-          window.setTimeout(() => this.submitOnlineSearch(this.initialDraft?.query || ""), 0);
         } else if (this.searchInput) {
           text.setValue(this.searchInput);
           this.queueSearch(this.searchInput);
@@ -10084,10 +10082,6 @@ class FoodSearchModal extends FoodInputModal {
       this.searchTimer = null;
       if (token !== this.searchToken || this.activeFoodLogTab !== "search") return;
       void this.runLocalSearch(query, token);
-      if (query.trim().length >= 2 && !/^\d+$/.test(query.trim())) this.searchTimer = window.setTimeout(() => {
-        this.searchTimer = null;
-        if (token === this.searchToken && this.activeFoodLogTab === "search") this.submitOnlineSearch(query);
-      }, FOOD_ONLINE_SEARCH_DEBOUNCE_MS - FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
     }, FOOD_LOCAL_SEARCH_DEBOUNCE_MS);
   }
 
@@ -10123,8 +10117,8 @@ class FoodSearchModal extends FoodInputModal {
           ? `${items.length} quick match${items.length === 1 ? "" : "es"} · checking online databases...`
           : "Checking online databases..."
         : items.length
-          ? `${items.length} saved match${items.length === 1 ? "" : "es"} · checking databases shortly…`
-          : "Checking food databases shortly…",
+          ? `${items.length} saved match${items.length === 1 ? "" : "es"} · Press Enter or Search to check online databases.`
+          : "No saved matches. Press Enter or Search to check online databases.",
       "Quick matches",
     );
   }

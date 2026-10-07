@@ -294,7 +294,7 @@ test("incompatible tray units remain visible with a correction message and valid
   assert.equal(tray.selectedNutrition().calories,50);
 });
 
-test('typing Michelob Ultra searches databases after settling, and old queries cannot win', async () => {
+test('typing Michelob Ultra stays local until submission, and closed queries cannot win', async () => {
   const {tray, plugin} = await setup();
   const timers = new Map(); let next = 0;
   window.setTimeout = (fn, delay) => { timers.set(++next, {fn, delay}); return next; };
@@ -306,6 +306,9 @@ test('typing Michelob Ultra searches databases after settling, and old queries c
   tray.queueSearch('michelob ultra'); await tick(100);
   assert.deepEqual(queries, []);
   await tick(700);
+  assert.deepEqual(queries, []);
+  assert.equal(timers.size, 0);
+  tray.submitOnlineSearch('michelob ultra'); await turn();
   assert.deepEqual(queries, ['michelob ultra']);
   assert.deepEqual(titles(tray), ['Michelob Ultra']);
   tray.queueSearch('later'); await tick(100);
@@ -685,7 +688,7 @@ test('diagnostic command separates a 30-second native write from tray persistenc
 });
 
 
-test('selection invalidates an in-flight search and cancels its pending database request', async () => {
+test('selection invalidates an in-flight submitted search and cancels pending local work', async () => {
   const {tray, plugin} = await setup();
   const timers = new Map(); let next = 0;
   window.setTimeout = (fn, delay) => { timers.set(++next, {fn, delay}); return next; };

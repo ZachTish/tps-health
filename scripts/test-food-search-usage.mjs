@@ -100,7 +100,7 @@ test('each independent submission rematerializes current usage instead of retain
   assert.ok(first.size > 0); assert.equal(second.size, 0, 'A deleted log is absent from the next submitted query');
 });
 
-test('typed local search and later automatic submission each read their own current history', async t => {
+test('typed local search and later explicit submission each read their own current history', async t => {
   const f = await fixture(2); t.after(() => f.close());
   const timers = new Map(); let timerId = 0;
   window.setTimeout = (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; };
@@ -114,9 +114,9 @@ test('typed local search and later automatic submission each read their own curr
   timers.delete(localId); local.callback(); await turn();
   assert.equal(f.calls.materializations, 1); assert.equal(f.calls.providers, 0);
   f.paths.clear();
-  const [onlineId, online] = [...timers].find(([, timer]) => timer.delay === 700);
-  timers.delete(onlineId); online.callback(); await turn(); await turn();
-  assert.equal(f.calls.materializations, 2, 'The delayed submission is not the earlier typed-local snapshot');
+  assert.equal(timers.size, 0, 'Typing schedules no online submission');
+  f.tray.submitOnlineSearch('usageqa'); await turn(); await turn();
+  assert.equal(f.calls.materializations, 2, 'The explicit submission is not the earlier typed-local snapshot');
   assert.equal(f.calls.providers, 1); assert.equal(f.inputs.local.length, 2); assert.equal(f.inputs.online.length, 1);
   assert.ok((await snapshots[0]).size > 0); assert.equal((await snapshots[1]).size, 0);
   assert.equal(f.inputs.local[1], f.inputs.online[0]);
