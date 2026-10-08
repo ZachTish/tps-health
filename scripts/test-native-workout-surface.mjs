@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
 import ts from "typescript";
@@ -12,10 +14,14 @@ const declaration=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node
 assert.ok(declaration,"the tested mount helper must be the actual main.ts function");
 const mountBuild=await transform(declaration.getText(ast)+"\nexport {nativeWorkoutReadingMountTarget};",{loader:"ts",format:"esm"});
 const {nativeWorkoutReadingMountTarget}=await import("data:text/javascript;base64,"+Buffer.from(mountBuild.code).toString("base64"));
-const surfaceBuild=await build({entryPoints:[fileURLToPath(new URL("../src/native-workout-surface.ts",import.meta.url))],bundle:true,write:false,format:"esm",platform:"node",logLevel:"silent"});
+const surfacePath=fileURLToPath(new URL("../src/native-workout-surface.ts",import.meta.url));
+const surfaceInput=process.env.TPS_WORKOUT_SURFACE_BASELINE==='4.2.7'
+ ? {stdin:{contents:execFileSync('git',['show','4.2.7:src/native-workout-surface.ts'],{encoding:'utf8'}),resolveDir:dirname(surfacePath),sourcefile:surfacePath,loader:'ts'}}
+ : {entryPoints:[surfacePath]};
+const surfaceBuild=await build({...surfaceInput,bundle:true,write:false,format:"esm",platform:"node",logLevel:"silent"});
 const {renderNativeWorkoutSurface}=await import("data:text/javascript;base64,"+Buffer.from(surfaceBuild.outputFiles[0].text).toString("base64"));
 
-// A small structural DOM double: no browser/Obsidian process, timers or writes.
+// A small structural DOM double: no browser/Obsidian process, real timers or writes.
 // Removing a focused descendant clears focus, as replacing the real controls
 // would; elapsed-only regression asserts element identity as well as text.
 class Element {
@@ -30,7 +36,7 @@ class Element {
  empty(){this.emptyCount++;this._text="";this.emptyChildren();}
  append(...nodes){for(const node of nodes)this.appendChild(node);}
  appendChild(node){if(node.parentElement)node.parentElement.children=node.parentElement.children.filter(x=>x!==node);node.parentElement=this;this.children.push(node);return node;}
- remove(){if(this.parentElement){this.parentElement.children=this.parentElement.children.filter(x=>x!==this);this.parentElement=null;}}
+ remove(){if(this.parentElement){if(this.contains(document.activeElement))document.activeElement=null;this.parentElement.children=this.parentElement.children.filter(x=>x!==this);this.parentElement=null;}}
  contains(node){return node===this||this.children.some(child=>child.contains(node));}
  matches(selector){return selector.startsWith(".")&&this.className.split(/\s+/).includes(selector.slice(1));}
  closest(selector){return this.matches(selector)?this:this.parentElement?.closest(selector)||null;}
@@ -214,4 +220,149 @@ test('adjacent drop chains have separate boundaries and readable group labels',(
  assert.equal(rows[2].classList.contains('is-drop-alternate'),true);
  assert.equal(rows[0].querySelector('.tps-health-native-drop-label').textContent,'D1');
  assert.equal(rows[2].querySelector('.tps-health-native-drop-label').textContent,'D2');
+});
+
+// The actual renderer registers/ticks its existing intervals. This bounded host
+// owns fake time and DOM only; counts are not installed/mobile latency claims.
+function workoutIntervals(t) {
+ const originalWindow=globalThis.window, originalNow=Date.now;
+ let now=Date.parse('2026-09-09T12:00:00Z'),nextId=0;
+ const timers=new Map(),counts={registered:0,cleared:0,callbacks:0};
+ Date.now=()=>now;
+ globalThis.window={
+  setInterval(callback,delay){assert.equal(delay,1000);const id=++nextId;counts.registered++;timers.set(id,callback);return id;},
+  clearInterval(id){if(timers.delete(id))counts.cleared++;},
+ };
+ t.after(()=>{globalThis.window=originalWindow;Date.now=originalNow;});
+ return {counts,timers,stamp:()=>new Date(now).toISOString(),tick(){now+=1000;for(const [id,callback] of [...timers])if(timers.has(id)){counts.callbacks++;callback();}}};
+}
+function workoutWithSets(sets) {
+ const data=snapshot(),base=data.exercises[0].sets[0];
+ data.exercises[0].sets=sets.map((fields,index)=>({...base,id:`set-${index}`,ordinal:index+1,...fields}));
+ data.setCount=sets.length;
+ return data;
+}
+test('25 completed active rows register zero rest timers and keep blank hidden countdowns',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const data=workoutWithSets(Array.from({length:25},()=>({completedDate:intervals.stamp(),restStartedAt:intervals.stamp()})));
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(intervals.counts.registered,0);
+ for(let tick=0;tick<20;tick++)intervals.tick();
+ assert.equal(intervals.counts.callbacks,0);
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,25*7,'Completed rows remain editable');
+ const countdowns=root.querySelectorAll('.tps-health-native-workout-rest-countdown');
+ assert.equal(countdowns.length,25);
+ for(const countdown of countdowns){assert.equal(countdown.textContent,'');assert.ok('hidden' in countdown.attributes);}
+});
+test('pending rows with absent or invalid rest timestamps register zero countdown timers',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const data=workoutWithSets(['','not-a-date','2026-99-99'].map(restStartedAt=>({restStartedAt})));
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(intervals.counts.registered,0);
+ intervals.tick();assert.equal(intervals.counts.callbacks,0);
+ for(const countdown of root.querySelectorAll('.tps-health-native-workout-rest-countdown'))assert.equal(countdown.textContent,'');
+});
+test('only a pending valid rest stamp registers a timer and it still follows edited duration',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const data=workoutWithSets([
+  {completedDate:intervals.stamp(),restStartedAt:intervals.stamp()},
+  {restStartedAt:''},{restStartedAt:'not-a-date'},{restStartedAt:intervals.stamp()},
+ ]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(intervals.counts.registered,1);assert.equal(intervals.timers.size,1);
+ const countdowns=root.querySelectorAll('.tps-health-native-workout-rest-countdown');
+ assert.equal(countdowns[3].textContent,'1:30');
+ intervals.tick();assert.equal(countdowns[3].textContent,'1:29');
+ const rest=root.querySelectorAll('.tps-health-native-workout-edit-control').find(control=>control.dataset.setId==='set-3'&&control.dataset.field==='restSeconds');
+ rest.focus();rest.value='120';intervals.tick();assert.equal(countdowns[3].textContent,'1:58');
+ assert.equal(document.activeElement,rest);assert.equal(rest.value,'120');
+});
+test('completion and uncompletion use the saved signature to retire and restore eligible timers',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const completed=workoutWithSets([{completedDate:intervals.stamp(),restStartedAt:intervals.stamp()}]);
+ renderNativeWorkoutSurface(root,completed,options('1:00'));assert.equal(intervals.timers.size,0);
+ const pending=structuredClone(completed);pending.exercises[0].sets[0].completedDate='';
+ renderNativeWorkoutSurface(root,pending,options('1:01'));assert.equal(intervals.timers.size,1);
+ renderNativeWorkoutSurface(root,completed,options('1:02'));intervals.tick();
+ assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.registered,1);assert.equal(intervals.counts.cleared,1);
+ assert.equal(root.querySelector('.tps-health-native-workout-rest-countdown').textContent,'');
+});
+test('a new or removed rest stamp changes timer eligibility through the existing saved render signature',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,0);
+ const started=structuredClone(data);started.exercises[0].sets[0].restStartedAt=intervals.stamp();
+ renderNativeWorkoutSurface(root,started,options('1:01'));assert.equal(intervals.timers.size,1);
+ renderNativeWorkoutSurface(root,data,options('1:02'));intervals.tick();
+ assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.cleared,1);
+});
+test('100 unchanged elapsed refreshes keep one eligible timer, focused control identity and its draft',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
+ data.exercises[0].sets[0].restStartedAt=intervals.stamp();
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ const weight=edit(root,'weight');weight.focus();weight.value='33';const emptied=root.emptyCount;
+ let exerciseQueries=0;const query=root.querySelectorAll.bind(root);
+ root.querySelectorAll=selector=>{if(selector==='.tps-health-native-workout-exercise')exerciseQueries++;return query(selector);};
+ for(let refresh=0;refresh<100;refresh++)renderNativeWorkoutSurface(root,data,options(`1:${refresh}`));
+ assert.equal(intervals.counts.registered,1);assert.equal(root.emptyCount,emptied);
+ assert.equal(exerciseQueries,0,'Clock-only refreshes do not enter obsolete-exercise pruning');
+ assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');
+ assert.equal(intervals.counts.callbacks,0,'Rendering does not execute a periodic callback');
+});
+test('25 detached eligible rows clear their existing intervals on the next tick and stay idle',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const data=workoutWithSets(Array.from({length:25},()=>({restStartedAt:intervals.stamp()})));
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,25);
+ root.rootConnected=false;intervals.tick();
+ assert.deepEqual(intervals.counts,{registered:25,cleared:25,callbacks:25});assert.equal(intervals.timers.size,0);
+ for(let tick=0;tick<20;tick++)intervals.tick();assert.equal(intervals.counts.callbacks,25);
+});
+test('inactive rows never register rest timers even with a valid pending rest stamp',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
+ data.exercises[0].sets[0].restStartedAt=intervals.stamp();
+ renderNativeWorkoutSurface(root,data,{...options('1:00'),active:false});
+ assert.equal(intervals.counts.registered,0);assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,0);
+});
+for(const draft of ['focused','badInput'])test(`a removed exercise's ${draft} draft cannot defer its authoritative removal`,()=>{
+ const root=connected('');renderNativeWorkoutSurface(root,snapshot(),options('1:00'));
+ const weight=edit(root,'weight');weight.focus();weight.value=draft==='badInput'?'':'33';weight.validity.badInput=draft==='badInput';
+ const removed={...snapshot(),exercises:[],exerciseCount:0,setCount:0};
+ renderNativeWorkoutSurface(root,removed,options('1:01'));
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-exercise').length,0);
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,0);
+ assert.equal(root.querySelector('.tps-health-native-workout-pending-refresh'),null);
+ assert.match(root.textContent,/No exercises yet/);assert.notEqual(document.activeElement,weight);
+});
+test('a removed set draft also cannot defer a saved empty-set state of its retained exercise',()=>{
+ const root=connected('');renderNativeWorkoutSurface(root,snapshot(),options('1:00'));
+ const reps=edit(root,'reps');reps.focus();reps.value='';reps.validity.badInput=true;
+ const next=snapshot();next.exercises[0].sets=[];next.setCount=0;
+ renderNativeWorkoutSurface(root,next,options('1:01'));
+ assert.deepEqual(root.querySelectorAll('.tps-health-native-workout-exercise').map(card=>card.dataset.exerciseId),['exercise-qa']);
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,0);
+ assert.equal(root.querySelector('.tps-health-native-workout-pending-refresh'),null);
+});
+test('removal prunes only its obsolete exercise while a retained draft defers the latest remaining values',()=>{
+ const root=connected(''),original=snapshot();
+ const retained=structuredClone(original.exercises[0]);
+ retained.id='exercise-retained';retained.name='Retained exercise';retained.path='QA/workout.md#exercise-retained';retained.sets[0].id='set-retained';
+ original.exercises.push(retained);original.exerciseCount=2;original.setCount=2;
+ renderNativeWorkoutSurface(root,original,options('1:00'));
+ const weight=root.querySelectorAll('.tps-health-native-workout-edit-control').find(control=>control.dataset.setId==='set-retained'&&control.dataset.field==='weight');
+ weight.focus();weight.value='45';
+ const removedWeight=root.querySelectorAll('.tps-health-native-workout-edit-control').find(control=>control.dataset.setId==='set-qa'&&control.dataset.field==='weight');
+ removedWeight.value='';removedWeight.validity.badInput=true;
+ const first=structuredClone(original);first.exercises.shift();first.exerciseCount=1;first.setCount=1;first.exercises[0].sets[0].reps=11;
+ renderNativeWorkoutSurface(root,first,options('1:01'));
+ assert.deepEqual(root.querySelectorAll('.tps-health-native-workout-exercise').map(card=>card.dataset.exerciseId),['exercise-retained']);
+ assert.equal(removedWeight.isConnected,false);
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').find(control=>control.dataset.setId==='set-retained'&&control.dataset.field==='weight'),weight);
+ assert.equal(weight.value,'45');assert.equal(document.activeElement,weight);
+ assert.ok(root.querySelector('.tps-health-native-workout-pending-refresh'));
+ const latest=structuredClone(first);latest.exercises[0].sets[0].reps=12;
+ renderNativeWorkoutSurface(root,latest,options('1:02'));
+ assert.equal(weight.value,'45');assert.equal(document.activeElement,weight);
+ weight.value='20';event(weight,'input');
+ assert.equal(edit(root,'reps').value,'12','Reverting the retained draft applies the latest pending snapshot');
+ assert.equal(root.querySelector('.tps-health-native-workout-pending-refresh'),null);
+ assert.deepEqual(root.querySelectorAll('.tps-health-native-workout-exercise').map(card=>card.dataset.exerciseId),['exercise-retained']);
 });

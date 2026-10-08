@@ -1589,6 +1589,29 @@ export class HealthNativeRecordService {
     });
   }
 
+  async removeWorkoutExercise(
+    sessionReference: string | TFile,
+    exerciseId: string,
+    expectedSessionId?: string,
+  ): Promise<NativeRecordHandle> {
+    const expectedExerciseId = String(exerciseId || '').trim();
+    if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');
+    return this.mutateWorkoutStructure(sessionReference, 'health-workout-remove-exercise', (exercises) => {
+      const matches = exercises.filter(exercise => exercise.id === expectedExerciseId);
+      if (matches.length !== 1) throw new Error('Workout exercise was missing or ambiguous.');
+      const removed = matches[0];
+      const completedTimes = new Set(removed.sets
+        .map(set => String(set.completedDate || set.endedAt || '').trim()).filter(Boolean));
+      exercises.splice(exercises.indexOf(removed), 1);
+      if (removed.supersetGroupId) clearSingletonSupersets(
+        exercises.filter(exercise => exercise.supersetGroupId === removed.supersetGroupId),
+      );
+      for (const exercise of exercises) for (const set of exercise.sets) {
+        if (typeof set.restStartedAt === 'string' && completedTimes.has(set.restStartedAt)) delete set.restStartedAt;
+      }
+    }, { resolveDefinitions: false, requireActive: true, expectedSessionId });
+  }
+
   async addPlannedWorkoutSet(sessionReference: string | TFile, exerciseId: string): Promise<NativeRecordHandle> {
     const expectedExerciseId = String(exerciseId || '').trim();
     if (!expectedExerciseId) throw new Error('Workout exercise identity was missing.');
@@ -1725,14 +1748,21 @@ export class HealthNativeRecordService {
     sessionReference: string | TFile,
     surface: string,
     mutation: (exercises: StoredWorkoutExercise[], session: NativeRecordHandle) => void,
+    options: { resolveDefinitions?: boolean; requireActive?: boolean; expectedSessionId?: string } = {},
   ): Promise<NativeRecordHandle> {
     const initialSession = await this.resolveRecord(sessionReference);
     if (!initialSession || initialSession.kind !== 'workout-session') throw new Error('Workout session was not found.');
+    const expectedSessionId = options.expectedSessionId || initialSession.id;
+    if (options.requireActive && initialSession.id !== expectedSessionId) throw new Error('Workout session identity changed.');
     return this.serializeWorkoutSessionMutation(initialSession, surface, async (session) => {
-      const { exercises: priorExercises, legacyChildren, markerState } = await this.workoutExercisesForWrite(session);
+      const { exercises: priorExercises, legacyChildren, markerState, authoritativeSession } = await this.workoutExercisesForWrite(
+        session, undefined, options.resolveDefinitions !== false, options.requireActive ? expectedSessionId : undefined,
+      );
       const exercises = cloneStoredWorkoutExercises(priorExercises);
-      mutation(exercises, session);
-      const updated = await this.updateWorkoutSessionData(session, exercises, {}, surface, markerState);
+      const currentSession = options.requireActive ? authoritativeSession : session;
+      mutation(exercises, currentSession);
+      const updated = await this.updateWorkoutSessionData(currentSession, exercises, {}, surface, markerState,
+        options.requireActive ? expectedSessionId : undefined);
       if (!updated) throw new Error('Workout session changed before the workout could be updated.');
       this.trackHandle(updated);
       if (legacyChildren.length) await this.trashLegacyWorkoutChildren(updated, legacyChildren, 'health-workout-storage-upgrade');
@@ -1746,9 +1776,11 @@ export class HealthNativeRecordService {
     updates: Record<string, unknown>,
     surface: string,
     expectedStorageState: string | null,
+    expectedActiveSessionId?: string,
   ): Promise<NativeRecordHandle | null> {
     const beforeContent = await this.plugin.app.vault.read(session.file);
     if (this.disposed || this.discoveryPass?.full) throw new WorkoutSessionConflictError();
+    if (expectedActiveSessionId) this.assertActiveWorkoutSource(workoutFrontmatterFromContent(beforeContent), expectedActiveSessionId);
     const currentStorageState = workoutStorageStateFromContent(beforeContent, this.plugin.settings);
     if (currentStorageState !== expectedStorageState) throw new WorkoutSessionConflictError();
     const legacyMarker = workoutDataMarkerState(beforeContent);
@@ -1760,6 +1792,7 @@ export class HealthNativeRecordService {
     let committedFrontmatter: Record<string, unknown> | null = null;
     await this.plugin.app.fileManager.processFrontMatter(session.file, (frontmatter) => {
       const current = frontmatter as Record<string, unknown>;
+      if (expectedActiveSessionId) this.assertActiveWorkoutSource(current, expectedActiveSessionId);
       if (this.disposed || this.discoveryPass?.full
         || workoutStorageState(decodeNativeRecordFrontmatter(this.plugin.settings, current), legacyMarker) !== expectedStorageState) {
         conflict = true;
@@ -2761,13 +2794,18 @@ export class HealthNativeRecordService {
   private async workoutExercisesForWrite(
     session: NativeRecordHandle,
     resolver?: WorkoutExerciseDefinitionResolver,
+    resolveDefinitions = true,
+    expectedActiveSessionId?: string,
   ): Promise<{
     exercises: StoredWorkoutExercise[];
     legacyChildren: IndexedHealthRecord[];
     markerState: string | null;
+    authoritativeSession: NativeRecordHandle;
   }> {
     const content = await this.plugin.app.vault.read(session.file);
-    const frontmatter = decodeNativeRecordFrontmatter(this.plugin.settings, workoutFrontmatterFromContent(content));
+    const rawFrontmatter = workoutFrontmatterFromContent(content);
+    if (expectedActiveSessionId) this.assertActiveWorkoutSource(rawFrontmatter, expectedActiveSessionId);
+    const frontmatter = decodeNativeRecordFrontmatter(this.plugin.settings, rawFrontmatter);
     const hasSession = Object.prototype.hasOwnProperty.call(frontmatter, 'session');
     const nested = hasSession ? storedWorkoutExercises(frontmatter.session) : null;
     if (hasSession && !nested) {
@@ -2781,14 +2819,26 @@ export class HealthNativeRecordService {
     }
     const authoritativeSession: NativeRecordHandle = { ...session, frontmatter };
     const legacyChildren = this.getWorkoutExerciseRecords(session);
+    const exercises = nested || stored || this.workoutExercisesWithoutBodyCache(authoritativeSession);
     return {
-      exercises: await this.ensureWorkoutExerciseDefinitionPaths(
-        nested || stored || this.workoutExercisesWithoutBodyCache(authoritativeSession),
-        resolver,
-      ),
+      // Unlinking existing rows needs no reusable-note resolution or creation.
+      exercises: resolveDefinitions ? await this.ensureWorkoutExerciseDefinitionPaths(exercises, resolver) : exercises,
       legacyChildren,
       markerState: workoutStorageStateFromContent(content, this.plugin.settings),
+      authoritativeSession,
     };
+  }
+
+  private assertActiveWorkoutSource(frontmatter: Record<string, unknown>, expectedId: string): void {
+    const inspected = this.requireApi().inspect(frontmatter);
+    const decoded = decodeNativeRecordFrontmatter(this.plugin.settings, inspected?.frontmatter || frontmatter);
+    if (inspected?.id !== expectedId || Number(inspected?.schemaVersion) !== 1
+      || canonicalNativeKind(this.plugin.settings, inspected?.kind) !== 'workout-session') {
+      throw new Error('Workout session identity changed.');
+    }
+    if (String(decoded.status || '').trim().toLocaleLowerCase() !== 'active' || decoded.archived === true) {
+      throw new Error('This workout is no longer active.');
+    }
   }
 
   private async ensureWorkoutExerciseDefinitionPaths(

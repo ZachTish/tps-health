@@ -7902,7 +7902,25 @@ export default class TPSHealthPlugin extends Plugin {
       .setTitle(exercise.supersetGroupId ? "Edit superset…" : "Create superset…")
       .setIcon("link")
       .onClick(() => this.openNativeWorkoutSupersetLinker(snapshot, exercise)));
+    menu.addSeparator();
+    menu.addItem((item) => item
+      .setTitle("Remove exercise")
+      .setIcon("trash")
+      .onClick(() => void this.removeNativeWorkoutExercise(snapshot, exercise)));
     menu.showAtMouseEvent(event);
+  }
+
+  private async removeNativeWorkoutExercise(snapshot: NativeWorkoutSnapshot, exercise: NativeWorkoutExerciseSnapshot): Promise<void> {
+    if (!this.nativeRecordService?.isEnabled() || !this.isActiveNativeWorkoutSnapshot(snapshot)) return;
+    try {
+      await this.nativeRecordService.removeWorkoutExercise(snapshot.path, exercise.id, snapshot.id);
+      this.updateNativeWorkoutSurfaces();
+      this.scheduleWorkoutActionBars();
+      logger.flow("WorkoutExercise", "native-remove:done", { path: snapshot.path, exerciseId: exercise.id });
+    } catch (error) {
+      logger.flowError("WorkoutExercise", "native-remove:failed", error, { path: snapshot.path, exerciseId: exercise.id });
+      new Notice("Could not remove this exercise. The workout was left unchanged.");
+    }
   }
 
   private openNativeWorkoutSetMenu(

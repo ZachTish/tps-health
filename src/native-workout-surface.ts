@@ -157,12 +157,12 @@ const registerWorkoutEdit = (root: HTMLElement, control: WorkoutEditControl, set
 const hasUncommittedWorkoutEdit = (root: HTMLElement, snapshot: NativeWorkoutSnapshot): boolean => {
   const sets = new Map(snapshot.exercises.flatMap(exercise => exercise.sets.map(set => [set.id, set] as const)));
   return Array.from(root.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control')).some(control => {
+    const set = sets.get(control.dataset.setId || '');
+    if (!set) return false;
     if ((control as HTMLInputElement).validity?.badInput) return true;
     const value = editValue(control);
     if (value === control.dataset.savedValue) return false;
     if (document.activeElement === control && !control.disabled) return true;
-    const set = sets.get(control.dataset.setId || '');
-    if (!set) return true;
     const stored = set[control.dataset.field as keyof NativeWorkoutSetSnapshot];
     const incoming = stored == null ? '' : typeof stored === 'number' ? formatNumber(stored) : String(stored);
     return value !== incoming;
@@ -204,19 +204,27 @@ export function renderNativeWorkoutSurface(
     return;
   }
   if (options.active && snapshot.status === 'active' && root.dataset.workoutId === snapshot.id
-    && root.dataset.workoutPath === snapshot.path && root.dataset.instanceKey === options.instanceKey
-    && hasUncommittedWorkoutEdit(root, snapshot)) {
-    pendingWorkoutRenders.set(root, { snapshot, options });
-    const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
-    if (summaryElement) summaryElement.textContent = summary;
-    let waiting = root.querySelector<HTMLElement>('.tps-health-native-workout-pending-refresh');
-    if (!waiting) {
-      waiting = text('p', '', 'tps-health-native-workout-pending-refresh');
-      waiting.setAttribute('role', 'status');
-      root.append(waiting);
+    && root.dataset.workoutPath === snapshot.path && root.dataset.instanceKey === options.instanceKey) {
+    // A removed exercise owns no editable draft. Show its removal immediately
+    // while the existing deferred render still protects edits on retained sets.
+    const exerciseIds = new Set(snapshot.exercises.map(exercise => exercise.id));
+    for (const card of Array.from(root.querySelectorAll<HTMLElement>('.tps-health-native-workout-exercise'))) {
+      const exerciseId = card.dataset.exerciseId;
+      if (exerciseId && !exerciseIds.has(exerciseId)) card.remove();
     }
-    waiting.textContent = 'New workout values are waiting. Save or revert your edit to show them.';
-    return;
+    if (hasUncommittedWorkoutEdit(root, snapshot)) {
+      pendingWorkoutRenders.set(root, { snapshot, options });
+      const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
+      if (summaryElement) summaryElement.textContent = summary;
+      let waiting = root.querySelector<HTMLElement>('.tps-health-native-workout-pending-refresh');
+      if (!waiting) {
+        waiting = text('p', '', 'tps-health-native-workout-pending-refresh');
+        waiting.setAttribute('role', 'status');
+        root.append(waiting);
+      }
+      waiting.textContent = 'New workout values are waiting. Save or revert your edit to show them.';
+      return;
+    }
   }
   // A persisted change may arrive after Tab has moved to the next field.
   // Preserve that current field, rather than pulling focus back to the saver.
@@ -426,13 +434,15 @@ export function renderNativeWorkoutSurface(
         restCountdown.classList.toggle('is-ready', label === 'ready');
       };
       updateRestCountdown();
-      const restInterval = window.setInterval(() => {
-        if (!restCell.isConnected) {
-          window.clearInterval(restInterval);
-          return;
-        }
-        updateRestCountdown();
-      }, 1000);
+      if (!set.completedDate && Number.isFinite(Date.parse(set.restStartedAt))) {
+        const restInterval = window.setInterval(() => {
+          if (!restCell.isConnected) {
+            window.clearInterval(restInterval);
+            return;
+          }
+          updateRestCountdown();
+        }, 1000);
+      }
       restCell.append(rest, restCountdown);
       row.append(restCell);
       const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);

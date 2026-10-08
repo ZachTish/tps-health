@@ -87,11 +87,12 @@ async function importPluginWithObsidianStub() {
     export class Menu {
       constructor() { this.items = []; }
       addItem(callback) {
-        const item = { setTitle(value) { this.title = value; return this; }, setIcon(value) { this.icon = value; return this; }, onClick(callback) { this.callback = callback; return this; } };
+        const item = { setTitle(value) { this.title = value; return this; }, setIcon(value) { this.icon = value; return this; }, setDisabled(value) { this.disabled = value; return this; }, onClick(callback) { this.callback = callback; return this; } };
         callback?.(item); this.items.push(item);
         return this;
       }
-      showAtMouseEvent() {}
+      addSeparator() { return this; }
+      showAtMouseEvent() { globalThis.__TPSHealthTestMenus?.push(this); }
       showAtPosition(position) { this.position = position; globalThis.__TPSHealthTestMenus?.push(this); }
     }
     export class Notice { constructor(message) { globalThis.__TPSHealthTestNotices?.push(String(message)); } }
@@ -10505,4 +10506,62 @@ test('Macros-only renders skip workout-history resolution while Activity retains
   assert.match(visibleText(activity), /Active Lift/u);
   assert.match(visibleText(activity), /Resume/u);
   assert.match(visibleText(activity), /Finish/u);
+});
+
+test('workout exercise menu removal uses the existing active session owner and preserves pointer state', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+  const fake=createFakeHealthApp(),plugin=new TPSHealthPlugin(fake.app);
+  plugin.settings={...plugin.settings,activeWorkoutId:'remove-menu',activeWorkoutPath:'Inbox/Removal.md',activeWorkoutTarget:'both',activeWorkoutTitle:'Removal',activeWorkoutStartedAt:'2026-10-08T10:00:00.000Z',activeWorkoutSetCount:4,lastSetEndedAt:'2026-10-08T10:01:00.000Z'};
+  const prior=structuredClone(plugin.settings),calls=[];
+  plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,
+    resolveWorkoutSession:()=>({state:'active',id:'remove-menu',path:'Inbox/Removal.md'}),
+    removeWorkoutExercise:async(...args)=>{calls.push(['remove',...args]);}};
+  plugin.updateNativeWorkoutSurfaces=()=>calls.push(['refresh']);
+  plugin.scheduleWorkoutActionBars=()=>calls.push(['bars']);
+  plugin.saveSettings=async()=>{throw Error('Removal must not change saved pointer settings');};
+  const exercise={id:'curl',name:'Curl'},snapshot={id:'remove-menu',path:'Inbox/Removal.md',status:'active',exercises:[exercise]};
+  globalThis.__TPSHealthTestMenus=[];
+  try {
+    plugin.openNativeWorkoutExerciseMenu(snapshot,exercise,{});
+    const menu=globalThis.__TPSHealthTestMenus[0];
+    assert.deepEqual(menu.items.map(item=>item.title),['Move exercise up','Move exercise down','Create superset…','Remove exercise']);
+    const remove=menu.items.find(item=>item.title==='Remove exercise');assert.equal(remove.icon,'trash');
+    remove.callback();await Promise.resolve();await Promise.resolve();
+    assert.deepEqual(calls,[['remove','Inbox/Removal.md','curl','remove-menu'],['refresh'],['bars']]);
+    assert.deepEqual(plugin.settings,prior);
+  } finally {delete globalThis.__TPSHealthTestMenus;}
+});
+
+test('workout removal rejects terminal, unresumed, conflicting and loading menu snapshots', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+  for(const scenario of ['complete','unresumed','conflicting','loading','disabled']) {
+    const fake=createFakeHealthApp(),plugin=new TPSHealthPlugin(fake.app),calls=[];
+    plugin.settings={...plugin.settings,activeWorkoutId:scenario==='unresumed'?'':'remove-menu',activeWorkoutPath:scenario==='unresumed'?'':'Inbox/Removal.md'};
+    plugin.nativeRecordService={isEnabled:()=>scenario!=='disabled',isWorkoutIndexSettled:()=>scenario!=='loading',
+      resolveWorkoutSession:()=>({state:scenario==='conflicting'?'ambiguous':'active',id:'remove-menu',path:'Inbox/Removal.md'}),
+      removeWorkoutExercise:async()=>calls.push('mutation')};
+    plugin.updateNativeWorkoutSurfaces=()=>calls.push('refresh');plugin.scheduleWorkoutActionBars=()=>calls.push('bars');
+    await plugin.removeNativeWorkoutExercise({id:'remove-menu',path:'Inbox/Removal.md',status:scenario==='complete'?'complete':'active'},{id:'curl',name:'Curl'});
+    assert.deepEqual(calls,[],scenario+' must remain read-only');
+  }
+});
+
+test('failed workout exercise removal reports failure without replay, refresh or pointer mutation', async () => {
+  installDeterministicBrowserGlobals();
+  const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+  const fake=createFakeHealthApp(),plugin=new TPSHealthPlugin(fake.app);let attempts=0,refreshes=0;
+  plugin.settings={...plugin.settings,activeWorkoutId:'remove-menu',activeWorkoutPath:'Inbox/Removal.md'};
+  const prior=structuredClone(plugin.settings);
+  plugin.nativeRecordService={isEnabled:()=>true,isWorkoutIndexSettled:()=>true,
+    resolveWorkoutSession:()=>({state:'active',id:'remove-menu',path:'Inbox/Removal.md'}),
+    removeWorkoutExercise:async()=>{attempts++;throw Error('Disk failed');}};
+  plugin.updateNativeWorkoutSurfaces=()=>refreshes++;plugin.scheduleWorkoutActionBars=()=>refreshes++;
+  globalThis.__TPSHealthTestNotices=[];
+  try {
+    await plugin.removeNativeWorkoutExercise({id:'remove-menu',path:'Inbox/Removal.md',status:'active'},{id:'curl',name:'Curl'});
+    assert.equal(attempts,1);assert.equal(refreshes,0);assert.deepEqual(plugin.settings,prior);
+    assert.deepEqual(globalThis.__TPSHealthTestNotices,['Could not remove this exercise. The workout was left unchanged.']);
+  } finally {delete globalThis.__TPSHealthTestNotices;}
 });

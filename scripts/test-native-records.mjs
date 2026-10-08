@@ -4505,3 +4505,195 @@ test('a failed fresh workout write rejects once without publishing an active sna
   assert.equal(h.createCalls.length, 0);
   assert.equal(h.service.getWorkoutSnapshot('uncommitted-workout'), null);
 });
+
+// Exercise removal exercises the existing service/serialized writer, not a simulated reducer.
+test('exercise removal writes only its session and preserves definitions, neighbors and body', async () => {
+  const h=createHarness();
+  const session=await h.service.createWorkoutSession({title:'Remove exercise QA',startedAt:'2026-10-08T10:00:00.000Z'},'remove-exercise');
+  const definition=h.addFrontmatterFile('Health/Exercises/Curl.md',{kind:'exercise',title:'Curl',description:'Reusable definition'});
+  await h.service.appendWorkoutSet(session.file,{id:'curl-1',exercise:'Curl',exercisePath:definition.path,reps:8,weight:40});
+  await h.service.appendWorkoutSet(session.file,{id:'row-1',exercise:'Row',exercisePath:'Missing/Row.md',reps:10,weight:60});
+  h.contents.set(session.path,h.contents.get(session.path)+'Workout body stays.\n');
+  const before=h.service.getWorkoutSnapshot(session.path),definitionBefore=h.contents.get(definition.path);
+  const rawBefore=h.readCalls.length,cachedBefore=h.cachedReadCalls.length,createsBefore=h.createCalls.length;
+  let writes=0,scans=0,definitionResolutions=0,bodyWrites=0;
+  const process=h.plugin.app.fileManager.processFrontMatter;
+  h.plugin.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+  h.plugin.app.vault.getMarkdownFiles=()=>{scans++;return [...h.files.values()];};
+  h.plugin.app.vault.process=async()=>{bodyWrites++;throw new Error('Modern removal must not rewrite a body');};
+  h.plugin.ensureExerciseDefinitionForWorkout=async()=>{definitionResolutions++;throw new Error('Unlinking must not resolve definitions');};
+  await h.service.removeWorkoutExercise(session.path,before.exercises[0].id);
+  const after=h.service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(after.exercises,[before.exercises[1]]);
+  assert.equal(after.exerciseCount,1);assert.equal(after.setCount,1);
+  assert.equal(after.id,before.id);assert.equal(after.status,'active');assert.equal(after.startedAt,before.startedAt);
+  assert.match(h.contents.get(session.path),/Workout body stays\.\n$/u);
+  assert.equal(h.contents.get(definition.path),definitionBefore);assert.equal(h.files.get(session.path),session.file);
+  assert.deepEqual(h.trashedPaths,[]);
+  assert.deepEqual({writes,scans,definitionResolutions,bodyWrites,creates:h.createCalls.length-createsBefore,cached:h.cachedReadCalls.length-cachedBefore,raw:h.readCalls.length-rawBefore},
+    {writes:1,scans:0,definitionResolutions:0,bodyWrites:0,creates:0,cached:0,raw:2});
+  h.service.dispose();
+});
+
+test('exercise removal clears only removed rest starts and singleton supersets', async () => {
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Removal links'},'remove-links');
+  const completed='2026-10-08T10:01:00.000Z',unrelated='2026-10-08T10:05:00.000Z';
+  await h.api.update(session.file,{session:{version:1,exercises:[
+    {id:'remove',name:'Curl',exercise:'[[Missing/Curl]]',superset:'pair',sets:[{id:'curl-a',reps:8,completedDate:completed},{id:'curl-b',reps:6,endedAt:unrelated}]},
+    {id:'keep-a',name:'Row',exercise:'[[Health/Exercises/Row]]',superset:'pair',sets:[{id:'row-a',reps:10,restStartedAt:completed},{id:'row-b',reps:5,restStartedAt:'2026-10-08T10:08:00.000Z',dropSetGroupId:'drop',setType:'drop'}]},
+    {id:'keep-b',name:'Press',exercise:'[[Health/Exercises/Press]]',superset:'other',sets:[{id:'press-a',reps:4,restStartedAt:unrelated}]},
+    {id:'keep-c',name:'Pull',exercise:'[[Health/Exercises/Pull]]',superset:'other',sets:[]},
+    {id:'keep-single',name:'Raise',exercise:'[[Missing/Raise]]',superset:'authored-singleton',sets:[]},
+  ]}});
+  await h.service.refreshFile(session.file);
+  const prior=h.service.getWorkoutSnapshot(session.path);
+  await h.service.removeWorkoutExercise(session.path,'remove');
+  const after=h.service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(after.exercises.map(e=>e.id),['keep-a','keep-b','keep-c','keep-single']);
+  assert.equal(after.exercises[0].supersetGroupId,undefined);
+  assert.equal(after.exercises[0].sets[0].restStartedAt,'');assert.equal(after.exercises[1].sets[0].restStartedAt,'');
+  assert.deepEqual(after.exercises[0].sets[1],prior.exercises[1].sets[1]);
+  assert.equal(after.exercises[1].supersetGroupId,'other');assert.equal(after.exercises[2].supersetGroupId,'other');
+  assert.deepEqual(after.exercises[3],prior.exercises[4],'an unrelated authored singleton is not repaired by removal');
+  h.service.dispose();
+});
+
+test('exercise removal persists an empty mapped workout through service reload', async () => {
+  const h=createHarness({customKinds:true,settings:{nativeRecordKinds:{workoutSession:'training'},nativeRecordProperties:{session:'trainingData',status:'trainingState'}}});
+  const session=await h.service.createWorkoutSession({title:'Empty after removal'},'remove-empty');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+  const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];
+  await h.service.removeWorkoutExercise(session.path,exercise.id);
+  assert.deepEqual(h.frontmatters.get(session.file).trainingData,{version:1,exercises:[]});
+  assert.equal(h.frontmatters.get(session.file).session,undefined);assert.equal(h.frontmatters.get(session.file).kind,'training');
+  assert.equal(h.frontmatters.get(session.file).trainingState,'active');assert.equal(h.frontmatters.get(session.file).status,undefined);
+  h.service.dispose();
+  const reopened=new HealthNativeRecordService(h.plugin);reopened.setup();await reopened.waitForWorkoutIndexSettled();
+  assert.deepEqual(reopened.getWorkoutSnapshot(session.path).exercises,[]);assert.equal(reopened.getWorkoutSnapshot(session.path).status,'active');
+  await reopened.ensureWorkoutExercise(session,'Row','Health/Exercises/Row.md');
+  assert.equal(reopened.getWorkoutSnapshot(session.path).exerciseCount,1);
+  reopened.dispose();
+});
+
+test('exercise removal rejects missing and ambiguous identities before atomic writes', async () => {
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Removal identity'},'remove-identity');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+  const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];
+  let writes=0,resolutions=0;const process=h.plugin.app.fileManager.processFrontMatter,resolve=h.api.resolve.bind(h.api);
+  h.plugin.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+  h.api.resolve=async(...args)=>{resolutions++;return resolve(...args);};
+  const before=h.contents.get(session.path),reads=h.readCalls.length;
+  await assert.rejects(h.service.removeWorkoutExercise(session.path,'   '),/identity.*missing/iu);
+  assert.equal(h.readCalls.length,reads);assert.equal(resolutions,0);assert.equal(writes,0);
+  await assert.rejects(h.service.removeWorkoutExercise(session.path,'missing'),/missing or ambiguous/iu);
+  assert.equal(writes,0);assert.equal(h.contents.get(session.path),before);
+  await h.api.update(session.file,{session:{version:1,exercises:[
+    {id:exercise.id,name:'Curl',exercise:'[[Health/Exercises/Curl]]',sets:[]},
+    {id:exercise.id,name:'Other Curl',exercise:'[[Health/Exercises/Other Curl]]',sets:[]},
+  ]}});
+  const ambiguous=h.contents.get(session.path);
+  await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id),/missing or ambiguous/iu);
+  assert.equal(writes,0);assert.equal(h.contents.get(session.path),ambiguous);
+  h.service.dispose();
+});
+
+test('exercise removal burst writes once and preserves concurrent retained-exercise edits', async () => {
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Concurrent removal'},'remove-concurrent');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');await h.service.ensureWorkoutExercise(session,'Row','Health/Exercises/Row.md');
+  const [remove,keep]=h.service.getWorkoutSnapshot(session.path).exercises;
+  let writes=0;const process=h.plugin.app.fileManager.processFrontMatter;
+  h.plugin.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+  const results=await Promise.allSettled([h.service.removeWorkoutExercise(session.path,remove.id),h.service.removeWorkoutExercise(session.path,remove.id),h.service.addPlannedWorkoutSet(session.path,keep.id)]);
+  assert.deepEqual(results.map(r=>r.status),['fulfilled','rejected','fulfilled']);assert.match(results[1].reason.message,/missing or ambiguous/iu);
+  assert.equal(writes,2,'one successful removal plus the separately requested set write');
+  const after=h.service.getWorkoutSnapshot(session.path);assert.deepEqual(after.exercises.map(e=>e.id),[keep.id]);assert.equal(after.setCount,1);
+  h.service.dispose();
+});
+
+test('exercise removal preserves an external retained-set edit at the atomic boundary', async () => {
+  const options={},h=createHarness(options),session=await h.service.createWorkoutSession({title:'Synced removal'},'remove-synced');
+  await h.service.appendWorkoutSet(session.file,{id:'curl-1',exercise:'Curl',exercisePath:'Health/Exercises/Curl.md',reps:8});
+  await h.service.appendWorkoutSet(session.file,{id:'row-1',exercise:'Row',exercisePath:'Health/Exercises/Row.md',reps:10});
+  const remove=h.service.getWorkoutSnapshot(session.path).exercises[0];
+  options.beforeFrontmatterProcess=({file,frontmatters,writeFrontmatterContent})=>{
+    options.beforeFrontmatterProcess=null;
+    const next=structuredClone(frontmatters.get(file));next.session.exercises[1].sets[0].reps=13;next.session.exercises[1].sets.push({id:'external',reps:7});
+    frontmatters.set(file,next);writeFrontmatterContent(file,next);
+  };
+  await h.service.removeWorkoutExercise(session.path,remove.id);
+  const after=h.service.getWorkoutSnapshot(session.path);assert.deepEqual(after.exercises.map(e=>e.name),['Row']);
+  assert.deepEqual(after.exercises[0].sets.map(s=>[s.id,s.reps]),[['row-1',13],['external',7]]);
+  h.service.dispose();
+});
+
+test('exercise removal failed atomic write leaves the complete session graph unchanged', async () => {
+  const options={},h=createHarness(options),session=await h.service.createWorkoutSession({title:'Failed removal'},'remove-failed');
+  await h.service.appendWorkoutSet(session.file,{id:'curl-1',exercise:'Curl',exercisePath:'Health/Exercises/Curl.md',reps:8});
+  const before=h.contents.get(session.path),snapshot=h.service.getWorkoutSnapshot(session.path);
+  options.beforeFrontmatterProcess=()=>{throw new Error('Disk write failed');};
+  await assert.rejects(h.service.removeWorkoutExercise(session.path,snapshot.exercises[0].id),/Disk write failed/iu);
+  assert.equal(h.contents.get(session.path),before);assert.deepEqual(h.service.getWorkoutSnapshot(session.path),snapshot);assert.deepEqual(h.trashedPaths,[]);
+  h.service.dispose();
+});
+
+for(const change of ['status','archived','identity','kind','schema']) {
+  test('exercise removal rejects fresh-source '+change+' changes before entering the atomic write', async()=>{
+    const h=createHarness(),session=await h.service.createWorkoutSession({title:'Stale removal'},'remove-stale-'+change);
+    await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+    const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];
+    const raw=h.plugin.app.vault.read;let reads=0,writes=0;
+    h.plugin.app.vault.read=async(file)=>{
+      if(++reads===1) {
+        const next=structuredClone(h.frontmatters.get(file));
+        if(change==='status')next.status='complete';if(change==='archived')next.archived=true;
+        if(change==='identity')next.tpsId='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
+        const temp=h.addFrontmatterFile(file.path,next);h.files.set(file.path,file);h.frontmatters.set(file,next);h.frontmatters.delete(temp);
+      }
+      return raw(file);
+    };
+    h.plugin.app.fileManager.processFrontMatter=async()=>{writes++;throw Error('Stale removal must not enter the queue');};
+    await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,session.id),/no longer active|identity changed/iu);
+    assert.equal(writes,0);assert.equal(reads,1);
+    assert.equal(h.frontmatters.get(session.file).session.exercises.length,1);
+    h.service.dispose();
+  });
+  test('exercise removal rejects atomic-boundary '+change+' changes with no committed removal', async()=>{
+    const options={},h=createHarness(options),session=await h.service.createWorkoutSession({title:'Atomic stale removal'},'remove-boundary-'+change);
+    await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+    const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];let attempts=0;
+    options.beforeFrontmatterProcess=({file,frontmatters,writeFrontmatterContent})=>{
+      attempts++;const next=structuredClone(frontmatters.get(file));
+      if(change==='status')next.status='complete';if(change==='archived')next.archived=true;
+      if(change==='identity')next.tpsId='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
+      frontmatters.set(file,next);writeFrontmatterContent(file,next);
+    };
+    await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,session.id),/no longer active|identity changed/iu);
+    assert.equal(attempts,1,'a terminal or reidentified source is rejected without automatic retry');
+    assert.equal(h.frontmatters.get(session.file).session.exercises.length,1);
+    assert.deepEqual(h.trashedPaths,[]);
+    h.service.dispose();
+  });
+}
+
+test('a removal queued after finish rejects without editing the completed workout',async()=>{
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Finish before removal',startedAt:'2026-10-08T10:00:00Z'},'remove-after-finish');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');
+  const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];let attempts=0;
+  const process=h.plugin.app.fileManager.processFrontMatter;
+  h.plugin.app.fileManager.processFrontMatter=async(...args)=>{attempts++;return process(...args);};
+  const results=await Promise.allSettled([h.service.finishWorkout(session.path,{endedAt:'2026-10-08T11:00:00Z'}),h.service.removeWorkoutExercise(session.path,exercise.id,session.id)]);
+  assert.deepEqual(results.map(r=>r.status),['fulfilled','rejected']);assert.match(results[1].reason.message,/no longer active/iu);
+  assert.equal(attempts,1,'only the finish operation writes');
+  const after=h.service.getWorkoutSnapshot(session.path);assert.equal(after.status,'complete');assert.equal(after.exerciseCount,1);
+  h.service.dispose();
+});
+
+test('a stale workout menu cannot remove an exercise from a reidentified path',async()=>{
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Reidentified removal'},'old-removal-id');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];
+  await h.api.update(session.file,{tpsId:'new-removal-id'});let attempts=0;
+  h.plugin.app.fileManager.processFrontMatter=async()=>{attempts++;};
+  await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,'old-removal-id'),/identity changed/iu);
+  assert.equal(attempts,0);assert.equal(h.frontmatters.get(session.file).session.exercises.length,1);
+  h.service.dispose();
+});

@@ -1,5 +1,15 @@
 # TPS Health
 
+## 4.3.0 — Remove exercises from active workouts
+
+Use an exercise’s three-dot menu → **Remove exercise** in an active or resumed whole-note workout. This removes that exercise and its sets from the session, retaining the workout note/body, reusable exercise definition and all neighboring exercise identities, order, links and sets. An empty workout remains usable. Completed/history workouts keep their existing read-only policy.
+
+Removal uses the existing serialized session writer and configured kind/property mappings. It reads current session content and rechecks identity, schema, kind, active status and archive exclusion at the atomic frontmatter boundary. It skips reusable-definition resolution: deleting a row cannot recreate a missing or archived exercise definition. Only rest starts referencing the removed sets and a singleton superset left by that removal are cleared. No repair, watcher, retry or new state store is introduced.
+
+The native surface removes obsolete exercise cards before deferring incoming values for a retained unsaved edit. A draft on another exercise retains its input, value and focus. Rest timers are allocated only for incomplete sets with a valid rest start; completed sets and missing/invalid rest dates allocate none. Elapsed-only refresh retains existing controls and timers. The same menu and renderer serve editor and Reading surfaces, including narrow mobile layouts.
+
+The final declared suite passed 699 of 700 checks with one optional USDA credential skip, zero failures, and passing TypeScript/build. Test-only deployment and a Health reload verified native Reading-menu removal of populated, empty and final exercise slots, source/body/library preservation and empty-session reload with all eight active TPS consumers enabled. The installed timer replay reduced 25 completed-set timers to zero; a pending valid rest retains its timer. The final native mutation had one atomic attempt, seven raw and two cached selected-session reads, zero inventories; those aggregate installed reads are separate from the service’s two explicit reads. Runtime settings/enabled state were restored exactly and owned fixtures archived. Physical mobile latency and installed editor-mode removal remain unmeasured. Detailed boundaries and installed test-vault QA are recorded in [4.3.0 release notes](release-notes/4.3.0.md). Minimum Obsidian remains **1.12.0**. This compatible capability receives a minor version; settings/schema/defaults are unchanged. Production installation is the user’s BRAT pull.
+
 ## 4.2.7 — Search online when requested
 
 Typing in **Log food** searches saved and built-in foods after the existing 100 ms local debounce. Online databases run only when the user presses **Search** or **Enter**; opening with an initial query also stays local. Local status text explains that action. Barcode submission and the adjacent scanner keep their explicit routes. No provider, setting, schema, classification, API, logging or tray behavior is removed or migrated.
