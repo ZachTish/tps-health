@@ -30,7 +30,7 @@ import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
 import * as logger from "./logger";
 import { buildNativeHealthRecordFileName, HealthNativeRecordService, resolveActiveWorkoutAfterFilenameMigration, type ActiveWorkoutFilenameState, type NativeDailyActivityEntrySnapshot, type NativeDailyFoodEntrySnapshot, type NativeWorkoutExerciseSnapshot, type NativeWorkoutSessionResolution, type NativeWorkoutSetPatch, type NativeWorkoutSetSnapshot, type NativeWorkoutSnapshot } from "./native-records";
-import { renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
+import { disposeNativeWorkoutSurface, renderNativeWorkoutSurface, type NativeWorkoutSetDraft } from "./native-workout-surface";
 import {
   nativeDailyNutrientContributors,
   splitNativeDailyMetrics,
@@ -1467,6 +1467,13 @@ export default class TPSHealthPlugin extends Plugin {
   onunload(): void {
     this.app.workspace.trigger("tps-health:unloading");
     logger.flow("Lifecycle", "unload");
+    const surfaces = new Set(Array.from(document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface")));
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      leaf.view.containerEl.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surfaces.add(surface));
+    });
+    for (const surface of surfaces) {
+      if (surface.dataset.instanceKey === this.workoutSurfaceInstanceKey) disposeNativeWorkoutSurface(surface);
+    }
     this.nativeRecordService?.dispose();
     this.activeWorkoutStateListeners.clear();
     if (this.workoutActionBarRefreshTimer != null) window.clearTimeout(this.workoutActionBarRefreshTimer);
@@ -3582,9 +3589,7 @@ export default class TPSHealthPlugin extends Plugin {
       throw new Error("Active native workout session was missing.");
     }
     const endedAt = set.completedDate || isoNow();
-    const previousEnd = this.settings.lastSetEndedAt ? Date.parse(this.settings.lastSetEndedAt) : NaN;
     const startedAt = set.startedAt || startedAtFromSetEnd(endedAt, set.durationSeconds);
-    const startedTimestamp = Date.parse(startedAt);
     if (set.createExerciseNote === false) {
       logger.flowWarn("Exercise", "set-note:required-override", { exercise: set.exercise, route: "native-workout" });
     }
@@ -3592,9 +3597,7 @@ export default class TPSHealthPlugin extends Plugin {
     // directly instead of rebuilding the entire exercise catalog before every
     // set; a typed new exercise still takes the responsive create path.
     const exercise = await this.ensureExerciseDefinitionForWorkout(set.exercise, set.exercisePath || "");
-    const restSeconds = set.restSeconds ?? (this.settings.restTimerMode === "count-up" && Number.isFinite(previousEnd)
-      ? Math.max(0, Math.round(((Number.isFinite(startedTimestamp) ? startedTimestamp : Date.parse(endedAt)) - previousEnd) / 1000))
-      : exercise?.defaultRestSeconds) ?? this.settings.defaultRestSeconds;
+    const restSeconds = set.restSeconds ?? exercise?.defaultRestSeconds ?? this.settings.defaultRestSeconds;
     const savedSet: WorkoutSet = {
       ...set,
       id: id("set"),
@@ -3603,7 +3606,6 @@ export default class TPSHealthPlugin extends Plugin {
       startedAt,
       endedAt,
       restSeconds,
-      restStartedAt: set.restStartedAt || endedAt,
       exercisePath: exercise?.sourcePath,
       workoutPath: sessionPath,
       workoutPlanPath: this.settings.activeWorkoutPlanPath || undefined,
@@ -7610,6 +7612,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private updateNativeWorkoutSurfaces(): void {
+    if (!this.nativeRecordService?.isEnabled()) return;
     // Index events own editor membership as well as updates to mounted controls.
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
@@ -7617,10 +7620,6 @@ export default class TPSHealthPlugin extends Plugin {
       const cm = (view.editor as any)?.cm as EditorView | undefined;
       if (cm) refreshNativeWorkoutEditor(this, cm, this.workoutSetChipField);
     });
-    if (!this.nativeRecordService?.isEnabled()) {
-      document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface").forEach((surface) => surface.remove());
-      return;
-    }
     this.ensureNativeWorkoutReadingSurfaces();
     const readingSurfacesByView = new Map<HTMLElement, Set<string>>();
     document.querySelectorAll<HTMLElement>(".tps-health-native-workout-surface[data-workout-path]").forEach((surface) => {
@@ -7698,6 +7697,7 @@ export default class TPSHealthPlugin extends Plugin {
       elapsedLabel,
       instanceKey: this.workoutSurfaceInstanceKey,
       defaultRestSeconds: this.settings.defaultRestSeconds,
+      restTimerMode: this.settings.restTimerMode,
       showSessionActions: !this.workoutActionBarOwnsNativeSession(snapshot),
       actions: {
         addExercise: () => new WorkoutExercisePickerModal(this.app, this, snapshot.path, snapshot.id).open(),
@@ -13790,6 +13790,7 @@ function renderNativeWorkoutSurfaceInReadingView(root: HTMLElement, plugin: TPSH
   const snapshot = plugin.nativeRecordService.getWorkoutSnapshot(sourcePath);
   if (!snapshot) return;
   const mount = (): boolean => {
+    if (!plugin.nativeRecordService?.isEnabled()) return false;
     const ownerPath = markdownFilePathForRenderedElement(plugin, root);
     if (ownerPath && ownerPath !== sourcePath) return false;
     const target = root.closest<HTMLElement>(".markdown-preview-sizer");

@@ -698,68 +698,6 @@ const clearSingletonDropSets = (exercise: StoredWorkoutExercise): void => {
   }
 };
 
-interface NativeWorkoutSetTransition {
-  nextSet: Record<string, unknown> | null;
-  startsRest: boolean;
-}
-
-const workoutSetIsComplete = (set: Record<string, unknown>): boolean => Boolean(
-  String(set.completedDate || set.endedAt || '').trim(),
-);
-
-/**
- * Resolve the next open set in training order. Drop sets stay inside their
- * chain, supersets rotate through the remaining members, and rest begins only
- * when that rotation wraps back to its first still-open member.
- */
-const nativeWorkoutSetTransition = (
-  exercises: StoredWorkoutExercise[],
-  exerciseIndex: number,
-  setIndex: number,
-): NativeWorkoutSetTransition => {
-  const exercise = exercises[exerciseIndex];
-  const completed = exercise?.sets[setIndex];
-  if (!exercise || !completed) return { nextSet: null, startsRest: false };
-  const open = (set: Record<string, unknown>): boolean => !workoutSetIsComplete(set);
-  const dropSetGroupId = String(completed.dropSetGroupId || '').trim();
-  if (dropSetGroupId) {
-    const linkedDropSet = exercise.sets
-      .slice(setIndex + 1)
-      .find((set) => String(set.dropSetGroupId || '').trim() === dropSetGroupId && open(set))
-      || exercise.sets
-        .slice(0, setIndex)
-        .find((set) => String(set.dropSetGroupId || '').trim() === dropSetGroupId && open(set));
-    if (linkedDropSet) return { nextSet: linkedDropSet, startsRest: false };
-  }
-
-  const supersetGroupId = String(exercise.supersetGroupId || '').trim();
-  if (supersetGroupId) {
-    const members = exercises
-      .map((candidate, index) => ({ candidate, index }))
-      .filter(({ candidate }) => String(candidate.supersetGroupId || '').trim() === supersetGroupId);
-    const memberIndex = members.findIndex(({ index }) => index === exerciseIndex);
-    for (let offset = 1; offset < members.length; offset += 1) {
-      const nextMember = members[(memberIndex + offset) % members.length];
-      const nextSet = nextMember.candidate.sets.find(open);
-      if (!nextSet) continue;
-      return { nextSet, startsRest: memberIndex + offset >= members.length };
-    }
-    const nextCurrentSet = exercise.sets.find(open);
-    if (nextCurrentSet) return { nextSet: nextCurrentSet, startsRest: true };
-    return { nextSet: null, startsRest: false };
-  }
-
-  const nextSameExercise = exercise.sets.slice(setIndex + 1).find(open)
-    || exercise.sets.slice(0, setIndex).find(open);
-  if (nextSameExercise) return { nextSet: nextSameExercise, startsRest: true };
-  for (let offset = 1; offset < exercises.length; offset += 1) {
-    const nextExercise = exercises[(exerciseIndex + offset) % exercises.length];
-    const nextSet = nextExercise.sets.find(open);
-    if (nextSet) return { nextSet, startsRest: true };
-  }
-  return { nextSet: null, startsRest: false };
-};
-
 const workoutAggregates = (exercises: StoredWorkoutExercise[]): {
   exerciseCount: number;
   setCount: number;
@@ -1198,7 +1136,7 @@ export class HealthNativeRecordService {
   isEnabled(): boolean {
     // The persisted legacy value only marks an install that needs an explicit
     // copy-only history review. New writes always use whole-note records.
-    return true;
+    return !this.disposed;
   }
 
   getDailyIndexStatus(): 'loading' | 'partial' | 'ready' {
@@ -1543,9 +1481,6 @@ export class HealthNativeRecordService {
           const completedAt = priorCompletedAt || new Date().toISOString();
           nextSet.completedDate = completedAt;
           nextSet.endedAt = completedAt;
-          exercises[exerciseIndex].sets[setIndex] = nextSet;
-          const transition = nativeWorkoutSetTransition(exercises, exerciseIndex, setIndex);
-          if (transition.startsRest && transition.nextSet) transition.nextSet.restStartedAt = completedAt;
         } else {
           delete nextSet.completedDate;
           delete nextSet.endedAt;

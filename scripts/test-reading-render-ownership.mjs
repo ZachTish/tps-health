@@ -36,7 +36,7 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
   class TFile { constructor(path) { this.path = path; } }
   const file = new TFile('Inbox/QA render.md');
   const root = Object.assign(rootItem || {}, { matches: selector => selector === 'li' && Boolean(rootItem), querySelectorAll: selector => selector === 'li' ? items : selector === 'h2' ? headings : [] });
-  const menus = [], chips = [], sourceLookups = [];
+  const menus = [], chips = [], sourceLookups = [], frames = [], timeouts = [];
   const ctx = { sourcePath: file.path, getSectionInfo: node => node.sectionInfo === null ? null : { lineStart: node.lineStart, ...node.sectionInfo } };
   const native = { enabled: true, indexed: false, snapshot: null, ownerPath: file.path };
   const target = { isConnected: true, querySelectorAll: () => [], appendChild(element) { element.parentElement = target; } };
@@ -55,6 +55,7 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
     renderNativeWorkoutSurfaceElement(element, snapshot) { counts.nativeRenders++; assert.equal(snapshot, native.snapshot); assert.equal(element.dataset.workoutPath, file.path); },
   };
   const context = vm.createContext({
+    window: { requestAnimationFrame: callback => frames.push(callback), setTimeout: callback => timeouts.push(callback) },
     TFile,
     MarkdownRenderChild: class { constructor(el) { this.containerEl = el; } },
     document: { createElement: () => ({ dataset: {} }) },
@@ -86,7 +87,7 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
   });
   vm.runInContext(compiled.code, context);
   const { renderFoodLogChips, renderDailyWorkoutHeaders, renderWorkoutSetChips, TPSHealthRenderedControlsChild } = context.api;
-  return { root, plugin, ctx, counts, menus, chips, sourceLookups,
+  return { root, plugin, ctx, counts, menus, chips, sourceLookups, target, frames, timeouts,
     food: () => renderFoodLogChips(root, plugin, ctx),
     headers: () => renderDailyWorkoutHeaders(root, plugin, ctx),
     sets: () => renderWorkoutSetChips(root, plugin, ctx),
@@ -523,4 +524,47 @@ test('indexed archived or ambiguous workouts still fail closed and remove stale 
     assert.equal(f.counts.renders, 0);
     assert.equal(f.counts.snapshots, 1, 'Membership does not bypass the snapshot validity check');
   }
+});
+
+
+// Actual lifecycle owner: the disposer boundary is tested separately against
+// the real renderer/timer host. These connected roots include a popout leaf
+// unavailable to the main document's selector.
+const unloadCode = await transform(`class Owner { ${classMethods(ast, 'TPSHealthPlugin', ['onunload'])} };globalThis.UnloadOwner=Owner;`,{loader:'ts',target:'es2020'});
+test('Health unload disposes only owned surfaces in the document and popout leaves without vault work',()=>{
+ const own='unloading-instance',foreign='another-instance',calls={disposals:[],events:[],records:0,bars:0,registration:0};
+ const root=instanceKey=>({dataset:{instanceKey},removed:false});
+ const mainRoot=root(own),popoutRoot=root(own),foreignRoot=root(foreign);
+ const context=vm.createContext({document:{querySelectorAll:selector=>{assert.equal(selector,'.tps-health-native-workout-surface');return [mainRoot,foreignRoot];}},
+  logger:{flow(){}},disposeNativeWorkoutSurface:surface=>{calls.disposals.push(surface);surface.removed=true;}});
+ vm.runInContext(unloadCode.code,context);const plugin=new context.UnloadOwner();
+ plugin.workoutSurfaceInstanceKey=own;plugin.api={};plugin.activeWorkoutStateListeners=new Set([()=>{}]);plugin.workoutActionBarRefreshTimer=null;
+ plugin.app={tpsHealth:plugin.api,workspace:{trigger:event=>calls.events.push(event),iterateAllLeaves:callback=>{
+  for(const roots of [[mainRoot,foreignRoot],[popoutRoot]])callback({view:{containerEl:{querySelectorAll:selector=>{assert.equal(selector,'.tps-health-native-workout-surface');return roots;}}}});
+ }}};
+ plugin.nativeRecordService={dispose:()=>calls.records++};plugin.removeWorkoutActionBars=()=>calls.bars++;plugin.clearGcmFoodLogButtonRegistration=()=>calls.registration++;
+ plugin.onunload();assert.deepEqual(calls.disposals,[mainRoot,popoutRoot],'Shared document/leaf roots are disposed once; popout roots are included');
+ assert.equal(mainRoot.removed,true);assert.equal(popoutRoot.removed,true);assert.equal(foreignRoot.removed,false);
+ assert.deepEqual(calls.events,['tps-health:unloading']);assert.equal(calls.records,1);assert.equal(calls.bars,1);assert.equal(calls.registration,1);
+ assert.equal(plugin.activeWorkoutStateListeners.size,0);assert.equal('tpsHealth' in plugin.app,false);
+ // No vault, metadata or scan API exists in the host: accidental IO fails.
+});
+
+
+test('late workout refreshes after service disposal do no editor or Reading work',()=>{
+ const f=navigationFixture({history:1000});f.addLeaf('Inbox/Late completion.md');f.addWorkout('Inbox/Late completion.md');
+ f.records.isEnabled=()=>false;
+ f.plugin.app.workspace.iterateAllLeaves=()=>assert.fail('A disposed owner cannot revisit current leaves');
+ f.plugin.ensureNativeWorkoutReadingSurfaces=()=>assert.fail('A disposed owner cannot remount Reading content');
+ for(let i=0;i<100;i++)f.sweep();
+ assert.deepEqual(f.counts,{snapshots:0,enumerations:0,visits:0,membership:0,renders:0});
+});
+
+test('queued Reading mounts cannot reappear after the owning service is disposed',()=>{
+ const f=fixture();f.plugin.nativeRecordService.isWorkoutSession=()=>true;
+ f.plugin.nativeRecordService.getWorkoutSnapshot=()=>({id:'queued',path:f.ctx.sourcePath});
+ f.target.isConnected=false;f.child().onload();assert.equal(f.frames.length,1);
+ f.target.isConnected=true;f.plugin.nativeRecordService.isEnabled=()=>false;
+ f.frames.shift()();assert.equal(f.timeouts.length,1);f.timeouts.shift()();
+ assert.equal(f.counts.nativeRenders,0);assert.equal(f.counts.cachedReads,0);assert.equal(f.timeouts.length,0);
 });

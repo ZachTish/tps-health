@@ -311,6 +311,15 @@ function createHarness(options = {}) {
 
 const providerEvent = available => ({ source: 'tps-global-context-menu', available });
 
+test('native record availability ends when its existing service lifecycle is disposed', () => {
+  const h = createHarness();
+  assert.equal(h.service.isEnabled(), true);
+  h.service.dispose();
+  assert.equal(h.service.isEnabled(), false);
+  h.service.dispose();
+  assert.equal(h.service.isEnabled(), false, 'repeated disposal cannot revive the old service');
+});
+
 // Real task scheduling is injected only at the host boundary. These tests count
 // work between continuations instead of depending on machine-speed timings.
 function manualIndexTasks(mode = 'scheduler') {
@@ -3462,7 +3471,7 @@ test('native workout structure edits persist sets, exercise order, supersets, an
   assert.equal([...files.values()].filter((file) => file.path.includes('/workout-exercises/')).length, 0, 'structural edits never create child notes');
 });
 
-test('native set completion starts rest only after the final superset exercise and can be undone', async () => {
+test('native superset completion persists each own timestamp without predicting the next resting row', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Superset timing',
@@ -3494,8 +3503,8 @@ test('native set completion starts rest only after the final superset exercise a
   assert.ok(completedPushdownAt);
   assert.equal(
     snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt,
-    completedPushdownAt,
-    'the next round starts resting only when the last superset member is complete',
+    '',
+    'completion never writes a timer into a guessed next superset row',
   );
 
   await service.updateWorkoutSet(session.path, firstPushdown.id, { completed: false });
@@ -3504,7 +3513,7 @@ test('native set completion starts rest only after the final superset exercise a
   assert.equal(snapshot.exercises.find((exercise) => exercise.id === pulldown.id).sets[1].restStartedAt, '', 'undoing completion removes only the timer it started');
 });
 
-test('a one-set exercise can add a drop set directly and completion starts rest only after the drop chain', async () => {
+test('a one-set exercise can add drop sets and persist their completion without predicting rest', async () => {
   const { service } = createHarness();
   const session = await service.createWorkoutSession({
     title: 'Direct drop set',
@@ -3542,7 +3551,8 @@ test('a one-set exercise can add a drop set directly and completion starts rest 
   await service.updateWorkoutSet(session.path, sets[2].id, { completed: true });
   snapshot = service.getWorkoutSnapshot(session.path);
   const completedDropAt = snapshot.exercises[0].sets[2].completedDate;
-  assert.equal(snapshot.exercises[0].sets[3].restStartedAt, completedDropAt, 'the first normal set after the drop chain receives the rest timer');
+  assert.ok(completedDropAt);
+  assert.equal(snapshot.exercises[0].sets[3].restStartedAt, '', 'drop-chain completion never writes a guessed next rest start');
 });
 
 test('a blank native workout projects a newly attached exercise before its first set', async () => {
@@ -3745,7 +3755,6 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(nativeWorkoutSurfaceSource, /priorCompleted \? 'Done ✓' : 'Complete'/u);
   assert.match(nativeWorkoutSurfaceSource, /\{ completed: !priorCompleted \}/u);
   assert.match(nativeWorkoutSurfaceSource, /aria-pressed/u);
-  assert.match(nativeWorkoutSurfaceSource, /restCountdownLabel\(set\.restStartedAt, targetSeconds\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openExerciseMenu\(exercise, event\)/u);
   assert.match(nativeWorkoutSurfaceSource, /options\.actions\.openSetMenu\(exercise, set, event\)/u);
   assert.match(nativeWorkoutSurfaceSource, /tps-health-native-workout-row\$\{set\.dropSetGroupId \? ' is-drop-set' : ''\}/u);
@@ -4695,5 +4704,68 @@ test('a stale workout menu cannot remove an exercise from a reidentified path',a
   h.plugin.app.fileManager.processFrontMatter=async()=>{attempts++;};
   await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,'old-removal-id'),/identity changed/iu);
   assert.equal(attempts,0);assert.equal(h.frontmatters.get(session.file).session.exercises.length,1);
+  h.service.dispose();
+});
+
+test('completion timing changes only the selected set timestamp and preserves authored rest metadata',async()=>{
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Completion timing'},'completion-timing');
+  await h.api.update(session.file,{session:{version:1,exercises:[
+    {id:'first',name:'Curl',exercise:'[[Health/Exercises/Curl]]',sets:[{id:'selected',reps:8,rest:45}]},
+    {id:'second',name:'Row',exercise:'[[Health/Exercises/Row]]',sets:[{id:'neighbor',reps:12,rest:120,restStarted:'2000-01-01T10:00:00.000Z'}]},
+  ]}});await h.service.refreshFile(session.file);
+  const before=h.service.getWorkoutSnapshot(session.path),reads=h.readCalls.length;
+  let attempts=0,scans=0;const process=h.plugin.app.fileManager.processFrontMatter;
+  h.plugin.app.fileManager.processFrontMatter=async(...args)=>{attempts++;return process(...args);};
+  h.plugin.app.vault.getMarkdownFiles=()=>{scans++;return [...h.files.values()];};
+  await h.service.updateWorkoutSet(session.path,'selected',{completed:true});
+  const after=h.service.getWorkoutSnapshot(session.path);
+  assert.ok(Number.isFinite(Date.parse(after.exercises[0].sets[0].completedDate)));
+  assert.deepEqual(after.exercises[0].sets[0],{...before.exercises[0].sets[0],completedDate:after.exercises[0].sets[0].completedDate});
+  assert.deepEqual(after.exercises[1],before.exercises[1],'a normal exercise transition must not overwrite authored neighbor rest');
+  assert.deepEqual({attempts,scans,reads:h.readCalls.length-reads},{attempts:1,scans:0,reads:2});
+  const readAfter=h.readCalls.length,cachedAfter=h.cachedReadCalls.length;
+  for(let projection=0;projection<200;projection++)assert.equal(h.service.getWorkoutSnapshot(session.path).exercises[0].sets[0].completedDate,after.exercises[0].sets[0].completedDate);
+  assert.deepEqual({attempts,scans,reads:h.readCalls.length-readAfter,cached:h.cachedReadCalls.length-cachedAfter},{attempts:1,scans:0,reads:0,cached:0},'display projections have no source reads, inventories or writes');
+  h.service.dispose();
+});
+
+test('mapped completion timestamps survive repeated completion, undo, redo and service reload',async()=>{
+  const h=createHarness({customKinds:true,settings:{nativeRecordKinds:{workoutSession:'training'},nativeRecordProperties:{session:'trainingData',status:'trainingState'}}});
+  const session=await h.service.createWorkoutSession({title:'Mapped completion'},'mapped-completion');
+  const firstStamp='2000-01-01T10:00:00.000Z',nextStamp='2000-01-01T10:01:00.000Z';
+  await h.api.update(session.file,{trainingData:{version:1,exercises:[
+    {id:'first',name:'Curl',exercise:'[[Health/Exercises/Curl]]',superset:'pair',sets:[{id:'selected',reps:8,completed:firstStamp,rest:45,restStarted:'1999-12-31T23:00:00.000Z'}]},
+    {id:'second',name:'Row',exercise:'[[Health/Exercises/Row]]',superset:'pair',sets:[{id:'done-neighbor',reps:12,completed:nextStamp,rest:120},{id:'pending-neighbor',reps:10,rest:75,restStarted:'1999-12-31T23:00:00.000Z'}]},
+  ]}});await h.service.refreshFile(session.file);
+  const prior=h.service.getWorkoutSnapshot(session.path);
+  await h.service.updateWorkoutSet(session.path,'selected',{completed:true});
+  assert.deepEqual(h.service.getWorkoutSnapshot(session.path),prior,'repeat completion preserves its original saved timestamp');
+  await h.service.updateWorkoutSet(session.path,'selected',{completed:false});
+  let current=h.service.getWorkoutSnapshot(session.path);
+  assert.equal(current.exercises[0].sets[0].completedDate,'');assert.deepEqual(current.exercises[1],prior.exercises[1]);
+  assert.equal(current.exercises[0].sets[0].restStartedAt,'1999-12-31T23:00:00.000Z');
+  await h.service.updateWorkoutSet(session.path,'selected',{completed:true});current=h.service.getWorkoutSnapshot(session.path);
+  const redoStamp=current.exercises[0].sets[0].completedDate;assert.ok(Number.isFinite(Date.parse(redoStamp)));assert.notEqual(redoStamp,firstStamp);
+  assert.deepEqual(current.exercises[1],prior.exercises[1],'redo never starts a guessed superset neighbor timer');
+  assert.equal(h.frontmatters.get(session.file).kind,'training');assert.equal(h.frontmatters.get(session.file).trainingState,'active');
+  assert.equal(h.frontmatters.get(session.file).session,undefined);assert.equal(h.frontmatters.get(session.file).status,undefined);
+  assert.equal(h.frontmatters.get(session.file).trainingData.exercises[0].sets[0].completed,redoStamp);
+  h.service.dispose();const reopened=new HealthNativeRecordService(h.plugin);reopened.setup();await reopened.waitForWorkoutIndexSettled();
+  assert.deepEqual(reopened.getWorkoutSnapshot(session.path),current,'source is enough to restore timing after reload');reopened.dispose();
+});
+
+test('completion timestamps remain stable when another exercise is completed and the authored order changes',async()=>{
+  const h=createHarness(),session=await h.service.createWorkoutSession({title:'Out of order completion'},'out-of-order-completion');
+  await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');await h.service.ensureWorkoutExercise(session,'Row','Health/Exercises/Row.md');
+  const [a,b]=h.service.getWorkoutSnapshot(session.path).exercises;
+  await h.service.addPlannedWorkoutSet(session.path,a.id);await h.service.addPlannedWorkoutSet(session.path,b.id);
+  let current=h.service.getWorkoutSnapshot(session.path);const aSet=current.exercises[0].sets[0],bSet=current.exercises[1].sets[0];
+  await h.service.updateWorkoutSet(session.path,bSet.id,{completed:true});current=h.service.getWorkoutSnapshot(session.path);
+  const bStamp=current.exercises[1].sets[0].completedDate;assert.ok(bStamp);
+  assert.equal(current.exercises[0].sets[0].restStartedAt,'','actual completion order is not a guessed wraparound rest start');
+  await h.service.updateWorkoutSet(session.path,aSet.id,{completed:true});current=h.service.getWorkoutSnapshot(session.path);
+  const aStamp=current.exercises[0].sets[0].completedDate;assert.ok(aStamp);assert.equal(current.exercises[1].sets[0].completedDate,bStamp);
+  await h.service.reorderWorkoutExercise(session.path,b.id,-1);current=h.service.getWorkoutSnapshot(session.path);
+  assert.deepEqual(current.exercises.map(e=>e.id),[b.id,a.id]);assert.equal(current.exercises[0].sets[0].completedDate,bStamp);assert.equal(current.exercises[1].sets[0].completedDate,aStamp);
   h.service.dispose();
 });

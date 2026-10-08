@@ -1,5 +1,16 @@
 # TPS Health
 
+## 4.3.1 — Rest timing follows completed sets
+
+In **Workouts → Rest timer mode**, Count up now measures elapsed time on the set just completed. Any next saved set completion, including a different exercise, freezes the previous row and starts the new row. Pending rows have no running rest clock. Rest history is derived from saved completion timestamps across the workout, with stable set-ID ordering for equal timestamps; display order stays unchanged. Finished workouts stop the last interval at their saved actual end. A finished workout without a valid end leaves that final interval blank.
+
+The same behavior serves editor and Reading surfaces and ongoing unresumed notes. Count down remains configurable and uses the row's planned rest target. Targets are preserved rather than overwritten with the prior set's gap. No fields, defaults, schema migration or notifications are added. Completion no longer predicts a pending row or writes a neighbor's rest start. Explicit historical rest input remains supported.
+
+Only one interval runs per displayed ongoing workout, and none runs for finished workouts or without a valid completion. Unloading Health disposes only its own displayed workout surfaces and clears their clocks immediately, including Reading footers and popout leaves. Late refreshes and queued Reading mounts respect the service’s existing disposed state, so the unloaded owner cannot restart them. Ticks update the live text without reads, mutations, inventories or full surface rebuilds. Changed saved completion timing takes effect even while an unrelated unsaved draft retains its control, text and focus. Reload reconstructs timing from the note instead of session-only timer state.
+
+This patch corrects the existing configured mode and timer ownership. Minimum Obsidian remains **1.12.0**. The final suite passed **736 of 737 checks**, with zero failures and one existing optional USDA credential skip. Separate builds deployed only to the test vault; actual native completion, cross-exercise timing, reload, Finish and disable cleanup were verified with all eight active TPS consumers enabled. Settings/enabled state were restored byte-identically and nine owned QA notes archived. Regression and installed test-vault evidence, limitations and artifact hashes are recorded in [4.3.1 release notes](release-notes/4.3.1.md). Production installation remains the user's BRAT pull. Historical 4.3.0 timer eligibility below is superseded by this completed-row model.
+
+
 ## 4.3.0 — Remove exercises from active workouts
 
 Use an exercise’s three-dot menu → **Remove exercise** in an active or resumed whole-note workout. This removes that exercise and its sets from the session, retaining the workout note/body, reusable exercise definition and all neighboring exercise identities, order, links and sets. An empty workout remains usable. Completed/history workouts keep their existing read-only policy.
@@ -324,7 +335,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [4.2.6](https://github.com/ZachTish/tps-health/releases/tag/4.2.6) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [4.3.1](https://github.com/ZachTish/tps-health/releases/tag/4.3.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

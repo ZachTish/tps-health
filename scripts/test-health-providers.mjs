@@ -5533,6 +5533,7 @@ test("GCM food action retries reuse one Health lifecycle listener", async () => 
   const fake = createFakeHealthApp();
   configureFakeCoreDailyNotes(fake.app, "Daily");
   const layoutListeners = [];
+  fake.app.workspace.iterateAllLeaves = () => {}; // This lifecycle host has no mounted workout leaves.
   fake.app.workspace.trigger = () => {};
   fake.app.workspace.on = (event, callback) => {
     if (event === "layout-change") layoutListeners.push(callback);
@@ -10564,4 +10565,53 @@ test('failed workout exercise removal reports failure without replay, refresh or
     assert.equal(attempts,1);assert.equal(refreshes,0);assert.deepEqual(plugin.settings,prior);
     assert.deepEqual(globalThis.__TPSHealthTestNotices,['Could not remove this exercise. The workout was left unchanged.']);
   } finally {delete globalThis.__TPSHealthTestNotices;}
+});
+
+async function mainWorkoutLoggerFixture({restTimerMode='count-up',exerciseRest=45}={}) {
+  installDeterministicBrowserGlobals();
+  const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
+  const fake=createFakeHealthApp(),plugin=new TPSHealthPlugin(fake.app),path='Inbox/Rest timing main route.md';
+  fake.files.set(path,'---\nkind: workout-session\nstatus: active\n---\nPreserved workout body.\n');
+  plugin.settings={...plugin.settings,restTimerMode,defaultRestSeconds:90,lastSetEndedAt:'2026-10-08T10:00:00.000Z',activeWorkoutSetCount:2};
+  const calls={definitions:[],append:[],saves:0,refreshes:0,bars:0};
+  plugin.ensureExerciseDefinitionForWorkout=async(name,existingPath)=>{
+    calls.definitions.push({name,existingPath});return {sourcePath:'Health/Exercises/Curl.md',defaultRestSeconds:exerciseRest};
+  };
+  plugin.nativeRecordService={appendWorkoutSet:async(file,set)=>{
+    calls.append.push({file,set:structuredClone(set)});return {session:{frontmatter:{}},exercise:{path:file.path}};
+  }};
+  plugin.saveSettings=async()=>{calls.saves++;};plugin.updateNativeWorkoutSurfaces=()=>{calls.refreshes++;};plugin.scheduleWorkoutActionBars=()=>{calls.bars++;};
+  return {plugin,fake,path,calls,input:{exercise:'Curl',exercisePath:'Health/Exercises/Curl.md',reps:8,startedAt:'2026-10-08T10:04:00.000Z',completedDate:'2026-10-08T10:05:00.000Z'}};
+}
+
+for(const mode of ['count-up','count-down'])for(const [label,rest,exerciseRest,expected] of [
+  ['explicit positive',130,45,130],['explicit zero',0,45,0],['exercise default',undefined,45,45],['global default',undefined,undefined,90],
+])test('actual native log route preserves '+label+' rest target in '+mode,async()=>{
+  const h=await mainWorkoutLoggerFixture({restTimerMode:mode,exerciseRest});
+  if(exerciseRest===undefined)h.plugin.ensureExerciseDefinitionForWorkout=async(name,existingPath)=>{
+    h.calls.definitions.push({name,existingPath});return {sourcePath:'Health/Exercises/Curl.md'};
+  };
+  const input={...h.input,...(rest===undefined?{}:{restSeconds:rest})};
+  const saved=await h.plugin.logNativeWorkoutSet(input,h.path);
+  assert.equal(saved.restSeconds,expected,'rest target is not the 240-second previous-set gap');
+  assert.equal(h.calls.append.length,1);assert.equal(h.calls.append[0].set.restSeconds,expected);
+  assert.deepEqual(h.calls.definitions,[{name:'Curl',existingPath:'Health/Exercises/Curl.md'}]);
+  assert.deepEqual({saves:h.calls.saves,refreshes:h.calls.refreshes,bars:h.calls.bars},{saves:1,refreshes:1,bars:1});
+  assert.equal(saved.completedDate,input.completedDate);assert.equal(saved.endedAt,input.completedDate);
+  assert.equal(h.plugin.settings.lastSetEndedAt,input.completedDate);assert.equal(h.plugin.settings.activeWorkoutSetCount,3,'existing active pointer behavior remains');
+  assert.deepEqual(h.fake.writes,[],'this main-route fixture stops at the append and settings boundaries');
+});
+
+test('actual native log route adds no rest-start property when caller omitted it',async()=>{
+  const h=await mainWorkoutLoggerFixture(),saved=await h.plugin.logNativeWorkoutSet(h.input,h.path);
+  assert.equal(Object.hasOwn(saved,'restStartedAt'),false);
+  assert.equal(Object.hasOwn(h.calls.append[0].set,'restStartedAt'),false);
+  assert.equal(saved.completedDate,h.input.completedDate);assert.equal(h.calls.append.length,1);
+});
+
+test('actual native log route preserves explicitly supplied historical rest-start metadata',async()=>{
+  const h=await mainWorkoutLoggerFixture(),stamp='2000-01-01T10:00:00.000Z';
+  const saved=await h.plugin.logNativeWorkoutSet({...h.input,restStartedAt:stamp,restSeconds:25},h.path);
+  assert.equal(saved.restStartedAt,stamp);assert.equal(h.calls.append[0].set.restStartedAt,stamp);
+  assert.equal(saved.restSeconds,25);assert.equal(h.calls.append.length,1);
 });

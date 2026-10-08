@@ -15,11 +15,13 @@ assert.ok(declaration,"the tested mount helper must be the actual main.ts functi
 const mountBuild=await transform(declaration.getText(ast)+"\nexport {nativeWorkoutReadingMountTarget};",{loader:"ts",format:"esm"});
 const {nativeWorkoutReadingMountTarget}=await import("data:text/javascript;base64,"+Buffer.from(mountBuild.code).toString("base64"));
 const surfacePath=fileURLToPath(new URL("../src/native-workout-surface.ts",import.meta.url));
-const surfaceInput=process.env.TPS_WORKOUT_SURFACE_BASELINE==='4.2.7'
- ? {stdin:{contents:execFileSync('git',['show','4.2.7:src/native-workout-surface.ts'],{encoding:'utf8'}),resolveDir:dirname(surfacePath),sourcefile:surfacePath,loader:'ts'}}
+const baseline=process.env.TPS_WORKOUT_SURFACE_BASELINE;
+assert.ok(!baseline||['4.2.7','4.3.0'].includes(baseline),'Use a released, explicitly supported surface baseline');
+const surfaceInput=baseline
+ ? {stdin:{contents:execFileSync('git',['show',`${baseline}:src/native-workout-surface.ts`],{encoding:'utf8'}),resolveDir:dirname(surfacePath),sourcefile:surfacePath,loader:'ts'}}
  : {entryPoints:[surfacePath]};
 const surfaceBuild=await build({...surfaceInput,bundle:true,write:false,format:"esm",platform:"node",logLevel:"silent"});
-const {renderNativeWorkoutSurface}=await import("data:text/javascript;base64,"+Buffer.from(surfaceBuild.outputFiles[0].text).toString("base64"));
+const {renderNativeWorkoutSurface,disposeNativeWorkoutSurface}=await import("data:text/javascript;base64,"+Buffer.from(surfaceBuild.outputFiles[0].text).toString("base64"));
 
 // A small structural DOM double: no browser/Obsidian process, real timers or writes.
 // Removing a focused descendant clears focus, as replacing the real controls
@@ -75,7 +77,7 @@ const snapshot=()=>({id:"workout-qa",path:"QA/workout.md",title:"QA workout",sta
  exercises:[{id:"exercise-qa",path:"QA/workout.md#exercise-qa",name:"QA press",totalReps:8,totalVolume:160,sets:[
  {id:"set-qa",ordinal:1,reps:8,weight:20,weightUnit:"kg",perArm:false,rpe:7.5,restSeconds:90,setType:"normal",restStartedAt:"",completedDate:""}
  ]}]});
-const options=elapsed=>({active:true,elapsedLabel:elapsed,instanceKey:"qa",defaultRestSeconds:90,showSessionActions:true,
+const options=elapsed=>({active:true,elapsedLabel:elapsed,instanceKey:"qa",defaultRestSeconds:90,restTimerMode:'count-up',showSessionActions:true,
  actions:{addExercise(){},addSet(){},updateSet(){},openExerciseMenu(){},openSetMenu(){},finish(){}}});
 test("elapsed-only refresh preserves focused input identity and unsaved draft while updating the visible clock",()=>{
  const root=connected(""),data=snapshot();
@@ -234,7 +236,7 @@ function workoutIntervals(t) {
   clearInterval(id){if(timers.delete(id))counts.cleared++;},
  };
  t.after(()=>{globalThis.window=originalWindow;Date.now=originalNow;});
- return {counts,timers,stamp:()=>new Date(now).toISOString(),tick(){now+=1000;for(const [id,callback] of [...timers])if(timers.has(id)){counts.callbacks++;callback();}}};
+ return {counts,timers,stamp:(offsetSeconds=0)=>new Date(now+offsetSeconds*1000).toISOString(),tick(seconds=1){now+=seconds*1000;for(const [id,callback] of [...timers])if(timers.has(id)){counts.callbacks++;callback();}}};
 }
 function workoutWithSets(sets) {
  const data=snapshot(),base=data.exercises[0].sets[0];
@@ -242,85 +244,228 @@ function workoutWithSets(sets) {
  data.setCount=sets.length;
  return data;
 }
-test('25 completed active rows register zero rest timers and keep blank hidden countdowns',(t)=>{
- const intervals=workoutIntervals(t),root=connected('');
- const data=workoutWithSets(Array.from({length:25},()=>({completedDate:intervals.stamp(),restStartedAt:intervals.stamp()})));
- renderNativeWorkoutSurface(root,data,options('1:00'));
- assert.equal(intervals.counts.registered,0);
- for(let tick=0;tick<20;tick++)intervals.tick();
- assert.equal(intervals.counts.callbacks,0);
- assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,25*7,'Completed rows remain editable');
- const countdowns=root.querySelectorAll('.tps-health-native-workout-rest-countdown');
- assert.equal(countdowns.length,25);
- for(const countdown of countdowns){assert.equal(countdown.textContent,'');assert.ok('hidden' in countdown.attributes);}
+const restLabel=(root,setId)=>root.querySelectorAll('.tps-health-native-workout-rest-countdown')
+ .find(label=>label.dataset.setId===setId)
+ ||root.querySelectorAll('.tps-health-native-workout-row').find(row=>row.dataset.setId===setId)?.querySelector('.tps-health-native-workout-rest-countdown');
+const editSet=(root,setId,field)=>root.querySelectorAll('.tps-health-native-workout-edit-control')
+ .find(control=>control.dataset.setId===setId&&control.dataset.field===field);
+function addSecondExercise(data,sets) {
+ const exercise=structuredClone(data.exercises[0]);
+ exercise.id='exercise-other';exercise.name='Other press';exercise.sets=sets.map((fields,index)=>({...exercise.sets[0],id:`other-${index}`,ordinal:index+1,...fields}));
+ data.exercises.push(exercise);data.exerciseCount++;data.setCount+=sets.length;
+ return data;
+}
+test('the actual owning main adapter forwards both configured rest timer modes',async()=>{
+ const owner=ast.statements.find(node=>ts.isClassDeclaration(node)&&node.name?.text==='TPSHealthPlugin');
+ const method=owner.members.find(node=>node.name?.getText(ast)==='renderNativeWorkoutSurfaceElement');
+ assert.ok(method);
+ const compiled=await transform(`let captured;const renderNativeWorkoutSurface=(root,snapshot,options)=>captured=options;const formatRestDuration=String;class Owner {${method.getText(ast)}};export {Owner};export const capture=()=>captured;`,{loader:'ts',format:'esm'});
+ const {Owner,capture}=await import('data:text/javascript;base64,'+Buffer.from(compiled.code).toString('base64'));
+ const facade=new Owner();facade.isActiveNativeWorkoutSnapshot=()=>true;facade.workoutActionBarOwnsNativeSession=()=>true;facade.workoutSurfaceInstanceKey='actual-adapter';
+ for(const mode of ['count-up','count-down']){
+  facade.settings={defaultRestSeconds:75,restTimerMode:mode};facade.renderNativeWorkoutSurfaceElement(connected(''),snapshot());
+  assert.equal(capture().restTimerMode,mode);assert.equal(capture().defaultRestSeconds,75);
+ }
 });
-test('pending rows with absent or invalid rest timestamps register zero countdown timers',(t)=>{
+test('25 completed rows have fixed prior spans and just one latest-row timer',(t)=>{
  const intervals=workoutIntervals(t),root=connected('');
- const data=workoutWithSets(['','not-a-date','2026-99-99'].map(restStartedAt=>({restStartedAt})));
- renderNativeWorkoutSurface(root,data,options('1:00'));
- assert.equal(intervals.counts.registered,0);
- intervals.tick();assert.equal(intervals.counts.callbacks,0);
- for(const countdown of root.querySelectorAll('.tps-health-native-workout-rest-countdown'))assert.equal(countdown.textContent,'');
-});
-test('only a pending valid rest stamp registers a timer and it still follows edited duration',(t)=>{
- const intervals=workoutIntervals(t),root=connected('');
- const data=workoutWithSets([
-  {completedDate:intervals.stamp(),restStartedAt:intervals.stamp()},
-  {restStartedAt:''},{restStartedAt:'not-a-date'},{restStartedAt:intervals.stamp()},
- ]);
+ const data=workoutWithSets(Array.from({length:25},(_,index)=>({completedDate:intervals.stamp(index-25),restStartedAt:intervals.stamp()})));
  renderNativeWorkoutSurface(root,data,options('1:00'));
  assert.equal(intervals.counts.registered,1);assert.equal(intervals.timers.size,1);
- const countdowns=root.querySelectorAll('.tps-health-native-workout-rest-countdown');
- assert.equal(countdowns[3].textContent,'1:30');
- intervals.tick();assert.equal(countdowns[3].textContent,'1:29');
- const rest=root.querySelectorAll('.tps-health-native-workout-edit-control').find(control=>control.dataset.setId==='set-3'&&control.dataset.field==='restSeconds');
- rest.focus();rest.value='120';intervals.tick();assert.equal(countdowns[3].textContent,'1:58');
- assert.equal(document.activeElement,rest);assert.equal(rest.value,'120');
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,25*7,'Completed rows remain editable');
+ for(let index=0;index<24;index++)assert.equal(restLabel(root,`set-${index}`).textContent,'1s');
+ intervals.tick();assert.equal(restLabel(root,'set-24').textContent,'2s');
+ assert.equal(restLabel(root,'set-0').textContent,'1s');
 });
-test('completion and uncompletion use the saved signature to retire and restore eligible timers',(t)=>{
+test('pending rows never own a clock, including legacy valid and invalid restStartedAt',(t)=>{
  const intervals=workoutIntervals(t),root=connected('');
- const completed=workoutWithSets([{completedDate:intervals.stamp(),restStartedAt:intervals.stamp()}]);
- renderNativeWorkoutSurface(root,completed,options('1:00'));assert.equal(intervals.timers.size,0);
- const pending=structuredClone(completed);pending.exercises[0].sets[0].completedDate='';
- renderNativeWorkoutSurface(root,pending,options('1:01'));assert.equal(intervals.timers.size,1);
- renderNativeWorkoutSurface(root,completed,options('1:02'));intervals.tick();
- assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.registered,1);assert.equal(intervals.counts.cleared,1);
- assert.equal(root.querySelector('.tps-health-native-workout-rest-countdown').textContent,'');
+ const data=workoutWithSets(['','not-a-date','2026-99-99',intervals.stamp()].map(restStartedAt=>({restStartedAt})));
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.counts.registered,0);
+ intervals.tick();assert.equal(intervals.counts.callbacks,0);
+ for(let index=0;index<4;index++){const label=restLabel(root,`set-${index}`);assert.equal(label.textContent,'');assert.ok('hidden' in label.attributes);}
 });
-test('a new or removed rest stamp changes timer eligibility through the existing saved render signature',(t)=>{
- const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
- renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,0);
- const started=structuredClone(data);started.exercises[0].sets[0].restStartedAt=intervals.stamp();
- renderNativeWorkoutSurface(root,started,options('1:01'));assert.equal(intervals.timers.size,1);
- renderNativeWorkoutSurface(root,data,options('1:02'));intervals.tick();
- assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.cleared,1);
-});
-test('100 unchanged elapsed refreshes keep one eligible timer, focused control identity and its draft',(t)=>{
- const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
- data.exercises[0].sets[0].restStartedAt=intervals.stamp();
+test('a first completion counts up on its own row and the next pending row stays blank',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp()},{}]);
  renderNativeWorkoutSurface(root,data,options('1:00'));
- const weight=edit(root,'weight');weight.focus();weight.value='33';const emptied=root.emptyCount;
- let exerciseQueries=0;const query=root.querySelectorAll.bind(root);
- root.querySelectorAll=selector=>{if(selector==='.tps-health-native-workout-exercise')exerciseQueries++;return query(selector);};
- for(let refresh=0;refresh<100;refresh++)renderNativeWorkoutSurface(root,data,options(`1:${refresh}`));
- assert.equal(intervals.counts.registered,1);assert.equal(root.emptyCount,emptied);
- assert.equal(exerciseQueries,0,'Clock-only refreshes do not enter obsolete-exercise pruning');
- assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');
- assert.equal(intervals.counts.callbacks,0,'Rendering does not execute a periodic callback');
+ assert.equal(restLabel(root,'set-0').textContent,'0s');assert.equal(restLabel(root,'set-1').textContent,'');
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'1s');assert.equal(intervals.timers.size,1);
 });
-test('25 detached eligible rows clear their existing intervals on the next tick and stay idle',(t)=>{
+test('the next completion in another exercise freezes the previous row regardless of render order',(t)=>{
  const intervals=workoutIntervals(t),root=connected('');
- const data=workoutWithSets(Array.from({length:25},()=>({restStartedAt:intervals.stamp()})));
- renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,25);
- root.rootConnected=false;intervals.tick();
- assert.deepEqual(intervals.counts,{registered:25,cleared:25,callbacks:25});assert.equal(intervals.timers.size,0);
- for(let tick=0;tick<20;tick++)intervals.tick();assert.equal(intervals.counts.callbacks,25);
+ const data=addSecondExercise(workoutWithSets([{completedDate:intervals.stamp(-100)},{}]),[{completedDate:intervals.stamp(-40)}]);
+ data.exercises.reverse();renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(restLabel(root,'set-0').textContent,'1:00');assert.equal(restLabel(root,'other-0').textContent,'40s');
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'1:00');assert.equal(restLabel(root,'other-0').textContent,'41s');
+ data.exercises.reverse();renderNativeWorkoutSurface(root,data,options('1:01'));
+ assert.equal(restLabel(root,'set-0').textContent,'1:00');assert.equal(restLabel(root,'other-0').textContent,'41s');assert.equal(intervals.timers.size,1);
 });
-test('inactive rows never register rest timers even with a valid pending rest stamp',(t)=>{
- const intervals=workoutIntervals(t),root=connected(''),data=snapshot();
- data.exercises[0].sets[0].restStartedAt=intervals.stamp();
+test('supersets and drop groups do not suppress any chronological completion boundary',(t)=>{
+ const intervals=workoutIntervals(t),root=connected('');
+ const data=addSecondExercise(workoutWithSets([{completedDate:intervals.stamp(-20),dropSetGroupId:'chain'}, {completedDate:intervals.stamp(-15),dropSetGroupId:'chain'}]),[{completedDate:intervals.stamp(-5)}]);
+ for(const exercise of data.exercises)exercise.supersetGroupId='pair';
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(restLabel(root,'set-0').textContent,'5s');assert.equal(restLabel(root,'set-1').textContent,'10s');assert.equal(restLabel(root,'other-0').textContent,'5s');assert.equal(intervals.timers.size,1);
+});
+test('equal completion timestamps use stable set identity to choose only one live row',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets(Array.from({length:3},()=>({completedDate:intervals.stamp()})));
+ data.exercises[0].sets[0].id='z';data.exercises[0].sets[1].id='a';data.exercises[0].sets[2].id='m';
+ renderNativeWorkoutSurface(root,data,options('1:00'));intervals.tick();
+ assert.equal(restLabel(root,'a').textContent,'0s');assert.equal(restLabel(root,'m').textContent,'0s');assert.equal(restLabel(root,'z').textContent,'1s');assert.equal(intervals.timers.size,1);
+ data.exercises[0].sets.reverse();renderNativeWorkoutSurface(root,data,options('1:01'));intervals.tick();
+ assert.equal(restLabel(root,'z').textContent,'2s');assert.equal(restLabel(root,'a').textContent,'0s');assert.equal(intervals.timers.size,1);
+});
+test('undoing the latest completion resumes the prior row from its existing timestamp',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-30)},{completedDate:intervals.stamp(-10)}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(restLabel(root,'set-0').textContent,'20s');
+ const undone=structuredClone(data);undone.exercises[0].sets[1].completedDate='';
+ renderNativeWorkoutSurface(root,undone,options('1:01'));assert.equal(restLabel(root,'set-0').textContent,'30s');assert.equal(restLabel(root,'set-1').textContent,'');
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'31s');assert.equal(intervals.timers.size,1);
+});
+test('terminal history retains elapsed spans capped at the configured workout ending',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-100)},{completedDate:intervals.stamp(-40)}]);
+ data.status='complete';data.endedAt=intervals.stamp(-10);
  renderNativeWorkoutSurface(root,data,{...options('1:00'),active:false});
- assert.equal(intervals.counts.registered,0);assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,0);
+ assert.equal(restLabel(root,'set-0').textContent,'1:00');assert.equal(restLabel(root,'set-1').textContent,'30s');assert.equal(intervals.counts.registered,0);
+ intervals.tick();assert.equal(restLabel(root,'set-1').textContent,'30s');assert.equal(intervals.counts.callbacks,0);
+ data.endedAt=intervals.stamp(-5);renderNativeWorkoutSurface(root,data,{...options('1:01'),active:false});
+ assert.equal(restLabel(root,'set-1').textContent,'36s','Workout ending participates in the saved display signature');
+});
+test('finishing the active workout retires its clock and freezes the last row',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-10)}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,1);
+ const finished={...data,status:'complete',endedAt:intervals.stamp()};
+ renderNativeWorkoutSurface(root,finished,{...options('1:01'),active:false});
+ assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.cleared,1);assert.equal(restLabel(root,'set-0').textContent,'10s');
+});
+test('terminal missing, invalid or earlier ending never invents a last rest duration',(t)=>{
+ const intervals=workoutIntervals(t);
+ for(const endedAt of ['', 'bad-date', intervals.stamp(-60)]){
+  const root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-100)},{completedDate:intervals.stamp(-40)}]);
+  data.status='complete';data.endedAt=endedAt;renderNativeWorkoutSurface(root,data,{...options('1:00'),active:false});
+  assert.equal(restLabel(root,'set-0').textContent,'1:00');assert.equal(restLabel(root,'set-1').textContent,'');
+ }
+ assert.equal(intervals.counts.registered,0);
+});
+test('read-only ongoing workouts still show one live rest clock with no editable controls',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-5)},{}]);
+ renderNativeWorkoutSurface(root,data,{...options('1:00'),active:false});
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-edit-control').length,0);assert.equal(intervals.timers.size,1);
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'6s');assert.equal(restLabel(root,'set-1').textContent,'');
+});
+test('invalid completion timestamps stay blank and future clocks cannot show negative elapsed',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:'bad-date'},{completedDate:intervals.stamp(10)},{}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ assert.equal(restLabel(root,'set-0').textContent,'');assert.equal(restLabel(root,'set-1').textContent,'0s');assert.equal(intervals.timers.size,1);
+ intervals.tick();assert.equal(restLabel(root,'set-1').textContent,'0s');
+});
+test('configured countdown uses the completed row target while pending legacy rest stays blank',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-3),restSeconds:5},{restStartedAt:intervals.stamp(),restSeconds:500}]);
+ renderNativeWorkoutSurface(root,data,{...options('1:00'),restTimerMode:'count-down'});
+ assert.equal(restLabel(root,'set-0').textContent,'2s');assert.equal(restLabel(root,'set-1').textContent,'');
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'1s');intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'ready');
+ const rest=editSet(root,'set-0','restSeconds');rest.focus();rest.value='10';intervals.tick();
+ assert.equal(restLabel(root,'set-0').textContent,'4s');assert.equal(document.activeElement,rest);assert.equal(rest.value,'10');
+});
+test('configured countdown fallback applies to history without replacing its target or completion',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-10),restSeconds:undefined}]);
+ data.status='complete';data.endedAt=intervals.stamp();
+ renderNativeWorkoutSurface(root,data,{...options('1:00'),active:false,restTimerMode:'count-down',defaultRestSeconds:30});
+ assert.equal(restLabel(root,'set-0').textContent,'20s');assert.equal(intervals.timers.size,0);assert.equal(data.exercises[0].sets[0].restSeconds,undefined);
+});
+test('100 live ticks touch only the clock label, with no snapshot reads, DOM queries or rebuilds',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-10)}]);
+ const opts=options('1:00');let mutationAttempts=0;for(const name of Object.keys(opts.actions))opts.actions[name]=()=>{mutationAttempts++;};
+ renderNativeWorkoutSurface(root,data,opts);const weight=edit(root,'weight'),label=restLabel(root,'set-0');weight.focus();weight.value='33';
+ const emptied=root.emptyCount;let snapshotReads=0,queries=0;
+ Object.defineProperty(data,'exercises',{get(){snapshotReads++;throw Error('No projection on a clock tick');}});
+ const query=root.querySelectorAll.bind(root);root.querySelectorAll=(...args)=>{queries++;return query(...args);};
+ for(let tick=0;tick<100;tick++)intervals.tick();
+ assert.equal(snapshotReads,0);assert.equal(queries,0);assert.equal(root.emptyCount,emptied);assert.equal(intervals.counts.registered,1);assert.equal(intervals.counts.callbacks,100);
+ assert.equal(mutationAttempts,0);
+ assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');assert.equal(label.textContent,'1:50');
+});
+test('100 unchanged elapsed refreshes retain the same clock and focused draft',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-10)}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const weight=edit(root,'weight');weight.focus();weight.value='33';const emptied=root.emptyCount;
+ for(let refresh=0;refresh<100;refresh++)renderNativeWorkoutSurface(root,data,options(`1:${refresh}`));
+ assert.equal(intervals.counts.registered,1);assert.equal(root.emptyCount,emptied);assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');
+});
+test('one detached surface clears its single clock on the next tick and stays idle',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets(Array.from({length:25},(_,index)=>({completedDate:intervals.stamp(index-25)})));
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.timers.size,1);root.rootConnected=false;intervals.tick();
+ assert.deepEqual(intervals.counts,{registered:1,cleared:1,callbacks:1});
+ for(let tick=0;tick<20;tick++)intervals.tick();assert.equal(intervals.counts.callbacks,1);
+});
+test('a cross-exercise completion hands off the clock immediately while retained drafts defer rebuilding',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=addSecondExercise(workoutWithSets([{completedDate:intervals.stamp(-20)}]),[{}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const weight=editSet(root,'set-0','weight');weight.focus();weight.value='33';const emptied=root.emptyCount;
+ const next=structuredClone(data);next.exercises[1].sets[0].completedDate=intervals.stamp();next.exercises[0].sets[0].reps=9;
+ renderNativeWorkoutSurface(root,next,options('1:01'));
+ assert.equal(root.emptyCount,emptied);assert.equal(editSet(root,'set-0','weight'),weight);assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');
+ assert.equal(restLabel(root,'set-0').textContent,'20s');assert.equal(restLabel(root,'other-0').textContent,'0s');assert.equal(intervals.timers.size,1);
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'20s');assert.equal(restLabel(root,'other-0').textContent,'1s');
+ for(let refresh=0;refresh<100;refresh++)renderNativeWorkoutSurface(root,next,options('1:01'));
+ assert.equal(intervals.counts.registered,2,'Repeated authoritative pending snapshots do not recreate the timing owner');
+ weight.value='20';event(weight,'input');assert.equal(editSet(root,'set-0','reps').value,'9');assert.equal(intervals.timers.size,1);
+});
+test('an authoritative original snapshot cancels pending timing as well as pending control values',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-20)},{}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const weight=editSet(root,'set-0','weight');weight.focus();weight.value='33';
+ const next=structuredClone(data);next.exercises[0].sets[1].completedDate=intervals.stamp();renderNativeWorkoutSurface(root,next,options('1:01'));
+ assert.equal(restLabel(root,'set-1').textContent,'0s');renderNativeWorkoutSurface(root,data,options('1:02'));intervals.tick();
+ assert.equal(restLabel(root,'set-0').textContent,'21s');assert.equal(restLabel(root,'set-1').textContent,'');assert.equal(intervals.timers.size,1);assert.equal(editSet(root,'set-0','weight'),weight);assert.equal(weight.value,'33');
+});
+test('removing the latest exercise restarts the retained row clock without discarding its draft',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=addSecondExercise(workoutWithSets([{completedDate:intervals.stamp(-20)}]),[{completedDate:intervals.stamp(-5)}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const weight=editSet(root,'set-0','weight');weight.focus();weight.value='33';
+ const next=structuredClone(data);next.exercises.pop();next.exerciseCount=1;next.setCount=1;renderNativeWorkoutSurface(root,next,options('1:01'));
+ assert.equal(restLabel(root,'other-0'),undefined);assert.equal(restLabel(root,'set-0').textContent,'20s');assert.equal(editSet(root,'set-0','weight'),weight);assert.equal(weight.value,'33');
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'21s');assert.equal(intervals.timers.size,1);
+});
+test('missing and invalid completions leave zero clocks even on editable active rows',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:''},{completedDate:'bad-date'},{completedDate:'2026-99-99'}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));assert.equal(intervals.counts.registered,0);intervals.tick();
+ assert.equal(intervals.counts.callbacks,0);for(let index=0;index<3;index++)assert.equal(restLabel(root,`set-${index}`).textContent,'');
+});
+test('separate visible workout surfaces each own one clock and detach independently',(t)=>{
+ const intervals=workoutIntervals(t),first=connected(''),second=connected(''),data=workoutWithSets([{completedDate:intervals.stamp()}]);
+ renderNativeWorkoutSurface(first,data,options('1:00'));renderNativeWorkoutSurface(second,data,{...options('1:00'),active:false});
+ assert.equal(intervals.timers.size,2);first.rootConnected=false;intervals.tick();assert.equal(intervals.timers.size,1);
+ assert.equal(restLabel(second,'set-0').textContent,'1s');intervals.tick();assert.equal(restLabel(second,'set-0').textContent,'2s');
+});
+test('an already queued old clock callback cannot change the new timing owner',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-20)},{}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const oldCallback=[...intervals.timers.values()][0];
+ const weight=editSet(root,'set-0','weight');weight.focus();weight.value='33';
+ const next=structuredClone(data);next.exercises[0].sets[1].completedDate=intervals.stamp();renderNativeWorkoutSurface(root,next,options('1:01'));
+ oldCallback();assert.equal(intervals.timers.size,1);assert.equal(restLabel(root,'set-0').textContent,'20s');assert.equal(restLabel(root,'set-1').textContent,'0s');
+ intervals.tick();assert.equal(restLabel(root,'set-1').textContent,'1s');assert.equal(weight.value,'33');
+});
+test('changing timer mode advances timing without replacing a retained unfinished input',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-20),restSeconds:60}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));const weight=edit(root,'weight');weight.focus();weight.value='33';
+ renderNativeWorkoutSurface(root,data,{...options('1:01'),restTimerMode:'count-down'});
+ assert.equal(restLabel(root,'set-0').textContent,'40s');assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);assert.equal(weight.value,'33');assert.equal(intervals.timers.size,1);
+ renderNativeWorkoutSurface(root,data,options('1:02'));intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'21s');assert.equal(edit(root,'weight'),weight);assert.equal(intervals.timers.size,1);
+});
+test('a saved countdown target advances during an unrelated draft while an actual rest draft stays local',(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=workoutWithSets([{completedDate:intervals.stamp(-20),restSeconds:60}]),opts={...options('1:00'),restTimerMode:'count-down'};
+ renderNativeWorkoutSurface(root,data,opts);const weight=edit(root,'weight'),rest=edit(root,'restSeconds');weight.focus();weight.value='33';
+ const next=structuredClone(data);next.exercises[0].sets[0].restSeconds=120;renderNativeWorkoutSurface(root,next,opts);
+ assert.equal(restLabel(root,'set-0').textContent,'1:40','The saved incoming target owns the clock when the retained rest input is pristine');
+ assert.equal(edit(root,'restSeconds'),rest);assert.equal(rest.value,'60');assert.equal(edit(root,'weight'),weight);assert.equal(weight.value,'33');assert.equal(document.activeElement,weight);
+ intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'1:39');
+ rest.focus();rest.value='150';intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'2:08','An actual unsaved rest draft still previews its own target');
+ rest.value='60';intervals.tick();assert.equal(restLabel(root,'set-0').textContent,'1:37','Reverting the rest draft reveals the incoming saved target');
+ assert.equal(intervals.timers.size,1);assert.equal(weight.value,'33');
+});
+test('a rejected completion never invents a timestamp or starts a rest clock',async(t)=>{
+ const intervals=workoutIntervals(t),root=connected(''),data=snapshot(),opts=options('1:00');let attempts=0;
+ opts.actions.updateSet=async()=>{attempts++;throw Error('Expected failed save');};renderNativeWorkoutSurface(root,data,opts);
+ const complete=root.querySelector('.is-complete-toggle');
+ for(const listener of complete.listeners.click)listener({preventDefault(){},stopPropagation(){}});await settled();
+ assert.equal(attempts,1);assert.equal(data.exercises[0].sets[0].completedDate,'');assert.equal(restLabel(root,'set-qa').textContent,'');assert.equal(intervals.counts.registered,0);
+ assert.equal(complete.textContent,'Complete');assert.equal(complete.disabled,false);assert.equal(root.querySelector('.tps-health-native-workout-save-state').textContent,'Retry');
 });
 for(const draft of ['focused','badInput'])test(`a removed exercise's ${draft} draft cannot defer its authoritative removal`,()=>{
  const root=connected('');renderNativeWorkoutSurface(root,snapshot(),options('1:00'));
@@ -365,4 +510,21 @@ test('removal prunes only its obsolete exercise while a retained draft defers th
  assert.equal(edit(root,'reps').value,'12','Reverting the retained draft applies the latest pending snapshot');
  assert.equal(root.querySelector('.tps-health-native-workout-pending-refresh'),null);
  assert.deepEqual(root.querySelectorAll('.tps-health-native-workout-exercise').map(card=>card.dataset.exerciseId),['exercise-retained']);
+});
+
+
+test('disposing a mounted surface clears its clock immediately and forgets deferred drafts',(t)=>{
+ const intervals=workoutIntervals(t),host=connected(''),root=el('');host.append(root);
+ const data=workoutWithSets([{completedDate:intervals.stamp(-5)}]);
+ renderNativeWorkoutSurface(root,data,options('1:00'));
+ const weight=editSet(root,'set-0','weight');weight.focus();weight.value='45';
+ const incoming=structuredClone(data);incoming.exercises[0].sets[0].reps=12;
+ renderNativeWorkoutSurface(root,incoming,options('1:01'));
+ assert.equal(intervals.timers.size,1);assert.ok(root.querySelector('.tps-health-native-workout-pending-refresh'));
+ const rebuilds=root.emptyCount,cleared=intervals.counts.cleared;
+ disposeNativeWorkoutSurface(root);
+ assert.equal(root.isConnected,false);assert.equal(intervals.timers.size,0);assert.equal(intervals.counts.cleared,cleared+1);
+ host.append(root);weight.value=weight.dataset.savedValue;event(weight,'input');
+ assert.equal(root.emptyCount,rebuilds,'An obsolete draft handler cannot replay the disposed pending snapshot');
+ assert.equal(intervals.timers.size,0);disposeNativeWorkoutSurface(root);assert.equal(intervals.counts.cleared,cleared+1);
 });

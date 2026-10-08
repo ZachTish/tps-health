@@ -430,7 +430,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     );
     new Setting(sessionDefaults)
       .setName("Rest timer mode")
-      .setDesc("Count up measures rest until the next set starts. Count down uses the default rest target after each set.")
+      .setDesc("The timer appears on the completed set and stops when another set is completed. Count up measures elapsed time; count down uses the set’s rest target.")
       .addDropdown((dropdown) => dropdown
         .addOption("count-up", "Count up")
         .addOption("count-down", "Count down")

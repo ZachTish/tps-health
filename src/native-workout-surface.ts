@@ -4,6 +4,7 @@ import type {
   NativeWorkoutSetSnapshot,
   NativeWorkoutSnapshot,
 } from './native-records';
+import type { RestTimerMode } from './types';
 
 export interface NativeWorkoutSetDraft {
   reps?: number;
@@ -29,6 +30,7 @@ export interface NativeWorkoutSurfaceOptions {
   elapsedLabel: string;
   instanceKey: string;
   defaultRestSeconds: number;
+  restTimerMode: RestTimerMode;
   showSessionActions: boolean;
   actions: NativeWorkoutSurfaceActions;
 }
@@ -65,14 +67,6 @@ const formatRest = (seconds: number | undefined): string => {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return minutes ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
-};
-
-const restCountdownLabel = (startedAt: string, targetSeconds: number, now = Date.now()): string => {
-  const started = Date.parse(startedAt);
-  if (!Number.isFinite(started)) return '';
-  const elapsed = Math.max(0, Math.floor((now - started) / 1000));
-  const remaining = Math.max(0, targetSeconds - elapsed);
-  return remaining > 0 ? formatRest(remaining) : 'ready';
 };
 
 const stopInteraction = (element: HTMLElement): void => {
@@ -169,6 +163,84 @@ const hasUncommittedWorkoutEdit = (root: HTMLElement, snapshot: NativeWorkoutSna
   });
 };
 
+interface WorkoutRestTimingOwner {
+  signature: string;
+  interval?: number;
+}
+// Only the visible clock's lifecycle is retained. Its values come from each
+// authoritative snapshot; ticks never inspect records or write workout data.
+const workoutRestTimingOwners = new WeakMap<HTMLElement, WorkoutRestTimingOwner>();
+const stopWorkoutRestTiming = (root: HTMLElement): void => {
+  const owner = workoutRestTimingOwners.get(root);
+  if (owner?.interval !== undefined) window.clearInterval(owner.interval);
+  workoutRestTimingOwners.delete(root);
+};
+export const disposeNativeWorkoutSurface = (root: HTMLElement): void => {
+  stopWorkoutRestTiming(root);
+  pendingWorkoutRenders.delete(root);
+  root.remove();
+};
+const restTimingElement = (setId: string): HTMLElement => {
+  const label = text('span', '', 'tps-health-native-workout-rest-countdown');
+  label.dataset.setId = setId;
+  label.toggleAttribute('hidden', true);
+  return label;
+};
+const syncWorkoutRestTiming = (
+  root: HTMLElement,
+  snapshot: NativeWorkoutSnapshot,
+  options: NativeWorkoutSurfaceOptions,
+  signature: string,
+): void => {
+  if (workoutRestTimingOwners.get(root)?.signature === signature) return;
+  stopWorkoutRestTiming(root);
+  const owner: WorkoutRestTimingOwner = { signature };
+  workoutRestTimingOwners.set(root, owner);
+  const completed = snapshot.exercises.flatMap(exercise => exercise.sets)
+    .map(set => ({ id: set.id, started: Date.parse(set.completedDate), restSeconds: set.restSeconds }))
+    .filter(set => Number.isFinite(set.started))
+    .sort((left, right) => left.started - right.started || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const ended = Date.parse(snapshot.endedAt);
+  const timings = new Map(completed.map((set, index) => {
+    const next = completed[index + 1];
+    const live = !next && snapshot.status === 'active';
+    const stopped = next?.started ?? (!live && Number.isFinite(ended) && ended >= set.started ? ended : undefined);
+    return [set.id, { ...set, live, stopped }] as const;
+  }));
+  const now = Date.now();
+  for (const label of Array.from(root.querySelectorAll<HTMLElement>('.tps-health-native-workout-rest-countdown'))) {
+    const timing = timings.get(label.dataset.setId || '');
+    const restInput = label.parentElement?.querySelector<HTMLInputElement>('.tps-health-native-workout-input');
+    const update = (at: number): void => {
+      let value = '';
+      if (timing && (timing.live || timing.stopped !== undefined)) {
+        const seconds = Math.max(0, Math.floor(((timing.stopped ?? at) - timing.started) / 1000));
+        if (options.restTimerMode === 'count-down') {
+          const restDraft = restInput && editValue(restInput) !== restInput.dataset.savedValue;
+          const target = Math.max(0, Math.round((restDraft ? parsedNumber(restInput) : timing.restSeconds) ?? options.defaultRestSeconds));
+          const remaining = Math.max(0, target - seconds);
+          value = remaining > 0 ? formatRest(remaining) : 'ready';
+        } else value = formatRest(seconds);
+      }
+      if (label.textContent !== value) label.textContent = value;
+      label.toggleAttribute('hidden', !value);
+      label.classList.toggle('is-ready', value === 'ready');
+      label.setAttribute('aria-label', options.restTimerMode === 'count-down' ? 'Rest remaining' : 'Rest elapsed');
+    };
+    update(now);
+    if (timing?.live && owner.interval === undefined) {
+      owner.interval = window.setInterval(() => {
+        if (workoutRestTimingOwners.get(root) !== owner) return;
+        if (!root.isConnected || !label.isConnected) {
+          stopWorkoutRestTiming(root);
+          return;
+        }
+        update(Date.now());
+      }, 1000);
+    }
+  }
+};
+
 export function renderNativeWorkoutSurface(
   root: HTMLElement,
   snapshot: NativeWorkoutSnapshot,
@@ -180,6 +252,7 @@ export function renderNativeWorkoutSurface(
     id: snapshot.id,
     path: snapshot.path,
     status: snapshot.status,
+    endedAt: snapshot.endedAt,
     showSessionActions: options.showSessionActions,
     exercises: snapshot.exercises.map((exercise) => [
       exercise.id,
@@ -191,6 +264,7 @@ export function renderNativeWorkoutSurface(
       exercise.sets.map((set) => [set.id, set.ordinal, set.reps, set.weight, set.weightUnit, set.perArm, set.rpe, set.restSeconds, set.setType, set.dropSetGroupId, set.completedDate, set.restStartedAt]),
     ]),
     defaultRestSeconds: options.defaultRestSeconds,
+    restTimerMode: options.restTimerMode,
   });
   const summary = `${snapshot.status === 'complete' ? 'Complete' : options.elapsedLabel} · ${snapshot.setCount} ${snapshot.setCount === 1 ? 'set' : 'sets'} · ${snapshot.exerciseCount} ${snapshot.exerciseCount === 1 ? 'exercise' : 'exercises'}`;
   if (root.dataset.renderKey === signature) {
@@ -201,6 +275,7 @@ export function renderNativeWorkoutSurface(
     // A clock-only refresh must not replace a focused input or its draft text.
     const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
     if (summaryElement) summaryElement.textContent = summary;
+    syncWorkoutRestTiming(root, snapshot, options, signature);
     return;
   }
   if (options.active && snapshot.status === 'active' && root.dataset.workoutId === snapshot.id
@@ -213,6 +288,9 @@ export function renderNativeWorkoutSurface(
       if (exerciseId && !exerciseIds.has(exerciseId)) card.remove();
     }
     if (hasUncommittedWorkoutEdit(root, snapshot)) {
+      // Timing belongs to the latest saved completion even while unrelated
+      // unfinished inputs keep their existing controls and deferred snapshot.
+      syncWorkoutRestTiming(root, snapshot, options, signature);
       pendingWorkoutRenders.set(root, { snapshot, options });
       const summaryElement = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
       if (summaryElement) summaryElement.textContent = summary;
@@ -240,6 +318,7 @@ export function renderNativeWorkoutSurface(
   root.dataset.workoutId = snapshot.id;
   root.dataset.workoutPath = snapshot.path;
   root.className = 'tps-health-native-workout-surface';
+  stopWorkoutRestTiming(root);
   root.empty();
 
   const header = document.createElement('header');
@@ -356,9 +435,13 @@ export function renderNativeWorkoutSurface(
           set.setType === 'normal' ? 'Normal' : set.setType.charAt(0).toUpperCase() + set.setType.slice(1),
           set.completedDate ? '✓' : '—',
         ];
-        for (const value of values) {
+        for (const [index, value] of values.entries()) {
           const cell = text('span', value);
           cell.setAttribute('role', 'cell');
+          if (index === 3) {
+            cell.className = 'tps-health-native-workout-rest-cell';
+            cell.append(restTimingElement(set.id));
+          }
           row.append(cell);
         }
         table.append(row);
@@ -425,25 +508,7 @@ export function renderNativeWorkoutSurface(
       const rest = numberInput(set.restSeconds, `${exercise.name} set ${set.ordinal} rest seconds`, { min: 0, step: '1', integer: true });
       registerWorkoutEdit(root, rest, set.id, 'restSeconds');
       rest.addEventListener('change', () => void commit(rest, { restSeconds: nativeWorkoutEditedNumber(rest, true) }));
-      const restCountdown = text('span', '', 'tps-health-native-workout-rest-countdown');
-      const updateRestCountdown = (): void => {
-        const targetSeconds = Math.max(0, Math.round(parsedNumber(rest) ?? options.defaultRestSeconds));
-        const label = set.completedDate ? '' : restCountdownLabel(set.restStartedAt, targetSeconds);
-        restCountdown.textContent = label;
-        restCountdown.toggleAttribute('hidden', !label);
-        restCountdown.classList.toggle('is-ready', label === 'ready');
-      };
-      updateRestCountdown();
-      if (!set.completedDate && Number.isFinite(Date.parse(set.restStartedAt))) {
-        const restInterval = window.setInterval(() => {
-          if (!restCell.isConnected) {
-            window.clearInterval(restInterval);
-            return;
-          }
-          updateRestCountdown();
-        }, 1000);
-      }
-      restCell.append(rest, restCountdown);
+      restCell.append(rest, restTimingElement(set.id));
       row.append(restCell);
       const setType = selectInput(set.setType, `${exercise.name} set ${set.ordinal} type`, setTypeOptions);
       registerWorkoutEdit(root, setType, set.id, 'setType');
@@ -484,6 +549,7 @@ export function renderNativeWorkoutSurface(
     exerciseList.append(group);
   }
   root.append(exerciseList);
+  syncWorkoutRestTiming(root, snapshot, options, signature);
   if (focusedControl && options.active) {
     const replacement = Array.from(root.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control'))
       .find(control => control.dataset.setId === focusedControl.setId && control.dataset.field === focusedControl.field);
