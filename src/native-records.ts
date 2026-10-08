@@ -44,7 +44,7 @@ interface RawNativeRecordHandle extends Omit<NativeRecordHandle, 'kind'> {
 
 interface NativeRecordsApi {
   version: number;
-  capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean };
+  capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean; updateFromSource?: boolean };
   isEnabled(): boolean;
   getStorageProfile?(kind?: string): unknown;
   getKindPropertyKeys?(): unknown;
@@ -52,6 +52,7 @@ interface NativeRecordsApi {
   createFresh?(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
   resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<RawNativeRecordHandle | null>;
   update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
+  updateFromSource?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, propertyKeys: readonly string[], compute: (frontmatter: Record<string, unknown>) => Record<string, unknown> | null, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
   rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
   inspect(frontmatter: unknown): {
     id: string;
@@ -329,7 +330,6 @@ const REDUNDANT_WORKOUT_SESSION_KEYS = [
   'nextEligibleDate', 'durationSeconds', 'timeEstimate', 'exerciseCount', 'setCount', 'totalReps',
   'totalVolume', 'lastSetEndedAt',
 ] as const;
-const FOOD_PROJECTION_DEBOUNCE_MS = 120;
 
 function compactRecordProperties(properties: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(properties).filter(([, value]) => (
@@ -963,8 +963,6 @@ export class HealthNativeRecordService {
   private readonly changeListeners = new Set<(change: NativeHealthRecordChange) => void>();
   private readonly dailyIndexStatusListeners = new Set<() => void>();
   private readonly refreshGenerations = new Map<string, symbol>();
-  private readonly foodProjectionTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
-  private readonly foodProjectionGenerations = new Map<string, number>();
   private readonly workoutMutationQueues = new Map<string, Promise<unknown>>();
   private workoutIndexReady = false;
   private metadataResolved = false;
@@ -1179,9 +1177,6 @@ export class HealthNativeRecordService {
     this.cancelDiscovery();
     this.refreshGenerations.clear();
     this.pendingMetadataPaths.clear();
-    for (const timer of this.foodProjectionTimers.values()) globalThis.clearTimeout(timer);
-    this.foodProjectionTimers.clear();
-    this.foodProjectionGenerations.clear();
   }
 
   refreshConfiguration(previousStatus = this.getDailyIndexStatus()): void {
@@ -1325,8 +1320,10 @@ export class HealthNativeRecordService {
       ...foodNutritionStorageValues(nutrition),
       note: entry.note,
     });
+    const projected = this.projectFoodEntry(properties, entry.item.sourcePath || '');
+    if (projected) Object.assign(properties, foodNutritionStorageValues(projected.frontmatter, true));
     const api = this.requireApi();
-    const record = await this.createRecord('food-entry', properties, {
+    const record = await this.createRecord('food-entry', compactRecordProperties(properties), {
       id: entry.id,
       now: new Date(entry.createdDate),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('food-entry', properties) : undefined,
@@ -2181,16 +2178,20 @@ export class HealthNativeRecordService {
       sodiumMg: nonNegativeNumber(patch.sodiumMg),
       ...extraNutrition(patch),
     };
-    const updated = await this.updateRecord(current.file, {
+    const updates = {
       title,
       completedDate,
       quantity: patch.quantity,
       unit,
       ...nutritionUpdates,
       note: String(patch.note || '').trim() || null,
-    }, { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-food-edit' });
+    };
+    const updated = linkedFood
+      ? await this.processFoodEntry(current, updates)
+      : await this.updateRecord(current.file, updates,
+        { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-food-edit' });
     if (!updated) throw new Error('Food log entry changed before it could be saved.');
-    this.trackHandle(updated);
+    if (!linkedFood) this.trackHandle(updated);
     return updated;
   }
 
@@ -3055,6 +3056,8 @@ export class HealthNativeRecordService {
     // Provider startup/reload is not evidence that a record was deleted.
     if (!api) return;
     const previous = this.recordsByPath.get(file.path);
+    const previousFoodPath = previous?.kind === 'food-entry'
+      ? this.resolveFoodSourcePath(foodReference(previous.frontmatter), file.path) : '';
     this.removePath(file.path, false);
     // An explicit absent frontmatter value comes from an indexed source. Do
     // not revive its old identity from a lagging getFileCache result.
@@ -3073,6 +3076,7 @@ export class HealthNativeRecordService {
         this.refreshLinkedFoodEntries(file.path, inputsUnchanged);
       } else this.foodDefinitionsByPath.delete(file.path);
       if (previous) this.emitChange(file.path, previous, null);
+      if (previousFoodPath && !this.entryPathsByFoodPath.has(previousFoodPath)) this.foodDefinitionsByPath.delete(previousFoodPath);
       return;
     }
     const rawFrontmatter = decodeNativeRecordFrontmatter(
@@ -3112,8 +3116,8 @@ export class HealthNativeRecordService {
         entries.add(file.path);
         this.entryPathsByFoodPath.set(foodPath, entries);
       }
-      if (projected?.needsPersist) this.scheduleFoodEntryProjection(file.path);
     }
+    if (previousFoodPath && !this.entryPathsByFoodPath.has(previousFoodPath)) this.foodDefinitionsByPath.delete(previousFoodPath);
     this.emitChange(file.path, previous, record);
   }
 
@@ -3142,13 +3146,7 @@ export class HealthNativeRecordService {
       entries?.delete(path);
       if (foodPath && (!entries || entries.size === 0)) {
         this.entryPathsByFoodPath.delete(foodPath);
-        this.foodDefinitionsByPath.delete(foodPath);
-      }
-      if (notify) {
-        const timer = this.foodProjectionTimers.get(path);
-        if (timer) globalThis.clearTimeout(timer);
-        this.foodProjectionTimers.delete(path);
-        this.foodProjectionGenerations.delete(path);
+        if (notify) this.foodDefinitionsByPath.delete(foodPath);
       }
     }
     const paths = this.pathsByKind.get(record.kind);
@@ -3274,62 +3272,70 @@ export class HealthNativeRecordService {
       }
       this.recordsByPath.set(entryPath, current);
       this.emitChange(entryPath, previous, current);
-      if (projected.needsPersist) this.scheduleFoodEntryProjection(entryPath);
     }
   }
 
-  private scheduleFoodEntryProjection(path: string): void {
-    const previousTimer = this.foodProjectionTimers.get(path);
-    if (previousTimer) globalThis.clearTimeout(previousTimer);
-    const generation = (this.foodProjectionGenerations.get(path) || 0) + 1;
-    this.foodProjectionGenerations.set(path, generation);
-    const timer = globalThis.setTimeout(() => {
-      this.foodProjectionTimers.delete(path);
-      void this.persistFoodEntryProjection(path, generation);
-    }, FOOD_PROJECTION_DEBOUNCE_MS);
-    this.foodProjectionTimers.set(path, timer);
+  /** Accept the successful definition owner's source before any later body work. */
+  acceptFoodDefinitionCommit(food: TFile, frontmatter: Record<string, unknown>): void {
+    if (!this.isEnabled()) return;
+    this.discoveryPass?.sourceFiles.add(food);
+    const unchanged = foodProjectionInputsUnchanged(this.foodDefinitionsByPath.get(food.path), frontmatter);
+    this.foodDefinitionsByPath.set(food.path, { ...frontmatter });
+    this.refreshLinkedFoodEntries(food.path, unchanged);
   }
 
-  private async persistFoodEntryProjection(path: string, generation: number): Promise<void> {
-    if (this.foodProjectionGenerations.get(path) !== generation || !this.isEnabled()) return;
-    try {
-      await this.waitForFullDiscovery();
-      if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
-      const indexed = this.recordsByPath.get(path);
-      if (!indexed || indexed.kind !== 'food-entry') return;
-      let current = await this.resolveRecord(indexed.file);
-      while (this.discoveryPass?.full && !this.disposed) {
-        await this.waitForFullDiscovery();
-        if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
-        current = await this.resolveRecord(indexed.file);
-      }
-      if (this.disposed || this.foodProjectionGenerations.get(path) !== generation) return;
-      if (!current || current.kind !== 'food-entry') return;
-      const projected = this.projectFoodEntry(current.frontmatter, current.path);
-      if (!projected?.needsPersist) return;
-      const updates: Record<string, unknown> = {
-        ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
-        ...foodNutritionStorageValues(projected.frontmatter, true),
-      };
-      const updated = await this.updateRecord(current.file, updates, {
-        kind: 'automation',
-        sourcePluginId: this.plugin.manifest.id,
-        surface: 'health-food-projection',
-      });
-      if (!updated) return;
-      this.trackHandle(updated);
-      logger.flow('NativeFoodProjection', 'reconcile:done', {
-        path,
-        foodPath: this.resolveFoodSourcePath(foodReference(updated.frontmatter), path),
-        quantity: numberValue(updated.frontmatter.quantity),
-        unit: String(updated.frontmatter.unit || ''),
-        changedKeys: [...REDUNDANT_FOOD_ENTRY_KEYS, ...foodNutritionKeys()],
-      });
-    } catch (error) {
-      logger.flowError('NativeFoodProjection', 'reconcile:failed', error, { path });
-    } finally {
-      if (this.foodProjectionGenerations.get(path) === generation) this.foodProjectionGenerations.delete(path);
+  /** Explicit definition edits own persistence; discovery and metadata only project display values. */
+  async persistLinkedFoodEntries(food: TFile): Promise<void> {
+    await this.waitForFullDiscovery();
+    if (!this.isEnabled()) return;
+    for (const path of [...(this.entryPathsByFoodPath.get(food.path) || [])]) {
+      const entry = this.recordsByPath.get(path);
+      if (!entry || entry.kind !== 'food-entry' || entry.frontmatter.archived === true) continue;
+      // Cached preflight only rejects work. Native GCM rechecks identity,
+      // exclusions and current source in its existing atomic write owner.
+      const raw = this.plugin.app.metadataCache.getFileCache(entry.file)?.frontmatter;
+      const inspected = this.readApi()?.inspect(raw);
+      if (!inspected || inspected.id !== entry.id || canonicalNativeKind(this.plugin.settings, inspected.kind) !== 'food-entry') continue;
+      const current = decodeNativeRecordFrontmatter(this.plugin.settings, inspected.frontmatter);
+      if (this.resolveFoodSourcePath(foodReference(current), path) !== food.path
+        || current.archived === true || !this.projectFoodEntry(current, path)?.needsPersist) continue;
+      await this.processFoodEntry(entry, {}, food.path);
     }
+  }
+
+  private async processFoodEntry(
+    entry: NativeRecordHandle | IndexedHealthRecord,
+    updates: Record<string, unknown>,
+    expectedFoodPath?: string,
+  ): Promise<NativeRecordHandle | null> {
+    const api = this.requireApi();
+    if (api.capabilities?.updateFromSource !== true || typeof api.updateFromSource !== 'function') {
+      throw new Error('Update TPS GCM to a build with nativeRecords.updateFromSource before saving linked food nutrition.');
+    }
+    const nutritionKeys = encodeNativeRecordProperties(this.plugin.settings, {
+      ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
+      ...Object.fromEntries(foodNutritionKeys().map(key => [key, null])),
+      ...updates,
+    });
+    const updated = this.canonicalHandle(await api.updateFromSource({path: entry.file.path, id: entry.id},
+      Object.keys(nutritionKeys), (frontmatter) => {
+        if (!this.isEnabled()) return null;
+        const current = decodeNativeRecordFrontmatter(this.plugin.settings, frontmatter);
+        if (String(current.tpsId || '') !== entry.id || canonicalNativeKind(this.plugin.settings, current.kind) !== 'food-entry') return null;
+        if (current.archived === true) return null;
+        if (expectedFoodPath && this.resolveFoodSourcePath(foodReference(current), entry.file.path) !== expectedFoodPath) return null;
+        const projected = this.projectFoodEntry({ ...current, ...updates }, entry.file.path);
+        return encodeNativeRecordProperties(this.plugin.settings, {
+          ...updates,
+          ...(projected ? {
+            ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
+            ...foodNutritionStorageValues(projected.frontmatter, true),
+          } : {}),
+        });
+      }, {kind: expectedFoodPath ? 'automation' : 'user', sourcePluginId: this.plugin.manifest.id,
+        surface: expectedFoodPath ? 'health-food-definition-edit' : 'health-daily-food-edit'}));
+    if (updated) this.trackHandle(updated);
+    return updated;
   }
 
   private emitChange(path: string, previous: IndexedHealthRecord | null | undefined, current: IndexedHealthRecord | null): void {

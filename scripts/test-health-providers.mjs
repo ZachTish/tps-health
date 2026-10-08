@@ -173,7 +173,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
+            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
             loader: "ts",
           };
         });
@@ -5501,15 +5501,20 @@ test("disabled GCM food action hides stale controls without reading Daily Notes 
   plugin.settings.showFoodLogButtonInGcm = false;
   for (let index = 0; index < 20; index++) plugin.scheduleGcmMenuRefresh();
   for (const callback of pending.splice(0)) await callback();
-  assert.equal(menuRefreshes, 20, "disabled navigation still refreshes GCM menus");
+  assert.equal(menuRefreshes, 0, "disabled navigation must not refresh GCM menus");
+  assert.equal(pending.length, 0, "disabled navigation does not schedule visibility work");
   assert.equal(configReads, 0, "disabled navigation never resolves Daily Notes from disk");
-  assert.equal(button.hidden, true, "a stale food action remains hidden");
+  await plugin.updateGcmFoodLogButtonVisibility();
+  assert.equal(button.hidden, true, "explicit cleanup still hides stale food actions");
   assert.equal(button.ariaHidden, true);
 
   plugin.settings.showFoodLogButtonInGcm = true;
   plugin.scheduleGcmMenuRefresh();
+  assert.equal(pending.length, 0, "enabled settings without a registered consumer do no work");
+  plugin.unregisterGcmFoodLogButton = () => {};
+  plugin.scheduleGcmMenuRefresh();
   await pending.shift()();
-  assert.equal(menuRefreshes, 21);
+  assert.equal(menuRefreshes, 1);
   assert.equal(configReads, 2, "enabled visibility still resolves the date and its diagnostic context");
   assert.equal(button.hidden, false, "the enabled action appears on a valid Daily Note");
   assert.equal(button.ariaHidden, false);
@@ -9639,6 +9644,36 @@ test("scanner uses accessible camera overlay actions without a Shortcut button",
   assert.match(mainSource, /setAttribute\("aria-pressed", String\(this.torchEnabled\)\)/);
 });
 
+test('explicit food and recipe edits await linked-entry persistence with their committed definition before returning', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  for (const type of ['food', 'recipe']) {
+    const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+    const food = await plugin.createFoodFromInput({name: `Owner ${type}`, type, servingAmount: 1, servingUnit: 'serving', nutrition: {calories: 200}});
+    const file = fake.app.vault.getAbstractFileByPath(food.sourcePath);
+    let release, finished = false, calls = 0, committedDefinition = null;
+    plugin.nativeRecordService = {
+      acceptFoodDefinitionCommit: (target, committed) => {
+        assert.equal(target.path, file.path);
+        committedDefinition = committed;
+      },
+      persistLinkedFoodEntries: async (target) => {
+        calls++;
+        assert.equal(target.path, file.path);
+        assert.deepEqual(committedDefinition, parseFrontmatter(fake.files.get(file.path)), 'definition body work finishes before fan-out');
+        await new Promise(resolve => { release = resolve; });
+      },
+    };
+    const save = plugin.upsertFoodFromInput({path: file.path, name: food.name, type, servingAmount: 2, servingUnit: 'serving', nutrition: {calories: 300}})
+      .then(() => { finished = true; });
+    for (let tick = 0; !release && tick < 100; tick++) await Promise.resolve();
+    assert.equal(calls, 1, type);
+    assert.equal(finished, false, 'explicit edit cannot report success before its linked notes are saved');
+    release(); await save;
+    assert.equal(finished, true);
+  }
+});
+
 test('supplements persist exact label nutrients and named doses through save, reload, edit and atomic lines', async () => {
   installDeterministicBrowserGlobals();
   const { default: Plugin, resolveFoodLogServing } = await importPluginWithObsidianStub();
@@ -10404,9 +10439,10 @@ test('daily Macros waits for hydration, shows known partial totals, and reveals 
   child.register = callback => cleanup.push(callback);
   child.registerEvent = () => {};
   const flush = async () => {
+    for (let index = 0; index < 8; index++) await Promise.resolve();
     while (queued.length) {
       queued.shift()();
-      for (let index = 0; index < 3; index++) await Promise.resolve();
+      for (let index = 0; index < 8; index++) await Promise.resolve();
     }
   };
   child.onload();
@@ -10507,6 +10543,206 @@ test('Macros-only renders skip workout-history resolution while Activity retains
   assert.match(visibleText(activity), /Active Lift/u);
   assert.match(visibleText(activity), /Resume/u);
   assert.match(visibleText(activity), /Finish/u);
+});
+
+test('daily dashboard coalesces pending reads, defers hidden views and catches up without post-unload work', async () => {
+  installDeterministicBrowserGlobals();
+  const queued = new Map(); let timer = 0;
+  window.setTimeout = callback => { queued.set(++timer, callback); return timer; };
+  window.clearTimeout = id => queued.delete(id);
+  const { TPSHealthNativeDailyDashboardChild: Child } = await importPluginWithObsidianStub();
+  const makeEl = (options = {}) => ({
+    text: options.text || '', children: [], dataset: {}, style: { setProperty() {} }, clears: 0,
+    empty() { this.clears++; this.text = ''; this.children = []; }, addClass() {}, setAttr() {},
+    setText(value) { this.text = value; }, addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+    createDiv(options) { return this.createEl('div', options); }, createSpan(options) { return this.createEl('span', options); },
+    createEl(tag, options = {}) { const child = makeEl(options); this.children.push(child); return child; },
+  });
+  const flush = async () => {
+    for (let cycle = 0; queued.size && cycle < 100; cycle++) {
+      const [id, callback] = queued.entries().next().value; queued.delete(id); callback();
+      for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    }
+  };
+  const setup = (shown, pending) => {
+    const container = makeEl(); container.getClientRects = () => shown.value ? [{}] : [];
+    const events = new Map(), cleanup = []; let changed, reads = 0, release;
+    const waiting = pending ? new Promise(resolve => { release = resolve; }) : Promise.resolve();
+    const plugin = {
+      settings: { macroBlockStyle: 'table', macroNutrientRows: 'hidden' },
+      app: { workspace: { on: (name, callback) => { events.set(name, callback); return {}; } }, vault: { getAbstractFileByPath: () => null } },
+      nativeRecordService: { getDailyIndexStatus: () => 'partial', onDailyIndexStatusChanged: () => () => {},
+        onRecordsChanged: callback => { changed = callback; return () => {}; }, getDailyFoodEntries: () => [] },
+      getMetricRenderConfigs: () => [],
+      getDailyFoodMacroTotals: async () => { reads++; await waiting; return { dateIso: '2026-10-06', entryCount: 1, calories: 250 }; },
+    };
+    const child = new Child(container, plugin, { dateIso: '2026-10-06' }, 'macros',
+      { macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden' });
+    child.register = callback => cleanup.push(callback); child.registerEvent = () => {};
+    child.onload();
+    return { container, child, events, cleanup, get reads() { return reads; }, release,
+      changed: () => changed({ dates: ['2026-10-06'], kinds: ['food-entry'] }) };
+  };
+  const visible = setup({ value: true }, true);
+  assert.equal(visible.reads, 1);
+  for (let batch = 0; batch < 20; batch++) { for (let event = 0; event < 10; event++) visible.changed(); await flush(); }
+  assert.equal(visible.reads, 1, '200 notifications cannot launch 20 concurrent reads while discovery is pending');
+  visible.release(); for (let tick = 0; tick < 8; tick++) await Promise.resolve(); await flush();
+  assert.equal(visible.reads, 2, 'one latest refresh follows the coalesced pending read');
+  assert.equal(visible.container.clears, 1, 'the obsolete pending result is not painted');
+  visible.cleanup.forEach(callback => callback());
+
+  const shown = { value: false }, hidden = setup(shown, false);
+  for (let event = 0; event < 50; event++) hidden.changed(); await flush();
+  assert.equal(hidden.reads, 0, 'a hidden restored view defers aggregation');
+  assert.equal(hidden.container.clears, 0);
+  shown.value = true;
+  hidden.events.get('active-leaf-change')?.(); await flush();
+  assert.equal(hidden.reads, 1, 'one visible refresh catches up to all hidden updates');
+  assert.equal(hidden.container.clears, 1);
+  hidden.cleanup.forEach(callback => callback());
+
+  const lateVisibility = {value: true}, lateHidden = setup(lateVisibility, true);
+  lateVisibility.value = false; lateHidden.release();
+  for (let tick = 0; tick < 8; tick++) await Promise.resolve(); await flush();
+  assert.equal(lateHidden.container.clears, 0, 'a read finishing after its host was hidden cannot paint');
+  lateVisibility.value = true; lateHidden.events.get('active-leaf-change')?.(); await flush();
+  assert.equal(lateHidden.container.clears, 1);
+  lateHidden.cleanup.forEach(callback => callback());
+
+  const disposed = setup({ value: true }, true);
+  disposed.changed(); disposed.cleanup.forEach(callback => callback()); disposed.release();
+  for (let tick = 0; tick < 8; tick++) await Promise.resolve(); await flush();
+  assert.equal(disposed.container.clears, 0);
+  assert.equal(disposed.reads, 1, 'unloaded owner cannot schedule the pending refresh');
+});
+
+test('daily dashboard visibility, refresh timers and disposal use its popout owner rather than a hidden main document', async () => {
+  installDeterministicBrowserGlobals();
+  const mainListeners = new Map(), ownerListeners = new Map(), queued = new Map(), intervals = new Map();
+  let mainTimers = 0, nextTimer = 0, reads = 0, changed;
+  Object.assign(document, {hidden: true,
+    addEventListener: (name, callback) => mainListeners.set(name, callback),
+    removeEventListener: name => mainListeners.delete(name)});
+  window.setTimeout = () => { mainTimers++; throw new Error('A popout cannot schedule on the main window'); };
+  window.setInterval = () => { mainTimers++; throw new Error('A popout cannot clock on the main window'); };
+  const owner = {hidden: false,
+    addEventListener: (name, callback) => ownerListeners.set(name, callback),
+    removeEventListener: (name, callback) => { if (ownerListeners.get(name) === callback) ownerListeners.delete(name); },
+    defaultView: {
+      setTimeout: callback => { queued.set(++nextTimer, callback); return nextTimer; },
+      clearTimeout: id => queued.delete(id),
+      setInterval: callback => { intervals.set(++nextTimer, callback); return nextTimer; },
+      clearInterval: id => intervals.delete(id),
+    }};
+  const makeEl = (options = {}) => ({
+    ownerDocument: owner, isConnected: true, text: options.text || '', children: [], dataset: {}, style: {setProperty() {}}, clears: 0,
+    getClientRects: () => [{}],
+    empty() { this.clears++; this.text = ''; this.children = []; }, addClass() {}, setAttr() {},
+    setText(value) { this.text = value; }, addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+    createDiv(options) { return this.createEl('div', options); }, createSpan(options) { return this.createEl('span', options); },
+    createEl(tag, options = {}) { const child = makeEl(options); this.children.push(child); return child; },
+  });
+  const flush = async () => {
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    for (let cycle = 0; queued.size && cycle < 100; cycle++) {
+      const [id, callback] = queued.entries().next().value; queued.delete(id); callback();
+      for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    }
+  };
+  const {TPSHealthNativeDailyDashboardChild: Child} = await importPluginWithObsidianStub();
+  const cleanup = [], container = makeEl();
+  const plugin = {
+    settings: {macroBlockStyle: 'table', macroNutrientRows: 'hidden'},
+    app: {workspace: {on: () => ({})}, vault: {getAbstractFileByPath: () => null}},
+    nativeRecordService: {getDailyIndexStatus: () => 'ready', onDailyIndexStatusChanged: () => () => {},
+      onRecordsChanged: callback => { changed = callback; return () => {}; }, getDailyFoodEntries: () => []},
+    getMetricRenderConfigs: () => [],
+    getDailyFoodMacroTotals: async () => { reads++; return {dateIso: '2026-10-06', entryCount: 1, calories: 250}; },
+  };
+  const child = new Child(container, plugin, {dateIso: '2026-10-06'}, 'macros',
+    {macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden'});
+  child.register = callback => cleanup.push(callback); child.registerEvent = () => {};
+  child.onload(); await flush();
+  assert.equal(reads, 1, 'a visible popout reads despite the hidden main document');
+  assert.equal(container.clears, 1);
+  assert.equal(mainListeners.size, 0, 'no main-document visibility listener is registered');
+  assert.equal(ownerListeners.has('visibilitychange'), true);
+  for (let event = 0; event < 200; event++) changed({dates: ['2026-10-06'], kinds: ['food-entry']});
+  assert.equal(queued.size, 1, 'the existing refresh timer belongs to the visible popout');
+  await flush(); assert.equal(reads, 2); assert.equal(mainTimers, 0);
+
+  child.syncActiveWorkoutTimer({startedAt: '2026-10-06T10:00:00'});
+  assert.equal(intervals.size, 1, 'the existing active-workout clock belongs to the popout');
+  document.hidden = false; owner.hidden = true; ownerListeners.get('visibilitychange')();
+  assert.equal(intervals.size, 0, 'hiding the owning document clears its clock');
+  for (let event = 0; event < 200; event++) changed({dates: ['2026-10-06'], kinds: ['food-entry']});
+  await flush(); assert.equal(reads, 2, 'a hidden popout defers work despite the visible main document');
+  assert.equal(queued.size, 0);
+  owner.hidden = false; ownerListeners.get('visibilitychange')(); await flush();
+  assert.equal(reads, 3, 'one owning-document reveal catches up');
+  changed({dates: ['2026-10-06'], kinds: ['food-entry']});
+  child.syncActiveWorkoutTimer({startedAt: '2026-10-06T10:00:00'});
+  assert.equal(queued.size, 1); assert.equal(intervals.size, 1);
+  cleanup.forEach(callback => callback());
+  assert.equal(ownerListeners.size, 0); assert.equal(queued.size, 0); assert.equal(intervals.size, 0);
+  await flush(); assert.equal(reads, 3); assert.equal(mainTimers, 0);
+});
+
+test('restored hidden Health view opens before layout readiness and discovers saved nutrition afterward without a startup wait cycle', async () => {
+  installDeterministicBrowserGlobals();
+  const timers = new Map(); let nextTimer = 0;
+  window.setTimeout = callback => { timers.set(++nextTimer, callback); return nextTimer; };
+  window.clearTimeout = id => timers.delete(id);
+  const {default: Plugin, HealthDashboardView: View, TPSHealthNativeDailyDashboardChild: Child, HealthNativeRecordService: Service} = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app), layout = [], metadata = new Map(), cleanup = [];
+  fake.app.workspace.layoutReady = false;
+  fake.app.workspace.onLayoutReady = callback => layout.push(callback);
+  fake.app.vault.on = () => ({});
+  fake.app.metadataCache.initialized = false;
+  fake.app.metadataCache.on = (event, callback) => { metadata.set(event, callback); return {}; };
+  fake.files.set('Inbox/Startup food.md', '---\ntpsId: startup-food\ntpsSchemaVersion: 1\nkind: food-entry\ntitle: Saved food\ncompletedDate: 2026-10-06T12:00:00\ncalories: 250\n---\nSaved body.');
+  plugin.getGcmNativeRecordsApi = () => ({version: 6, isEnabled: () => true, create() {}, resolve() {}, update() {},
+    inspect: fm => fm?.tpsId ? {id: fm.tpsId, kind: fm.kind, schemaVersion: 1, frontmatter: {...fm}} : null});
+  plugin.scheduleWorkoutActionBars = () => {};
+  plugin.nativeRecordService = new Service(plugin);
+  plugin.nativeRecordService.setup();
+  let shown = false, reads = 0;
+  plugin.getMetricRenderConfigs = () => [];
+  const totals = plugin.getDailyFoodMacroTotals.bind(plugin);
+  plugin.getDailyFoodMacroTotals = async date => { reads++; return totals(date); };
+  const makeEl = (options = {}) => ({
+    text: options.text || '', attrs: options.attr || {}, children: [], dataset: {}, value: '', style: {setProperty() {}},
+    isConnected: true, getClientRects: () => shown ? [{}] : [],
+    empty() {this.children = []; this.text = '';}, addClass() {}, setAttr(name, value) {this.attrs[name] = value;}, setText(value) {this.text = value;},
+    addEventListener() {}, focus() {}, all() {return [this, ...this.children.flatMap(child => child.all())];},
+    querySelector(selector) {const label = selector.match(/aria-label="([^"]+)"/)?.[1]; return this.all().find(child => child.attrs['aria-label'] === label) || null;},
+    querySelectorAll() {return [];}, createDiv(options) {return this.createEl('div', options);}, createSpan(options) {return this.createEl('span', options);},
+    createEl(tag, options = {}) {const child = makeEl(options); this.children.push(child); return child;},
+  });
+  const view = Object.create(View.prototype);
+  view.contentEl = makeEl(); view.dateIso = '2026-10-06'; view.day = null;
+  view.addChild = child => {child.register = callback => cleanup.push(callback); child.registerEvent = () => {}; child.onload();};
+  view.removeChild = () => cleanup.splice(0).forEach(callback => callback());
+  view.host = {dashboardEnabled: () => true, dashboardWeek: () => [], dashboardAction() {},
+    mountDashboardDay: (container, date, onRendered) => new Child(container, plugin, {dateIso: date}, 'macros',
+      {macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden'}, '', {dates: [date], onRendered})};
+  await view.onOpen();
+  assert.equal(fake.app.workspace.layoutReady, false, 'actual ItemView.onOpen does not await layout/index/child reads');
+  assert.equal(plugin.nativeRecordService.getDailyIndexStatus(), 'loading');
+  assert.equal(reads, 0, 'hidden child opens without a pending aggregation');
+  fake.app.workspace.layoutReady = true; layout.splice(0).forEach(callback => callback());
+  fake.app.metadataCache.initialized = true; metadata.get('resolved')();
+  assert.equal((await plugin.nativeRecordService.readDailyFoodTotals('2026-10-06')).calories, 250);
+  shown = true; fake.app.workspace.trigger('active-leaf-change');
+  for (let cycle = 0; timers.size && cycle < 20; cycle++) {
+    const [id, callback] = timers.entries().next().value; timers.delete(id); callback();
+    for (let tick = 0; tick < 12; tick++) await Promise.resolve();
+  }
+  assert.equal(reads, 1);
+  assert.match(view.contentEl.all().map(el => el.text).join(' '), /250 kcal/);
+  assert.deepEqual(fake.writes, []);
+  await view.onClose(); plugin.nativeRecordService.dispose();
 });
 
 test('workout exercise menu removal uses the existing active session owner and preserves pointer state', async () => {

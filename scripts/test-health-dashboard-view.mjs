@@ -118,7 +118,7 @@ test('dashboard integration reuses indexed day blocks, scoped record events and 
  assert.match(main,/registerView\(HEALTH_DASHBOARD_VIEW/);assert.match(main,/id: "open-health-dashboard"/);
  assert.match(main,/getLeavesOfType\(HEALTH_DASHBOARD_VIEW\)\[0\]/);
  assert.match(main,/this\.dashboard\?\.dates \?\? \[this\.dateContext\.dateIso\]/);
- assert.match(main,/\+\+this\.renderGeneration;\s*if \(this\.refreshTimer/);
+ assert.match(main,/\+\+this\.renderGeneration;\s*this\.renderPending = null;\s*this\.refreshRequested = false;\s*if \(this\.refreshTimer/);
  const view=readFileSync('src/health-dashboard-view.ts','utf8');
  assert.doesNotMatch(view,/getMarkdownFiles|cachedRead|vault\.(read|modify|create)|setInterval|setTimeout|file-open|active-leaf-change/);
 });

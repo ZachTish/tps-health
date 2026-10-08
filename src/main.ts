@@ -1483,10 +1483,11 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   refreshGcmFoodLogButtonRegistration(): void {
+    const hadRegistration = Boolean(this.unregisterGcmFoodLogButton);
     this.clearGcmFoodLogButtonRegistration();
     if (!this.settings.showFoodLogButtonInGcm) {
       logger.flow("GCM", "food-log-action:disabled");
-      this.scheduleGcmMenuRefresh();
+      if (hadRegistration) this.scheduleGcmMenuRefresh(true);
       return;
     }
 
@@ -4221,6 +4222,7 @@ export default class TPSHealthPlugin extends Plugin {
     const tag = isRecipeLikeFoodType(type) ? this.settings.recipeTag : this.settings.customFoodTag;
     const recipeLike = isRecipeLikeFoodType(type);
     let recipeContent: string | null = null;
+    let committedFrontmatter: Record<string, unknown> | null = null;
     let currentRecipeBody = "";
     if (recipeLike) {
       const recipeDiskContent = await this.app.vault.read(file);
@@ -4258,7 +4260,9 @@ export default class TPSHealthPlugin extends Plugin {
       for (const key of FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS) delete frontmatter[key];
       if (!this.configuredKindCodec()) applyFoodIdentityFrontmatterMode(frontmatter, tag, type, this.settings);
       this.applyAtomicHealthFrontmatter(frontmatter, file, type, normalized.name, original);
+      committedFrontmatter = { ...frontmatter };
     });
+    if (committedFrontmatter) this.nativeRecordService?.acceptFoodDefinitionCommit(file, committedFrontmatter);
 
     if (recipeLike && recipeContent != null) {
       const processedContent = await this.app.vault.read(file);
@@ -4285,12 +4289,14 @@ export default class TPSHealthPlugin extends Plugin {
         replaceRecipeBody ? item.recipeBody ?? currentNonIngredientBody : currentNonIngredientBody,
       );
       await this.writeRecipeMutationContent(file, bodyContent, "food-note-body", processedContent, processedContent);
+      if (committedFrontmatter) await this.nativeRecordService?.persistLinkedFoodEntries(file);
       this.localFoodIndexDirty = true;
       logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
       return normalized;
     }
 
     await this.app.vault.process(file, (content) => stripStandaloneFoodIdentityTagFromBody(content, tag, type));
+    if (committedFrontmatter) await this.nativeRecordService?.persistLinkedFoodEntries(file);
     this.localFoodIndexDirty = true;
     logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
     return normalized;
@@ -7322,8 +7328,11 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  private scheduleGcmMenuRefresh(): void {
-    this.getGcmApi()?.overlays?.scheduleMenus?.("tps-health-food-log-button");
+  private scheduleGcmMenuRefresh(cleanup = false): void {
+    if (!cleanup && (!this.settings.showFoodLogButtonInGcm || !this.unregisterGcmFoodLogButton)) return;
+    const overlays = this.getGcmApi()?.overlays;
+    if (!overlays) return;
+    overlays.scheduleMenus?.("tps-health-food-log-button");
     window.setTimeout(() => this.updateGcmFoodLogButtonVisibility(), 50);
   }
 
@@ -11792,6 +11801,8 @@ export function activeWorkoutElapsedLabel(startedAt: string, now = Date.now()): 
 
 class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   private refreshTimer: number | null = null;
+  private renderPending: Promise<void> | null = null;
+  private refreshRequested = false;
   private activeWorkoutTimer: number | null = null;
   private renderGeneration = 0;
   private readonly disclosures = new Map<string, boolean>();
@@ -11809,13 +11820,41 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   }
 
   onload(): void {
+    const ownerDocument = this.containerEl.ownerDocument || document;
+    const ownerWindow = ownerDocument.defaultView || window;
     const scheduleRefresh = () => {
-      if (this.refreshTimer != null) return;
-      this.refreshTimer = window.setTimeout(() => {
+      this.refreshRequested = true;
+      if (this.renderPending) { ++this.renderGeneration; return; }
+      if (this.refreshTimer != null || !this.isVisible()) return;
+      this.refreshTimer = ownerWindow.setTimeout(() => {
         this.refreshTimer = null;
-        void this.render();
+        refresh();
       }, 0);
     };
+    const refresh = () => {
+      if (!this.isVisible()) { this.refreshRequested = true; return; }
+      this.refreshRequested = false;
+      const pending = this.render();
+      this.renderPending = pending;
+      void pending.finally(() => {
+        if (this.renderPending !== pending) return;
+        this.renderPending = null;
+        if (this.refreshRequested) scheduleRefresh();
+      });
+    };
+    const visibleRefresh = () => {
+      if (!this.isVisible()) {
+        this.refreshRequested = true;
+        if (this.renderPending) ++this.renderGeneration;
+        this.syncActiveWorkoutTimer(null);
+      } else if (this.refreshRequested) scheduleRefresh();
+    };
+    this.registerEvent(this.plugin.app.workspace.on("active-leaf-change", visibleRefresh));
+    this.registerEvent(this.plugin.app.workspace.on("layout-change", visibleRefresh));
+    if (typeof ownerDocument.addEventListener === "function") {
+      ownerDocument.addEventListener("visibilitychange", visibleRefresh);
+      this.register(() => ownerDocument.removeEventListener("visibilitychange", visibleRefresh));
+    }
     this.registerEvent(this.plugin.app.workspace.on("tps-health:appearance-changed" as any, () => {
       this.disclosures.delete("nutrients");
       scheduleRefresh();
@@ -11838,12 +11877,20 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     }
     this.register(() => {
       ++this.renderGeneration;
-      if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
+      this.renderPending = null;
+      this.refreshRequested = false;
+      if (this.refreshTimer != null) ownerWindow.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
-      if (this.activeWorkoutTimer != null) window.clearInterval(this.activeWorkoutTimer);
+      if (this.activeWorkoutTimer != null) ownerWindow.clearInterval(this.activeWorkoutTimer);
       this.activeWorkoutTimer = null;
     });
-    void this.render();
+    refresh();
+  }
+
+  private isVisible(): boolean {
+    const ownerDocument = this.containerEl.ownerDocument || document;
+    return !ownerDocument.hidden && this.containerEl.isConnected !== false
+      && (typeof this.containerEl.getClientRects !== "function" || this.containerEl.getClientRects().length > 0);
   }
 
   private async render(): Promise<void> {
@@ -11909,6 +11956,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       }
       const totals = await this.plugin.getDailyFoodMacroTotals(this.dateContext.dateIso);
       if (generation !== this.renderGeneration) return;
+      if (!this.isVisible()) { this.refreshRequested = true; return; }
       const currentStatus = this.plugin.nativeRecordService?.getDailyIndexStatus() ?? "ready";
       if (currentStatus === "loading") {
         this.syncActiveWorkoutTimer(null);
@@ -11951,7 +11999,8 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
   }
 
   private syncActiveWorkoutTimer(activeWorkout: ActiveNativeWorkoutPresentation | null): void {
-    if (this.activeWorkoutTimer != null) window.clearInterval(this.activeWorkoutTimer);
+    const ownerWindow = this.containerEl.ownerDocument?.defaultView || window;
+    if (this.activeWorkoutTimer != null) ownerWindow.clearInterval(this.activeWorkoutTimer);
     this.activeWorkoutTimer = null;
     if (!activeWorkout) return;
     const update = () => {
@@ -11960,7 +12009,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         .forEach((element) => element.setText(elapsed));
     };
     update();
-    this.activeWorkoutTimer = window.setInterval(update, 1000);
+    this.activeWorkoutTimer = ownerWindow.setInterval(update, 1000);
   }
 }
 
