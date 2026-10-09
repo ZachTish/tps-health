@@ -5243,6 +5243,8 @@ body .tps-health-food-search-frame .tps-health-log-date-banner { order: -1; marg
   .tps-health-settings-nutrient-goals input, .tps-health-settings-nutrient-goals select { width: 100%; }
 }
 
+.tps-health-settings-energy-controls .setting-item[hidden] { display: none !important; }
+
 .tps-health-energy-overview { container-type: inline-size; border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 16px; }
 .tps-health-energy-overview h3 { margin: 0 0 12px; font-size: 1.1em; }
 .tps-health-energy-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }

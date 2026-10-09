@@ -303,7 +303,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    const energy = createSettingsGroup(page, "Energy estimate", "Choose a fixed TDEE target or calculate one from BMR and activity level.");
+    const energy = createSettingsGroup(page, "Energy estimate", "Choose a fixed TDEE, BMR × activity factor, or BMR plus calories from activity notes.");
     renderEnergySettings(energy, this.plugin);
 
     const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Browse nutrients and set daily minimums, maximums or ranges. Food data can be incomplete; missing nutrients are never inferred. Targets are your own, not automatic dietary recommendations.");

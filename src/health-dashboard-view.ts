@@ -23,10 +23,12 @@ export function healthWeekDates(end: string): string[] {
 export interface HealthDashboardIndex {
   getDailyFoodTotals(date: string): { calories: number; entryCount: number };
   getDailyActivityTotals(date: string): { durationMinutes: number; steps: number; entryCount: number };
+  getDailyEnergyActivityTotals?(date: string): { dateIso: string; caloriesBurned: number; entryCount: number } | null;
 }
 export function healthDashboardWeek(index: HealthDashboardIndex, settings: EnergySettings, end: string) {
   return healthWeekDates(end).map(dateIso => ({
-    ...dailyEnergyEstimate(settings, { dateIso, ...index.getDailyFoodTotals(dateIso) }),
+    ...dailyEnergyEstimate(settings, { dateIso, ...index.getDailyFoodTotals(dateIso) },
+      settings.energyEstimateMode === "activity-notes" ? index.getDailyEnergyActivityTotals?.(dateIso) : undefined),
     activity: index.getDailyActivityTotals(dateIso),
   }));
 }
@@ -140,6 +142,11 @@ export class HealthDashboardView extends ItemView {
         ["Activity", day.activity.entryCount ? `${format(day.activity.durationMinutes)} min` : "—"],
       ]) row.createEl("td", { text: value, attr: { "data-label": label } });
     }
-    container.createEl("p", { cls: "tps-health-dashboard-note", text: `${indexing ? "— means no known logged data yet or no configured estimate while indexing continues. " : "— means no logged data or no configured estimate. "}Difference is logged intake minus estimated burn. Estimates use your current BMR and activity factor, including typical exercise; activity calories are not added again.` });
+    const method = days[0]?.mode;
+    const estimateNote = method === "activity-notes"
+      ? "Estimates add the day's matching activity calories to your current BMR. Only logged activity is included."
+      : method === "fixed" ? "Estimates use your current fixed TDEE; activity calories are not added again."
+        : "Estimates use your current BMR and activity factor, including typical exercise; activity calories are not added again.";
+    container.createEl("p", { cls: "tps-health-dashboard-note", text: `${indexing ? "— means no known logged data yet or no configured estimate while indexing continues. " : "— means no logged data or no configured estimate. "}Difference is logged intake minus estimated burn. ${estimateNote}` });
   }
 }

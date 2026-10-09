@@ -4,6 +4,7 @@ import type { ExtraNutrition } from "./nutrients";
 import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { normalizeFoodLogTags } from "./food-log-tags";
+import { parseEnergyActivitySettings, projectEnergyActivity } from './energy-activity';
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { id, isoDateKey } from './format';
@@ -75,6 +76,12 @@ interface IndexedHealthRecord {
   id: string;
   kind: NativeHealthKind;
   dailyDates: string[];
+}
+
+interface IndexedEnergyActivity {
+  file: TFile;
+  dateIso: string;
+  caloriesBurned: number;
 }
 
 export interface NativeWorkoutSetSnapshot {
@@ -957,6 +964,11 @@ export class HealthNativeRecordService {
   private readonly recordsByPath = new Map<string, IndexedHealthRecord>();
   private readonly pathsByKind = new Map<NativeHealthKind, Set<string>>();
   private readonly pathsByDate = new Map<string, Set<string>>();
+  // Read-only metadata projections share discovery and source ownership with
+  // native records, but never become identities that a mutation can resolve.
+  private readonly energyActivitiesByPath = new Map<string, IndexedEnergyActivity>();
+  private readonly energyActivityPathsByDate = new Map<string, Set<string>>();
+  private energyActivityConfiguration = '';
   private readonly entryPathsByFoodPath = new Map<string, Set<string>>();
   private readonly foodDefinitionsByPath = new Map<string, Record<string, unknown>>();
   private readonly workoutDataByPath = new Map<string, StoredWorkoutExercise[]>();
@@ -993,6 +1005,16 @@ export class HealthNativeRecordService {
         || this.providerConfiguration(api) === this.indexedProviderConfiguration)) return;
       // A provider reload invalidates old reads, not the accepted food data.
       const previousStatus = this.getDailyIndexStatus();
+      if (!api && this.plugin.settings.energyEstimateMode === 'activity-notes') {
+        // Energy metadata does not depend on native mutation authority. Let
+        // its existing finite discovery finish while the provider is absent.
+        this.refreshGenerations.clear();
+        this.indexedProvider = null;
+        this.indexedProviderConfiguration = '';
+        this.plugin.scheduleWorkoutActionBars();
+        this.notifyDailyIndexStatusChanged(previousStatus);
+        return;
+      }
       this.cancelDiscovery();
       this.refreshGenerations.clear();
       this.indexedProvider = null;
@@ -1039,7 +1061,7 @@ export class HealthNativeRecordService {
           }
         }
       }
-      this.indexFile(file, frontmatter, data);
+      this.indexFile(file, frontmatter, data, undefined, cache ? cache.tags?.map(tag => tag.tag) || [] : undefined);
       if (wasPending && typeof data !== 'string'
         && this.recordsByPath.get(file.path)?.kind === 'workout-session') {
         this.hydrateWorkoutBodiesAfterLayout([file]);
@@ -1103,6 +1125,9 @@ export class HealthNativeRecordService {
       }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
+      // A late callback for a replaced object cannot project its old cache
+      // over the current file now owning the destination path.
+      if (file instanceof TFile && vault.getAbstractFileByPath(file.path) !== file) return;
       // A stale rename must not move a different file now occupying oldPath.
       const current = vault.getAbstractFileByPath(oldPath);
       if (current instanceof TFile && current !== file) return;
@@ -1112,11 +1137,27 @@ export class HealthNativeRecordService {
       this.refreshGenerations.delete(oldPath);
       const wasHealthSource = this.recordsByPath.has(oldPath) || this.entryPathsByFoodPath.has(oldPath)
         || oldPath === this.plugin.settings.activeWorkoutPath || file.path === this.plugin.settings.activeWorkoutPath;
+      const previousEnergy = this.energyActivitiesByPath.get(oldPath);
       this.foodDefinitionsByPath.delete(oldPath);
       const workoutData = this.workoutDataByPath.get(oldPath);
       this.workoutDataByPath.delete(oldPath);
       if (workoutData && file instanceof TFile) this.workoutDataByPath.set(file.path, workoutData);
-      this.removePath(oldPath);
+      this.removePath(oldPath, true, false);
+      if (file instanceof TFile && file.extension === 'md' && this.plugin.settings.energyEstimateMode === 'activity-notes') {
+        const cache = metadataCache.getFileCache(file);
+        if (cache) {
+          this.pendingMetadataPaths.delete(file.path);
+          this.projectEnergyFile(file, cache.frontmatter ?? null, cache.tags?.map(tag => tag.tag), false);
+        } else {
+          // Rename does not prove a changed source. Retain its accepted value
+          // until metadata resolves, without reading an unrelated note body.
+          if (previousEnergy) this.setEnergyActivity(file.path, { ...previousEnergy, file }, false);
+          this.pendingMetadataPaths.set(file.path, file);
+        }
+      }
+      const currentEnergy = this.energyActivitiesByPath.get(file.path);
+      this.emitEnergyActivityChange(file.path, [...new Set([previousEnergy?.dateIso, currentEnergy?.dateIso]
+        .filter((date): date is string => !!date))]);
       this.notifyDailyIndexStatusChanged(previousStatus);
       // Obsidian does not emit metadata changed on rename. Preserve that
       // explicit refresh for Health files without reading unrelated notes.
@@ -1140,7 +1181,7 @@ export class HealthNativeRecordService {
   getDailyIndexStatus(): 'loading' | 'partial' | 'ready' {
     if (this.disposed) return 'loading';
     if (!this.metadataResolved || !this.indexedProvider || this.discoveryPass) {
-      return this.recordsByPath.size > 0 ? 'partial' : 'loading';
+      return this.recordsByPath.size > 0 || this.energyActivitiesByPath.size > 0 ? 'partial' : 'loading';
     }
     return this.pendingMetadataPaths.size > 0 ? 'partial' : 'ready';
   }
@@ -1177,6 +1218,8 @@ export class HealthNativeRecordService {
     this.cancelDiscovery();
     this.refreshGenerations.clear();
     this.pendingMetadataPaths.clear();
+    this.energyActivitiesByPath.clear();
+    this.energyActivityPathsByDate.clear();
   }
 
   refreshConfiguration(previousStatus = this.getDailyIndexStatus()): void {
@@ -2265,6 +2308,24 @@ export class HealthNativeRecordService {
     };
   }
 
+  getDailyEnergyActivityTotals(dateIso: string): { dateIso: string; caloriesBurned: number; entryCount: number } | null {
+    let caloriesBurned = 0, entryCount = 0;
+    if (this.disposed || this.plugin.settings.energyEstimateMode !== 'activity-notes') return null;
+    // An invalid source configuration is unknown, not a measured empty day.
+    // This validates only the tiny configuration; it performs no inspection.
+    try { parseEnergyActivitySettings(this.plugin.settings); } catch { return null; }
+    for (const path of this.energyActivityPathsByDate.get(dateIso) || []) {
+      const activity = this.energyActivitiesByPath.get(path);
+      if (!activity) continue;
+      caloriesBurned += activity.caloriesBurned;
+      entryCount++;
+    }
+    // Missing candidates may still belong to an apparently empty date. Keep
+    // accepted matches visible, but do not publish an unproven zero baseline.
+    if (entryCount === 0 && (!this.metadataResolved || this.discoveryPass || this.pendingMetadataPaths.size > 0)) return null;
+    return { dateIso, caloriesBurned, entryCount };
+  }
+
   /**
    * Explicitly remove legacy note-level identity aliases after first replacing
    * workout child-ID joins with one durable wikilink relationship.
@@ -2892,10 +2953,21 @@ export class HealthNativeRecordService {
   private rebuild(resolved = false, previousStatus = this.getDailyIndexStatus()): void {
     if (this.disposed) return;
     this.cancelDiscovery();
+    const settings = this.plugin.settings;
+    const energyConfiguration = JSON.stringify([
+      settings.energyEstimateMode, settings.energyActivityIdentificationMode,
+      settings.energyActivityPropertyKey, settings.energyActivityPropertyValue,
+      settings.energyActivityTag, settings.energyActivityCaloriesPropertyKey,
+      settings.energyActivityDatePropertyKey, settings.nativeRecordProperties?.archived,
+    ]);
+    if (energyConfiguration !== this.energyActivityConfiguration) {
+      this.energyActivityConfiguration = energyConfiguration;
+      for (const path of this.energyActivitiesByPath.keys()) this.setEnergyActivity(path, null);
+    }
     const api = this.readApi();
     this.indexedProvider = api;
-    if (!api) return;
-    this.indexedProviderConfiguration = this.providerConfiguration(api);
+    if (!api && settings.energyEstimateMode !== 'activity-notes') return;
+    this.indexedProviderConfiguration = api ? this.providerConfiguration(api) : '';
     this.pendingMetadataPaths.clear();
     const vault = this.plugin.app.vault;
     if (typeof vault?.getMarkdownFiles !== 'function') return;
@@ -2918,6 +2990,7 @@ export class HealthNativeRecordService {
     // Removed-record reconciliation shares the same bounded queue so events
     // arriving during any yield are drained before the pass can become ready.
     if (full) for (const path of this.recordsByPath.keys()) queue.add(path);
+    if (full) for (const path of this.energyActivitiesByPath.keys()) queue.add(path);
     const pass: HealthDiscoveryPass = {
       full, queue, sourceFiles: new Set(), readyWorkouts: [],
       reconcilePending: false, resolved, completion, complete, fail, previousStatus, hadFiles,
@@ -2998,7 +3071,7 @@ export class HealthNativeRecordService {
             this.pendingMetadataPaths.set(path, current);
           } else {
             this.pendingMetadataPaths.delete(path);
-            this.indexFile(current, cache.frontmatter ?? null, undefined, pass);
+            this.indexFile(current, cache.frontmatter ?? null, undefined, pass, cache.tags?.map(tag => tag.tag) || []);
             if (!pass.full && this.recordsByPath.get(path)?.kind === 'workout-session') pass.readyWorkouts.push(current);
           }
         }
@@ -3050,9 +3123,18 @@ export class HealthNativeRecordService {
     });
   }
 
-  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string, discovery?: HealthDiscoveryPass): void {
+  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string, discovery?: HealthDiscoveryPass, tags?: string[], physicalSource = true): void {
+    if (this.disposed) return;
     if (this.discoveryPass && discovery !== this.discoveryPass) this.discoveryPass.sourceFiles.add(file);
     const api = this.readApi();
+    if (!api && this.plugin.settings.energyEstimateMode !== 'activity-notes') return;
+    // An explicit source is authoritative; absent metadata is still unknown.
+    // Projection happens before native identity checks so ordinary notes can
+    // contribute without adding a record ID or changing their source.
+    const cache = frontmatter === undefined || (physicalSource && this.plugin.settings.energyEstimateMode === 'activity-notes' && tags === undefined)
+      ? this.plugin.app.metadataCache.getFileCache(file) : undefined;
+    const resolved = frontmatter === undefined ? cache?.frontmatter : frontmatter;
+    if (physicalSource && (frontmatter !== undefined || cache)) this.projectEnergyFile(file, resolved ?? null, tags ?? cache?.tags?.map(tag => tag.tag));
     // Provider startup/reload is not evidence that a record was deleted.
     if (!api) return;
     const previous = this.recordsByPath.get(file.path);
@@ -3061,9 +3143,6 @@ export class HealthNativeRecordService {
     this.removePath(file.path, false);
     // An explicit absent frontmatter value comes from an indexed source. Do
     // not revive its old identity from a lagging getFileCache result.
-    const resolved = frontmatter === undefined
-      ? this.plugin.app.metadataCache.getFileCache(file)?.frontmatter
-      : frontmatter;
     const inspected = api.inspect(resolved);
     const kind = canonicalNativeKind(this.plugin.settings, inspected?.kind);
     const recordId = String(inspected?.id || '').trim();
@@ -3135,7 +3214,10 @@ export class HealthNativeRecordService {
     ]);
   }
 
-  private removePath(path: string, notify = true): void {
+  private removePath(path: string, notify = true, energyNotify = notify): void {
+    // Native replacement removes its own indexes temporarily. Only a real
+    // removal may discard the independent read-only energy projection.
+    if (notify) this.setEnergyActivity(path, null, energyNotify);
     const record = this.recordsByPath.get(path);
     this.recordsByPath.delete(path);
     if (!record) return;
@@ -3153,6 +3235,38 @@ export class HealthNativeRecordService {
     paths?.delete(path);
     if (!paths || paths.size === 0) this.pathsByKind.delete(record.kind);
     if (notify) this.emitChange(path, record, null);
+  }
+
+  private projectEnergyFile(file: TFile, frontmatter: Record<string, unknown> | null, tags: string[] = [], notify = true): void {
+    if (this.disposed || this.plugin.settings.energyEstimateMode !== 'activity-notes') return;
+    const projection = frontmatter ? projectEnergyActivity(this.plugin.settings, frontmatter, tags) : null;
+    this.setEnergyActivity(file.path, projection ? { file, ...projection } : null, notify);
+  }
+
+  private setEnergyActivity(path: string, next: IndexedEnergyActivity | null, notify = true): void {
+    const previous = this.energyActivitiesByPath.get(path);
+    if (previous?.file === next?.file && previous?.dateIso === next?.dateIso
+      && previous?.caloriesBurned === next?.caloriesBurned) return;
+    if (previous) {
+      const paths = this.energyActivityPathsByDate.get(previous.dateIso);
+      paths?.delete(path);
+      if (paths?.size === 0) this.energyActivityPathsByDate.delete(previous.dateIso);
+      this.energyActivitiesByPath.delete(path);
+    }
+    if (next) {
+      this.energyActivitiesByPath.set(path, next);
+      const paths = this.energyActivityPathsByDate.get(next.dateIso) || new Set<string>();
+      paths.add(path);
+      this.energyActivityPathsByDate.set(next.dateIso, paths);
+    }
+    const dates = [...new Set([previous?.dateIso, next?.dateIso].filter((date): date is string => !!date))];
+    if (notify) this.emitEnergyActivityChange(path, dates);
+  }
+
+  private emitEnergyActivityChange(path: string, dates: string[]): void {
+    if (!dates.length) return;
+    const change: NativeHealthRecordChange = { path, kinds: ['activity-entry'], dates };
+    for (const listener of this.changeListeners) listener(change);
   }
 
   private async refreshFile(file: TFile): Promise<void> {
@@ -3380,7 +3494,10 @@ export class HealthNativeRecordService {
   }
 
   private trackHandle(handle: NativeRecordHandle): void {
-    this.indexFile(handle.file, handle.frontmatter);
+    // A decoded native handle adds canonical aliases that may not exist in
+    // the note. Only physical metadata/source can authorize energy matching;
+    // retain accepted energy until that source's indexed event arrives.
+    this.indexFile(handle.file, handle.frontmatter, undefined, undefined, undefined, false);
   }
 
   private toHandle(record: IndexedHealthRecord): NativeRecordHandle {

@@ -8,7 +8,7 @@ export type WorkoutLogTarget = "session-note" | "daily-note" | "both";
 export type WorkoutDailyNotePlacement = "after-frontmatter" | "before-first-h2" | "bottom";
 export type ActivitySource = "manual" | "workout" | "apple-health";
 export type HealthStorageMode = "legacy" | "native-records";
-export type EnergyEstimateMode = "calculated" | "fixed";
+export type EnergyEstimateMode = "calculated" | "fixed" | "activity-notes";
 export type WorkoutSetNotation = "compact" | "verbose";
 export type WorkoutIntervalMode = "duration" | "end";
 export type WorkoutControlPlacement = "inline" | "floating";
@@ -21,7 +21,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 8;
+export const TPS_HEALTH_SCHEMA_VERSION = 9;
 
 export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workoutSession" | "workoutExercise";
 export type HealthNativeRecordPropertyKey = ExtraNutrientKey
@@ -95,6 +95,12 @@ export interface TPSHealthSettings {
   energyActivityFactor: number;
   energyEstimateMode: EnergyEstimateMode;
   energyFixedTdeeKcal: number | null;
+  energyActivityIdentificationMode: "property" | "tag";
+  energyActivityPropertyKey: string;
+  energyActivityPropertyValue: string;
+  energyActivityTag: string;
+  energyActivityCaloriesPropertyKey: string;
+  energyActivityDatePropertyKey: string;
   calorieGoal: number;
   proteinGoalG: number;
   activityGoalMinutes: number;
@@ -412,6 +418,12 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   energyActivityFactor: 1.4,
   energyEstimateMode: "calculated",
   energyFixedTdeeKcal: null,
+  energyActivityIdentificationMode: "property",
+  energyActivityPropertyKey: "kind",
+  energyActivityPropertyValue: "",
+  energyActivityTag: "",
+  energyActivityCaloriesPropertyKey: "caloriesBurned",
+  energyActivityDatePropertyKey: "completedDate",
   calorieGoal: 2400,
   proteinGoalG: 180,
   activityGoalMinutes: 45,

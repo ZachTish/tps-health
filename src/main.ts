@@ -3,6 +3,7 @@ import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
 import { HealthKindCodec, libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
+import { energyActivitySourceSignature, type EnergyActivitySettings } from "./energy-activity";
 import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange } from "./nutrient-goals";
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
@@ -47,6 +48,7 @@ import { buildVaultDestinationPath, fileIsInVaultDestination, normalizeVaultDest
 import { workoutDurationMinutes, workoutEndedAt, workoutIntervalPropertyKey, workoutStartedAt, workoutStartPropertyKey, workoutTemporalPropertyUpdates } from "./workout-properties";
 import {
   DEFAULT_SETTINGS,
+  EnergyEstimateMode,
   ActivityLogEntry,
   ExerciseItem,
   FoodItem,
@@ -1427,19 +1429,27 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async saveEnergySettings(bmr: string, factor: string,
-    mode: "calculated" | "fixed" = this.settings.energyEstimateMode,
-    fixed: string = this.settings.energyFixedTdeeKcal == null ? "" : String(this.settings.energyFixedTdeeKcal)): Promise<void> {
+    mode: EnergyEstimateMode = this.settings.energyEstimateMode,
+    fixed: string = this.settings.energyFixedTdeeKcal == null ? "" : String(this.settings.energyFixedTdeeKcal),
+    activity: EnergyActivitySettings = this.settings): Promise<void> {
     if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing energy settings.");
-    const next = parseEnergySettings(bmr, factor, mode, fixed);
+    const next = parseEnergySettings(bmr, factor, mode, fixed, activity);
     const previous = {energyBmrKcal:this.settings.energyBmrKcal,energyActivityFactor:this.settings.energyActivityFactor,
-      energyEstimateMode:this.settings.energyEstimateMode,energyFixedTdeeKcal:this.settings.energyFixedTdeeKcal};
+      energyEstimateMode:this.settings.energyEstimateMode,energyFixedTdeeKcal:this.settings.energyFixedTdeeKcal,
+      energyActivityIdentificationMode:this.settings.energyActivityIdentificationMode,
+      energyActivityPropertyKey:this.settings.energyActivityPropertyKey,energyActivityPropertyValue:this.settings.energyActivityPropertyValue,
+      energyActivityTag:this.settings.energyActivityTag,energyActivityCaloriesPropertyKey:this.settings.energyActivityCaloriesPropertyKey,
+      energyActivityDatePropertyKey:this.settings.energyActivityDatePropertyKey};
     Object.assign(this.settings, next);
     try {
       await this.saveSettings();
-      this.app.workspace.trigger("tps-health:appearance-changed");
-      logger.flow("Settings", "energy-estimate:updated", {enabled:dailyEnergyEstimate(this.settings,{dateIso:"",calories:0,entryCount:0}).estimatedBurnKcal != null,
-        mode:this.settings.energyEstimateMode});
     } catch (error) { Object.assign(this.settings, previous); throw error; }
+    if (energyActivitySourceSignature(previous) !== energyActivitySourceSignature(this.settings))
+      this.nativeRecordService?.refreshConfiguration();
+    this.app.workspace.trigger("tps-health:appearance-changed");
+    logger.flow("Settings", "energy-estimate:updated", {enabled:this.settings.energyEstimateMode === "activity-notes"
+      ? this.settings.energyBmrKcal != null : dailyEnergyEstimate(this.settings,{dateIso:"",calories:0,entryCount:0}).estimatedBurnKcal != null,
+      mode:this.settings.energyEstimateMode});
   }
 
   async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false): Promise<void> {
@@ -11985,7 +11995,9 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
         this.plugin.nativeRecordService?.getDailyActivityEntries(this.dateContext.dateIso) ?? [],
         this.display,
         actions,
-        this.section === "overview" ? dailyEnergyEstimate(this.plugin.settings, totals) : undefined,
+        this.section === "overview" ? dailyEnergyEstimate(this.plugin.settings, totals,
+          this.plugin.settings.energyEstimateMode === "activity-notes"
+            ? this.plugin.nativeRecordService?.getDailyEnergyActivityTotals(this.dateContext.dateIso) : undefined) : undefined,
       );
       showIndexing();
       this.syncActiveWorkoutTimer(activeWorkout);

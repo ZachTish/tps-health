@@ -1,5 +1,34 @@
 # TPS Health
 
+## 4.4.0 — BMR plus activity notes
+
+Choose **Health → Food & goals → Energy estimate → TDEE method → BMR + activity notes**, enter your BMR, configure which notes contribute, and choose **Save energy settings**. Each displayed day estimates burn as **BMR + that day's matching activity calories**. Once indexing is complete, a valid empty day uses BMR alone. The activity factor and separate native activity/workout total are not added in this mode. Fixed and Calculated remain available, retain their saved values and defaults, and ignore the activity projection.
+
+The settings group remains on the existing **Food & goals** route. Method-specific controls appear beside the method; the identification selector displays either the property/value inputs or the tag input. There is no new destination or disclosure. Draft changes do not save until the explicit button is pressed. Its status preview is announced, fields have accessible labels, and save restores focus to the button. The existing responsive settings layout applies on narrow screens.
+
+| Setting key | Meaning and default |
+| --- | --- |
+| `energyActivityIdentificationMode` | `property` by default; alternatively `tag`. |
+| `energyActivityPropertyKey` | Identification key; defaults to `kind`. |
+| `energyActivityPropertyValue` | Exact matching value; blank by default, so no classification is invented. |
+| `energyActivityTag` | Matching tag; blank by default. A leading `#` is optional. |
+| `energyActivityCaloriesPropertyKey` | Numeric activity calories in kcal; defaults to `caloriesBurned`. |
+| `energyActivityDatePropertyKey` | The activity's date or datetime; defaults to `completedDate`. |
+
+Property matching accepts the exact configured scalar or a matching element of a list; a matching file contributes once even if its list repeats the value. Property keys are resolved without case sensitivity, but ambiguous case variants are not guessed. Values match exactly. Tag matching is case-insensitive and includes the selected tag and its descendants, from frontmatter tags or Obsidian's cached inline tags. Prefix collisions do not match. Every identification, calories and date key/value is configurable; these defaults do not rewrite notes or become mandatory note fields.
+
+Calories must be a finite nonnegative number or numeric string; known zero is accepted. Missing or malformed measurements and invalid dates do not contribute. ISO calendar dates retain their day; datetimes are assigned to their local day. No fallback date/calorie key, duration-to-calorie estimate or inferred BMR is used. The configured Health archive key excludes a note when its value is `true`. Choose individual activity notes **or** a daily active-calorie summary; matching both sums both authored measurements, because the plugin does not guess whether they overlap. Select active calories rather than a total burn value that already includes BMR.
+
+The energy overview explains the BMR/activity sum and matching-note count. The selected day and seven-day comparison use the same dated projection. Missing or invalid source configuration remains an unavailable estimate, not an invented BMR-only total. Missing metadata preserves accepted evidence while the existing index remains pending; an apparently empty day stays unavailable until indexing can prove it has no matching entries. The overview notes that unlogged activity and other movement are not estimated. Changing current BMR applies to every displayed date, including historical dates; dated BMR profiles are not introduced.
+
+This feature is read-only. It writes no TDEE property, record identity or migration into notes. Ordinary matching notes need no native ID or GCM identity for their energy projection; food/workout ownership and dashboard provider readiness retain their existing requirements and honest loading/partial states. Decoded native-handle aliases cannot substitute for the configured fields actually present in a note. Health's existing finite discovery and incremental metadata/rename/delete listeners maintain transient path/date projections. There is no new poller, timer, body-reading pass or routine-edit inventory. Explicit source-selector changes reuse one existing configuration rebuild; BMR-only edits and switching between Fixed and Calculated request none.
+
+Settings schema **9** uses the existing future-schema guard so an older Health version cannot overwrite this method/configuration after it is saved. Existing mode/defaults are preserved on upgrade; update Health on other devices before changing synced schema-9 settings. Validation/save failures leave the prior energy configuration intact. If persistence succeeds but a later projection/UI callback fails, the committed configuration stays consistent between memory and storage. No Apple app, companion widget or importing behavior changes. Minimum Obsidian remains **1.12.0**; this additive mode is a minor release.
+
+Focused source regressions cover matching, local-day handling, mapped fields, deduplication by path, physical-source authority, metadata readiness, rename/delete/replacement, disposal, provider changes, selected-day math, conditional native Setting controls, the actual energy save owner and seven-day integration. Synthetic 4,049-note discovery shares one inventory, performs no raw/cached source reads or writes for energy projection, and subsequent day reads visit only matching dated paths. Unchanged metadata bursts emit no redundant energy changes. These counts describe the isolated source harness, not the installed whole-plugin startup.
+
+**Final validation:** 793 of 794 checks passed, with zero failures and one existing optional USDA credential skip. TypeScript and the test suite’s build passed with TPS_NO_DEPLOY=1; a separate ordinary build deployed to the test vault.. **Installed test-vault verification:** The foreground installed test-vault flow used all eight active TPS consumers and two isolated ordinary activity notes without native IDs. A saved property/list selector and BMR 1,600 produced 2,050 kcal from 450 activity calories; a direct calorie edit changed the daily and seven-day views to 2,450 without refresh. Moving the edited note to the prior date changed today to 1,750 and the prior day to 2,300. Saving a parent tag matched nested frontmatter tags; a measured-zero edit retained one contributing entry with a 1,600-kcal baseline, and renaming it retained the total. Actual settings accessibility and computed styles confirmed inactive multiplier/fixed/property controls are hidden in tag mode. The final 4.4.0 plugin reload preserved the saved tag method and reconstructed both days from saved notes (today: one zero-calorie entry/BMR 1,600; prior day: 700 activity calories). Original energy settings and the prior leaf were restored; all pre-existing normalized settings matched except the expected schema 8→9 upgrade, and the six new fields were restored to their defaults. Both owned fixtures were archived byte-identically, with their bodies preserved. Every other captured TPS settings file remained byte-identical; Health persisted only its expected schema/new defaults and QA-restored values. No provider requests, production mutations or physical iPhone QA were performed.. [4.4.0 release notes](release-notes/4.4.0.md) record the final artifact hashes and verification boundaries. Publication/handoff status: Stable numeric 4.4.0 is the tested BRAT handoff, ready for the user’s pull after public release publication. Production is untouched; installation there is the user's BRAT pull. No physical iPhone or end-to-end performance claim is made.
+
 ## 4.3.2 — Read-only startup nutrition and coalesced dashboards
 
 Whole-note discovery and generic metadata/source invalidation now update Health's read-only nutrition projection without scheduling note writes. Linked historical logs still display nutrition derived from their current food definition and quantity, including late-arriving definitions; their stored frontmatter remains authored source. The retired delayed food-projection timers and generation map are removed.
@@ -355,7 +384,7 @@ This is a minor configuration/API release with no data/settings migration. Nativ
 
 Food, recipes, nutrition dashboards, activity, and workout logging for Obsidian.
 
-Current release: [4.3.1](https://github.com/ZachTish/tps-health/releases/tag/4.3.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [4.4.0](https://github.com/ZachTish/tps-health/releases/tag/4.4.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

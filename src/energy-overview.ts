@@ -2,7 +2,8 @@ import type { DailyEnergyEstimate } from './energy-estimate';
 import { formatNativeDailyMacroValue } from './native-daily-dashboard';
 
 export function energyComparisonText(model: DailyEnergyEstimate): string {
-  if (model.estimatedBurnKcal == null) return model.mode === 'fixed' ? 'Set fixed TDEE' : 'Set your BMR';
+  if (model.estimatedBurnKcal == null) return model.mode === 'fixed' ? 'Set fixed TDEE' :
+    model.mode === 'activity-notes' && model.bmrKcal != null ? 'Activity estimate unavailable' : 'Set your BMR';
   if (model.differenceKcal == null) return 'No food logged';
   const rounded = Math.round(model.differenceKcal * 10) / 10;
   if (rounded === 0) return 'Matches estimate';
@@ -14,7 +15,7 @@ export function renderEnergyOverview(container: HTMLElement, model: DailyEnergyE
   root.createEl('h3',{text:'Daily energy · '+model.dateIso});
   const cards=root.createEl('dl',{cls:'tps-health-energy-cards'});
   const rows=[
-    ['Estimated full-day burn',model.estimatedBurnKcal == null ? 'Not configured' : formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal'],
+    [model.mode === 'activity-notes' ? 'BMR + logged activity' : 'Estimated full-day burn',model.estimatedBurnKcal == null ? 'Not configured' : formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal'],
     ['Logged food',model.consumedKcal == null ? 'No food logged' : formatNativeDailyMacroValue(model.consumedKcal)+' kcal'],
     ['Intake compared with burn',energyComparisonText(model)],
   ];
@@ -24,8 +25,13 @@ export function renderEnergyOverview(container: HTMLElement, model: DailyEnergyE
   }
   if(model.estimatedBurnKcal == null) root.createEl('p',{text:model.mode === 'fixed' ?
     'Set a fixed TDEE in Health → Food & goals → Energy estimate to compare intake and burn.' :
+    model.mode === 'activity-notes' && model.bmrKcal != null ?
+    'Activity data is not ready or the configured activity source is invalid. Check Health → Food & goals → Energy estimate.' :
     'Set your BMR in Health → Food & goals → Energy estimate to compare intake and burn.'});
   else if(model.mode === 'fixed') root.createEl('p',{text:'Fixed daily target: '+formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal/day.'});
+  else if(model.mode === 'activity-notes') root.createEl('p',{text:'BMR '+formatNativeDailyMacroValue(model.bmrKcal!)+' + logged activity '+formatNativeDailyMacroValue(model.activityCaloriesBurned!)+' = '+formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal · '+model.activityEntryCount+' matching '+(model.activityEntryCount === 1 ? 'note.' : 'notes.')});
   else root.createEl('p',{text:'BMR '+formatNativeDailyMacroValue(model.bmrKcal!)+' × activity factor '+model.activityFactor+' = '+formatNativeDailyMacroValue(model.estimatedBurnKcal)+' kcal/day.'});
-  root.createEl('p',{cls:'tps-health-energy-note',text:'Full-day target using your current settings, not burn so far. Compares only logged food; incomplete logging changes the comparison. Workout calories are shown separately and are not added again.'});
+  root.createEl('p',{cls:'tps-health-energy-note',text:model.mode === 'activity-notes'
+    ? 'BMR plus recorded activity for this date. Other movement and unlogged activity are not estimated. Compares only logged food; incomplete logging changes the comparison. No activity multiplier or separate workout total is added.'
+    : 'Full-day target using your current settings, not burn so far. Compares only logged food; incomplete logging changes the comparison. Workout calories are shown separately and are not added again.'});
 }

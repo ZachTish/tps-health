@@ -30,6 +30,18 @@ test('week reads only seven indexed days, preserves absent/zero intake, and neve
  assert.equal(week[5].consumedKcal,0);assert.equal(week[5].differenceKcal,-2400);
  assert.equal(week[0].estimatedBurnKcal,2400);assert.equal(week[0].differenceKcal,-400);
 });
+test('activity-notes week uses the same selected-date energy index without adding native workout totals twice',()=>{
+ const reads=[];
+ const index={getDailyFoodTotals:()=>({entryCount:1,calories:2100}),
+   getDailyActivityTotals:()=>({entryCount:1,durationMinutes:30,steps:1000,caloriesBurned:900}),
+   getDailyEnergyActivityTotals(dateIso){reads.push(dateIso);return {dateIso,entryCount:1,caloriesBurned:dateIso.endsWith('03')?500:200};}};
+ const week=healthDashboardWeek(index,{energyBmrKcal:1600,energyActivityFactor:1.5,energyEstimateMode:'activity-notes'},'2026-01-03');
+ assert.equal(reads.length,7);assert.equal(week[6].estimatedBurnKcal,2100);assert.equal(week[6].differenceKcal,0);
+ assert.equal(week[0].estimatedBurnKcal,1800);assert.equal(week[0].differenceKcal,300);
+ reads.length=0;
+ healthDashboardWeek(index,{energyBmrKcal:1600,energyActivityFactor:1.5},'2026-01-03');
+ assert.equal(reads.length,0,'other methods do not request the activity-energy index');
+});
 test('one seven-day read renders a compact glance before daily detail and full mobile cards after it',async()=>{
  const h=harness();await h.view.onOpen();
  const sections=h.view.contentEl.children.map(e=>e.cls);
