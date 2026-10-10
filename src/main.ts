@@ -1060,12 +1060,16 @@ export default class TPSHealthPlugin extends Plugin {
     });
     if (typeof MutationObserver !== "undefined" && this.app.workspace.containerEl) {
       const workoutReadingObserver = new MutationObserver((records) => {
+        // Preview virtualization can remove the card's containing section.
         const structural = records.some((record) => {
           const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
           return nodes.some((node) => node instanceof HTMLElement && (
             node.matches(".markdown-preview-view, .markdown-preview-sizer, .mod-footer")
-            || node.querySelector(".markdown-preview-sizer")
-            || (Array.from(record.removedNodes).includes(node) && node.matches(".tps-health-native-workout-surface"))
+            || node.querySelector(".markdown-preview-sizer, .mod-footer")
+            || (Array.from(record.removedNodes).includes(node) && (
+              node.matches(".tps-health-native-workout-surface")
+              || node.querySelector(".tps-health-native-workout-surface")
+            ))
           ));
         });
         if (structural) this.scheduleWorkoutActionBars();
@@ -13754,8 +13758,8 @@ class NativeWorkoutSurfaceWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const sourceView = view.dom.closest(".markdown-source-view");
-    if (!(sourceView instanceof HTMLElement) || !sourceView.classList.contains("is-live-preview")) {
+    // The editor state owns the mode; its host class can lag widget creation.
+    if (!view.state.field(editorLivePreviewField, false)) {
       return document.createElement("span");
     }
     const root = document.createElement("section");
@@ -13779,10 +13783,7 @@ function refreshNativeWorkoutEditor(
 ): void {
   const decorations = field && editor.state.field(field, false);
   if (!decorations) return;
-  const path = editor.state.field(editorInfoField, false)?.file?.path || "";
-  const expectedPath = path && editor.state.field(editorLivePreviewField, false)
-    && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(path)
-    ? path : "";
+  const expectedPath = nativeWorkoutEditorPath(plugin, editor.state);
   let renderedPath = "";
   decorations.between(0, editor.state.doc.length, (_from, _to, decoration) => {
     const widget = decoration.spec.widget;
@@ -13804,17 +13805,32 @@ function createWorkoutSetChipExtension(plugin: TPSHealthPlugin) {
         || transaction.startState.field(editorLivePreviewField, false) !== transaction.state.field(editorLivePreviewField, false)) {
         return buildWorkoutSetChipDecorations(plugin, transaction.state);
       }
+      // Obsidian can initialize its mutable file context after field creation.
+      // Compare the captured widget path, not two references to that context.
+      let renderedPath = "";
+      decorations.between(0, transaction.state.doc.length, (_from, _to, decoration) => {
+        const widget = decoration.spec.widget;
+        if (widget instanceof NativeWorkoutSurfaceWidget) renderedPath = widget.filePath;
+      });
+      if (renderedPath !== nativeWorkoutEditorPath(plugin, transaction.state)) {
+        return buildWorkoutSetChipDecorations(plugin, transaction.state);
+      }
       return decorations;
     },
     provide: (field) => EditorView.decorations.from(field),
   });
 }
 
+function nativeWorkoutEditorPath(plugin: TPSHealthPlugin, state: EditorState): string {
+  if (!state.field(editorLivePreviewField, false)) return "";
+  const path = state.field(editorInfoField, false)?.file?.path || "";
+  return path && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(path)
+    ? path : "";
+}
+
 function buildWorkoutSetChipDecorations(plugin: TPSHealthPlugin, state: EditorState): DecorationSet {
-  if (!state.field(editorLivePreviewField, false)) return Decoration.none;
-  const filePath = state.field(editorInfoField, false)?.file?.path || "";
-  const nativeWorkout = !!filePath && plugin.nativeRecordService?.isEnabled() && plugin.nativeRecordService.isWorkoutSession(filePath);
-  if (!nativeWorkout) return Decoration.none;
+  const filePath = nativeWorkoutEditorPath(plugin, state);
+  if (!filePath) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
   builder.add(state.doc.length, state.doc.length, Decoration.widget({
     widget: new NativeWorkoutSurfaceWidget(plugin, filePath),

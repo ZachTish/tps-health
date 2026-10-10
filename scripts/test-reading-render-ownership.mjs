@@ -376,24 +376,39 @@ const nativeSource = readFileSync(new URL('../src/native-records.ts', import.met
 const nativeAst = ts.createSourceFile('native-records.ts', nativeSource, ts.ScriptTarget.Latest, true);
 const mountTarget = ast.statements.find(node => node.name?.text === 'nativeWorkoutReadingMountTarget');
 assert.ok(mountTarget);
+let readingObserverCallback;
+const findReadingObserver = node => {
+  if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'workoutReadingObserver') {
+    readingObserverCallback = node.initializer.arguments[0];
+  }
+  ts.forEachChild(node, findReadingObserver);
+};
+findReadingObserver(ast);
+assert.ok(readingObserverCallback, 'Run the actual Reading lifecycle observer callback');
 const sweepCode = await transform(`
-  class Sweep { ${classMethods(ast, 'TPSHealthPlugin', ['ensureNativeWorkoutReadingSurfaces', 'updateNativeWorkoutSurfaces'])} }
+  class Sweep { ${classMethods(ast, 'TPSHealthPlugin', ['ensureNativeWorkoutReadingSurfaces', 'updateNativeWorkoutSurfaces', 'scheduleWorkoutActionBars'])} }
   class Records { ${classMethods(nativeAst, 'HealthNativeRecordService', ['isWorkoutSession', 'getWorkoutSnapshot', 'getKindRecords'])} }
   ${mountTarget.getText(ast)}
-  globalThis.sweepApi = { Sweep, Records };
+  function createReadingObserverCallback() { return ${readingObserverCallback.getText(ast)}; }
+  globalThis.sweepApi = { Sweep, Records, createReadingObserverCallback };
 `, { loader: 'ts', target: 'es2020' });
 
 function navigationFixture({ history = 0 } = {}) {
   const counts = { snapshots: 0, enumerations: 0, visits: 0, membership: 0, renders: 0 };
+  const lifecycle = { schedules: 0, timers: 0, cancels: 0, actionBars: 0 };
+  const pending = new Map();
+  let nextTimer = 0;
   class Element {
     constructor(className = '') { this.className = className; this.children = []; this.dataset = {}; this.parentElement = null; this.connected = true; }
     get isConnected() { return this.connected && (!this.parentElement || this.parentElement.isConnected); }
     matches(selector) {
+      if (selector.includes(',')) return selector.split(',').some(part => this.matches(part.trim()));
       const [classSelector] = selector.split('[');
       return this.className.split(' ').includes(classSelector.slice(1))
         && (!selector.includes('[data-workout-path]') || this.dataset.workoutPath !== undefined);
     }
     querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
     contains(element) { return element === this || this.children.some(child => child.contains(element)); }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
@@ -407,6 +422,10 @@ function navigationFixture({ history = 0 } = {}) {
     document: {
       createElement: () => new Element(),
       querySelectorAll: selector => leaves.flatMap(leaf => leaf.preview?.isConnected ? leaf.preview.querySelectorAll(selector) : []),
+    },
+    window: {
+      setTimeout(callback, delay) { assert.equal(delay, 80); const timer = ++nextTimer; lifecycle.timers++; pending.set(timer, callback); return timer; },
+      clearTimeout(timer) { if (pending.delete(timer)) lifecycle.cancels++; },
     },
     logger: { flow() {} },
     numberValue: value => Number(value) || 0,
@@ -429,6 +448,10 @@ function navigationFixture({ history = 0 } = {}) {
   plugin.nativeRecordService = records;
   plugin.getActiveWorkoutState = () => null;
   plugin.renderNativeWorkoutSurfaceElement = (surface, snapshot) => { counts.renders++; surface.rendered = snapshot; };
+  plugin.updateWorkoutActionBars = () => { lifecycle.actionBars++; };
+  const schedule = plugin.scheduleWorkoutActionBars;
+  plugin.scheduleWorkoutActionBars = function() { lifecycle.schedules++; return schedule.call(this); };
+  const observe = context.sweepApi.createReadingObserverCallback.call(plugin);
   function addWorkout(path, fields = {}) {
     const frontmatter = { status: 'active', scheduled: '2026-10-06T09:00:00', ...fields };
     const archived = frontmatter.archived;
@@ -438,12 +461,13 @@ function navigationFixture({ history = 0 } = {}) {
     records.pathsByKind.get('workout-session').add(path);
     return record;
   }
-  function addLeaf(path, { missingTarget = false, connected = true } = {}) {
+  function addLeaf(path, { missingTarget = false, connected = true, withFooter = true, withSection = false } = {}) {
     const preview = new Element('markdown-preview-view');
     preview.connected = connected;
     const target = preview.appendChild(new Element('markdown-preview-sizer'));
-    const footer = target.appendChild(new Element('mod-footer'));
-    const leaf = { view: new MarkdownView(new TFile(path)), preview, target, footer,
+    const section = withSection ? target.appendChild(new Element('markdown-preview-section')) : null;
+    const footer = withFooter ? target.appendChild(new Element('mod-footer')) : null;
+    const leaf = { view: new MarkdownView(new TFile(path)), preview, target, footer, section,
       containerEl: { querySelector: selector => { assert.equal(selector, '.markdown-preview-view .markdown-preview-sizer'); return missingTarget ? null : target; } } };
     leaves.push(leaf);
     return leaf;
@@ -456,7 +480,10 @@ function navigationFixture({ history = 0 } = {}) {
     return surface;
   }
   for (let index = 0; index < history; index++) addWorkout(`History/${index}.md`);
-  return { plugin, records, counts, addLeaf, addWorkout, addSurface, sweep: () => plugin.updateNativeWorkoutSurfaces() };
+  return { plugin, records, counts, lifecycle, pending, Element, observe, addLeaf, addWorkout, addSurface,
+    sweep: () => plugin.updateNativeWorkoutSurfaces(),
+    flush() { for (const [timer, callback] of [...pending]) { if (!pending.delete(timer)) continue; callback(); } },
+  };
 }
 
 test('ordinary preview leaves do not enumerate workout history during repeated navigation/layout sweeps', () => {
@@ -524,6 +551,107 @@ test('indexed archived or ambiguous workouts still fail closed and remove stale 
     assert.equal(f.counts.renders, 0);
     assert.equal(f.counts.snapshots, 1, 'Membership does not bypass the snapshot validity check');
   }
+});
+
+test('Reading lifecycle remounts the indexed workout after its managed fallback section is removed', () => {
+  const f = navigationFixture({ history: 100 });
+  const path = 'Inbox/Virtualized workout.md';
+  const leaf = f.addLeaf(path, { withFooter: false, withSection: true });
+  const record = f.addWorkout(path, { exercises: [{ id: 'exercise', name: 'Squat', sets: [{ id: 'first', reps: 5, weight: 100 }] }] });
+  f.sweep();
+  const oldSurface = leaf.section.children[0];
+  assert.equal(oldSurface.rendered.setCount, 1);
+  const sourceBefore = JSON.stringify(record.frontmatter);
+  leaf.section.remove();
+  assert.equal(leaf.target.querySelectorAll('.tps-health-native-workout-surface').length, 0);
+  f.observe([{ addedNodes: [], removedNodes: [leaf.section] }]);
+  assert.equal(f.lifecycle.schedules, 1, 'Removing the section containing the workout must wake the existing mount owner');
+  assert.equal(f.pending.size, 1);
+  f.flush();
+  const surface = leaf.target.querySelector('.tps-health-native-workout-surface');
+  assert.ok(surface, 'The next existing refresh restores the controls without an edit or navigation');
+  assert.notEqual(surface, oldSurface);
+  assert.equal(surface.rendered.path, path);
+  assert.equal(surface.rendered.setCount, 1);
+  assert.equal(surface.parentElement, leaf.target, 'A footer-free preview uses its surviving sizer');
+  assert.equal(JSON.stringify(record.frontmatter), sourceBefore);
+  assert.equal(f.counts.renders, 2);
+});
+
+test('Reading lifecycle recognizes surface removal inside an otherwise ordinary wrapper', () => {
+  const f = navigationFixture();
+  const path = 'Inbox/Wrapped workout.md';
+  const leaf = f.addLeaf(path, { withFooter: false });
+  f.addWorkout(path);
+  f.sweep();
+  const surface = leaf.target.querySelector('.tps-health-native-workout-surface');
+  const wrapper = new f.Element('render-wrapper');
+  leaf.target.appendChild(wrapper);
+  wrapper.appendChild(surface);
+  wrapper.remove();
+  f.observe([{ addedNodes: [], removedNodes: [wrapper] }]);
+  assert.equal(f.lifecycle.schedules, 1, 'Surface removal remains relevant through an otherwise ordinary wrapper');
+  f.flush();
+  const remounted = leaf.target.querySelector('.tps-health-native-workout-surface');
+  assert.ok(remounted);
+  assert.equal(remounted.rendered.path, path);
+  assert.equal(f.lifecycle.actionBars, 1);
+  assert.equal(f.counts.renders, 2);
+});
+
+test('Reading lifecycle mounts a frontmatter-only workout after a wrapped footer arrives', () => {
+  const f = navigationFixture();
+  const path = 'Inbox/Late footer workout.md';
+  const leaf = f.addLeaf(path, { withFooter: false });
+  f.addWorkout(path);
+  assert.equal(leaf.target.querySelector('.tps-health-native-workout-surface'), null);
+  const footerWrapper = new f.Element('render-wrapper');
+  const footer = footerWrapper.appendChild(new f.Element('mod-footer'));
+  leaf.target.appendChild(footerWrapper);
+  f.observe([{ addedNodes: [footerWrapper], removedNodes: [] }]);
+  assert.equal(f.lifecycle.schedules, 1, 'A footer arriving inside a wrapper must wake the existing owner');
+  assert.equal(f.pending.size, 1);
+  f.flush();
+  const surface = leaf.target.querySelector('.tps-health-native-workout-surface');
+  assert.ok(surface, 'Late preview structure mounts the existing indexed note without a body postprocessor');
+  assert.equal(surface.rendered.path, path);
+  assert.equal(f.lifecycle.actionBars, 1);
+  assert.equal(f.counts.renders, 1);
+  assert.equal(surface.parentElement, leaf.target, 'A nested footer is not a direct managed footer and cannot redirect the fallback mount');
+  assert.equal(footer.children.length, 0);
+});
+
+test('Reading observer ignores ordinary mutation bursts and its own surface additions', () => {
+  const f = navigationFixture({ history: 10_000 });
+  f.addLeaf('Inbox/Ordinary note.md');
+  const paragraph = new f.Element('el-p');
+  const ordinarySection = new f.Element('markdown-preview-section');
+  ordinarySection.appendChild(paragraph);
+  const ownSurface = new f.Element('tps-health-native-workout-surface');
+  for (let index = 0; index < 500; index++) {
+    f.observe([{ addedNodes: [ordinarySection, ownSurface], removedNodes: [paragraph] }]);
+  }
+  assert.equal(f.lifecycle.schedules, 0);
+  assert.equal(f.pending.size, 0);
+  assert.deepEqual(f.counts, { snapshots: 0, enumerations: 0, visits: 0, membership: 0, renders: 0 }, 'Unrelated DOM activity never starts the workout sweep');
+});
+
+test('a Reading structural burst keeps one pending refresh and cannot remount a disposed native-record owner', () => {
+  const f = navigationFixture();
+  const path = 'Inbox/Closing workout.md';
+  f.addLeaf(path);
+  f.addWorkout(path);
+  for (let index = 0; index < 20; index++) {
+    f.observe([{ addedNodes: [new f.Element('mod-footer')], removedNodes: [] }]);
+  }
+  assert.equal(f.lifecycle.schedules, 20);
+  assert.equal(f.pending.size, 1, 'The existing scheduler coalesces a burst');
+  assert.equal(f.lifecycle.cancels, 19);
+  f.records.isEnabled = () => false;
+  f.plugin.app.workspace.iterateAllLeaves = () => assert.fail('A disposed owner cannot revisit current leaves');
+  f.flush();
+  assert.equal(f.pending.size, 0);
+  assert.deepEqual(f.counts, { snapshots: 0, enumerations: 0, visits: 0, membership: 0, renders: 0 });
 });
 
 

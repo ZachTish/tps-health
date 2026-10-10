@@ -3956,7 +3956,7 @@ test('explicit identity normalization replaces legacy workout joins before remov
 
 test('native workout sessions render one persistent table without rewriting the note body', () => {
   assert.match(mainSource, /new NativeWorkoutSurfaceWidget\(plugin, filePath\)/u);
-  assert.match(mainSource, /sourceView\.classList\.contains\("is-live-preview"\)/u);
+  assert.match(mainSource, /view\.state\.field\(editorLivePreviewField, false\)/u);
   assert.match(mainSource, /renderNativeWorkoutSurfaceInReadingView\(this\.containerEl, this\.plugin, this\.ctx\.sourcePath\)/u);
   assert.match(mainSource, /this\.ensureNativeWorkoutReadingSurfaces\(\);/u);
   assert.match(mainSource, /view\.getMode\(\) !== "preview"/u);
