@@ -61,10 +61,10 @@ function harness(options = {}) {
     listeners.push(callback); events[owner].set(name, listeners); return {};
   };
   const api = {
-    version: 6,
+    version: 7,
     isEnabled: () => true,
-    inspect: fm => fm?.tpsId && fm.tpsSchemaVersion === 1
-      ? { id: fm.tpsId, schemaVersion: 1, kind: fm.kind, frontmatter: fm }
+    inspect: fm => fm?.id && fm.tpsSchemaVersion === 1
+      ? { id: fm.id, schemaVersion: 1, kind: fm.kind, frontmatter: fm }
       : null,
   };
   const plugin = {
@@ -136,7 +136,7 @@ test('arbitrary property-selected notes need no native identity and count once p
 
 test('native and arbitrary matches share one read-only energy total without adding native totals again', async () => {
   const h = harness({ settings: { energyActivityPropertyValue: 'activity-entry', energyActivityCaloriesPropertyKey: 'caloriesBurned', energyActivityDatePropertyKey: 'completedDate' } });
-  h.add('Inbox/native.md', { tpsId: 'walk', tpsSchemaVersion: 1, kind: 'activity-entry', completedDate: day, caloriesBurned: 125 });
+  h.add('Inbox/native.md', { id: 'walk', tpsSchemaVersion: 1, kind: 'activity-entry', completedDate: day, caloriesBurned: 125 });
   h.add('Inbox/plain.md', { kind: ['activity-entry'], completedDate: day, caloriesBurned: 75 });
   h.service.setup(); await h.settle();
   assert.equal(h.service.getDailyActivityTotals(day).caloriesBurned, 125);
@@ -151,10 +151,10 @@ test('decoded native handle aliases cannot authorize activity matching or replac
     energyActivityDatePropertyKey: 'completedDate',
     nativeRecordProperties: { ...DEFAULT_SETTINGS.nativeRecordProperties, caloriesBurned: 'burnKcal' },
   } });
-  const raw = { tpsId: 'walk', tpsSchemaVersion: 1, kind: 'activity-entry', completedDate: day, burnKcal: 125 };
+  const raw = { id: 'walk', tpsSchemaVersion: 1, kind: 'activity-entry', completedDate: day, burnKcal: 125 };
   const file = h.add('Inbox/native.md', raw); h.service.setup(); await h.settle();
   assert.equal(h.service.getDailyEnergyActivityTotals(day).entryCount, 0, 'configured canonical alias is absent from source');
-  const handle = frontmatter => ({ file, path: file.path, id: raw.tpsId, kind: raw.kind,
+  const handle = frontmatter => ({ file, path: file.path, id: raw.id, kind: raw.kind,
     frontmatter: decodeNativeRecordFrontmatter(h.plugin.settings, frontmatter) });
   assert.equal(handle(raw).frontmatter.caloriesBurned, 125, 'the actual native decoder introduces this alias');
   h.reset(); h.service.trackHandle(handle(raw));
@@ -242,7 +242,7 @@ test('missing metadata preserves accepted totals while pending and resolves incr
 
 test('an unproven empty day stays unknown during partial indexing while accepted matching dates remain visible', async () => {
   const h = harness();
-  h.add('Inbox/food.md', { tpsId: 'food', tpsSchemaVersion: 1, kind: 'food-entry', completedDate: day, calories: 200 });
+  h.add('Inbox/food.md', { id: 'food', tpsSchemaVersion: 1, kind: 'food-entry', completedDate: day, calories: 200 });
   h.add('Inbox/known-activity.md', activity(125, '2032-01-02'));
   const pending = h.add('Inbox/unknown-activity.md', activity(500)); h.caches.delete(pending);
   h.service.setup(); await h.settle();

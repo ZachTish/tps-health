@@ -210,3 +210,28 @@ test('already-current timing is a no-op regardless of frontmatter key order',asy
  await changeHealthMapping(h.plugin,defaults(),'Timing','workout-timing');
  assert.deepEqual(h.fm,data);assert.equal(h.writes,0);assert.equal(h.saves,0);
 });
+
+
+test('unavailable GCM blocks native identity migration for id case variants and configured keys',async()=>{
+ for(const key of ['id','ID','tpsId','customRecordId']) {
+  const h=harness({'native.md':{[key]:'unchanged',kind:'food-entry'}});
+  h.plugin.getGcmNativeRecordsApi=()=>({getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'customRecordId',kindPropertyKey:'kind'})});
+  const next=defaults();next.foodFrontmatterKey='foodType';
+  await assert.rejects(changeHealthMapping(h.plugin,next,'Food key'),/Enable TPS GCM/);
+  assert.equal(h.writes,0);assert.equal(h.saves,0);assert.equal(h.fm['native.md'][key],'unchanged');
+ }
+});
+
+test('short id key does not treat words in unrelated malformed values as native identities',async()=>{
+ for(const source of ['description: invalid value\n- broken','description: identity example\n- broken']) {
+  const h=harness({'broken.md':{}});h.plugin.app.vault.read=async()=>source;
+  const next=defaults();next.foodFrontmatterKey='foodType';globalThis.confirmMapping=modal=>modal.resolve(false);
+  assert.equal(await changeHealthMapping(h.plugin,next,'Food key'),false);assert.equal(h.writes,0);
+ }
+ for(const source of ['id: example\n- broken','"ID": example\n- broken','customRecordId: example\n- broken']) {
+  const h=harness({'broken.md':{}});h.plugin.app.vault.read=async()=>source;
+  h.plugin.getGcmNativeRecordsApi=()=>({getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'customRecordId',kindPropertyKey:'kind'}),inspect:()=>null});
+  const next=defaults();next.foodFrontmatterKey='foodType';
+  await assert.rejects(changeHealthMapping(h.plugin,next,'Food key'),/Repair invalid frontmatter/);assert.equal(h.writes,0);
+ }
+});

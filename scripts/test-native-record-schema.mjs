@@ -56,7 +56,7 @@ test('custom kind values stay canonical internally and invalid or reserved field
   assert.equal(schema.canonicalNativeKind(settings, 'food-entry'), null);
   assert.equal(schema.isValidNativeRecordKindValue('Food Entry'), false);
   assert.equal(schema.isValidFrontmatterPropertyKey('energy_kcal'), true);
-  for (const reserved of ['tpsId', 'kind', 'title', 'createdDate', 'modifiedDate', 'tags']) {
+  for (const reserved of ['id', 'ID', 'tpsId', 'kind', 'title', 'createdDate', 'modifiedDate', 'tags']) {
     assert.equal(schema.isValidFrontmatterPropertyKey(reserved), false);
   }
 });

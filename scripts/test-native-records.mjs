@@ -115,7 +115,7 @@ function createHarness(options = {}) {
   };
   const legacyFileNames = options.legacyFileNames === true;
   const api = {
-    version: options.apiVersion ?? 6,
+    version: options.apiVersion ?? 7,
     capabilities: { customKinds: options.customKinds === true, updateFromSource: options.sourceUpdates !== false },
     isEnabled: () => options.apiEnabled !== false,
     async create(kind, properties, options = {}) {
@@ -125,7 +125,7 @@ function createHarness(options = {}) {
       const file = new (class TFile {
         constructor(path) { this.path = path; this.name = path.split('/').pop(); this.extension = 'md'; this.basename = this.name.replace(/\.md$/u, ''); }
       })(path);
-      const frontmatter = { ...properties, tpsId: id, tpsSchemaVersion: 1, kind, title: properties.title, createdDate: new Date().toISOString(), modifiedDate: new Date().toISOString() };
+      const frontmatter = { ...properties, id: id, tpsSchemaVersion: 1, kind, title: properties.title, createdDate: new Date().toISOString(), modifiedDate: new Date().toISOString() };
       files.set(file.path, file);
       frontmatters.set(file, frontmatter);
       writeFrontmatterContent(file, frontmatter);
@@ -133,10 +133,10 @@ function createHarness(options = {}) {
     },
     async resolve(reference) {
       const path = typeof reference === 'string' && reference.includes('/') ? reference : reference?.path;
-      const file = path ? files.get(path) : [...files.values()].find((candidate) => frontmatters.get(candidate)?.tpsId === reference);
+      const file = path ? files.get(path) : [...files.values()].find((candidate) => frontmatters.get(candidate)?.id === reference);
       if (!file) return null;
       const frontmatter = frontmatters.get(file);
-      return { file, path: file.path, id: frontmatter.tpsId, kind: frontmatter.kind, frontmatter: { ...frontmatter } };
+      return { file, path: file.path, id: frontmatter.id, kind: frontmatter.kind, frontmatter: { ...frontmatter } };
     },
     async update(reference, updates) {
       updateCalls.push({ reference, updates: { ...updates } });
@@ -190,7 +190,7 @@ function createHarness(options = {}) {
     },
     inspect(frontmatter) {
       const physicalKeys = Object.keys(frontmatter || {});
-      const idKey = physicalKeys.find((key) => key.toLowerCase() === 'tpsid');
+      const idKey = physicalKeys.find((key) => key.toLowerCase() === 'id');
       const schemaKey = physicalKeys.find((key) => key.toLowerCase() === 'tpsschemaversion');
       const kindKey = physicalKeys.find((key) => key.toLowerCase() === 'kind');
       if (idKey && schemaKey && kindKey && Number(frontmatter[schemaKey]) === 1) {
@@ -198,7 +198,7 @@ function createHarness(options = {}) {
           id: String(frontmatter[idKey]),
           kind: String(frontmatter[kindKey]),
           schemaVersion: 1,
-          frontmatter: { ...frontmatter, tpsId: String(frontmatter[idKey]), tpsSchemaVersion: 1, kind: String(frontmatter[kindKey]) },
+          frontmatter: { ...frontmatter, id: String(frontmatter[idKey]), tpsSchemaVersion: 1, kind: String(frontmatter[kindKey]) },
         };
       }
       const identityTag = Array.isArray(frontmatter?.tags)
@@ -208,7 +208,7 @@ function createHarness(options = {}) {
       const [, , , kind, ...idParts] = String(identityTag).split('/');
       const id = idParts.join('/');
       return id && kind
-        ? { id, kind, schemaVersion: 1, frontmatter: { ...frontmatter, tpsId: id, tpsSchemaVersion: 1, kind } }
+        ? { id, kind, schemaVersion: 1, frontmatter: { ...frontmatter, id: id, tpsSchemaVersion: 1, kind } }
         : null;
     },
   };
@@ -404,7 +404,7 @@ function addIndexLoad(h, count = 700) {
 
 function indexedFood(h, path, calories = 100, id = path) {
   return h.addFrontmatterFile(path, {
-    tpsId: id, tpsSchemaVersion: 1, kind: 'food-entry', completedDate: '2026-10-06T12:00:00Z', calories,
+    id: id, tpsSchemaVersion: 1, kind: 'food-entry', completedDate: '2026-10-06T12:00:00Z', calories,
   });
 }
 
@@ -473,7 +473,7 @@ test('newer metadata sources win over queued old caches during cooperative disco
     addIndexLoad(h);
     const food = indexedFood(h, 'Inbox/Queued food.md', 100);
     const workout = h.addFrontmatterFile('Inbox/Queued workout.md', {
-      tpsId: 'queued-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
+      id: 'queued-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
     });
     h.service.setup();
     assert.equal(tasks.pending, 1);
@@ -554,7 +554,7 @@ test('pending-only large reconciliation keeps known workout controls enabled', a
   const h = createHarness({ deferSetup: true });
   try {
     const workout = h.addFrontmatterFile('Inbox/Settled workout.md', {
-      tpsId: 'settled-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
+      id: 'settled-workout', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active', session: { version: 1, exercises: [] },
     });
     addIndexLoad(h);
     let ready = false;
@@ -653,7 +653,7 @@ test('dispose while yielded cannot inspect, notify, hydrate or accept any more f
   try {
     addIndexLoad(h);
     h.addFrontmatterFile('Inbox/Late legacy workout.md', {
-      tpsId: 'late-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+      id: 'late-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
     });
     let inspections = 0, notifications = 0;
     const inspect = h.api.inspect;
@@ -677,7 +677,7 @@ test('a pending legacy workout discovered mid-pass hydrates only from full compl
   const h = createHarness({ deferSetup: true });
   try {
     const workout = h.addFrontmatterFile('Inbox/Pending legacy during full.md', {
-      tpsId: 'pending-legacy-full', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+      id: 'pending-legacy-full', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
     });
     h.contents.set(workout.path, writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
       version: 1, exercises: [{ id: 'bench', name: 'Bench', sets: [{ id: 'set', reps: 8 }] }],
@@ -723,7 +723,7 @@ test('a completion hydration error settles its waiter even after the discovery o
   try {
     addIndexLoad(h);
     h.addFrontmatterFile('Inbox/Completion legacy workout.md', {
-      tpsId: 'completion-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+      id: 'completion-legacy', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
     });
     const error = new Error('Synthetic completion hydration failure');
     const statuses = [];
@@ -744,7 +744,7 @@ test('a deferred hydration callback from an earlier pass cannot read during a ne
   const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized: true });
   try {
     h.addFrontmatterFile('Inbox/Deferred legacy full owner.md', {
-      tpsId: 'deferred-full-owner', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+      id: 'deferred-full-owner', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
     });
     addIndexLoad(h);
     h.service.setup();
@@ -822,10 +822,10 @@ test('a workout mutation requested during full discovery waits for indexed legac
   try {
     addIndexLoad(h);
     const workout = h.addFrontmatterFile('Inbox/Legacy gated workout.md', {
-      tpsId: 'legacy-gated', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
+      id: 'legacy-gated', tpsSchemaVersion: 1, kind: 'workout-session', status: 'active',
     });
     const child = h.addFrontmatterFile('Inbox/Legacy gated child.md', {
-      tpsId: 'legacy-child', tpsSchemaVersion: 1, kind: 'workout-exercise',
+      id: 'legacy-child', tpsSchemaVersion: 1, kind: 'workout-exercise',
       workout: '[[Inbox/Legacy gated workout]]', exercise: 'Bench', exercisePath: '[[Health/Exercises/Bench]]',
       sets: [{ id: 'prior-set', reps: 8, weight: 50 }],
     });
@@ -907,7 +907,7 @@ async function createLinkedProjectionHarness(count = 1, definition = {}) {
     quantity: 1, unit: 'serving', nutritionOverride: { calories: 200, proteinG: 20, carbsG: 20, fatG: 4 },
   });
   for (let index = 1; index < count; index++) {
-    const fm = { ...seed.frontmatter, tpsId: `projection-entry-${index}` };
+    const fm = { ...seed.frontmatter, id: `projection-entry-${index}` };
     const file = h.addFrontmatterFile(`Inbox/Projection entry ${index}.md`, fm);
     h.service.indexFile(file, fm);
   }
@@ -1012,7 +1012,7 @@ test('explicit definition nutrition uses current portion and preserves link iden
         current = { ...prior, quantity: 3, userField: 'keep' };
         if (scenario === 'link') current.food = '[[Inbox/Other food]]';
         if (scenario === 'archived') current.archived = true;
-        if (scenario === 'identity') current.tpsId = 'replacement-id';
+        if (scenario === 'identity') current.id = 'replacement-id';
         if (scenario === 'kind') current.kind = 'activity-entry';
         h.frontmatters.set(file, current);
         return processor(file, mutate);
@@ -1088,7 +1088,7 @@ test('temporary last-entry reindex retains committed nutrition evidence and chan
     assert.equal(h.service.foodDefinitionsByPath.get(h.food.path).calories, 350, 'temporary last-reference removal cannot discard newer committed evidence');
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 350);
     assert.ok(h.contents.get(h.seed.path).endsWith(body));
-    assert.equal(h.frontmatters.get(h.seed.file).tpsId, id);
+    assert.equal(h.frontmatters.get(h.seed.file).id, id);
     const other = h.addFrontmatterFile('Inbox/New food link.md', {kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 75});
     const changed = {...h.frontmatters.get(h.seed.file), food: '[[Inbox/New food link]]'};
     h.frontmatters.set(h.seed.file, changed); h.emitMetadata('changed', h.seed.file, '', {frontmatter: changed});
@@ -1477,7 +1477,7 @@ test('native food usage honors mapped entry fields and incrementally edited food
 
 function addProviderFood(h, path = 'Inbox/provider-food.md') {
   return h.addFrontmatterFile(path, {
-    tpsId: 'provider-food', tpsSchemaVersion: 1, kind: 'food-entry',
+    id: 'provider-food', tpsSchemaVersion: 1, kind: 'food-entry',
     title: 'Synthetic food', completedDate: '2026-09-29T12:00:00.000Z', calories: 210,
   });
 }
@@ -1725,7 +1725,7 @@ test('a provider rebuild drops a linked-food definition only when current cached
     kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 100, proteinG: 10, carbsG: 0, fatG: 0,
   });
   h.addFrontmatterFile('Inbox/linked-entry.md', {
-    tpsId: 'linked-entry', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Linked food',
+    id: 'linked-entry', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Linked food',
     food: '[[Inbox/definition]]', quantity: 1, unit: 'serving',
     completedDate: '2026-09-29T12:00:00.000Z', calories: 100, proteinG: 10, carbsG: 0, fatG: 0,
   });
@@ -1832,12 +1832,12 @@ test('metadata changes use their saved source when cached frontmatter is absent'
 test('an initialized MetadataCache reconciles food missed by an incomplete startup scan', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const food = h.addFrontmatterFile('Inbox/food-sept-30.md', {
-    tpsId: 'food-sept-30', title: 'Lunch', tags: ['kind/food/transaction'],
+    id: 'food-sept-30', title: 'Lunch', tags: ['kind/food/transaction'],
     completedDate: '2026-09-30T13:00:00.000Z', calories: 420,
   });
   const inspect = h.api.inspect;
   h.api.inspect = (frontmatter) => frontmatter?.tags?.includes('kind/food/transaction')
-    ? { id: frontmatter.tpsId, kind: 'food-entry', schemaVersion: 1,
+    ? { id: frontmatter.id, kind: 'food-entry', schemaVersion: 1,
         frontmatter: { ...frontmatter, tpsSchemaVersion: 1, kind: 'food-entry' } }
     : inspect(frontmatter);
   let cacheReady = false;
@@ -1876,7 +1876,7 @@ test('startup metadata reconciliation restores saved activity and food together'
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   addProviderFood(h);
   h.addFrontmatterFile('Inbox/provider-activity.md', {
-    tpsId: 'provider-activity', tpsSchemaVersion: 1, kind: 'activity-entry',
+    id: 'provider-activity', tpsSchemaVersion: 1, kind: 'activity-entry',
     title: 'Synthetic walk', completedDate: '2026-09-29T13:30:00.000Z', durationMinutes: 30,
   });
   let cacheReady = false;
@@ -1904,16 +1904,16 @@ test('startup metadata reconciliation restores saved activity and food together'
 test('partially cached startup food is retained while resolved adds missing records once', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const first = h.addFrontmatterFile('Inbox/first-food.md', {
-    tpsId: 'first-food', title: 'First', tags: ['kind/food/transaction'],
+    id: 'first-food', title: 'First', tags: ['kind/food/transaction'],
     completedDate: '2026-09-30T12:00:00.000Z', calories: 100,
   });
   const second = h.addFrontmatterFile('Inbox/second-food.md', {
-    tpsId: 'second-food', title: 'Second', tags: ['kind/food/transaction'],
+    id: 'second-food', title: 'Second', tags: ['kind/food/transaction'],
     completedDate: '2026-09-30T13:00:00.000Z', calories: 200,
   });
   const inspect = h.api.inspect;
   h.api.inspect = (frontmatter) => frontmatter?.tags?.includes('kind/food/transaction')
-    ? { id: frontmatter.tpsId, kind: 'food-entry', schemaVersion: 1,
+    ? { id: frontmatter.id, kind: 'food-entry', schemaVersion: 1,
         frontmatter: { ...frontmatter, tpsSchemaVersion: 1, kind: 'food-entry' } }
     : inspect(frontmatter);
   let secondCacheReady = false;
@@ -1973,7 +1973,7 @@ test('provider reload reconciles edits and removals from cached metadata without
   const h = createHarness({ deferSetup: true });
   const food = addProviderFood(h);
   const removed = h.addFrontmatterFile('Inbox/removed-food.md', {
-    tpsId: 'removed-food', tpsSchemaVersion: 1, kind: 'food-entry',
+    id: 'removed-food', tpsSchemaVersion: 1, kind: 'food-entry',
     title: 'Removed synthetic food', completedDate: '2026-09-28T12:00:00.000Z', calories: 120,
   });
   h.service.setup();
@@ -2091,7 +2091,7 @@ test('late provider startup before layout queues legacy workout hydration only o
   for (const metadataInitialized of [false, true]) {
     const h = createHarness({ deferSetup: true, layoutReady: false, metadataInitialized });
     const workout = h.addFrontmatterFile('Inbox/provider-workout.md', {
-      tpsId: 'provider-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Synthetic workout',
+      id: 'provider-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Synthetic workout',
     });
     h.plugin.getGcmNativeRecordsApi = () => null;
     h.service.setup();
@@ -2146,8 +2146,8 @@ test('external Health discovery and workout body edits use the indexed event sou
   await Promise.resolve();
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
-  const fm = { tpsId: 'external-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'External', status: 'active' };
-  const body = reps => writeWorkoutDataToNoteContent('---\ntpsId: external-workout\n---\n', JSON.stringify({
+  const fm = { id: 'external-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'External', status: 'active' };
+  const body = reps => writeWorkoutDataToNoteContent('---\nid: external-workout\n---\n', JSON.stringify({
     version: 1, exercises: [{ id: 'press', name: 'Press', sets: [{ id: 'set', reps }] }],
   }));
   // The event's cache/source are current even when getFileCache still returns the old note.
@@ -2247,7 +2247,7 @@ test('a newly arrived saved active-workout path remains guarded before metadata 
   const path = 'Inbox/synced-active-workout.md';
   const h = createHarness({ settings: { activeWorkoutPath: path } });
   const file = h.addLegacyFile(path, [
-    '---', 'tpsId: synced-active', 'tpsSchemaVersion: 1', 'kind: workout-session',
+    '---', 'id: synced-active', 'tpsSchemaVersion: 1', 'kind: workout-session',
     'title: Synced active', 'status: active', '---',
   ].join('\n'));
   let release;
@@ -2328,7 +2328,7 @@ test('deleting a Health source cancels its pending guard and late data cannot re
 test('known source losing valid YAML or Health classification evicts its stale identity', async () => {
   const h = createHarness();
   const record = await h.service.createWorkoutSession({ title: 'Malformed' }, 'malformed-known');
-  h.contents.set(record.path, '---\ntpsId: malformed-known\ntpsSchemaVersion: 1\nkind: [invalid\n---\nBody');
+  h.contents.set(record.path, '---\nid: malformed-known\ntpsSchemaVersion: 1\nkind: [invalid\n---\nBody');
   h.emitVault('modify', record.file);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(h.service.getWorkoutSnapshot(record.path), null);
@@ -2361,10 +2361,10 @@ test('startup discovery does not queue a body read for every Markdown file in ei
 test('startup metadata restores food records and hydrates legacy workout bodies after layout readiness', async () => {
   const harness = createHarness({ layoutReady: false, metadataInitialized: false });
   const food = harness.addFrontmatterFile('Inbox/startup-food.md', {
-    tpsId: 'startup-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 210,
+    id: 'startup-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 210,
   });
   const workout = harness.addFrontmatterFile('Inbox/startup-workout.md', {
-    tpsId: 'startup-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Startup workout', status: 'active',
+    id: 'startup-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Startup workout', status: 'active',
   });
   harness.contents.set(workout.path, writeWorkoutDataToNoteContent(harness.contents.get(workout.path), JSON.stringify({
     version: 1, exercises: [{ id: 'legacy-exercise', name: 'Bench press', sets: [{ id: 'legacy-set', reps: 8 }] }],
@@ -2393,7 +2393,7 @@ test('startup reads only legacy workout bodies while modern sessions stay curren
   const modern = [];
   for (let index = 0; index < 128; index += 1) {
     modern.push(h.addFrontmatterFile(`Inbox/modern-workout-${index}.md`, {
-      tpsId: `modern-workout-${index}`, tpsSchemaVersion: 1, kind: 'workout-session',
+      id: `modern-workout-${index}`, tpsSchemaVersion: 1, kind: 'workout-session',
       title: `Modern workout ${index}`, status: 'complete',
       session: workoutSessionPropertyValue([{
         id: `exercise-${index}`, name: 'Squat', sets: [{ id: `set-${index}`, reps: 5 }],
@@ -2401,7 +2401,7 @@ test('startup reads only legacy workout bodies while modern sessions stay curren
     }));
   }
   const legacy = h.addFrontmatterFile('Inbox/legacy-workout.md', {
-    tpsId: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy workout',
+    id: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy workout',
   });
   h.contents.set(legacy.path, writeWorkoutDataToNoteContent(h.contents.get(legacy.path), JSON.stringify({
     version: 1, exercises: [{ id: 'legacy-exercise', name: 'Row', sets: [{ id: 'legacy-set', reps: 8 }] }],
@@ -2446,7 +2446,7 @@ test('an externally created Health record is discovered by its metadata event wi
   const harness = createHarness({ layoutReady: false });
   harness.finishLayout();
   const file = harness.addLegacyFile('Inbox/new-food.md', [
-    '---', 'tpsId: new-food', 'tpsSchemaVersion: 1', 'kind: food-entry',
+    '---', 'id: new-food', 'tpsSchemaVersion: 1', 'kind: food-entry',
     'date: 2026-09-08', 'calories: 320', '---',
   ].join('\n'));
   harness.emitVault('create', file);
@@ -2455,7 +2455,7 @@ test('an externally created Health record is discovered by its metadata event wi
   assert.deepEqual(harness.cachedReadCalls, []);
   assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 0);
   harness.emitMetadata('changed', file, harness.contents.get(file.path), { frontmatter: {
-    tpsId: 'new-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 320,
+    id: 'new-food', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-09-08', calories: 320,
   } });
   assert.equal(harness.service.getDailyFoodTotals('2026-09-08').calories, 320);
   harness.service.dispose();
@@ -2510,7 +2510,7 @@ test('workout session data uses one compact Bases-queryable property while legac
     }],
   });
 
-  const original = '---\nkind: workout-session\ntpsId: workout-one\n---\nNotes stay here.\n';
+  const original = '---\nkind: workout-session\nid: workout-one\n---\nNotes stay here.\n';
   const firstData = JSON.stringify({ version: 1, exercises: [{ id: 'exercise-one', sets: [] }] });
   const first = writeWorkoutDataToNoteContent(original, firstData);
   assert.equal(readWorkoutDataFromNoteContent(first), firstData);
@@ -2522,8 +2522,8 @@ test('workout session data uses one compact Bases-queryable property while legac
   assert.equal(second.match(/tps-health-workout-data:v1:/gu)?.length, 1, 'updates replace the atomic marker');
 });
 
-test('GCM API v6 receives readable filenames while stable record IDs remain authoritative', async () => {
-  const { service, createCalls } = createHarness({ apiVersion: 6 });
+test('GCM API v7 receives readable filenames while stable record IDs remain authoritative', async () => {
+  const { service, createCalls } = createHarness({ apiVersion: 7 });
   const firstFood = await service.createFoodEntry({
     tags: ['#food/healthy', 'food/healthy', '#meal/breakfast'],
     id: 'food-one', createdDate: '2026-08-25T12:00:00.000Z', completedDate: '2026-08-25T12:00:00.000Z',
@@ -2567,26 +2567,26 @@ test('GCM API v6 receives readable filenames while stable record IDs remain auth
   ]);
 });
 
-test('native Health writes fail closed before GCM API v6', () => {
+test('native Health writes fail closed before GCM API v7', () => {
   const { service } = createHarness({ apiVersion: 5 });
   assert.throws(
     () => service.requireApi(),
-    /nativeRecords API v6/u,
+    /nativeRecords API v7/u,
   );
 });
 
-test('native Health requires exactly API v6 and every method it uses', () => {
-  assert.throws(() => createHarness({ apiVersion: 7 }).service.requireApi(), /nativeRecords API v6/u);
-  assert.throws(() => createHarness({ apiEnabled: false }).service.requireApi(), /nativeRecords API v6/u);
+test('native Health requires exactly API v7 and every method it uses', () => {
+  for (const apiVersion of [6,8]) assert.throws(() => createHarness({ apiVersion }).service.requireApi(), /nativeRecords API v7/u);
+  assert.throws(() => createHarness({ apiEnabled: false }).service.requireApi(), /nativeRecords API v7/u);
   for (const method of ['isEnabled', 'create', 'resolve', 'update', 'inspect']) {
     const { service, api } = createHarness();
     delete api[method];
-    assert.throws(() => service.requireApi(), /nativeRecords API v6/u, `${method} is required`);
+    assert.throws(() => service.requireApi(), /nativeRecords API v7/u, `${method} is required`);
   }
 });
 
 test('readable filename migration renames only opaque ID paths and is idempotent', async () => {
-  const { service, api, addFrontmatterFile } = createHarness({ apiVersion: 6, legacyFileNames: true });
+  const { service, api, addFrontmatterFile } = createHarness({ apiVersion: 7, legacyFileNames: true });
   const food = await service.createFoodEntry({
     id: 'food-old', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
     item: { id: 'apple', name: 'Apple', source: 'manual' }, quantity: 1, unit: 'serving',
@@ -2601,7 +2601,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   }, 'workout-old');
   const exercise = await service.ensureWorkoutExercise(session, 'Bench press', 'Health/Exercises/Bench press.md');
   const customFrontmatter = {
-    tpsId: 'food-custom', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Apple', foodName: 'Apple', date: '2026-08-24',
+    id: 'food-custom', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Apple', foodName: 'Apple', date: '2026-08-24',
   };
   const custom = addFrontmatterFile('_records/food-entries/My custom apple.md', customFrontmatter);
   service.indexFile(custom, customFrontmatter);
@@ -2610,7 +2610,7 @@ test('readable filename migration renames only opaque ID paths and is idempotent
   assert.equal(activity.file.basename, 'activity-old');
   assert.equal(session.file.basename, 'workout-old');
   assert.equal(exercise.file, session.file, 'adding an exercise does not create another note');
-  api.version = 6;
+  api.version = 7;
   const first = await service.normalizeNativeRecordFilenames();
   assert.deepEqual(first, {
     inspected: 4,
@@ -2636,46 +2636,46 @@ test('readable filename migration renames only opaque ID paths and is idempotent
 });
 
 test('readable filename migration narrowly repairs generated title-first workout names', async () => {
-  const { service, addFrontmatterFile } = createHarness({ apiVersion: 6 });
+  const { service, addFrontmatterFile } = createHarness({ apiVersion: 7 });
   const localStartedAt = (hour, minute) => new Date(2026, 7, 24, hour, minute, 0, 0).toISOString();
   const generatedFrontmatter = {
-    tpsId: 'workout-generated', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-generated', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-24 06.16', workoutDate: '2026-08-24', startedAt: localStartedAt(6, 16),
   };
   const generated = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 06.16.md', generatedFrontmatter);
   service.indexFile(generated, generatedFrontmatter);
   const mismatchedDateFrontmatter = {
-    tpsId: 'workout-wrong-date', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-wrong-date', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-23 06.16', workoutDate: '2026-08-24', startedAt: localStartedAt(6, 16),
   };
   const mismatchedDate = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-23 06.16.md', mismatchedDateFrontmatter);
   service.indexFile(mismatchedDate, mismatchedDateFrontmatter);
   const customBasenameFrontmatter = {
-    tpsId: 'workout-custom-name', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-custom-name', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-24 07.00', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 0),
   };
   const customBasename = addFrontmatterFile('_records/workout-sessions/My preferred workout.md', customBasenameFrontmatter);
   service.indexFile(customBasename, customBasenameFrontmatter);
   const manualTitleFirstFrontmatter = {
-    tpsId: 'workout-manual-title-first', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-manual-title-first', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Strength', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 30),
   };
   const manualTitleFirst = addFrontmatterFile('_records/workout-sessions/Strength 2026-08-24 07.30.md', manualTitleFirstFrontmatter);
   service.indexFile(manualTitleFirst, manualTitleFirstFrontmatter);
   const nonGeneratedTimeFrontmatter = {
-    tpsId: 'workout-non-generated-time', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-non-generated-time', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-24 7.45', workoutDate: '2026-08-24', startedAt: localStartedAt(7, 45),
   };
   const nonGeneratedTime = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 7.45.md', nonGeneratedTimeFrontmatter);
   service.indexFile(nonGeneratedTime, nonGeneratedTimeFrontmatter);
   const mismatchedTimeFrontmatter = {
-    tpsId: 'workout-wrong-time', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-wrong-time', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-24 08.30', workoutDate: '2026-08-24', startedAt: localStartedAt(9, 30),
   };
   const mismatchedTime = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 08.30.md', mismatchedTimeFrontmatter);
   service.indexFile(mismatchedTime, mismatchedTimeFrontmatter);
   const missingStartedAtFrontmatter = {
-    tpsId: 'workout-missing-start', tpsSchemaVersion: 1, kind: 'workout-session',
+    id: 'workout-missing-start', tpsSchemaVersion: 1, kind: 'workout-session',
     title: 'Workout 2026-08-24 10.00', workoutDate: '2026-08-24',
   };
   const missingStartedAt = addFrontmatterFile('_records/workout-sessions/Workout 2026-08-24 10.00.md', missingStartedAtFrontmatter);
@@ -2703,7 +2703,7 @@ test('readable filename migration narrowly repairs generated title-first workout
 });
 
 test('readable filename migration preserves a manual rename that lands while the batch is running', async () => {
-  const { service, api, files } = createHarness({ apiVersion: 6, legacyFileNames: true });
+  const { service, api, files } = createHarness({ apiVersion: 7, legacyFileNames: true });
   await service.createFoodEntry({
     id: 'food-a', createdDate: '2026-08-24T12:00:00.000Z', completedDate: '2026-08-24T12:00:00.000Z',
     item: { id: 'apple-a', name: 'Apple A', source: 'manual' }, quantity: 1, unit: 'serving',
@@ -2712,7 +2712,7 @@ test('readable filename migration preserves a manual rename that lands while the
     id: 'food-b', createdDate: '2026-08-24T13:00:00.000Z', completedDate: '2026-08-24T13:00:00.000Z',
     item: { id: 'apple-b', name: 'Apple B', source: 'manual' }, quantity: 1, unit: 'serving',
   });
-  api.version = 6;
+  api.version = 7;
   const rename = api.rename.bind(api);
   let injected = false;
   api.rename = async (...args) => {
@@ -2810,7 +2810,7 @@ test('multi-serving labels keep the same portion denominator after native indexi
 test('editing consumed time moves an older food record out of its redundant legacy date', async () => {
   const h = createHarness();
   const file = h.addFrontmatterFile('Inbox/legacy-date-food.md', {
-    tpsId: 'date-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Food',
+    id: 'date-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Food',
     date: '2026-09-29', completedDate: '2026-09-29T12:00:00', quantity: 1, unit: 'serving', calories: 210,
   });
   h.service.indexFile(file, h.frontmatters.get(file));
@@ -2831,28 +2831,28 @@ test('daily queries stay date-scoped across ten years of records and current mut
     const historicalDay = new Date(Date.UTC(2018, 0, 1 + index % 3650)).toISOString().slice(0, 10);
     const activity = index % 2 === 0;
     h.addFrontmatterFile(`Inbox/history-${index}.md`, activity ? {
-      tpsId: `history-activity-${index}`, tpsSchemaVersion: 1, kind: 'activity-entry',
+      id: `history-activity-${index}`, tpsSchemaVersion: 1, kind: 'activity-entry',
       title: `Activity ${index}`, completedDate: `${historicalDay}T12:00:00`, durationMinutes: 10,
     } : {
-      tpsId: `history-food-${index}`, tpsSchemaVersion: 1, kind: 'food-entry',
+      id: `history-food-${index}`, tpsSchemaVersion: 1, kind: 'food-entry',
       title: `Food ${index}`, completedDate: `${historicalDay}T12:00:00`, calories: 100,
       quantity: 1, unit: 'serving',
     });
   }
   const first = h.addFrontmatterFile('Inbox/current-a.md', {
-    tpsId: 'current-a', tpsSchemaVersion: 1, kind: 'food-entry', title: 'A food',
+    id: 'current-a', tpsSchemaVersion: 1, kind: 'food-entry', title: 'A food',
     completedDate: '2032-01-03T12:00:00', calories: 100, quantity: 1, unit: 'serving',
   });
   const second = h.addFrontmatterFile('Inbox/current-b.md', {
-    tpsId: 'current-b', tpsSchemaVersion: 1, kind: 'food-entry', title: 'B food',
+    id: 'current-b', tpsSchemaVersion: 1, kind: 'food-entry', title: 'B food',
     completedDate: '2032-01-03T12:00:00', calories: 200, quantity: 1, unit: 'serving',
   });
   const movement = h.addFrontmatterFile('Inbox/current-activity.md', {
-    tpsId: 'current-activity', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
+    id: 'current-activity', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
     completedDate: '2032-01-03T13:00:00', durationMinutes: 30,
   });
   const workout = h.addFrontmatterFile('Inbox/current-workout.md', {
-    tpsId: 'current-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
+    id: 'current-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
     scheduled: '2032-01-03T14:00:00', timeEstimate: 20, status: 'complete',
   });
   h.service.setup();
@@ -2925,11 +2925,11 @@ test('daily queries stay date-scoped across ten years of records and current mut
 test('date buckets retain the distinct activity totals and entry date rules', () => {
   const h = createHarness();
   const activity = h.addFrontmatterFile('Inbox/activity-dates.md', {
-    tpsId: 'activity-dates', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
+    id: 'activity-dates', tpsSchemaVersion: 1, kind: 'activity-entry', title: 'Walk',
     workoutDate: '2032-01-03', completedDate: '2032-01-04T12:00:00', durationMinutes: 10,
   });
   const workout = h.addFrontmatterFile('Inbox/workout-dates.md', {
-    tpsId: 'workout-dates', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
+    id: 'workout-dates', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Lift',
     scheduled: '2032-01-03T10:00:00', completedDate: '2032-01-04T10:30:00',
     timeEstimate: 30, status: 'complete',
   });
@@ -3000,7 +3000,7 @@ test('food notes arriving before their linked definition converge without reopen
   const h = createHarness();
   try {
     const entry = h.addFrontmatterFile('Inbox/synced-food.md', {
-      tpsId: 'synced-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Synced food',
+      id: 'synced-food', tpsSchemaVersion: 1, kind: 'food-entry', title: 'Synced food',
       completedDate: '2026-09-29T12:00:00', quantity: 2, unit: 'serving',
       food: '[[Inbox/late-definition]]', calories: 400,
     });
@@ -3021,8 +3021,8 @@ test('food notes arriving before their linked definition converge without reopen
   } finally { h.service.dispose(); }
 });
 
-test('native Health indexing follows GCM API v6 legacy tag inspection without physical ID/schema properties', () => {
-  const { service } = createHarness({ apiVersion: 6 });
+test('native Health indexing follows GCM API v7 legacy tag inspection without physical ID/schema properties', () => {
+  const { service } = createHarness({ apiVersion: 7 });
   const file = { path: 'food-tagged.md', name: 'food-tagged.md', extension: 'md', basename: 'food-tagged' };
   service.indexFile(file, {
     tags: ['food-log', 'tps/record/v1/food-entry/food-tagged'],
@@ -3133,7 +3133,7 @@ test('native food and activity records keep typed quantities and indexed daily m
     { id: 'food-2', title: 'Dinner', quantity: 1, unit: 'serving', calories: 600, proteinG: 40, carbsG: 50, fatG: 20 },
   ], 'macro contribution rows preserve chronological entry identity, serving, and projected core macros');
   const foodRecord = [...service.recordsByPath.values()].find((record) => record.id === 'food-1');
-  assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'tpsId is the only food-record identity');
+  assert.equal(Object.hasOwn(foodRecord.frontmatter, 'foodId'), false, 'id is the only food-record identity');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingQuantity'), false, 'new records keep one authored quantity field');
   assert.equal(Object.hasOwn(foodRecord.frontmatter, 'servingUnit'), false, 'new records keep one authored unit field');
   for (const redundant of ['status', 'date', 'foodName', 'brand', 'amount', 'amountUnit', 'tags']) {
@@ -3275,12 +3275,12 @@ test('editing a linked food definition recalculates only its indexed food entrie
 
 test('a known Health modify refreshes its cached source before MetadataCache catches up', async () => {
   const { service, addFrontmatterFile, contents, emitVault, readCalls, cachedReadCalls } = createHarness();
-  const original = { tpsId: 'food-live', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-08-24', calories: 100 };
+  const original = { id: 'food-live', tpsSchemaVersion: 1, kind: 'food-entry', date: '2026-08-24', calories: 100 };
   const file = addFrontmatterFile('food-live.md', original);
   service.indexFile(file, original);
   contents.set(file.path, [
     '---',
-    'tpsId: food-live',
+    'id: food-live',
     'tpsSchemaVersion: 1',
     'kind: food-entry',
     'date: 2026-08-24',
@@ -3814,11 +3814,11 @@ test('a blank native workout projects a newly attached exercise before its first
 test('legacy workout child notes consolidate into the parent and follow it to trash', async () => {
   const { service, addFrontmatterFile, files, frontmatters, contents, trashedPaths, exerciseDefinitions, emitVault } = createHarness();
   const session = addFrontmatterFile('_records/workout-sessions/legacy-workout.md', {
-    tpsId: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy strength', status: 'complete',
+    id: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy strength', status: 'complete',
     startedAt: '2026-08-22T08:00:00.000Z', setCount: 1, workoutData: 'invalid synced value',
   });
   const child = addFrontmatterFile('_records/workout-exercises/legacy-bench.md', {
-    tpsId: 'legacy-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
+    id: 'legacy-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
     workout: '[[_records/workout-sessions/legacy-workout]]', exerciseOrder: 1,
     sets: [{ id: 'legacy-set', reps: 8, weight: 100, weightUnit: 'lb', completedDate: '2026-08-22T08:05:00.000Z' }],
   });
@@ -3838,10 +3838,10 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
   assert.equal(service.getWorkoutSnapshot(session.path).exercises[0].exercisePath, 'Health/Exercises/Bench press.md');
 
   const orphanSession = addFrontmatterFile('_records/workout-sessions/delete-me.md', {
-    tpsId: 'delete-me', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Delete me', status: 'complete',
+    id: 'delete-me', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Delete me', status: 'complete',
   });
   const orphanChild = addFrontmatterFile('_records/workout-exercises/delete-me-child.md', {
-    tpsId: 'delete-me-child', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Row', exercise: 'Row',
+    id: 'delete-me-child', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Row', exercise: 'Row',
     workout: '[[_records/workout-sessions/delete-me]]', sets: [],
   });
   service.indexFile(orphanSession, frontmatters.get(orphanSession));
@@ -3856,11 +3856,11 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
 test('the next live mutation upgrades an active child-note workout without losing sets', async () => {
   const { service, addFrontmatterFile, frontmatters, files, trashedPaths } = createHarness();
   const session = addFrontmatterFile('_records/workout-sessions/active-legacy.md', {
-    tpsId: 'active-legacy', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Active legacy', status: 'active',
+    id: 'active-legacy', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Active legacy', status: 'active',
     startedAt: '2026-08-22T08:00:00.000Z', setCount: 1,
   });
   const child = addFrontmatterFile('_records/workout-exercises/active-bench.md', {
-    tpsId: 'active-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
+    id: 'active-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
     workout: '[[_records/workout-sessions/active-legacy]]', exerciseOrder: 1,
     sets: [{ id: 'set-1', reps: 8, weight: 100, weightUnit: 'lb' }],
   });
@@ -3899,7 +3899,7 @@ test('active workout resolution distinguishes moved, terminal, missing, conflict
   assert.equal(bothValidConflict.matches, 2);
 
   const duplicate = addFrontmatterFile('Duplicate Strength.md', {
-    tpsId: 'workout-live', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Duplicate Strength', status: 'active',
+    id: 'workout-live', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Duplicate Strength', status: 'active',
     startedAt: '2026-08-24T08:01:00.000Z',
   });
   service.indexFile(duplicate);
@@ -3930,7 +3930,7 @@ test('explicit identity normalization replaces legacy workout joins before remov
   });
   const session = await service.createWorkoutSession({ title: 'Strength', startedAt: '2026-08-24T08:00:00.000Z' }, 'workout-old');
   const exercise = addFrontmatterFile('_records/workout-exercises/legacy-bench.md', {
-    tpsId: 'legacy-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
+    id: 'legacy-bench', tpsSchemaVersion: 1, kind: 'workout-exercise', title: 'Bench press', exercise: 'Bench press',
     workoutId: session.id, workoutPath: session.path, sets: [],
   });
   service.indexFile(exercise);
@@ -4056,7 +4056,7 @@ test('whole-note storage is mandatory while legacy import remains explicit and c
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {
-  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 6 });
+  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 7 });
   const legacy = [
     '- Apple <!-- [type:: foodLog] [food:: Apple] [foodId:: food-old-1] [servings:: 2] [unit:: serving] [cal:: 190] [protein:: 1] [carbs:: 50] [fat:: 0.6] [fiber:: 8.8] [sodium:: 4] [completedDate:: 2026-08-23T12:00:00.000Z] -->',
     '- Walk <!-- [type:: activityLog] [activity:: Walk] [activityType:: walking] [activityId:: activity-old-1] [source:: manual] [durationMinutes:: 30] [startedAt:: 2026-08-23T08:00:00.000Z] [completedDate:: 2026-08-23T08:30:00.000Z] -->',
@@ -4179,7 +4179,7 @@ test('an unloaded service cannot refresh controls when an old mobile read finish
 });
 
 test('food record projection preserves requested order and excludes duplicates and non-food records', async () => {
-  const { service } = createHarness({ apiVersion: 6 });
+  const { service } = createHarness({ apiVersion: 7 });
   const food = (id, amount) => ({id,createdDate:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:00:00.000Z',item:{id,name:id,source:'manual',nutrition:{calories:amount}},quantity:1,unit:'serving'});
   const a=await service.createFoodEntry(food('base-a',100));
   const b=await service.createFoodEntry(food('base-b',200));
@@ -4359,7 +4359,7 @@ test('cold metadata resolution builds once and later batches preserve the settle
 function addStartupRecords(h) {
   for (let index = 0; index < 2048; index++) h.addFrontmatterFile(`Inbox/startup-${index}.md`, { title: `Note ${index}` });
   const workout = h.addFrontmatterFile('Inbox/startup-session.md', {
-    tpsId: 'startup-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Workout', status: 'active',
+    id: 'startup-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Workout', status: 'active',
   });
   h.contents.set(workout.path, writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
     version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 8 }] }],
@@ -4401,10 +4401,10 @@ test('unrelated missing metadata does not prevent scoped hydration of indexed wo
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   h.addLegacyFile('Inbox/unrelated.md', 'Ordinary note.');
   const ready = h.addFrontmatterFile('Inbox/ready-session.md', {
-    tpsId: 'ready-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Ready workout', status: 'active',
+    id: 'ready-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Ready workout', status: 'active',
   });
   const later = h.addFrontmatterFile('Inbox/later-session.md', {
-    tpsId: 'later-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Later workout', status: 'active',
+    id: 'later-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Later workout', status: 'active',
   });
   for (const file of [ready, later]) {
     h.contents.set(file.path, writeWorkoutDataToNoteContent(h.contents.get(file.path), JSON.stringify({
@@ -4436,7 +4436,7 @@ test('unrelated missing metadata does not prevent scoped hydration of indexed wo
 test('a pending workout indexed from changed source does not reread its supplied body', () => {
   const h = createHarness({ deferSetup: true, metadataInitialized: true });
   const workout = h.addFrontmatterFile('Inbox/changed-session.md', {
-    tpsId: 'changed-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Changed workout', status: 'active',
+    id: 'changed-session', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Changed workout', status: 'active',
   });
   const source = writeWorkoutDataToNoteContent(h.contents.get(workout.path), JSON.stringify({
     version: 1, exercises: [{ id: 'exercise', name: 'Bench press', sets: [{ id: 'set', reps: 8 }] }],
@@ -4896,7 +4896,7 @@ for(const change of ['status','archived','identity','kind','schema']) {
       if(++reads===1) {
         const next=structuredClone(h.frontmatters.get(file));
         if(change==='status')next.status='complete';if(change==='archived')next.archived=true;
-        if(change==='identity')next.tpsId='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
+        if(change==='identity')next.id='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
         const temp=h.addFrontmatterFile(file.path,next);h.files.set(file.path,file);h.frontmatters.set(file,next);h.frontmatters.delete(temp);
       }
       return raw(file);
@@ -4914,7 +4914,7 @@ for(const change of ['status','archived','identity','kind','schema']) {
     options.beforeFrontmatterProcess=({file,frontmatters,writeFrontmatterContent})=>{
       attempts++;const next=structuredClone(frontmatters.get(file));
       if(change==='status')next.status='complete';if(change==='archived')next.archived=true;
-      if(change==='identity')next.tpsId='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
+      if(change==='identity')next.id='new-id';if(change==='kind')next.kind='food-entry';if(change==='schema')next.tpsSchemaVersion=2;
       frontmatters.set(file,next);writeFrontmatterContent(file,next);
     };
     await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,session.id),/no longer active|identity changed/iu);
@@ -4941,7 +4941,7 @@ test('a removal queued after finish rejects without editing the completed workou
 test('a stale workout menu cannot remove an exercise from a reidentified path',async()=>{
   const h=createHarness(),session=await h.service.createWorkoutSession({title:'Reidentified removal'},'old-removal-id');
   await h.service.ensureWorkoutExercise(session,'Curl','Health/Exercises/Curl.md');const exercise=h.service.getWorkoutSnapshot(session.path).exercises[0];
-  await h.api.update(session.file,{tpsId:'new-removal-id'});let attempts=0;
+  await h.api.update(session.file,{id:'new-removal-id'});let attempts=0;
   h.plugin.app.fileManager.processFrontMatter=async()=>{attempts++;};
   await assert.rejects(h.service.removeWorkoutExercise(session.path,exercise.id,'old-removal-id'),/identity changed/iu);
   assert.equal(attempts,0);assert.equal(h.frontmatters.get(session.file).session.exercises.length,1);

@@ -30,7 +30,28 @@ const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["m
 const HEALTH_STORAGE_MODES = ["legacy", "native-records"];
 const HEALTH_GOAL_KINDS: HealthGoalKind[] = ["min", "max", "range", "counter"];
 
-export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
+/** Refuse identity collisions before normalization can replace a saved mapping. */
+export function assertHealthIdentityMappings(stored: unknown, identityPropertyKey = "id"): void {
+  const input = stored && typeof stored === "object" && !Array.isArray(stored) ? stored as SettingsRecord : {};
+  const properties = input.nativeRecordProperties && typeof input.nativeRecordProperties === "object"
+    ? input.nativeRecordProperties as SettingsRecord : {};
+  const identityKeys = new Set(["id", String(identityPropertyKey || "id").trim().toLocaleLowerCase()]);
+  const fixedField = ["kind", "title", "name", "tpsSchemaVersion", "createdDate", "modifiedDate"]
+    .find(key => identityKeys.has(key.toLocaleLowerCase()));
+  if (fixedField) throw new Error(`Health property “${fixedField}” conflicts with the configured record identity property. Choose a different shared identity property before using Health.`);
+  const mappings = [
+    ...HEALTH_NATIVE_RECORD_PROPERTY_KEYS.map(key => [`nativeRecordProperties.${key}`, properties[key] ?? DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES[key]]),
+    ...["foodFrontmatterKey", "workoutFrontmatterKey", "workoutStartPropertyKey", "workoutIntervalPropertyKey"].map(key => [key, input[key] ?? (DEFAULT_SETTINGS as any)[key]]),
+  ];
+  for (const [name, value] of mappings) {
+    if (typeof value === "string" && identityKeys.has(value.trim().toLocaleLowerCase())) {
+      throw new Error(`Health mapping “${name}” uses reserved record identity property “${value}”. Migrate the mapping with the previous Health version, or change the shared identity property, before using Health.`);
+    }
+  }
+}
+
+export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey = "id"): TPSHealthSettings {
+  assertHealthIdentityMappings(stored, identityPropertyKey);
   const storedRecord = stored && typeof stored === "object" && !Array.isArray(stored) ? stored as SettingsRecord : {};
   const raw = { ...DEFAULT_SETTINGS, ...storedRecord } as SettingsRecord;
   const settings = Object.keys(DEFAULT_SETTINGS).reduce((normalized, key) => {
@@ -151,6 +172,7 @@ export function normalizeTPSHealthSettings(stored: unknown): TPSHealthSettings {
   for (const [key, value] of Object.entries(settings as unknown as SettingsRecord)) {
     preserved[key] = cloneSettingValue(value);
   }
+  assertHealthIdentityMappings(preserved, identityPropertyKey);
   return preserved as unknown as TPSHealthSettings;
 }
 

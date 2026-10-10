@@ -334,7 +334,7 @@ function installNativeWorkoutTestService(plugin, fake, options = {}) {
       const path = `2026-08-26 - ${String(properties.title || "Workout")}.md`;
       const file = new globalThis.__TPSHealthTestTFile(path);
       const frontmatter = {
-        ...properties, tpsId: id, tpsSchemaVersion: 1, kind: "workout-session", status: "active",
+        ...properties, id: id, tpsSchemaVersion: 1, kind: "workout-session", status: "active",
       };
       fake.files.set(path, frontmatterToYaml(frontmatter));
       resolver = () => ({
@@ -5766,7 +5766,7 @@ test("Health frontmatter writes use the native standalone route exactly once and
   assert.equal(nativeCalls, 2);
 });
 
-test("atomic Health identity is case-insensitive, canonicalized by GCM v6, and never minted locally", async () => {
+test("atomic Health identity delegates unchanged to GCM API6 and API7 without minting locally", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -5777,52 +5777,184 @@ test("atomic Health identity is case-insensitive, canonicalized by GCM v6, and n
   const identity = {
     getInternalId(frontmatter) {
       identityCalls += 1;
-      const key = Object.keys(frontmatter).find((candidate) => candidate.toLowerCase() === "tpsid");
+      const key = Object.keys(frontmatter).find((candidate) => candidate.toLowerCase() === "id");
       return key ? String(frontmatter[key] || "").trim() || null : null;
     },
     setInternalId(frontmatter, value) {
       identityCalls += 1;
-      for (const key of Object.keys(frontmatter)) if (key.toLowerCase() === "tpsid") delete frontmatter[key];
-      frontmatter.tpsId = value;
+      for (const key of Object.keys(frontmatter)) if (key.toLowerCase() === "id") delete frontmatter[key];
+      frontmatter.id = value;
       return value;
     },
     ensureInternalIdInFrontmatter(frontmatter) {
       identityCalls += 1;
-      frontmatter.tpsId = "gcm-owned-id";
-      return frontmatter.tpsId;
+      frontmatter.id = "gcm-owned-id";
+      return frontmatter.id;
     },
   };
   fake.app.plugins.plugins["tps-global-context-menu"] = {
-    api: { nativeRecords: { version: 6 }, frontmatter: { process() {} }, identity },
+    api: { nativeRecords: { version: 7 }, frontmatter: { process() {} }, identity },
   };
 
   const frontmatter = {
-    TPSID: "existing-id",
-    tPsId: "stale-duplicate",
+    ID: "existing-id",
+    iD: "stale-duplicate",
     Name: "Authored title",
     CREATEDDATE: "retired",
   };
   plugin.applyAtomicHealthFrontmatter(frontmatter, file, "exercise", "Fallback title");
   assert.equal(identityCalls, 2, "GCM reads and canonicalizes the existing identity without minting");
-  assert.equal(frontmatter.tpsId, "existing-id");
-  assert.deepEqual(Object.keys(frontmatter).filter((key) => key.toLowerCase() === "tpsid"), ["tpsId"]);
+  assert.equal(frontmatter.id, "existing-id");
+  assert.deepEqual(Object.keys(frontmatter).filter((key) => key.toLowerCase() === "id"), ["id"]);
   assert.equal(frontmatter.title, "Authored title");
   assert.equal(frontmatter.name, undefined);
   assert.equal(frontmatter.CREATEDDATE, undefined);
 
+  fake.app.plugins.plugins["tps-global-context-menu"].api.nativeRecords.version = 6;
+  const olderOwner = { ID: "existing-api6-id" };
+  plugin.applyAtomicHealthFrontmatter(olderOwner, file, "exercise", "Compatible identity owner");
+  assert.equal(identityCalls, 4, "the independent identity contract remains available with API6");
+  assert.equal(olderOwner.id, "existing-api6-id");
+  const createdWithOlderOwner = {};
+  plugin.applyAtomicHealthFrontmatter(createdWithOlderOwner, file, "exercise", "New reusable definition");
+  assert.equal(identityCalls, 6);
+  assert.equal(createdWithOlderOwner.id, "gcm-owned-id");
+
   fake.app.plugins.plugins["tps-global-context-menu"].api.nativeRecords.version = 5;
-  const incompatible = { TPSID: "preserved-id" };
+  const incompatible = { ID: "preserved-id" };
   plugin.applyAtomicHealthFrontmatter(incompatible, file, "exercise", "Still usable");
-  assert.equal(identityCalls, 2, "an incompatible GCM boundary is never asked to mint identity");
-  assert.equal(incompatible.TPSID, "preserved-id");
-  assert.equal(Object.hasOwn(incompatible, "tpsId"), false, "Health does not add a differently-cased duplicate");
+  assert.equal(identityCalls, 6, "an incompatible GCM boundary is never asked to mint identity");
+  assert.equal(incompatible.ID, "preserved-id");
+  assert.equal(Object.hasOwn(incompatible, "id"), false, "Health does not add a differently-cased duplicate");
 
   delete fake.app.plugins.plugins["tps-global-context-menu"];
   const standalone = {};
   plugin.applyAtomicHealthFrontmatter(standalone, file, "exercise", "Standalone note");
-  assert.equal(Object.keys(standalone).some((key) => key.toLowerCase() === "tpsid"), false);
+  assert.equal(Object.keys(standalone).some((key) => key.toLowerCase() === "id"), false);
   assert.equal(standalone.kind, "exercise");
   assert.equal(standalone.title, "Standalone note");
+});
+
+test("saved identity collisions reject Health loading before settings or notes can be changed", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  for (const key of ["id", "ID", "iD"]) {
+    for (const mapping of [
+      { nativeRecordProperties: { calories: key } },
+      { workoutStartPropertyKey: key },
+      { workoutIntervalPropertyKey: key },
+      { foodFrontmatterKey: key },
+      { workoutFrontmatterKey: key },
+    ]) {
+      const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+      const stored = { ...mapping, untouched: { keep: true } }, before = structuredClone(stored);
+      let saves = 0;
+      plugin.loadData = async () => stored;
+      plugin.saveData = async () => { saves++; };
+      await assert.rejects(plugin.onload(), /reserved record identity property/);
+      assert.throws(() => normalizeTPSHealthSettings(stored), /reserved record identity property/);
+      assert.deepEqual(stored, before);assert.equal(saves, 0);assert.deepEqual(fake.writes, []);
+    }
+  }
+});
+
+test("configured physical identity collisions reject default and saved mappings without replacing settings", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, HealthNativeRecordService: Service } = await importPluginWithObsidianStub();
+  for (const [identityKey, mapping] of [
+    ["calories", {}],
+    ["scheduled", {}],
+    ["recordIdentity", { nativeRecordProperties: { calories: "recordIdentity" } }],
+    ["recordIdentity", { workoutStartPropertyKey: "RECORDIDENTITY" }],
+    ["recordIdentity", { workoutIntervalPropertyKey: "recordIdentity" }],
+  ]) {
+    const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+    const profile = { identityMode: "property", identityPropertyKey: identityKey };
+    fake.app.plugins.plugins["tps-global-context-menu"] = { api: { nativeRecords: {
+      version: 7, getStorageProfile: () => profile, isEnabled: () => true,
+      create() {}, resolve() {}, update() {}, inspect() {},
+    } } };
+    const stored = { ...mapping, untouched: "keep" }, before = structuredClone(stored);
+    let saves = 0;
+    plugin.loadData = async () => stored;plugin.saveData = async () => { saves++; };
+    await assert.rejects(plugin.onload(), /reserved record identity property/);
+    assert.deepEqual(stored, before);assert.equal(saves, 0);assert.deepEqual(fake.writes, []);
+
+    plugin.settings = { ...plugin.settings, ...mapping };
+    const settingsBefore = structuredClone(plugin.settings);
+    await assert.rejects(plugin.saveSettings(), /reserved record identity property/);
+    assert.deepEqual(plugin.settings, settingsBefore);assert.equal(saves, 0);
+    assert.throws(() => new Service(plugin).requireApi(), /reserved record identity property/);
+    assert.deepEqual(fake.writes, []);
+  }
+});
+
+test("native food logging rejects incompatible owners before creating or editing its reusable source", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin, HealthNativeRecordService: Service } = await importPluginWithObsidianStub();
+  for (const version of [6, 8]) {
+    for (const existing of [false, true]) {
+      const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+      fake.app.plugins.plugins["tps-global-context-menu"] = { api: { nativeRecords: {
+        version, isEnabled: () => true, create() { throw Error("Unexpected record creation"); },
+        resolve() {}, update() {}, inspect() {},
+      } } };
+      if (existing) fake.files.set("Health/Foods/QA Food.md", "---\nid: preserved-food\nkind: food\n---\nBody sentinel\n");
+      const before = [...fake.files];let sourceCalls = 0;
+      const findSource = plugin.findOrCreateFoodNote.bind(plugin);
+      plugin.findOrCreateFoodNote = item => { sourceCalls++;return findSource(item); };
+      plugin.nativeRecordService = new Service(plugin);
+      await assert.rejects(plugin.logFood({ id: "qa-food", name: "QA Food", source: "manual",
+        servingAmount: 1, servingUnit: "serving", nutrition: { calories: 100 } }, 1, "serving"), /nativeRecords API v7/);
+      assert.equal(sourceCalls, 0);assert.deepEqual([...fake.files], before);assert.deepEqual(fake.writes, []);
+    }
+  }
+});
+
+test("normalization rejects a fallback that would occupy the configured physical identity key", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  for (const [identityKey, mapping] of [
+    ["calories", { nativeRecordProperties: { calories: "" } }],
+    ["calories", { nativeRecordProperties: { calories: "not valid" } }],
+    ["proteinG", { nativeRecordProperties: { calories: "energy", proteinG: "energy" } }],
+  ]) {
+    const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+    fake.app.plugins.plugins["tps-global-context-menu"] = { api: { nativeRecords: {
+      getStorageProfile: () => ({ identityMode: "property", identityPropertyKey: identityKey }),
+    } } };
+    const stored = structuredClone(mapping), before = structuredClone(stored);let saves = 0;
+    plugin.loadData = async () => stored;plugin.saveData = async () => { saves++; };
+    assert.throws(() => normalizeTPSHealthSettings(stored, identityKey), /reserved record identity property/);
+    await assert.rejects(plugin.onload(), /reserved record identity property/);
+    plugin.settings = { ...plugin.settings, ...mapping };
+    const beforeSettings = structuredClone(plugin.settings);
+    await assert.rejects(plugin.saveSettings(), /reserved record identity property/);
+    assert.deepEqual(plugin.settings, beforeSettings);assert.deepEqual(stored, before);
+    assert.equal(saves, 0);assert.deepEqual(fake.writes, []);
+  }
+});
+
+test("fixed reusable-definition fields cannot erase a configured physical identity", async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  for (const version of [6, 7]) {
+    for (const identityKey of ["name", "NAME", "title", "kind", "tpsSchemaVersion", "createdDate", "modifiedDate"]) {
+      const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);let identityCalls = 0;
+      fake.app.plugins.plugins["tps-global-context-menu"] = { api: {
+        nativeRecords: { version, getStorageProfile: () => ({ identityMode: "property", identityPropertyKey: identityKey }) },
+        frontmatter: { process() { throw Error("Unexpected frontmatter write"); } },
+        identity: { getInternalId() { identityCalls++;return "preserved-id"; }, setInternalId() { identityCalls++; }, ensureInternalIdInFrontmatter() { identityCalls++; } },
+      } };
+      const fields = { [identityKey]: "preserved-id" }, before = structuredClone(fields);
+      const file = new globalThis.__TPSHealthTestTFile("Health/Foods/QA.md");
+      assert.throws(() => plugin.applyAtomicHealthFrontmatter(fields, file, "food", "QA"), /configured record identity property/);
+      await assert.rejects(plugin.createFoodNoteFromItem({ name: "QA", servingAmount: 1, servingUnit: "serving" }), /configured record identity property/);
+      assert.deepEqual(fields, before);assert.equal(identityCalls, 0);assert.deepEqual(fake.writes, []);
+    }
+  }
 });
 
 test("all Health-owned Markdown frontmatter writes share the explicit routing helper", () => {
@@ -6952,7 +7084,7 @@ test("a native inline set reuses its attached exercise note without rebuilding t
   const sessionPath = "_records/workout-sessions/Native inline QA.md";
   const exercisePath = "Health/Exercises/Bench press.md";
   fake.files.set(sessionPath, frontmatterToYaml({
-    tpsId: "workout-inline",
+    id: "workout-inline",
     tpsSchemaVersion: 1,
     kind: "workout-session",
     title: "Native inline QA",
@@ -7173,16 +7305,16 @@ test("workout GCM timer matching is scoped to the protected workout task id", as
   installDeterministicBrowserGlobals();
   const { workoutGcmTimerMatches } = await importPluginWithObsidianStub();
   const lines = [
-    "- [ ] [[#Workout|Push]] [kind:: workout] [workoutId:: workout-push] [tpsId:: timer-push]",
-    "- [ ] Other timer [tpsId:: timer-other]",
+    "- [ ] [[#Workout|Push]] [kind:: workout] [workoutId:: workout-push] [id:: timer-push]",
+    "- [ ] Other timer [id:: timer-other]",
   ];
   const timers = [
     { id: "tt-push", targetId: "timer-push", targetLineNumber: 0 },
     { id: "tt-other", targetId: "timer-other", targetLineNumber: 1 },
   ];
   assert.deepEqual(workoutGcmTimerMatches(lines, "workout-push", timers).map((timer) => timer.id), ["tt-push"]);
-  assert.deepEqual(workoutGcmTimerMatches([lines[1], lines[0]], "workout-push", timers).map((timer) => timer.id), ["tt-push"], "stable tpsId rebases a moved task");
-  const legacyLine = "- [ ] [[#Workout|Push]] [tpsId:: timer-push] <!-- tps-health:workout-task [workoutId:: workout-push] -->";
+  assert.deepEqual(workoutGcmTimerMatches([lines[1], lines[0]], "workout-push", timers).map((timer) => timer.id), ["tt-push"], "stable id rebases a moved task");
+  const legacyLine = "- [ ] [[#Workout|Push]] [id:: timer-push] <!-- tps-health:workout-task [workoutId:: workout-push] -->";
   assert.deepEqual(workoutGcmTimerMatches([legacyLine], "workout-push", [{ id: "legacy", targetId: "timer-push", targetLineNumber: 0 }]).map((timer) => timer.id), ["legacy"], "legacy comment identity remains readable");
 });
 
@@ -7482,7 +7614,7 @@ test("blank native workouts attach a new exercise through the resolved stable se
   const plugin = new TPSHealthPlugin(fake.app);
   const resolvedPath = "Workouts/2026-08-27 - Blank workout.md";
   fake.files.set(resolvedPath, frontmatterToYaml({
-    tpsId: "workout-blank",
+    id: "workout-blank",
     tpsSchemaVersion: 1,
     kind: "workout-session",
     title: "Blank workout",
@@ -10188,8 +10320,8 @@ test('library note creation uses GCM classification while preserving nutrition a
  installDeterministicBrowserGlobals();const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
  const fake=createFakeHealthApp();const plugin=new TPSHealthPlugin(fake.app);
  fake.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:{definition:kind=>kind==='food'?{parentKind:'entity',key:'entityKind',value:'food'}:null,encode:fm=>({...fm,kind:'entity',entityKind:'food'})}}};
- const fm={tpsId:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Food'},'food','Food');
- assert.equal(fm.kind,'entity');assert.equal(fm.entityKind,'food');assert.equal(fm.tpsId,'retained');assert.equal(fm.calories,100);
+ const fm={id:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Food'},'food','Food');
+ assert.equal(fm.kind,'entity');assert.equal(fm.entityKind,'food');assert.equal(fm.id,'retained');assert.equal(fm.calories,100);
 });
 
 test('tag-classified library creation and lookup use the complete GCM tag without retaining kind',async()=>{
@@ -10200,8 +10332,8 @@ test('tag-classified library creation and lookup use the complete GCM tag withou
  fake.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
  plugin.settings.foodFrontmatterKey='entityKind';plugin.settings.workoutFrontmatterKey='entityKind';
  for(const kind of Object.keys(tags)) {
-  const fm={tpsId:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Library'},kind,'Library');
-  assert.equal(fm.kind,undefined);assert.equal(fm.entityKind,undefined);assert.ok(fm.tags.includes(tags[kind]));assert.equal(fm.tpsId,'retained');assert.equal(fm.calories,100);
+  const fm={id:'retained',calories:100};plugin.applyAtomicHealthFrontmatter(fm,{basename:'Library'},kind,'Library');
+  assert.equal(fm.kind,undefined);assert.equal(fm.entityKind,undefined);assert.ok(fm.tags.includes(tags[kind]));assert.equal(fm.id,'retained');assert.equal(fm.calories,100);
  }
  const exercise=await plugin.createExercise({name:'Tag press'});
  plugin.settings.exercisesFolder='Elsewhere';
@@ -10701,9 +10833,9 @@ test('restored hidden Health view opens before layout readiness and discovers sa
   fake.app.vault.on = () => ({});
   fake.app.metadataCache.initialized = false;
   fake.app.metadataCache.on = (event, callback) => { metadata.set(event, callback); return {}; };
-  fake.files.set('Inbox/Startup food.md', '---\ntpsId: startup-food\ntpsSchemaVersion: 1\nkind: food-entry\ntitle: Saved food\ncompletedDate: 2026-10-06T12:00:00\ncalories: 250\n---\nSaved body.');
-  plugin.getGcmNativeRecordsApi = () => ({version: 6, isEnabled: () => true, create() {}, resolve() {}, update() {},
-    inspect: fm => fm?.tpsId ? {id: fm.tpsId, kind: fm.kind, schemaVersion: 1, frontmatter: {...fm}} : null});
+  fake.files.set('Inbox/Startup food.md', '---\nid: startup-food\ntpsSchemaVersion: 1\nkind: food-entry\ntitle: Saved food\ncompletedDate: 2026-10-06T12:00:00\ncalories: 250\n---\nSaved body.');
+  plugin.getGcmNativeRecordsApi = () => ({version: 7, isEnabled: () => true, create() {}, resolve() {}, update() {},
+    inspect: fm => fm?.id ? {id: fm.id, kind: fm.kind, schemaVersion: 1, frontmatter: {...fm}} : null});
   plugin.scheduleWorkoutActionBars = () => {};
   plugin.nativeRecordService = new Service(plugin);
   plugin.nativeRecordService.setup();

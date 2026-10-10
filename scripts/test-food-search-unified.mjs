@@ -650,12 +650,12 @@ test('tray and search log actions share submission and stay synchronized', async
 
 test('diagnostic command separates a 30-second native write from tray persistence', async () => {
   const {tray,plugin}=await setup();
-  let now=0,finishNative;
+  let now=0,finishNative,preflights=0;
   plugin.foodLogTimings.now=()=>now;
   plugin.manifest={version:'3.2.0'};
   plugin.app.plugins={plugins:{'tps-global-context-menu':{manifest:{version:'3.1.7'}}}};
   plugin.findOrCreateFoodNote=async item=>{now+=2000;return item;};
-  plugin.nativeRecordService={isEnabled:()=>true,createFoodEntry:()=>new Promise(resolve=>{finishNative=()=>{now+=30000;resolve({path:'Private/entry.md'});};})};
+  plugin.nativeRecordService={isEnabled:()=>true,requireApi:()=>{preflights++;},createFoodEntry:()=>new Promise(resolve=>{finishNative=()=>{now+=30000;resolve({path:'Private/entry.md'});};})};
   const saveSettings=plugin.saveSettings.bind(plugin);
   plugin.saveSettings=async()=>{now+=1000;await saveSettings();};
   tray.selectionItems=[{item:food('Private food'),quantity:1,unit:'serving'}];
@@ -664,6 +664,7 @@ test('diagnostic command separates a 30-second native write from tray persistenc
   assert.equal(typeof finishNative,'function');
   await tray.logSelected(); // A second press must still be suppressed.
   finishNative();await operation;
+  assert.equal(preflights,1,'the native contract is checked once before source preparation');
   const report=JSON.parse(plugin.foodLogTimings.report());
   const single=report.attempts.find(a=>a.route==='food');
   const batch=report.attempts.find(a=>a.route==='tray');

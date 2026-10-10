@@ -4,6 +4,7 @@ import type { ExtraNutrition } from "./nutrients";
 import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { normalizeFoodLogTags } from "./food-log-tags";
+import { assertHealthIdentityMappings } from "./settings-normalization";
 import { parseEnergyActivitySettings, projectEnergyActivity } from './energy-activity';
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
 import type TPSHealthPlugin from './main';
@@ -51,10 +52,10 @@ interface NativeRecordsApi {
   getKindPropertyKeys?(): unknown;
   create(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
   createFresh?(kind: string, properties: Record<string, unknown>, options?: Record<string, unknown>): Promise<RawNativeRecordHandle>;
-  resolve(reference: string | TFile | { path?: string; id?: string; tpsId?: string }): Promise<RawNativeRecordHandle | null>;
-  update(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
-  updateFromSource?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, propertyKeys: readonly string[], compute: (frontmatter: Record<string, unknown>) => Record<string, unknown> | null, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
-  rename?(reference: string | TFile | { path?: string; id?: string; tpsId?: string }, fileName: string, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
+  resolve(reference: string | TFile | { path?: string; id?: string }): Promise<RawNativeRecordHandle | null>;
+  update(reference: string | TFile | { path?: string; id?: string }, updates: Record<string, unknown>, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
+  updateFromSource?(reference: string | TFile | { path?: string; id?: string }, propertyKeys: readonly string[], compute: (frontmatter: Record<string, unknown>) => Record<string, unknown> | null, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
+  rename?(reference: string | TFile | { path?: string; id?: string }, fileName: string, cause?: Record<string, unknown>): Promise<RawNativeRecordHandle | null>;
   inspect(frontmatter: unknown): {
     id: string;
     kind: string;
@@ -1238,12 +1239,14 @@ export class HealthNativeRecordService {
     const requiredMethods = ['isEnabled', 'create', 'resolve', 'update', 'inspect'] as const;
     if (
       !api
-      || api.version !== 6
+      || api.version !== 7
       || requiredMethods.some((method) => typeof api[method] !== 'function')
       || api.isEnabled() !== true
     ) {
-      throw new Error('TPS Health native records require TPS GCM native-record mode and nativeRecords API v6.');
+      throw new Error('TPS Health native records require TPS GCM native-record mode and nativeRecords API v7.');
     }
+    const profile = api.getStorageProfile?.();
+    assertHealthIdentityMappings(this.plugin.settings, profile?.identityMode === 'property' ? profile.identityPropertyKey : 'id');
     if (hasCustomNativeKindValues(this.plugin.settings) && api.capabilities?.customKinds !== true) {
       throw new Error('Custom Health record kind values require a TPS GCM native-record build with custom-kind support.');
     }
@@ -1262,7 +1265,7 @@ export class HealthNativeRecordService {
   }
 
   private async resolveRecord(
-    reference: string | TFile | { path?: string; id?: string; tpsId?: string },
+    reference: string | TFile | { path?: string; id?: string },
   ): Promise<NativeRecordHandle | null> {
     return this.canonicalHandle(await this.requireApi().resolve(reference));
   }
@@ -1293,7 +1296,7 @@ export class HealthNativeRecordService {
   }
 
   private async updateRecord(
-    reference: string | TFile | { path?: string; id?: string; tpsId?: string },
+    reference: string | TFile | { path?: string; id?: string },
     updates: Record<string, unknown>,
     cause?: Record<string, unknown>,
   ): Promise<NativeRecordHandle | null> {
@@ -2410,7 +2413,7 @@ export class HealthNativeRecordService {
   async normalizeNativeRecordFilenames(): Promise<NativeFilenameNormalizationResult> {
     const api = this.requireApi();
     if (typeof api.rename !== 'function') {
-      throw new Error('Readable Health filenames require nativeRecords API v6 with rename support.');
+      throw new Error('Readable Health filenames require nativeRecords API v7 with rename support.');
     }
     const records = [...this.recordsByPath.values()]
       .filter((record) => record.kind === 'food-entry' || record.kind === 'activity-entry' || record.kind === 'workout-session' || record.kind === 'workout-exercise')
@@ -3202,7 +3205,7 @@ export class HealthNativeRecordService {
 
   private readApi(): NativeRecordsApi | null {
     const api = this.plugin.getGcmNativeRecordsApi() as NativeRecordsApi | null;
-    return api?.version === 6 && typeof api.inspect === 'function' && api.isEnabled?.() === true
+    return api?.version === 7 && typeof api.inspect === 'function' && api.isEnabled?.() === true
       ? api : null;
   }
 
@@ -3435,7 +3438,7 @@ export class HealthNativeRecordService {
       Object.keys(nutritionKeys), (frontmatter) => {
         if (!this.isEnabled()) return null;
         const current = decodeNativeRecordFrontmatter(this.plugin.settings, frontmatter);
-        if (String(current.tpsId || '') !== entry.id || canonicalNativeKind(this.plugin.settings, current.kind) !== 'food-entry') return null;
+        if (String(current.id || '') !== entry.id || canonicalNativeKind(this.plugin.settings, current.kind) !== 'food-entry') return null;
         if (current.archived === true) return null;
         if (expectedFoodPath && this.resolveFoodSourcePath(foodReference(current), entry.file.path) !== expectedFoodPath) return null;
         const projected = this.projectFoodEntry({ ...current, ...updates }, entry.file.path);

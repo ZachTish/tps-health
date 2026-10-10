@@ -855,7 +855,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         [next.foodFrontmatterFoodValue, next.foodFrontmatterRecipeValue, next.foodFrontmatterMealValue],
         [next.workoutPlanFrontmatterValue, next.exerciseFrontmatterValue]];
       const profile = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.();
-      const reserved = ["tpsId", "tpsSchemaVersion", "title", "createdDate", "modifiedDate", "tags", "cssclasses",
+      const reserved = ["id", "tpsId", "tpsSchemaVersion", "title", "createdDate", "modifiedDate", "tags", "cssclasses",
         ...Object.values(DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES), "brand", "aliases", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "ingredients", "ingredientStatement", "name", "notes", "cooldownDays", "defaultRestSeconds", "category", "primaryMuscles", "secondaryMuscles", "equipment",
         ...[profile?.identityPropertyKey, profile?.schemaPropertyKey, profile?.titlePropertyKey, profile?.createdPropertyKey, profile?.modifiedPropertyKey].filter(Boolean)].map(key => String(key).toLowerCase());
       const sharedKindKey = this.plugin.getGcmNativeRecordsApi()?.getStorageProfile?.(this.plugin.settings.nativeRecordKinds.foodEntry)?.kindPropertyKey || profile?.kindPropertyKey || "kind";

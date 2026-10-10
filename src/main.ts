@@ -25,7 +25,7 @@ import { buildHealthPropertyCatalog } from "./health-property-catalog";
 import { activityEntryLine, foodEntryLine, id, isoDateKey, isoNow, workoutSessionLine, workoutSetLine } from "./format";
 import { foodLogDateIndicator, resolveFoodLogDateKey } from "./food-log-date";
 import { resolveNativeDailyDateFilter } from "./native-daily-date-filter";
-import { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
+import { applyBuiltInHealthGoalTargets, assertHealthIdentityMappings, isFutureTPSHealthSettings, legacyUsdaApiKeyValue, mergeTPSHealthSettingsChanges, normalizeTPSHealthSettings, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } from "./settings-normalization";
 import { describeFoodEstimateIssues, describeFoodPlanFromReview, isUsableDescribeFoodExtraction, isUsableDescribeFoodReview, localDescribeFoodEstimate, parseFoodDescription, type DescribeExtractedFood, type DescribeFoodExtraction, type DescribeFoodPlan, type DescribeFoodReview, type DescribeNutritionEstimate, type DescribePlannedFood, type DescribeReviewedFood } from "./describe-food";
 import { createTPSHealthHomeActionProvider } from "./home-actions";
 import { TPSHealthSettingTab } from "./settings";
@@ -696,8 +696,9 @@ export default class TPSHealthPlugin extends Plugin {
 
   async onload() {
     const storedSettings = await this.loadData();
+    const profile = this.getGcmNativeRecordsApi()?.getStorageProfile?.();
     this.settingsPersistenceBlockedByFutureSchema = isFutureTPSHealthSettings(storedSettings);
-    this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {});
+    this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {}, profile?.identityMode === "property" ? profile.identityPropertyKey : "id");
     if (this.settings.storageMode === "legacy") {
       logger.flowWarn("Settings", "inline-history:review-needed");
       new Notice("TPS Health now saves whole-note records. Earlier inline logs remain in their notes; use Daily logging → Earlier inline logs to preview and copy them.", 12000);
@@ -903,7 +904,7 @@ export default class TPSHealthPlugin extends Plugin {
       checkCallback: (checking) => {
         if (!this.nativeRecordService?.isEnabled()) return false;
         if (!checking) void this.traceCommand("normalize-native-health-identities", async () => {
-          const message = "Replace legacy foodId/workoutId/exerciseRecordIds fields with the record's tpsId and typed workout links? No record bodies or set IDs will be removed.";
+          const message = "Replace legacy foodId/workoutId/exerciseRecordIds fields with the record's id and typed workout links? No record bodies or set IDs will be removed.";
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
           const result = await this.nativeRecordService.normalizeNativeRecordIdentities();
           new Notice(`Health identity cleanup: ${result.updated} of ${result.inspected} records updated; ${result.skipped} need manual relationship repair.`, 12000);
@@ -935,7 +936,7 @@ export default class TPSHealthPlugin extends Plugin {
       name: "Native records: Apply readable Health filenames",
       checkCallback: (checking) => {
         const nativeRecords = this.getGcmNativeRecordsApi();
-        if (!this.nativeRecordService?.isEnabled() || nativeRecords?.version !== 6 || typeof nativeRecords?.rename !== "function") return false;
+        if (!this.nativeRecordService?.isEnabled() || nativeRecords?.version !== 7 || typeof nativeRecords?.rename !== "function") return false;
         if (!checking) void this.traceCommand("normalize-native-health-filenames", async () => {
           const message = "Rename opaque food, activity, and workout record files—and exact generated title-first workout filenames—to date-and-title names? Stable TPS identity is preserved, links are updated through Obsidian, and other manually named files are left unchanged.";
           if (typeof window.confirm === "function" && !window.confirm(message)) return;
@@ -1163,7 +1164,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async saveSettings() {
-    this.settings = normalizeTPSHealthSettings(this.settings);
+    const profile = this.getGcmNativeRecordsApi()?.getStorageProfile?.();
+    this.settings = normalizeTPSHealthSettings(this.settings, profile?.identityMode === "property" ? profile.identityPropertyKey : "id");
     logger.setLoggingEnabled(this.settings.enableLogging);
     if (this.settingsPersistenceBlockedByFutureSchema) {
       this.notifySettingsPersistenceBlocked();
@@ -3739,6 +3741,7 @@ export default class TPSHealthPlugin extends Plugin {
   async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
     return this.measureFoodLogging("food", 1, async timing => {
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
+      if (persistFoodNote) this.nativeRecordService.requireApi();
       const loggedItem = persistFoodNote ? await timing.measure("food-note", () => this.findOrCreateFoodNote(item)) : normalizeFoodMetricServing(item);
       const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
       if (resolvedServing.unsupportedUnit || resolvedServing.servings <= 0) {
@@ -7118,6 +7121,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private requireConfiguredKindWriter(kind: string): void {
+    const profile = this.getGcmNativeRecordsApi()?.getStorageProfile?.();
+    assertHealthIdentityMappings(this.settings, profile?.identityMode === "property" ? profile.identityPropertyKey : "id");
     const codec = this.configuredKindCodec();
     if (!codec) return; // Older GCM installations keep their existing Health settings behavior.
     if (!codec.definition(kind) || codec.writerEnabled?.(kind) !== true) {
@@ -7139,6 +7144,8 @@ export default class TPSHealthPlugin extends Plugin {
     title: string,
     existingRaw?: Record<string, unknown>,
   ): void {
+    const profile = this.getGcmNativeRecordsApi()?.getStorageProfile?.();
+    assertHealthIdentityMappings(this.settings, profile?.identityMode === "property" ? profile.identityPropertyKey : "id");
     const normalizedKind = String(kind || "").trim();
     const normalizedTitle = String(title || file.basename).replace(/\s+/gu, " ").trim() || file.basename;
     const identity = this.getGcmAtomicHealthIdentityApi();
@@ -7206,7 +7213,7 @@ export default class TPSHealthPlugin extends Plugin {
     const api = this.getGcmApi();
     const identity = api?.identity;
     if (
-      api?.nativeRecords?.version !== 6
+      ![6, 7].includes(api?.nativeRecords?.version)
       || typeof api?.frontmatter?.process !== "function"
       || typeof identity?.getInternalId !== "function"
       || typeof identity?.setInternalId !== "function"
@@ -21634,7 +21641,7 @@ export function workoutGcmTimerMatches(lines: readonly string[], workoutId: stri
     const preferred = Number(timer?.targetLineNumber ?? timer?.lineNumber);
     const targetId = String(timer?.targetId || "").trim();
     if (targetId) {
-      const byId = lines.findIndex((line) => readStringField(line, "tpsId") === targetId);
+      const byId = lines.findIndex((line) => readStringField(line, "id") === targetId);
       if (byId >= 0) return isWorkoutDailyTaskLine(lines[byId], workoutId);
     }
     return Number.isInteger(preferred) && preferred >= 0 && preferred < lines.length
@@ -21770,8 +21777,8 @@ export function repairWorkoutDailyBlockContent(
   const originalBlockStart = existingTaskIndex >= 0 && existingTaskIndex < startIndex ? existingTaskIndex : startIndex;
   const existingTask = existingTaskIndex >= 0 ? lines[existingTaskIndex] : "";
   let taskLine = workoutDailyTaskLine(lines[anchorIndex], /^\s*-\s+\[[xX]\]/.test(existingTask));
-  const existingTaskId = readStringField(existingTask, "tpsId");
-  if (existingTaskId) taskLine = upsertDataviewField(taskLine, "tpsId", existingTaskId);
+  const existingTaskId = readStringField(existingTask, "id");
+  if (existingTaskId) taskLine = upsertDataviewField(taskLine, "id", existingTaskId);
   const explicitEnd = explicitWorkoutDailyEndIndex(lines, anchorIndex);
   let blockLines: string[];
   let remaining: string[];

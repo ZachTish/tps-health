@@ -1,5 +1,44 @@
 # TPS Health
 
+## 5.0.0 — Use the shared `id` property
+
+Health uses GCM nativeRecords API v7, whose canonical record envelope exposes
+`id`. GCM 9.0.0 is required for native record work; incompatible owners fail
+before food logging creates or alters a reusable source note, and before other
+native record writes. Linked-food nutrition persistence uses the canonical ID.
+The independent identity API remains compatible with API6 and API7 for reusable
+food, exercise and plan definitions, preserving the owner's configured key.
+The physical property remains configurable in GCM; `id` is its new default,
+and a deliberately configured custom key is preserved. Record values, workout
+set IDs, timer session IDs, `targetId` and provider references are unchanged.
+
+Canonical and configured identity fields cannot be reused by nutrition or
+workout timing mappings. Explicit Health mapping previews recognize both the
+new identity and the legacy key, including case variants; a short `id` key in
+malformed source must be an actual key before it blocks an unrelated note.
+Saved mappings that reuse `id` or the configured physical identity property
+fail explicitly before settings normalization, persistence or record writes;
+Health does not silently replace them with defaults. Migrate an old conflicting
+mapping using the previous Health version, or change the shared identity key,
+before loading Health 5.0.0. Defaults also cannot collide with a custom GCM key.
+Health's fixed definition fields, including `name` and `title`, cannot serve as
+the physical identity key; their writers refuse that ownership conflict.
+The retired inline helpers use `id`; they add no new line-level features.
+There is no automatic startup migration, repair or discovery writer.
+
+This is a major compatibility release because the canonical GCM contract
+changed. Update the coordinated plugins and explicitly migrate the physical
+property before removing the old storage configuration. Minimum Obsidian is
+1.12.0. Validation and rollout boundaries are recorded in
+[5.0.0 release notes](release-notes/5.0.0.md).
+
+
+Installed Test-vault creation/update checks passed with stable primary and
+foreign IDs, exact bodies and restored temporary settings. The final ordinary
+stable build deployed only to this vault and was reloaded by manifest ID.
+See the linked release notes for operation counts, synthetic boundaries and
+SHA-256 hashes; no production installation or physical-iPhone claim is made.
+
 ## 4.4.1 — Keep workout controls mounted
 
 Reading mode now recognizes removal of a preview wrapper containing the workout card and arrival of a wrapped preview footer. These real structural changes notify the existing coalesced mount owner, including a frontmatter-only workout whose body has no postprocessor sections. Ordinary paragraphs, internal card edits and the card’s own insertion still request no refresh. No new observer, interval, scan, read, write, retry or repair route is added.

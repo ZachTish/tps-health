@@ -19,7 +19,7 @@ const WORKOUT_RESERVED_PROPERTY_KEYS = new Set([
   "tags",
   "targetgapdays",
   "title",
-  "tpsid",
+  "id", "tpsid",
   "tpsschemaversion",
   "workout",
   "workoutdate",

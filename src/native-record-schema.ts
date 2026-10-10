@@ -56,7 +56,7 @@ export const HEALTH_NATIVE_RECORD_PROPERTY_KEYS = Object.freeze(
 );
 
 const RESERVED_NATIVE_ENVELOPE_KEYS = new Set([
-  "tpsid", "tpsschemaversion", "kind", "title", "createddate", "modifieddate", "tags", "cssclasses",
+  "id", "tpsid", "tpsschemaversion", "kind", "title", "createddate", "modifieddate", "tags", "cssclasses",
 ]);
 
 export type CanonicalHealthNativeKind = "food-entry" | "activity-entry" | "workout-session" | "workout-exercise";

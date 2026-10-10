@@ -3,6 +3,7 @@ import type TPSHealthPlugin from './main';
 import type { TPSHealthSettings, HealthNativeRecordKindKey } from './types';
 import { HEALTH_MAPPING_KEYS, WORKOUT_TIMING_MAPPING_KEYS, type HealthMappingScope, mappingSnapshot, migrateHealthFrontmatter } from './health-mapping';
 import * as logger from './logger';
+import { assertHealthIdentityMappings } from './settings-normalization';
 
 type Change = { file: TFile; before: Record<string, unknown>; after: Record<string, unknown> };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -16,7 +17,10 @@ async function readFrontmatter(app: App, file: TFile, identityKeys: string[]): P
     // An unrelated malformed note must not prevent a Health mapping change.
     // Be conservative for possible identities, escaped keys, anchors or aliases.
     const source = info.frontmatter || '';
-    if (!identityKeys.some(key => source.toLowerCase().includes(key.toLowerCase())) && !/[\\&*!]|<</.test(source)) return {};
+    const keyPattern = identityKeys.map(key => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join('|');
+    const possibleIdentity = identityKeys.some(key => key.length > 2 && source.toLowerCase().includes(key.toLowerCase()))
+      || new RegExp(`(?:^|[\\r\\n{,])[ \t]*["']?(?:${keyPattern})["']?[ \t]*:`, 'i').test(source);
+    if (!possibleIdentity && !/[\\&*!]|<</.test(source)) return {};
     throw new Error(`Repair invalid frontmatter before changing Health mappings: ${file.path}`);
   }
 }
@@ -56,6 +60,9 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     const api = plugin.getGcmNativeRecordsApi();
     const profile = api?.getStorageProfile?.();
     const kindKey = profile ? profile.kindPropertyKey : 'kind';
+    const identityKey = profile?.identityMode === 'property' ? profile.identityPropertyKey : 'id';
+    assertHealthIdentityMappings(before, identityKey);
+    assertHealthIdentityMappings(next, identityKey);
     const kindKeys = api?.getKindPropertyKeys?.() || {};
     const nextKindKeys = { ...kindKeys };
     for (const key of Object.keys(before.nativeRecordKinds) as HealthNativeRecordKindKey[]) {
@@ -68,12 +75,12 @@ export async function changeHealthMapping(plugin: TPSHealthPlugin, next: TPSHeal
     const nativeContext = (inspected: any) => inspected ? { kind: inspected.kind, kindKey: inspected.profile?.kindPropertyKey || api?.getStorageProfile?.(inspected.kind)?.kindPropertyKey || kindKey } : null;
     const identityKeys = scope === 'workout-timing'
       ? [before.nativeRecordKinds.workoutSession, ...(before.nativeRecordKindAliases.workoutSession || []), 'workout-session', 'runType', 'workoutId'].filter(Boolean)
-      : [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, ...Object.values(kindKeys) as string[], 'kind', 'tpsType', 'runKind', 'runType', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
+      : [before.foodFrontmatterKey, before.workoutFrontmatterKey, kindKey, ...Object.values(kindKeys) as string[], 'kind', 'tpsType', 'runKind', 'runType', identityKey, 'id', 'tpsId', 'tpsSchemaVersion', 'tags'].filter(Boolean);
     for (const file of plugin.app.vault.getMarkdownFiles()) {
       const fm = await readFrontmatter(plugin.app, file, identityKeys);
       const inspected = api?.inspect?.(fm);
       // Never reinterpret an uninspectable native record as a reusable definition.
-      if (!inspected && (fm.tpsSchemaVersion != null || fm.tpsId != null) && !api?.inspect) {
+      if (!inspected && Object.keys(fm).some(key => [identityKey, 'id', 'tpsId', 'tpsSchemaVersion'].some(identity => identity && key.toLowerCase() === identity.toLowerCase())) && !api?.inspect) {
         throw new Error('Enable TPS GCM before migrating native Health records.');
       }
       if (inspected && !kindKey) throw new Error('Configure a shared record kind property in GCM before migrating Health mappings.');
