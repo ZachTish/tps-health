@@ -1,5 +1,11 @@
 # TPS Health
 
+## 5.1.0 — Consistent food search
+
+Food logging and recipe ingredients share relevance-first ranking, source/serving detail formatting, and a maximum of 30 results. Exact names or aliases rank first, followed by complete query-word matches. Within the same relevance group, created foods come first; existing usage and nutrition quality scoring breaks further ties. Substring matches no longer count as exact words. Recipe queries release the previous online request state immediately, so typing during a request cannot leave Search online disabled. Existing explicit online search, provider configuration and nutrition data remain unchanged. No settings migration, scans, or background services were added.
+
+Validation: shared-ranking regression cases, existing search/provider suites, full npm test and a separate production build. Test-vault deployment/reload and UI checks are recorded in the release notes; physical iPhone acceptance remains separate.
+
 ## 5.0.0 — Use the shared `id` property
 
 Health uses GCM nativeRecords API v7, whose canonical record envelope exposes

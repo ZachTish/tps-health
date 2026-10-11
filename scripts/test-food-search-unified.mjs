@@ -797,3 +797,40 @@ test('tray options retain submission protection and a 44px touch target', async 
   assert.match(css, /> \.tps-health-selection-options \{[^}]*width: 44px;[^}]*min-height: 44px;/);
   assert.match(css, /\.tps-health-selection-options:focus-visible/);
 });
+
+test("query relevance precedes source and usage; created foods win equally relevant matches", async () => {
+  const { rankFoodSearchResults } = await importPluginWithObsidianStub();
+  const item = (id, name, source) => ({ id, name, source, nutrition: { calories: 100, proteinG: 2, carbsG: 10, fatG: 2 } });
+  const exact = item("exact", "Greek yogurt", "usda");
+  const saved = item("saved", "Greek yogurt strawberry dessert", "custom-note");
+  assert.equal(rankFoodSearchResults("Greek yogurt", [saved, exact])[0].id, "exact");
+  const savedExact = item("saved-exact", "Greek yogurt", "custom-note");
+  assert.equal(rankFoodSearchResults("Greek yogurt", [exact, savedExact])[0].id, "saved-exact");
+  const substring = item("substring", "Eggplant", "custom-note");
+  const egg = item("egg", "Egg cooked", "usda");
+  assert.equal(rankFoodSearchResults("egg", [substring, egg])[0].id, "egg");
+});
+
+
+test("recipe query changes release the old request and ignore its eventual results", async () => {
+  installDeterministicBrowserGlobals();
+  const { RecipeIngredientModal } = await importPluginWithObsidianStub();
+  let resolveOld;
+  const plugin = { searchFoods: () => new Promise(resolve => { resolveOld = resolve; }) };
+  const modal = new RecipeIngredientModal(createFakeHealthApp().app, plugin, null);
+  modal.query = "oats";
+  modal.statusEl = nativeTrayTestElement();
+  modal.resultsEl = nativeTrayTestElement();
+  modal.onlineSearchButton = nativeTrayTestElement("button");
+  let renders = 0;
+  modal.renderResults = () => { renders++; };
+  const pending = modal.submitOnlineSearch();
+  assert.equal(modal.onlineSearchButton.disabled, true);
+  modal.queueSearch("");
+  assert.equal(modal.onlineSearchButton.disabled, false);
+  assert.equal(modal.onlineSearchActive, false);
+  resolveOld([food("Old oats")]);
+  await pending;
+  assert.equal(renders, 0);
+  assert.equal(modal.statusEl.attributes["aria-busy"], "false");
+});

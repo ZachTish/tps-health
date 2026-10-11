@@ -13106,6 +13106,9 @@ class RecipeIngredientModal extends Modal {
   private queueSearch(query: string): void {
     const trimmed = query.trim();
     const token = ++this.searchToken;
+    this.onlineSearchActive = false;
+    if (this.onlineSearchButton) this.onlineSearchButton.disabled = false;
+    this.statusEl.setAttr("aria-busy", "false");
     if (this.searchTimer !== null) {
       window.clearTimeout(this.searchTimer);
       this.searchTimer = null;
@@ -13122,11 +13125,11 @@ class RecipeIngredientModal extends Modal {
       logger.flow("RecipeIngredient", "add-search-local:start", { sourcePath: this.sourcePath || "", query: trimmed, token });
       void this.plugin.searchLocalFoods(trimmed).then((items) => {
         if (token !== this.searchToken) return;
-        this.renderResults(items.slice(0, 12));
+        this.renderResults(items);
         if (!items.length) {
           this.statusEl.setText("No saved matches. Press Enter or Search online.");
         } else {
-          this.statusEl.setText(`${Math.min(items.length, 12)} saved result${items.length === 1 ? "" : "s"}. Press Enter to search online.`);
+          this.statusEl.setText(`${items.length} saved result${items.length === 1 ? "" : "s"}. Press Enter to search online.`);
         }
       }).catch((error) => {
         if (token !== this.searchToken) return;
@@ -13152,7 +13155,7 @@ class RecipeIngredientModal extends Modal {
     try {
       const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken);
       if (token !== this.searchToken) return;
-      this.renderResults(items.slice(0, 12));
+      this.renderResults(items);
     } catch (error) {
       if (token !== this.searchToken) return;
       logger.flowError("RecipeIngredient", "add-search-online:failed", error, { sourcePath: this.sourcePath || "", query: trimmed });
@@ -13184,7 +13187,7 @@ class RecipeIngredientModal extends Modal {
       const row = this.resultsEl.createDiv({ cls: "tps-health-search-result" });
       const copy = row.createDiv({ cls: "tps-health-search-result-copy" });
       copy.createDiv({ cls: "tps-health-search-result-title", text: item.brand ? `${item.name} - ${item.brand}` : item.name });
-      copy.createDiv({ cls: "tps-health-search-result-meta", text: foodServingLabel(item) || "serving" });
+      copy.createDiv({ cls: "tps-health-search-result-meta", text: foodResultMeta(item) });
       const select = row.createEl("button", { text: "Select" });
       select.type = "button";
       select.addEventListener("click", () => void this.selectFood(item));
@@ -20191,8 +20194,9 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
       item,
       score: foodSearchScore(item, normalizedQuery, usageStats),
       tokenMatch: foodSearchItemTokenMatch(item, tokens),
+      exactName: normalizeLookup(item.name) === normalizedQuery || foodAliasesForItem(item).some(alias => normalizeLookup(alias) === normalizedQuery),
     }))
-    .sort((a, b) => Number(b.item.source === "custom-note") - Number(a.item.source === "custom-note") || closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats, normalizedQuery) || b.score - a.score)
+    .sort((a, b) => Number(b.exactName) - Number(a.exactName) || b.tokenMatch.exact - a.tokenMatch.exact || Number(b.item.source === "custom-note") - Number(a.item.source === "custom-note") || closeProviderServingPreference(a.item, b.item, a.tokenMatch, b.tokenMatch, usageStats, normalizedQuery) || b.score - a.score)
     .map(({ item }) => item);
 }
 
@@ -20298,7 +20302,7 @@ function foodSearchTokenMatchScore(tokens: string[], haystack: string, haystackT
   let fuzzy = 0;
   for (const token of tokens) {
     const variants = foodSearchTokenVariants(token);
-    if (variants.some((variant) => haystackTokens.has(variant) || haystack.includes(variant))) {
+    if (variants.some((variant) => haystackTokens.has(variant))) {
       exact += 1;
     } else if (variants.some((variant) => foodSearchHasFuzzyTokenMatch(variant, haystackTokens))) {
       fuzzy += 1;

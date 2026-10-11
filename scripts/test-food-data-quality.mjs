@@ -45,13 +45,13 @@ test('nutrient parsing distinguishes unknown, invalid and measured zero', () => 
   for (const raw of [0, '0', ' 0.0 ']) assert.equal(nutritionNumber(raw), 0);
   assert.equal(nutritionNumber('.5'), .5); assert.equal(nutritionNumber('1e-4'), .0001);
 });
-test('all relevant saved notes precede exact, popular online and built-in matches', () => {
+test('exact names precede longer saved matches and unrelated saved foods are excluded', () => {
   const local = item('custom-note', 'My favorite oats', { sourcePath: 'Inbox/Favorite oats.md' });
   const remote = item('usda', 'Oats');
   const curated = item('curated', 'Oats');
   const unrelated = item('custom-note', 'Chicken breast', { id: 'unrelated' });
   const ranked = m.rankFoodSearchResults('oats', [remote, curated, unrelated, local], new Map([['id:usda', { count: 100, lastLoggedAt: '2026-09-18' }]]));
-  assert.equal(ranked[0], local); assert.ok(!ranked.includes(unrelated));
+  assert.equal(ranked[0], remote); assert.ok(ranked.includes(local)); assert.ok(!ranked.includes(unrelated));
 });
 test('deduplication never substitutes a provider serving or nutrient into saved notes', () => {
   const local = item('custom-note', 'Oats', { sourcePath: 'Inbox/Oats.md', barcode: '123456789012', servingGrams: undefined, nutrition: { calories: 123 } });
@@ -219,8 +219,9 @@ test('volume evidence keeps unlabelled liquid bases in ml without inventing a ca
 });
 test('equally relevant complete labels rank above incomplete generic matches while saved notes stay first', () => {
   const full = off(whiteClaw('0635985500018'));
+  full.name = 'White Claw';
   const partial = item('open-food-facts','White Claw',{nutritionBasis:'per-100g',nutrition:{calories:100},brand:'White Claw'});
-  const local = item('custom-note','White Claw saved',{sourcePath:'Inbox/Claw.md',nutrition:{calories:101}});
+  const local = item('custom-note','White Claw',{sourcePath:'Inbox/Claw.md',nutrition:{calories:101}});
   assert.deepEqual(m.rankFoodSearchResults('white claw',[partial,full,local]),[local,full,partial]);
   const unrelated = item('open-food-facts','Lobster claw with white shrimp pasta',{nutritionBasis:'labeled-serving'});
   assert.equal(m.rankFoodSearchResults('white claw',[unrelated,partial])[0],partial);
