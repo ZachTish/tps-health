@@ -1,5 +1,11 @@
 # TPS Health
 
+## 5.1.1 — Keep workout controls mounted
+
+Saved set values update existing inputs and completion controls in place. Adding a set appends its row without detaching existing controls or replacing the workout container. Rendering retains per-surface exercise/set models so menus and completion actions read the latest snapshot. Removed sets are removed and reordered sets follow snapshot order. Unfinished drafts still defer conflicting updates; clocks retain their existing lifecycle. A different workout, plugin instance, editability or session-action placement rebuilds the surface. Changed exercise presentation or set grouping rebuilds only its affected card/row. No scroll-restoration timer, poller, vault cache, settings migration or writer was added.
+
+Regression coverage verifies 100 saved changes plus an appended set with zero whole-surface clears and unchanged input/focus identity, fresh completion toggles, reordering/deletion, existing draft safety and timers. Validation: 816 tests passed, one optional live USDA test skipped, and 52 focused renderer tests passed. The retained-input regression fails on released 5.1.0. A reloaded 5.1.1 installed-renderer probe with 100 synthetic sets retained focus/input identity and scrollTop 2500 through an edit and append, with zero root clears. That isolated browser probe mocked active-session eligibility and supplied snapshots; it did not perform a real save or simulate the iPhone keyboard. Build and release details are recorded in the release notes. Physical iPhone keyboard/scroll acceptance remains necessary; desktop checks cannot establish device-specific behavior.
+
 ## 5.1.0 — Consistent food search
 
 Food logging and recipe ingredients share relevance-first ranking, source/serving detail formatting, and a maximum of 30 results. Exact names or aliases rank first, followed by complete query-word matches. Within the same relevance group, created foods come first; existing usage and nutrition quality scoring breaks further ties. Substring matches no longer count as exact words. Recipe queries release the previous online request state immediately, so typing during a request cannot leave Search online disabled. Existing explicit online search, provider configuration and nutrition data remain unchanged. No settings migration, scans, or background services were added.

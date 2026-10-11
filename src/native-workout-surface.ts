@@ -132,6 +132,9 @@ const setTypeOptions: Array<[string, string]> = [
 ];
 
 type WorkoutEditControl = HTMLInputElement | HTMLSelectElement;
+// These are the models owned by mounted controls, not a vault data cache.
+// Stable references keep their event handlers current without replacing inputs.
+const mountedWorkoutModels = new WeakMap<HTMLElement, { snapshot: NativeWorkoutSnapshot; options: NativeWorkoutSurfaceOptions }>();
 const pendingWorkoutRenders = new WeakMap<HTMLElement, { snapshot: NativeWorkoutSnapshot; options: NativeWorkoutSurfaceOptions }>();
 const editValue = (control: WorkoutEditControl): string => control.type === 'checkbox'
   ? String((control as HTMLInputElement).checked) : control.value;
@@ -178,6 +181,7 @@ const stopWorkoutRestTiming = (root: HTMLElement): void => {
 export const disposeNativeWorkoutSurface = (root: HTMLElement): void => {
   stopWorkoutRestTiming(root);
   pendingWorkoutRenders.delete(root);
+  mountedWorkoutModels.delete(root);
   root.remove();
 };
 const restTimingElement = (setId: string): HTMLElement => {
@@ -304,14 +308,25 @@ export function renderNativeWorkoutSurface(
       return;
     }
   }
-  // A persisted change may arrive after Tab has moved to the next field.
-  // Preserve that current field, rather than pulling focus back to the saver.
-  const activeElement = (root.ownerDocument || document).activeElement as HTMLElement | null;
-  const focusedControl = activeElement && root.contains(activeElement)
-    && activeElement.classList.contains('tps-health-native-workout-edit-control')
-    && root.dataset.workoutId === snapshot.id && root.dataset.workoutPath === snapshot.path
-    && root.dataset.instanceKey === options.instanceKey
-    ? { setId: activeElement.dataset.setId, field: activeElement.dataset.field } : null;
+  const previous = mountedWorkoutModels.get(root);
+  const reuse = previous && previous.snapshot.id === snapshot.id && previous.snapshot.path === snapshot.path
+    && previous.options.instanceKey === options.instanceKey && previous.options.active === options.active
+    && previous.options.showSessionActions === options.showSessionActions;
+  const oldExercises = new Map(reuse ? previous.snapshot.exercises.map(exercise => [exercise.id, exercise] as const) : []);
+  snapshot = { ...snapshot, exercises: snapshot.exercises.map(incoming => {
+    const exercise = oldExercises.get(incoming.id);
+    const oldSets = new Map(exercise?.sets.map(set => [set.id, set] as const) || []);
+    const sets = incoming.sets.map(value => {
+      const set = oldSets.get(value.id);
+      if (!set) return { ...value };
+      // Remove optional values that were explicitly cleared in the new snapshot.
+      for (const key of Object.keys(set)) if (!(key in value)) delete (set as any)[key];
+      return Object.assign(set, value);
+    });
+    return exercise ? Object.assign(exercise, incoming, { sets }) : { ...incoming, sets };
+  }) };
+  options = reuse ? Object.assign(previous.options, options) : { ...options };
+  mountedWorkoutModels.set(root, { snapshot, options });
   pendingWorkoutRenders.delete(root);
   root.dataset.renderKey = signature;
   root.dataset.instanceKey = options.instanceKey;
@@ -319,34 +334,42 @@ export function renderNativeWorkoutSurface(
   root.dataset.workoutPath = snapshot.path;
   root.className = 'tps-health-native-workout-surface';
   stopWorkoutRestTiming(root);
-  root.empty();
+  root.querySelector<HTMLElement>('.tps-health-native-workout-pending-refresh')?.remove();
+  if (!reuse) root.empty();
 
-  const header = document.createElement('header');
-  header.className = 'tps-health-native-workout-header';
-  const identity = document.createElement('div');
-  identity.className = 'tps-health-native-workout-identity';
-  identity.append(
-    text('h3', 'Workout', 'tps-health-native-workout-heading'),
-    text(
-      'p',
-      summary,
-      'tps-health-native-workout-summary',
-    ),
-  );
-  header.append(identity);
-  if (options.showSessionActions) {
-    const actions = document.createElement('div');
-    actions.className = 'tps-health-native-workout-actions';
-    actions.append(
-      button('+ Exercise', 'Add exercise', options.actions.addExercise, !options.active),
-      button('Finish', 'Finish active workout', options.actions.finish, !options.active),
+  if (!reuse) {
+    const header = document.createElement('header');
+    header.className = 'tps-health-native-workout-header';
+    const identity = document.createElement('div');
+    identity.className = 'tps-health-native-workout-identity';
+    identity.append(
+      text('h3', 'Workout', 'tps-health-native-workout-heading'),
+      text(
+        'p',
+        summary,
+        'tps-health-native-workout-summary',
+      ),
     );
-    actions.lastElementChild?.classList.add('is-primary');
-    header.append(actions);
+    header.append(identity);
+    if (options.showSessionActions) {
+      const actions = document.createElement('div');
+      actions.className = 'tps-health-native-workout-actions';
+      actions.append(
+        button('+ Exercise', 'Add exercise', options.actions.addExercise, !options.active),
+        button('Finish', 'Finish active workout', options.actions.finish, !options.active),
+      );
+      actions.lastElementChild?.classList.add('is-primary');
+      header.append(actions);
+    }
+    root.append(header);
+  } else {
+    const label = root.querySelector<HTMLElement>('.tps-health-native-workout-summary');
+    if (label) label.textContent = summary;
   }
-  root.append(header);
 
   if (!snapshot.exercises.length) {
+    root.querySelector<HTMLElement>('.tps-health-native-workout-exercises')?.remove();
+    if (root.querySelector('.tps-health-native-workout-empty')) return;
     const empty = document.createElement('div');
     empty.className = 'tps-health-native-workout-empty';
     empty.append(text('span', options.active ? 'No exercises yet. Add one to log your first set.' : 'No exercises were logged.'));
@@ -357,45 +380,56 @@ export function renderNativeWorkoutSurface(
     return;
   }
 
-  const exerciseList = document.createElement('div');
+  root.querySelector<HTMLElement>('.tps-health-native-workout-empty')?.remove();
+  const exerciseList = root.querySelector<HTMLElement>('.tps-health-native-workout-exercises') || document.createElement('div');
   exerciseList.className = 'tps-health-native-workout-exercises';
   for (const exercise of snapshot.exercises) {
-    const group = document.createElement('section');
-    group.className = `tps-health-native-workout-exercise${exercise.supersetGroupId ? ' is-superset' : ''}`;
-    group.dataset.exerciseId = exercise.id;
-    if (exercise.supersetGroupId) group.dataset.supersetGroup = exercise.supersetGroupId;
-    const exerciseHeader = document.createElement('header');
-    exerciseHeader.className = 'tps-health-native-workout-exercise-header';
-    const exerciseIdentity = document.createElement('div');
-    exerciseIdentity.className = 'tps-health-native-workout-exercise-identity';
-    exerciseIdentity.append(
-      text('h4', exercise.name, 'tps-health-native-workout-exercise-name'),
-      text(
-        'span',
-        `${exercise.sets.length} ${exercise.sets.length === 1 ? 'set' : 'sets'} · ${formatNumber(exercise.totalReps)} reps · ${formatNumber(exercise.totalVolume)} volume`,
-        'tps-health-native-workout-exercise-total',
-      ),
-    );
-    if (exercise.supersetGroupId) {
-      exerciseIdentity.append(text('span', `Super ${exercise.supersetGroupId}`, 'tps-health-native-workout-group-badge is-superset'));
+    let group = Array.from(exerciseList.children).find(child => (child as HTMLElement).dataset.exerciseId === exercise.id) as HTMLElement | undefined;
+    const presentation = JSON.stringify([exercise.name, exercise.supersetGroupId]);
+    if (group && group.dataset.presentation !== presentation) { group.remove(); group = undefined; }
+    const freshGroup = !group;
+    if (!group) group = document.createElement('section');
+    group.dataset.presentation = presentation;
+    if (freshGroup) {
+      group.className = `tps-health-native-workout-exercise${exercise.supersetGroupId ? ' is-superset' : ''}`;
+      group.dataset.exerciseId = exercise.id;
+      if (exercise.supersetGroupId) group.dataset.supersetGroup = exercise.supersetGroupId;
+      const exerciseHeader = document.createElement('header');
+      exerciseHeader.className = 'tps-health-native-workout-exercise-header';
+      const exerciseIdentity = document.createElement('div');
+      exerciseIdentity.className = 'tps-health-native-workout-exercise-identity';
+      exerciseIdentity.append(
+        text('h4', exercise.name, 'tps-health-native-workout-exercise-name'),
+        text(
+          'span',
+          `${exercise.sets.length} ${exercise.sets.length === 1 ? 'set' : 'sets'} · ${formatNumber(exercise.totalReps)} reps · ${formatNumber(exercise.totalVolume)} volume`,
+          'tps-health-native-workout-exercise-total',
+        ),
+      );
+      if (exercise.supersetGroupId) {
+        exerciseIdentity.append(text('span', `Super ${exercise.supersetGroupId}`, 'tps-health-native-workout-group-badge is-superset'));
+      }
+      const exerciseActions = document.createElement('div');
+      exerciseActions.className = 'tps-health-native-workout-exercise-actions';
+      const more = button('⋯', `${exercise.name} actions`, (event) => options.actions.openExerciseMenu(exercise, event), !options.active);
+      more.classList.add('is-menu');
+      exerciseActions.append(
+        button('+ Set', `Add another ${exercise.name} set`, () => options.actions.addSet(exercise), !options.active),
+        more,
+      );
+      exerciseHeader.append(
+        exerciseIdentity,
+        exerciseActions,
+      );
+      group.append(exerciseHeader);
     }
-    const exerciseActions = document.createElement('div');
-    exerciseActions.className = 'tps-health-native-workout-exercise-actions';
-    const more = button('⋯', `${exercise.name} actions`, (event) => options.actions.openExerciseMenu(exercise, event), !options.active);
-    more.classList.add('is-menu');
-    exerciseActions.append(
-      button('+ Set', `Add another ${exercise.name} set`, () => options.actions.addSet(exercise), !options.active),
-      more,
-    );
-    exerciseHeader.append(
-      exerciseIdentity,
-      exerciseActions,
-    );
-    group.append(exerciseHeader);
-    const table = document.createElement('div');
+    const total = group.querySelector<HTMLElement>('.tps-health-native-workout-exercise-total');
+    if (total) total.textContent = `${exercise.sets.length} ${exercise.sets.length === 1 ? 'set' : 'sets'} · ${formatNumber(exercise.totalReps)} reps · ${formatNumber(exercise.totalVolume)} volume`;
+    const table = group.querySelector<HTMLElement>('.tps-health-native-workout-table') || document.createElement('div');
     table.className = 'tps-health-native-workout-table';
     table.setAttribute('role', 'table');
     table.setAttribute('aria-label', `${exercise.name} sets`);
+    if (!table.children.length) {
     const tableHeader = document.createElement('div');
     tableHeader.className = 'tps-health-native-workout-row is-header';
     tableHeader.setAttribute('role', 'row');
@@ -405,9 +439,30 @@ export function renderNativeWorkoutSurface(
       tableHeader.append(cell);
     }
     table.append(tableHeader);
+    }
     const dropGroups = Array.from(new Set(exercise.sets.map(set => set.dropSetGroupId).filter(Boolean)));
     for (const [setIndex, set] of exercise.sets.entries()) {
+      const retained = Array.from(table.children).find(child => (child as HTMLElement).dataset.setId === set.id) as HTMLElement | undefined;
+      const rowPresentation = JSON.stringify([set.ordinal, set.dropSetGroupId, exercise.sets[setIndex - 1]?.dropSetGroupId, exercise.sets[setIndex + 1]?.dropSetGroupId]);
+      if (retained && options.active && retained.dataset.presentation === rowPresentation) {
+        for (const control of Array.from(retained.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control'))) {
+          const value = set[control.dataset.field as keyof NativeWorkoutSetSnapshot];
+          const incoming = value == null ? '' : typeof value === 'number' ? formatNumber(value) : String(value);
+          if (control.type === 'checkbox') (control as HTMLInputElement).checked = Boolean(value);
+          else if (control.value !== incoming) control.value = incoming;
+          control.dataset.savedValue = incoming;
+        }
+        const complete = retained.querySelector<HTMLElement>('.is-complete-toggle');
+        if (complete) {
+          complete.textContent = set.completedDate ? 'Done ✓' : 'Complete';
+          complete.setAttribute('aria-pressed', set.completedDate ? 'true' : 'false');
+          complete.setAttribute('aria-label', set.completedDate ? `Mark ${exercise.name} set ${set.ordinal} incomplete` : `Complete ${exercise.name} set ${set.ordinal}`);
+        }
+        continue;
+      }
+      retained?.remove();
       const row = document.createElement('div');
+      row.dataset.presentation = rowPresentation;
       row.className = `tps-health-native-workout-row${set.dropSetGroupId ? ' is-drop-set' : ''}`;
       row.setAttribute('role', 'row');
       row.dataset.setId = set.id;
@@ -521,6 +576,7 @@ export function renderNativeWorkoutSurface(
         priorCompleted ? 'Done ✓' : 'Complete',
         priorCompleted ? `Mark ${exercise.name} set ${set.ordinal} incomplete` : `Complete ${exercise.name} set ${set.ordinal}`,
         async () => {
+          const priorCompleted = Boolean(set.completedDate);
           completed.disabled = true;
           completed.textContent = 'Saving…';
           status.textContent = 'Saving…';
@@ -545,14 +601,26 @@ export function renderNativeWorkoutSurface(
       row.append(setType, rowActions);
       table.append(row);
     }
-    group.append(table);
-    exerciseList.append(group);
+    const setIds = new Set(exercise.sets.map(set => set.id));
+    for (const child of Array.from(table.children)) {
+      const id = (child as HTMLElement).dataset.setId;
+      if (id && !setIds.has(id)) child.remove();
+    }
+    exercise.sets.forEach((set, index) => {
+      const row = Array.from(table.children).find(child => (child as HTMLElement).dataset.setId === set.id);
+      const expected = table.children[index + 1];
+      if (row && row !== expected) table.insertBefore(row, expected || null);
+    });
+    if (table.parentElement !== group) group.append(table);
+    if (group.parentElement !== exerciseList) exerciseList.append(group);
   }
-  root.append(exerciseList);
+  const exerciseIds = new Set(snapshot.exercises.map(exercise => exercise.id));
+  for (const child of Array.from(exerciseList.children)) if (!exerciseIds.has((child as HTMLElement).dataset.exerciseId || '')) child.remove();
+  snapshot.exercises.forEach((exercise, index) => {
+    const group = Array.from(exerciseList.children).find(child => (child as HTMLElement).dataset.exerciseId === exercise.id);
+    const expected = exerciseList.children[index];
+    if (group && group !== expected) exerciseList.insertBefore(group, expected || null);
+  });
+  if (exerciseList.parentElement !== root) root.append(exerciseList);
   syncWorkoutRestTiming(root, snapshot, options, signature);
-  if (focusedControl && options.active) {
-    const replacement = Array.from(root.querySelectorAll<WorkoutEditControl>('.tps-health-native-workout-edit-control'))
-      .find(control => control.dataset.setId === focusedControl.setId && control.dataset.field === focusedControl.field);
-    replacement?.focus({ preventScroll: true });
-  }
 }

@@ -16,7 +16,7 @@ const mountBuild=await transform(declaration.getText(ast)+"\nexport {nativeWorko
 const {nativeWorkoutReadingMountTarget}=await import("data:text/javascript;base64,"+Buffer.from(mountBuild.code).toString("base64"));
 const surfacePath=fileURLToPath(new URL("../src/native-workout-surface.ts",import.meta.url));
 const baseline=process.env.TPS_WORKOUT_SURFACE_BASELINE;
-assert.ok(!baseline||['4.2.7','4.3.0'].includes(baseline),'Use a released, explicitly supported surface baseline');
+assert.ok(!baseline||['4.2.7','4.3.0','5.1.0'].includes(baseline),'Use a released, explicitly supported surface baseline');
 const surfaceInput=baseline
  ? {stdin:{contents:execFileSync('git',['show',`${baseline}:src/native-workout-surface.ts`],{encoding:'utf8'}),resolveDir:dirname(surfacePath),sourcefile:surfacePath,loader:'ts'}}
  : {entryPoints:[surfacePath]};
@@ -38,6 +38,7 @@ class Element {
  empty(){this.emptyCount++;this._text="";this.emptyChildren();}
  append(...nodes){for(const node of nodes)this.appendChild(node);}
  appendChild(node){if(node.parentElement)node.parentElement.children=node.parentElement.children.filter(x=>x!==node);node.parentElement=this;this.children.push(node);return node;}
+ insertBefore(node,before){if(node.parentElement)node.parentElement.children=node.parentElement.children.filter(x=>x!==node);node.parentElement=this;const index=before?this.children.indexOf(before):-1;if(index<0)this.children.push(node);else this.children.splice(index,0,node);return node;}
  remove(){if(this.parentElement){if(this.contains(document.activeElement))document.activeElement=null;this.parentElement.children=this.parentElement.children.filter(x=>x!==this);this.parentElement=null;}}
  contains(node){return node===this||this.children.some(child=>child.contains(node));}
  matches(selector){return selector.startsWith(".")&&this.className.split(/\s+/).includes(selector.slice(1));}
@@ -98,7 +99,7 @@ test("a real saved-set change still updates the rendered record rather than keep
  const before=root.emptyCount;
  const changed=snapshot();changed.exercises[0].sets[0].reps=9;
  renderNativeWorkoutSurface(root,changed,options("1:01"));
- assert.equal(root.emptyCount,before+1);
+ assert.equal(root.emptyCount,before);
  const reps=root.querySelectorAll(".tps-health-native-workout-input").find(input=>input.attributes["aria-label"].endsWith("reps"));
  assert.equal(reps.value,"9");
 });
@@ -527,4 +528,47 @@ test('disposing a mounted surface clears its clock immediately and forgets defer
  host.append(root);weight.value=weight.dataset.savedValue;event(weight,'input');
  assert.equal(root.emptyCount,rebuilds,'An obsolete draft handler cannot replay the disposed pending snapshot');
  assert.equal(intervals.timers.size,0);disposeNativeWorkoutSurface(root);assert.equal(intervals.counts.cleared,cleared+1);
+});
+
+
+test('saved values and appended sets retain existing rows, inputs, focus, and root height ownership',()=>{
+ const root=connected(''),data=snapshot();renderNativeWorkoutSurface(root,data,options('1:00'));
+ const row=root.querySelectorAll('.tps-health-native-workout-row').find(x=>x.dataset.setId==='set-qa');
+ const weight=edit(root,'weight');weight.focus();const emptied=root.emptyCount;
+ for(let i=0;i<100;i++){
+  const next=snapshot();next.exercises[0].sets[0].reps=i;
+  renderNativeWorkoutSurface(root,next,options('1:00'));
+  assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);
+ }
+ const next=snapshot();next.exercises[0].sets.push({...next.exercises[0].sets[0],id:'added',ordinal:2});next.setCount=2;
+ renderNativeWorkoutSurface(root,next,options('1:00'));
+ assert.equal(root.emptyCount,emptied);
+ assert.equal(root.querySelectorAll('.tps-health-native-workout-row').find(x=>x.dataset.setId==='set-qa'),row);
+ assert.equal(edit(root,'weight'),weight);assert.equal(document.activeElement,weight);
+ assert.ok(root.querySelectorAll('.tps-health-native-workout-row').some(x=>x.dataset.setId==='added'));
+});
+
+test('retained completion controls use the latest saved state on every click',async()=>{
+ const root=connected(''),data=snapshot(),opts=options('1:00'),patches=[];
+ opts.actions.updateSet=async(_e,_s,patch)=>{patches.push(patch);};
+ renderNativeWorkoutSurface(root,data,opts);
+ const complete=root.querySelector('.is-complete-toggle');
+ const click=()=>{for(const listener of complete.listeners.click)listener({preventDefault(){},stopPropagation(){}});};
+ click();await settled();
+ const next=snapshot();next.exercises[0].sets[0].completedDate='2026-10-11T12:00:00Z';
+ renderNativeWorkoutSurface(root,next,opts);
+ assert.equal(root.querySelector('.is-complete-toggle'),complete);
+ click();await settled();assert.deepEqual(patches,[{completed:true},{completed:false}]);
+});
+
+
+test('set reorder and deletion match the snapshot without rebuilding the surface',()=>{
+ const root=connected(''),data=snapshot();data.exercises[0].sets.push({...data.exercises[0].sets[0],id:'second',ordinal:2});
+ renderNativeWorkoutSurface(root,data,options('1:00'));const count=root.emptyCount;
+ const next=structuredClone(data);next.exercises[0].sets.reverse();next.exercises[0].sets.forEach((set,i)=>set.ordinal=i+1);
+ renderNativeWorkoutSurface(root,next,options('1:00'));
+ const ids=()=>root.querySelectorAll('.tps-health-native-workout-row').filter(row=>row.dataset.setId).map(row=>row.dataset.setId);
+ assert.deepEqual(ids(),['second','set-qa']);
+ next.exercises[0].sets.pop();renderNativeWorkoutSurface(root,next,options('1:00'));
+ assert.deepEqual(ids(),['second']);assert.equal(root.emptyCount,count);
 });
