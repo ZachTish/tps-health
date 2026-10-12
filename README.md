@@ -8,7 +8,7 @@ Regression coverage verifies 100 saved changes plus an appended set with zero wh
 
 ### Recipe search coverage
 
-Saved recipes participate in the shared food index and retain created-food ranking, serving yield and nutrition in local, combined-provider and saved-food searches. Recognition follows configured property/tag/folder identity; archived definitions and definitions without searchable nutrition remain excluded. Regression tests cover custom recipe property values and tags across all three searches with zero body reads or writes. This verification changes no shipped behavior or version.
+Saved recipes participate in the shared food index and retain created-food ranking, serving yield and nutrition in local, combined-provider and saved-food searches. Recognition follows configured property/tag/folder identity; archived definitions and definitions without searchable nutrition remain excluded. Regression tests cover custom recipe property values and tags across all three searches with zero body reads or writes. Shared GCM v2 classification coverage also verifies recipes and meals on the same configured kind path: a search begun before API readiness recognizes them on the next query after readiness. Only the initial and readiness-transition queries inventory metadata; repeated queries retain the index and perform zero body reads/writes. This verification changes no shipped behavior or version.
 
 ## 5.1.0 — Consistent food search
 

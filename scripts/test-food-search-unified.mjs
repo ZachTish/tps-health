@@ -860,3 +860,48 @@ for (const mode of ['metadata', 'tag']) test(`saved recipes appear in local, com
   }
   assert.equal(reads, 0); assert.equal(writes, 0);
 });
+
+for (const type of ['recipe', 'meal']) test(`late GCM readiness picks up a saved ${type} with shared kind classification and reuses unchanged food indexes`, async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodIdentificationMode: 'metadata', foodFrontmatterKey: 'entityKind' };
+  const saved = await fake.app.vault.create(`Inbox/Synthetic shared-kind ${type}.md`, `Synthetic ${type}`);
+  const archived = await fake.app.vault.create(`_archive/Synthetic shared-kind ${type}.md`, `Archived ${type}`);
+  const fm = { title: `Synthetic shared-kind ${type}`, kind: ['entity/food'],
+    calories: 250, proteinG: 15, carbsG: 25, fatG: 10, ingredients: ['1 serving - [[Synthetic ingredient]]'],
+    recipeServings: type === 'meal' ? 1 : 4, servingUnit: type === 'meal' ? 'meal' : 'serving', servingAmount: 1 };
+  fake.app.metadataCache.getFileCache = () => ({ frontmatter: fm });
+  let inventories = 0, reads = 0, writes = 0;
+  const getMarkdownFiles = fake.app.vault.getMarkdownFiles;
+  fake.app.vault.getMarkdownFiles = () => { inventories++; return getMarkdownFiles(); };
+  fake.app.vault.read = fake.app.vault.cachedRead = async () => { reads++; throw new Error('Search must not read bodies'); };
+  fake.app.vault.modify = fake.app.vault.process = async () => { writes++; throw new Error('Search must not write'); };
+  plugin.searchUsdaFoods = plugin.searchOpenFoodFacts = async () => [];
+  const stats = new Map();
+  assert.ok(!(await plugin.searchLocalFoods(fm.title, stats)).some(item => item.sourcePath === saved.path),
+    'the legacy fallback cannot recognize a shared kind property while GCM is unavailable');
+  assert.equal(inventories, 1);
+
+  const definition = { kindList: { key: 'kind', value: 'entity/food' } };
+  const definitions = { food: definition, recipe: definition, meal: definition };
+  fake.app.plugins.plugins['tps-global-context-menu'] = { api: { frontmatterKinds: {
+    version: 2,
+    definition: kind => definitions[kind] || null,
+    matches: (value, kind) => Boolean(definitions[kind] && value?.kind?.includes('entity/food')),
+    snapshot: () => structuredClone(definitions),
+  } } };
+  for (let repeat = 0; repeat < 3; repeat++) {
+    for (const results of [await plugin.searchLocalFoods(fm.title, stats), await plugin.searchFoods(fm.title, stats), await plugin.getSavedFoods(stats)]) {
+      const result = results.find(item => item.sourcePath === saved.path);
+      assert.ok(result, 'the next search recognizes the ready GCM API without a metadata event or manual refresh');
+      assert.ok(!results.some(item => item.sourcePath === archived.path));
+      assert.equal(result.source, 'custom-note');
+      assert.equal(result.recipeServings, type === 'meal' ? 1 : 4);
+      assert.equal(result.servingUnit, type === 'meal' ? 'meal' : 'serving');
+      assert.equal(result.nutrition.calories, 250);
+    }
+    assert.equal(inventories, 2, 'only the initial fallback and changed classification signature inventory the vault');
+  }
+  assert.equal(reads, 0); assert.equal(writes, 0);
+});
