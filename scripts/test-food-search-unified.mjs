@@ -834,3 +834,29 @@ test("recipe query changes release the old request and ignore its eventual resul
   assert.equal(renders, 0);
   assert.equal(modal.statusEl.attributes["aria-busy"], "false");
 });
+
+for (const mode of ['metadata', 'tag']) test(`saved recipes appear in local, combined, and saved-food searches with configured ${mode} identity`, async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
+  plugin.settings = { ...plugin.settings, foodIdentificationMode: mode,
+    foodFrontmatterKey: 'category', foodFrontmatterRecipeValue: 'library/my-recipe', recipeTag: 'library/my-recipe' };
+  const recipe = await fake.app.vault.create('Inbox/Synthetic recipe.md', 'Synthetic recipe');
+  const archived = await fake.app.vault.create('_archive/Synthetic recipe.md', 'Archived recipe');
+  const fm = { title: 'Synthetic recipe', category: 'library/my-recipe', tags: ['library/my-recipe'],
+    calories: 250, proteinG: 15, carbsG: 25, fatG: 10, recipeServings: 4, servingUnit: 'serving', servingAmount: 1 };
+  fake.app.metadataCache.getFileCache = file => ({ frontmatter: fm, tags: [{tag:'#library/my-recipe'}] });
+  let reads = 0, writes = 0;
+  fake.app.vault.read = fake.app.vault.cachedRead = async () => { reads++; throw new Error('Search must not read bodies'); };
+  fake.app.vault.modify = fake.app.vault.process = async () => { writes++; throw new Error('Search must not write'); };
+  plugin.searchUsdaFoods = plugin.searchOpenFoodFacts = async () => [];
+  for (const results of [await plugin.searchLocalFoods('Synthetic recipe'), await plugin.searchFoods('Synthetic recipe'), await plugin.getSavedFoods()]) {
+    assert.ok(results.some(item => item.sourcePath === recipe.path));
+    assert.ok(!results.some(item => item.sourcePath === archived.path));
+    const result = results.find(item => item.sourcePath === recipe.path);
+    assert.equal(result.source, 'custom-note');
+    assert.equal(result.recipeServings, 4);
+    assert.equal(result.nutrition.calories, 250);
+  }
+  assert.equal(reads, 0); assert.equal(writes, 0);
+});
