@@ -3811,7 +3811,7 @@ test('a blank native workout projects a newly attached exercise before its first
   assert.deepEqual(snapshot.exercises[0].sets, [], 'the live table can render its first editable draft row immediately');
 });
 
-test('legacy workout child notes consolidate into the parent and follow it to trash', async () => {
+test('legacy workout children consolidate explicitly but never follow incoming deletion to trash', async () => {
   const { service, addFrontmatterFile, files, frontmatters, contents, trashedPaths, exerciseDefinitions, emitVault } = createHarness();
   const session = addFrontmatterFile('_records/workout-sessions/legacy-workout.md', {
     id: 'legacy-workout', tpsSchemaVersion: 1, kind: 'workout-session', title: 'Legacy strength', status: 'complete',
@@ -3849,8 +3849,8 @@ test('legacy workout child notes consolidate into the parent and follow it to tr
   files.delete(orphanSession.path);
   emitVault('delete', orphanSession);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(files.has(orphanChild.path), false, 'deleting an old workout also trashes only its redundant child notes');
-  assert.ok(trashedPaths.includes(orphanChild.path));
+  assert.equal(files.has(orphanChild.path), true, 'incoming deletion must preserve the separate child note');
+  assert.equal(trashedPaths.includes(orphanChild.path), false);
 });
 
 test('the next live mutation upgrades an active child-note workout without losing sets', async () => {
@@ -3974,7 +3974,7 @@ test('native workout sessions render one persistent table without rewriting the 
   assert.match(mainSource, /reorderWorkoutExercise\(snapshot\.path, exercise\.id, direction\)/u);
   assert.match(mainSource, /setWorkoutSupersetLinks\(snapshot\.path, exercise\.id, selectedIds\)/u);
   assert.match(mainSource, /setWorkoutDropSetLinks\(snapshot\.path, exercise\.id, set\.id, selected, Boolean\(created\)\)/u);
-  assert.match(mainSource, /active-state:reconciled-from-native-record/u);
+  assert.doesNotMatch(mainSource, /active-state:reconciled-from-native-record|native-surface-recovery|native-session-view-recovery/u);
   const activeSurfaceGuard = mainSource.slice(
     mainSource.indexOf("  private isActiveNativeWorkoutSnapshot"),
     mainSource.indexOf("  private async logNativeWorkoutSetDraft"),
@@ -5009,4 +5009,46 @@ test('completion timestamps remain stable when another exercise is completed and
   await h.service.reorderWorkoutExercise(session.path,b.id,-1);current=h.service.getWorkoutSnapshot(session.path);
   assert.deepEqual(current.exercises.map(e=>e.id),[b.id,a.id]);assert.equal(current.exercises[0].sets[0].completedDate,bStamp);assert.equal(current.exercises[1].sets[0].completedDate,aStamp);
   h.service.dispose();
+});
+
+
+test('decoded mutation handles remain indexed with configured physical kind values', () => {
+  const h = createHarness();
+  const file = indexedFood(h, 'Inbox/Configured food entry.md', 400);
+  let inspections = 0;
+  h.api.inspect = () => { inspections++; return null; };
+  const beforeReads = h.readCalls.length + h.cachedReadCalls.length;
+  h.service.trackHandle({ file, path: file.path, id: 'configured-entry', kind: 'food-entry',
+    frontmatter: { id: 'configured-entry', kind: 'food-entry', completedDate: '2026-10-06T12:00:00', calories: 400 } });
+  assert.equal(h.service.recordsByPath.get(file.path)?.id, 'configured-entry');
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 400);
+  assert.equal(inspections, 0, 'canonical handles must not be reclassified as physical frontmatter');
+  assert.equal(h.readCalls.length + h.cachedReadCalls.length, beforeReads);
+});
+
+test('100 incoming workout deletions preserve child notes without reads or mutations', async () => {
+  const h = createHarness();
+  const parents = [], children = [];
+  for (let i = 0; i < 100; i++) {
+    const parent = h.addFrontmatterFile(`Inbox/Deleted workout ${i}.md`, {
+      id: `deleted-${i}`, kind: 'workout-session', tpsSchemaVersion: 1, status: 'complete',
+    });
+    const child = h.addFrontmatterFile(`Inbox/Preserved exercise ${i}.md`, {
+      id: `child-${i}`, kind: 'workout-exercise', tpsSchemaVersion: 1,
+      workout: `[[Inbox/Deleted workout ${i}]]`, exercise: 'Row', sets: [],
+    });
+    h.service.indexFile(parent, h.frontmatters.get(parent));
+    h.service.indexFile(child, h.frontmatters.get(child));
+    parents.push(parent); children.push([child, h.contents.get(child.path)]);
+  }
+  const beforeReads = h.readCalls.length + h.cachedReadCalls.length;
+  for (const parent of parents) { h.files.delete(parent.path); h.emitVault('delete', parent); }
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.trashedPaths.length, 0);
+  assert.equal(h.createCalls.length + h.updateCalls.length + h.frontmatterCalls.length, 0);
+  assert.equal(h.readCalls.length + h.cachedReadCalls.length, beforeReads);
+  for (const [child, original] of children) {
+    assert.equal(h.files.get(child.path), child);
+    assert.equal(h.contents.get(child.path), original);
+  }
 });

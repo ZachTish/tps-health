@@ -154,7 +154,6 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
 
   settings.appendWorkoutSummaryToDailyNote = booleanSetting(settings.appendWorkoutSummaryToDailyNote, DEFAULT_SETTINGS.appendWorkoutSummaryToDailyNote);
   settings.showFoodLogButtonInGcm = booleanSetting(settings.showFoodLogButtonInGcm, DEFAULT_SETTINGS.showFoodLogButtonInGcm);
-  settings.automaticDailyRollups = booleanSetting(settings.automaticDailyRollups, DEFAULT_SETTINGS.automaticDailyRollups);
   settings.includeBrandedFoodSearch = booleanSetting(settings.includeBrandedFoodSearch, DEFAULT_SETTINGS.includeBrandedFoodSearch);
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
 
@@ -237,12 +236,6 @@ export function mergeTPSHealthSettingsChanges(
   return settingsPersistencePayload(normalizeTPSHealthSettings(mergedRecord), retainedLegacyUsdaApiKey);
 }
 
-export interface LegacyUsdaApiKeyMigration {
-  secretName: string;
-  secretNames: string[];
-  value: string;
-}
-
 export function normalizeUsdaApiKeySecrets(value: unknown): string[] {
   const source = Array.isArray(value) ? value : [];
   const seen = new Set<string>();
@@ -263,29 +256,6 @@ export function legacyUsdaApiKeyValue(stored: unknown): string {
     : {};
   const value = typeof raw.usdaApiKey === "string" ? raw.usdaApiKey.trim() : "";
   return value === USDA_DEMO_API_KEY ? "" : value;
-}
-
-export function planLegacyUsdaApiKeyMigration(
-  stored: unknown,
-  settings: TPSHealthSettings,
-  readSecret: (name: string) => string | null,
-): LegacyUsdaApiKeyMigration | null {
-  const value = legacyUsdaApiKeyValue(stored);
-  if (!value) return null;
-  const secretNames = normalizeUsdaApiKeySecrets(settings.usdaApiKeySecrets);
-  for (const secretName of secretNames) {
-    if (String(readSecret(secretName) || "").trim() === value) return null;
-  }
-  for (const secretName of secretNames) {
-    if (!String(readSecret(secretName) || "").trim()) return { secretName, secretNames, value };
-  }
-  if (secretNames.length >= USDA_API_KEY_SECRET_MAX) throw new Error("No empty USDA SecretStorage reference is available for legacy credential migration.");
-  for (let suffix = 0; suffix < USDA_API_KEY_SECRET_MAX; suffix += 1) {
-    const secretName = suffix === 0 ? USDA_API_KEY_SECRET : `${USDA_API_KEY_SECRET}-legacy-${suffix}`;
-    if (secretNames.includes(secretName) || String(readSecret(secretName) || "").trim()) continue;
-    return { secretName, secretNames: [...secretNames, secretName], value };
-  }
-  throw new Error("No safe USDA SecretStorage reference is available for legacy credential migration.");
 }
 
 export function settingsPersistencePayload(

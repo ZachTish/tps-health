@@ -560,7 +560,7 @@ for (const action of ['log','remove','clear']) test(`successfully ${action === '
   assert.deepEqual(tray.selectionItems.map(entry=>entry.item.name),expectedRemaining);
   assert.equal(plugin.readPendingFoodDescribeWorkflow(),null,'successful persistence must acknowledge the prepared workflow');
   tray.onClose();
-  await plugin.resumePendingFoodDescribeWorkflow('layout-ready');
+  assert.equal(plugin.resumePendingFoodDescribeWorkflow, undefined, 'startup cannot replay consumed drafts');
   assert.deepEqual(plugin.settings.pendingFoodLogDraft?.selectionItems.map(entry=>entry.item.name)||[],expectedRemaining);
   assert.equal(plugin.readPendingFoodDescribeWorkflow(),null);
 });

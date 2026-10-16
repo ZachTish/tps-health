@@ -85,7 +85,6 @@ export interface TPSHealthSettings {
   recipeTag: string;
   foodLogTarget: FoodLogTarget;
   showFoodLogButtonInGcm: boolean;
-  automaticDailyRollups: boolean;
   includeBrandedFoodSearch: boolean;
   macroBlockStyle: "rings" | "table";
   macroNutrientRows: "collapsed" | "expanded" | "hidden";
@@ -400,7 +399,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   recipeTag: "#tps/recipe",
   foodLogTarget: "daily-note",
   showFoodLogButtonInGcm: false,
-  automaticDailyRollups: true,
   includeBrandedFoodSearch: true,
   macroBlockStyle: "rings",
   macroNutrientRows: "collapsed",

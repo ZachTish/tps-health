@@ -141,18 +141,6 @@ export interface FinishWorkoutInput {
   cooldownDays?: number;
 }
 
-export interface DailyRollup extends ExtraNutrition {
-  calories: number;
-  proteinG: number;
-  carbsG: number;
-  fatG: number;
-  fiberG: number;
-  sugarG: number;
-  sugarAlcoholG: number;
-  alcoholG: number;
-  sodiumMg: number;
-}
-
 export interface HealthMetricRenderConfig {
   propertyKey: string;
   label: string;
@@ -263,7 +251,6 @@ export interface TPSHealthApi {
   getActiveWorkoutPath(): string;
   getActiveWorkout(): ActiveWorkoutState | null;
   getSettings(): TPSHealthSettings;
-  getDailyRollup(): Promise<DailyRollup>;
   getMetricRenderConfigs(): HealthMetricRenderConfig[];
   getMetricRenderConfig(propertyKey: string): HealthMetricRenderConfig | null;
   getPropertyCatalog(): HealthPropertyCatalog;

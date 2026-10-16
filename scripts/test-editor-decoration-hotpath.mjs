@@ -10,14 +10,13 @@ import { Decoration, EditorView } from '@codemirror/view';
 const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true);
 const names = [
-  'createFoodLogChipExtension', 'buildFoodLogChipDecorations',
   'createRecipeIngredientEditorExtension', 'buildRecipeIngredientEditorDecorations',
   'recipeEditorSourcePath', 'markdownContentLooksLikeRecipe',
   'changedEditorLinesMatch', 'editorChangeTouchesLineBreak', 'selectionTouchesMatchingEditorLine',
 ];
 const declarations = names.map(name => ast.statements.find(node => node.name?.text === name))
   .filter(Boolean).map(node => node.getText(ast));
-const compiled = await transform(`${declarations.join('\n')}\nglobalThis.api = { createFoodLogChipExtension, createRecipeIngredientEditorExtension };`, { loader: 'ts' });
+const compiled = await transform(`${declarations.join('\n')}\nglobalThis.api = { createRecipeIngredientEditorExtension };`, { loader: 'ts' });
 
 function fixture({ path = 'Inbox/Ordinary.md', doc = 'Plain note', recipePath = false, initialSelection = 0 } = {}) {
   class TFile { constructor(filePath) { this.path = filePath; } }
@@ -47,17 +46,10 @@ function fixture({ path = 'Inbox/Ordinary.md', doc = 'Plain note', recipePath = 
     RecipeIngredientAddWidget: class { constructor() { counts.recipeWidgets++; } },
   });
   vm.runInContext(compiled.code, context);
-  const food = context.api.createFoodLogChipExtension(plugin);
   const recipe = context.api.createRecipeIngredientEditorExtension(plugin);
-  let state = EditorState.create({ doc, selection: { anchor: initialSelection }, extensions: [live, food, recipe] });
+  let state = EditorState.create({ doc, selection: { anchor: initialSelection }, extensions: [live, recipe] });
   const dispatch = spec => { state = state.update(spec).state; };
-  return { counts, file, plugin, food, recipe, get state() { return state; }, dispatch,
-    foodDecorations: () => state.field(food).size,
-    foodSourceLines: () => {
-      const lines = [];
-      state.field(food).between(0, state.doc.length, (_from, _to, value) => lines.push(value.spec.widget.source.lineNumber));
-      return lines;
-    },
+  return { counts, file, plugin, recipe, get state() { return state; }, dispatch,
     recipeDecorations: () => state.field(recipe).size,
   };
 }
@@ -70,9 +62,9 @@ test('ordinary typing and cursor movement inspect changed lines without rescanni
     f.dispatch({ changes: { from: f.state.doc.length, insert: 'x' } });
     f.dispatch({ selection: { anchor: index + 1 } });
   }
-  assert.ok(f.counts.foodLineChecks <= 200, `food checks: ${f.counts.foodLineChecks}`);
+  assert.equal(f.counts.foodLineChecks, 0);
   assert.equal(f.counts.recipeContentChecks, 0);
-  assert.equal(f.foodDecorations(), 0);
+  assert.doesNotMatch(source, /createFoodLogChipExtension|FoodLogChipWidget/);
   assert.equal(f.recipeDecorations(), 0);
 });
 
@@ -84,34 +76,6 @@ test('a newly typed recipe tag activates and deleting it removes recipe controls
   assert.ok(f.counts.recipeWidgets > 0);
   f.dispatch({ changes: { from: f.state.doc.length - '#tps/recipe'.length, to: f.state.doc.length } });
   assert.equal(f.recipeDecorations(), 0);
-});
-
-test('food chips survive unrelated edits and still reveal their source during selection', () => {
-  const f = fixture({ doc: 'Ordinary paragraph\n- Apple <!-- tps-health:food -->' });
-  assert.equal(f.foodDecorations(), 1);
-  f.counts.foodLineChecks = 0;
-  f.dispatch({ changes: { from: 0, insert: 'New ' } });
-  assert.equal(f.foodDecorations(), 1);
-  assert.ok(f.counts.foodLineChecks <= 2, `food checks: ${f.counts.foodLineChecks}`);
-  f.dispatch({ selection: { anchor: f.state.doc.length - 3 } });
-  assert.equal(f.foodDecorations(), 0);
-  f.dispatch({ selection: { anchor: 0 } });
-  assert.equal(f.foodDecorations(), 1);
-});
-
-test('deleting a food marker removes its chip', () => {
-  const marker = '<!-- tps-health:food -->';
-  const f = fixture({ doc: `Ordinary paragraph\n- Apple ${marker}` });
-  assert.equal(f.foodDecorations(), 1);
-  f.dispatch({ changes: { from: f.state.doc.length - marker.length, to: f.state.doc.length } });
-  assert.equal(f.foodDecorations(), 0);
-});
-
-test('inserting a line before a chip keeps its source-line action accurate', () => {
-  const f = fixture({ doc: 'Ordinary paragraph\n- Apple <!-- tps-health:food -->' });
-  assert.deepEqual(f.foodSourceLines(), [1]);
-  f.dispatch({ changes: { from: 0, insert: 'New line\n' } });
-  assert.deepEqual(f.foodSourceLines(), [2]);
 });
 
 test('a recipe path retains ingredient selection behavior without serializing its note', () => {

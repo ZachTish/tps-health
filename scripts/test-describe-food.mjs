@@ -241,21 +241,15 @@ test("Describe keeps mobile users in a visible, retryable flow and opens the com
   assert.match(mainSource, /modal\.selectionExpanded = true;\s+modal\.open\(\)/);
 });
 
-test("Describe persists a resumable workflow and uses stable durable jobs for each stage", () => {
-  assert.doesNotMatch(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-extract/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-review-v7` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-repair-v6-\$\{index \+ 1\}` : undefined/);
-  assert.match(mainSource, /durableJobId: workflow \? `\$\{workflow\.id\}-estimate-v4-\$\{index \+ 1\}` : undefined/);
+test("Describe preserves explicit retry state without queued jobs or startup replay", () => {
+  assert.doesNotMatch(mainSource, /durableJobId|resumePendingFoodDescribeWorkflow|TPS_AI_JOB_PENDING/);
   assert.match(mainSource, /version: 2 as const/);
   assert.match(mainSource, /workflow\.extraction = extraction/);
   assert.match(mainSource, /tps-health-pending-food-describe-/);
   assert.match(mainSource, /window\.localStorage\.setItem\(this\.pendingFoodDescribeStorageKey\(\), JSON\.stringify\(workflow\)\)/);
-  assert.match(mainSource, /resumePendingFoodDescribeWorkflow\("layout-ready"\)/);
-  assert.match(mainSource, /isPendingAiJobError\(error\)/);
   assert.match(mainSource, /appendDescribedFoods\(selectionItems, dateContext, workflow\?\.id\)/);
   assert.match(mainSource, /workflow\.preparedSelectionItems = selectionItems\.map\(cloneBatchFoodSelection\)/);
   assert.match(mainSource, /workflow:prepared-tray-restored/);
-  assert.match(mainSource, /this\.settings\.pendingFoodLogDraft\?\.id === workflow\.id/);
   assert.match(mainSource, /tps:health-food-describe-ready/);
 });
 

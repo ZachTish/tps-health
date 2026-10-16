@@ -9,7 +9,7 @@ import { transform } from 'esbuild';
 const sourcePath = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 const source = readFileSync(sourcePath, 'utf8');
 const ast = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const names = ['renderFoodLogChips', 'renderDailyWorkoutHeaders', 'renderWorkoutSetChips', 'renderNativeWorkoutSurfaceInReadingView', 'TPSHealthRenderedControlsChild'];
+const names = ['renderNativeWorkoutSurfaceInReadingView', 'TPSHealthRenderedControlsChild'];
 const declarations = names.map(name => {
   const declaration = ast.statements.find(node => node.name?.text === name);
   assert.ok(declaration, `Run the actual ${name} declaration`);
@@ -86,11 +86,9 @@ function fixture({ items = [], headings = [], recipe = false, missingFile = fals
     workoutDailyHeaderElement(actualPlugin, data, path) { counts.headerRenders++; assert.equal(actualPlugin, plugin); return { data, path }; },
   });
   vm.runInContext(compiled.code, context);
-  const { renderFoodLogChips, renderDailyWorkoutHeaders, renderWorkoutSetChips, TPSHealthRenderedControlsChild } = context.api;
+  const { TPSHealthRenderedControlsChild } = context.api;
   return { root, plugin, ctx, counts, menus, chips, sourceLookups, target, frames, timeouts,
-    food: () => renderFoodLogChips(root, plugin, ctx),
-    headers: () => renderDailyWorkoutHeaders(root, plugin, ctx),
-    sets: () => renderWorkoutSetChips(root, plugin, ctx),
+    food: () => new TPSHealthRenderedControlsChild(root, plugin, ctx).onload(),
     child: () => new TPSHealthRenderedControlsChild(root, plugin, ctx),
   };
 }
@@ -136,39 +134,6 @@ test('native workout membership uses the live index and retains eligible Reading
   assert.equal(f.counts.errors, 0);
 });
 
-test('workout lists retain ownership, set ordering and line targets', () => {
-  const first = item('Squat 5 reps', 3), second = item('Squat 8 reps', 4);
-  const f = fixture({ workout: true, items: [first, second] });
-  f.sets();
-  assert.equal(f.counts.workoutOwners, 1);
-  assert.equal(f.counts.workoutChecks, 1);
-  assert.equal(f.counts.setRenders, 2);
-  assert.deepEqual([first, second].map(row => row.children[0].chip.setOrdinal), [1, 2]);
-  assert.deepEqual([first, second].map(row => row.children[0].source.lineNumber), [3, 4]);
-  assert.equal(first.children[0].source.filePath, f.ctx.sourcePath);
-});
-
-test('standalone li roots retain explicit workout rows in ordinary notes', () => {
-  const row = item('SET:Squat 5 reps', 7);
-  const f = fixture({ rootItem: row });
-  f.sets();
-  assert.equal(f.counts.setRenders, 1);
-  assert.equal(row.children[0].source.lineNumber, 7);
-  const ordinary = fixture({ items: [item('Squat shopping reminder')] });
-  ordinary.sets();
-  assert.equal(ordinary.counts.setRenders, 0);
-});
-
-test('already rendered workout headings do not reread the note', async () => {
-  const heading = item('Workout', 0);
-  heading.nextElementSibling = { classList: { contains: name => name === 'tps-health-daily-workout-header' } };
-  const f = fixture({ headings: [heading], content: '## Workout\nWORKOUT:session' });
-  for (let n = 0; n < 20; n++) await f.headers();
-  assert.equal(f.counts.cachedReads, 0);
-  assert.equal(f.counts.fileLookups, 0);
-  assert.equal(f.counts.headerRenders, 0);
-});
-
 test('empty recipes retain their ingredient control route without reading source', async () => {
   const f = fixture({ recipe: true });
   await f.food();
@@ -182,183 +147,6 @@ test('populated recipes keep their existing ingredient rendering owner', async (
   assert.equal(f.counts.recipeRenders, 1);
   assert.equal(f.counts.cachedReads, 0);
   assert.equal(f.counts.sourceLookups, 0);
-});
-
-test('hidden source fields and custom food units remain authoritative with repeated visible rows', async () => {
-  const visible = '2 portions oats';
-  const f = fixture({ items: [item(visible, 0), item(visible, 0)], content: `FOOD:${visible}|id:first\nFOOD:${visible}|id:second` });
-  await f.food();
-  assert.equal(f.counts.cachedReads, 1);
-  assert.deepEqual(f.chips.map(chip => chip.data.food), [`FOOD:${visible}|id:first`, `FOOD:${visible}|id:second`]);
-  assert.deepEqual(f.sourceLookups.map(value => value.after), [0, 1]);
-  f.chips[1].actions.onMenu('event');
-  assert.deepEqual(f.menus[0], ['event', f.ctx.sourcePath, 1, `FOOD:${visible}|id:second`]);
-});
-
-test('raw food rows and source-less visible fallback retain their menus', async () => {
-  const raw = fixture({ items: [item('FOOD:raw|id:1', 4)], content: '' });
-  await raw.food();
-  assert.equal(raw.chips.length, 1);
-  raw.chips[0].actions.onMenu('raw event');
-  assert.deepEqual(raw.menus[0], ['raw event', raw.ctx.sourcePath, 4, 'FOOD:raw|id:1']);
-  const missing = fixture({ missingFile: true, items: [item('1 serving oats', 2)] });
-  await missing.food();
-  assert.equal(missing.counts.cachedReads, 0);
-  assert.equal(missing.chips.length, 1);
-});
-
-test('ordinary list sections with complete source do not read the note', async () => {
-  const row = item('Shopping reminder');
-  row.sectionInfo = { text: '- Shopping reminder' };
-  const f = fixture({ items: [row], content: '- Shopping reminder' });
-  await f.food();
-  assert.equal(f.counts.cachedReads, 0);
-  assert.equal(f.counts.fileLookups, 0);
-  assert.equal(f.chips.length, 0);
-  assert.equal(row.classes.size, 0);
-});
-
-test('ordinary heading sections with complete source do not read the note', async () => {
-  const heading = item('Shopping', 0);
-  heading.sectionInfo = { text: '## Shopping\nA plain section about groceries.' };
-  const f = fixture({ headings: [heading], content: '## Shopping\nA plain section about groceries.' });
-  await f.headers();
-  assert.equal(f.counts.cachedReads, 0);
-  assert.equal(f.counts.fileLookups, 0);
-  assert.equal(f.counts.headerRenders, 0);
-});
-
-test('full-document section text uses the heading lineStart before deciding to read', async () => {
-  const content = '- Shopping reminder\n\n## Plans\nOrdinary prose.\n## Workout\n<!-- tps-health:workout [workoutId:: qa] -->';
-  const plans = item('Plans', 2);
-  plans.sectionInfo = { text: content };
-  const ordinary = fixture({ headings: [plans], content });
-  await ordinary.headers();
-  assert.equal(ordinary.counts.cachedReads, 0);
-  assert.equal(ordinary.counts.headerRenders, 0);
-
-  const workoutHeading = item('Workout', 4);
-  workoutHeading.sectionInfo = { text: content };
-  const workout = fixture({ headings: [workoutHeading], content });
-  await workout.headers();
-  assert.equal(workout.counts.cachedReads, 1);
-  assert.equal(workout.counts.headerRenders, 1);
-  assert.equal(workoutHeading.nextElementSibling.element.data.index, 5);
-});
-
-test('ambiguous section-local and global H2 candidates keep the source read', async () => {
-  const heading = item('Workout', 2);
-  heading.sectionInfo = { text: '## Workout\n<!-- tps-health:workout [workoutId:: qa] -->\n## Other\nordinary' };
-  const content = 'front\nother\n## Workout\n<!-- tps-health:workout [workoutId:: qa] -->';
-  const f = fixture({ headings: [heading], content });
-  await f.headers();
-  assert.equal(f.counts.cachedReads, 1);
-  assert.equal(f.counts.headerRenders, 1);
-  assert.equal(heading.nextElementSibling.element.data.index, 3);
-});
-
-test('many ordinary list and heading sections start zero Health source reads', async () => {
-  const row = item('Shopping reminder', 1);
-  row.sectionInfo = { text: '- Shopping reminder' };
-  const heading = item('Shopping', 0);
-  heading.sectionInfo = { text: '## Shopping\nA plain section about groceries.' };
-  const f = fixture({ items: [row], headings: [heading], content: '## Shopping\n- Shopping reminder' });
-  for (let index = 0; index < 62; index++) f.child().onload();
-  await settle();
-  assert.equal(f.counts.cachedReads, 0);
-  assert.equal(f.counts.fileLookups, 0);
-  assert.equal(f.counts.recipeChecks, 62, 'recipe identity keeps its existing owner');
-  assert.equal(f.counts.headerRenders, 0);
-  assert.equal(f.counts.errors, 0);
-});
-
-test('unprocessed workout heading mapping retains blank lines and skips unrelated h2', async () => {
-  const unrelated = item('Other', 0), workout = item('Workout', 2);
-  unrelated.sectionInfo = { text: '## Other\nordinary' };
-  workout.sectionInfo = { text: '## Workout\n\nWORKOUT:session' };
-  const f = fixture({ headings: [unrelated, workout], content: '## Other\nordinary\n## Workout\n\nWORKOUT:session' });
-  await f.headers();
-  assert.equal(f.counts.cachedReads, 1);
-  assert.equal(unrelated.nextElementSibling, null);
-  assert.equal(workout.nextElementSibling.element.data.index, 4);
-  assert.equal(workout.nextElementSibling.element.path, f.ctx.sourcePath);
-});
-
-test('source-backed hidden food rows still read and resolve repeated custom-unit records', async () => {
-  const visible = '2 bowls oats';
-  const first = item(visible, 0), second = item(visible, 0);
-  first.sectionInfo = { text: `FOOD:${visible}|id:first` };
-  second.sectionInfo = { text: `FOOD:${visible}|id:second` };
-  const f = fixture({ items: [first, second], content: `FOOD:${visible}|id:first\nFOOD:${visible}|id:second` });
-  await f.food();
-  assert.equal(f.counts.cachedReads, 1);
-  assert.deepEqual(f.chips.map(chip => chip.data.food), [`FOOD:${visible}|id:first`, `FOOD:${visible}|id:second`]);
-  assert.deepEqual(f.sourceLookups.map(value => value.after), [0, 1]);
-  f.chips[1].actions.onMenu('event');
-  assert.deepEqual(f.menus[0], ['event', f.ctx.sourcePath, 1, `FOOD:${visible}|id:second`]);
-});
-
-test('complete Obsidian section source keeps hidden food and workout comments eligible', async () => {
-  const foodSource = '- QA Apple <!-- tps-health:food [food:: QA Apple] [qty:: 1] -->';
-  const row = item('QA Apple', 0);
-  row.sectionInfo = { text: foodSource };
-  const food = fixture({ items: [row], content: foodSource });
-  await food.food();
-  assert.equal(food.counts.cachedReads, 1);
-  assert.equal(food.chips[0].data.food, foodSource);
-  food.chips[0].actions.onMenu('event');
-  assert.deepEqual(food.menus[0], ['event', food.ctx.sourcePath, 0, foodSource]);
-
-  const workoutSource = '## Workout\n\n<!-- tps-health:workout [workoutId:: qa] -->';
-  const heading = item('Workout', 0);
-  heading.sectionInfo = { text: workoutSource };
-  const workout = fixture({ headings: [heading], content: workoutSource });
-  await workout.headers();
-  assert.equal(workout.counts.cachedReads, 1);
-  assert.equal(workout.counts.headerRenders, 1);
-  assert.equal(heading.nextElementSibling.element.data.index, 2);
-});
-
-test('null and incomplete section information retains the existing source read', async () => {
-  for (const sectionInfo of [null, { text: '' }, { text: '- Shopping' }]) {
-    const row = item('Shopping reminder', 0);
-    row.sectionInfo = sectionInfo;
-    const f = fixture({ items: [row], content: '- Shopping reminder' });
-    await f.food();
-    assert.equal(f.counts.cachedReads, 1);
-    assert.equal(f.chips.length, 0);
-  }
-  for (const sectionInfo of [null, { text: '' }, { text: '## Workout\n\n' }]) {
-    const heading = item('Workout', 0);
-    heading.sectionInfo = sectionInfo;
-    const f = fixture({ headings: [heading], content: '## Workout\nWORKOUT:session' });
-    await f.headers();
-    assert.equal(f.counts.cachedReads, 1);
-    assert.equal(f.counts.headerRenders, sectionInfo === null ? 0 : 1);
-  }
-});
-
-test('missing workout files do not read or render', async () => {
-  const f = fixture({ missingFile: true, headings: [item('Workout')] });
-  await f.headers();
-  assert.equal(f.counts.cachedReads, 0);
-  assert.equal(f.counts.headerRenders, 0);
-});
-
-test('concurrent header renders recheck the existing header after the source await', async () => {
-  const d = deferred(), heading = item('Workout', 0);
-  const f = fixture({ headings: [heading], read: () => d.promise });
-  const first = f.headers(), second = f.headers();
-  d.resolve('## Workout\nWORKOUT:session');
-  await Promise.all([first, second]);
-  assert.equal(f.counts.headerRenders, 1);
-});
-
-test('postprocessor reports an eligible historical food read failure', async () => {
-  const f = fixture({ items: [item('Food')], headings: [item('Workout')], read: () => Promise.reject(new Error('synthetic read failure')) });
-  f.child().onload();
-  await settle();
-  assert.equal(f.counts.errors, 1);
 });
 
 // Run the navigation sweep and index projection themselves, not a replacement
@@ -695,4 +483,27 @@ test('queued Reading mounts cannot reappear after the owning service is disposed
  f.target.isConnected=true;f.plugin.nativeRecordService.isEnabled=()=>false;
  f.frames.shift()();assert.equal(f.timeouts.length,1);f.timeouts.shift()();
  assert.equal(f.counts.nativeRenders,0);assert.equal(f.counts.cachedReads,0);assert.equal(f.timeouts.length,0);
+});
+
+
+test('retired inline workout renderer and exclusive mutators are absent',()=>{
+ for(const name of ["WorkoutSetChipWidget","WorkoutSetEmptyWidget","renderWorkoutSetChips","renderEmptyWorkoutSetAction","emptyWorkoutSetActionElement","workoutSetEditorElement","safeWorkoutSetEditorElement","addSeededWorkoutSetAfterBlock","deleteWorkoutSetLine","duplicateWorkoutSetBelow","duplicateWorkoutSetBelowNow","openWorkoutSupersetLinker","applyWorkoutSupersetLinks","openWorkoutDropSetLinker","applyWorkoutDropSetLinks"]) assert.doesNotMatch(source,new RegExp('\\b'+name+'\\b'),name);
+ assert.match(source,/class NativeWorkoutSurfaceWidget/);
+});
+
+test('100 ordinary or historical list mounts perform zero Health source reads', async () => {
+  for (const text of ['Shopping item', 'FOOD:historical entry', '1 serving old food']) {
+    const f = fixture({ items: [item(text)], content: text });
+    for (let i = 0; i < 100; i++) f.child().onload();
+    await settle();
+    assert.equal(f.counts.cachedReads, 0, text);
+    assert.equal(f.counts.sourceLookups, 0, text);
+    assert.equal(f.counts.nativeRenders, 0);
+    assert.equal(f.chips.length, 0);
+  }
+});
+
+
+test('historical food and Daily Note workout display owners are absent',()=>{
+ for(const name of ["FoodLogChipWidget","foodLogChipElement","createFoodLogChipExtension","buildFoodLogChipDecorations","renderFoodLogChips","renderDailyWorkoutHeaders","WorkoutDailyHeaderWidget","createWorkoutDailyHeaderExtension","createWorkoutDailyMarkerProtectionExtension","buildWorkoutDailyHeaderDecorations","workoutDailyHeaderDataFromLines","workoutDailyHeaderElement"]) assert.doesNotMatch(source,new RegExp('\\b'+name+'\\b'),name);
 });

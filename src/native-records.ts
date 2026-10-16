@@ -1113,16 +1113,11 @@ export class HealthNativeRecordService {
         const previousStatus = this.getDailyIndexStatus();
         this.pendingMetadataPaths.delete(file.path);
         const hadPendingRead = this.refreshGenerations.delete(file.path);
-        const deleted = this.recordsByPath.get(file.path);
-        const legacyChildren = deleted?.kind === 'workout-session'
-          ? this.getWorkoutExerciseRecords(deleted)
-          : [];
         this.foodDefinitionsByPath.delete(file.path);
         this.workoutDataByPath.delete(file.path);
         this.removePath(file.path);
         this.notifyDailyIndexStatusChanged(previousStatus);
         if (hadPendingRead && this.isWorkoutIndexSettled()) this.plugin.scheduleWorkoutActionBars();
-        if (legacyChildren.length) void this.trashLegacyWorkoutChildren(deleted!, legacyChildren, 'health-workout-delete');
       }
     }));
     this.plugin.registerEvent(vault.on('rename', (file, oldPath) => {
@@ -3126,11 +3121,12 @@ export class HealthNativeRecordService {
     });
   }
 
-  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string, discovery?: HealthDiscoveryPass, tags?: string[], physicalSource = true): void {
+  private indexFile(file: TFile, frontmatter?: Record<string, unknown> | null, content?: string, discovery?: HealthDiscoveryPass, tags?: string[], decodedHandle?: NativeRecordHandle): void {
     if (this.disposed) return;
     if (this.discoveryPass && discovery !== this.discoveryPass) this.discoveryPass.sourceFiles.add(file);
     const api = this.readApi();
     if (!api && this.plugin.settings.energyEstimateMode !== 'activity-notes') return;
+    const physicalSource = !decodedHandle;
     // An explicit source is authoritative; absent metadata is still unknown.
     // Projection happens before native identity checks so ordinary notes can
     // contribute without adding a record ID or changing their source.
@@ -3146,8 +3142,10 @@ export class HealthNativeRecordService {
     this.removePath(file.path, false);
     // An explicit absent frontmatter value comes from an indexed source. Do
     // not revive its old identity from a lagging getFileCache result.
-    const inspected = api.inspect(resolved);
-    const kind = canonicalNativeKind(this.plugin.settings, inspected?.kind);
+    // Mutation handles have already passed native identity/classification validation.
+    // Their canonical aliases are not the configured physical note schema.
+    const inspected = decodedHandle ? { ...decodedHandle, schemaVersion: 1 } : api.inspect(resolved);
+    const kind = decodedHandle?.kind ?? canonicalNativeKind(this.plugin.settings, inspected?.kind);
     const recordId = String(inspected?.id || '').trim();
     const schemaVersion = Number(inspected?.schemaVersion);
     if (!recordId || schemaVersion !== 1 || !kind || !HEALTH_KINDS.has(kind)) {
@@ -3500,7 +3498,7 @@ export class HealthNativeRecordService {
     // A decoded native handle adds canonical aliases that may not exist in
     // the note. Only physical metadata/source can authorize energy matching;
     // retain accepted energy until that source's indexed event arrives.
-    this.indexFile(handle.file, handle.frontmatter, undefined, undefined, undefined, false);
+    this.indexFile(handle.file, handle.frontmatter, undefined, undefined, undefined, handle);
   }
 
   private toHandle(record: IndexedHealthRecord): NativeRecordHandle {

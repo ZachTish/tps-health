@@ -1249,7 +1249,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /const rawPath = link\.getAttribute\("data-href"\) \|\| link\.getAttribute\("href"\) \|\| ""/);
   assert.match(mainSource, /parseQuantity\(match\[1\]\)/);
   assert.doesNotMatch(mainSource, /line\.text\.matchAll\(\/<!--\[\\s\\S\]\*\?-->/);
-  assert.match(mainSource, /renderRecipeIngredientChips\(root, plugin, ctx\)/);
+  assert.match(mainSource, /renderRecipeIngredientChips\(this\.containerEl, this\.plugin, this\.ctx\)/);
   assert.match(mainSource, /renderRecipeIngredientAddAction\(root, plugin, ctx\.sourcePath, lastRenderedItem\)/);
   assert.doesNotMatch(mainSource, /function renderRecipeIngredientAddAction[\s\S]{0,500}if \(!lastRenderedItem\) return/);
   assert.match(mainSource, /function recipeIngredientAddElement\(plugin: TPSHealthPlugin, sourcePath: string\): HTMLElement/);
@@ -4176,9 +4176,8 @@ test("health API exposes deterministic agent food logging entry points", () => {
     mainSource.indexOf("private createApi"),
   );
   assert.match(macroTotalsMethod, /window\.moment\(normalizedDate, "YYYY-MM-DD", true\)\.isValid\(\)/);
-  assert.match(macroTotalsMethod, /createFoodLogBaseEntry\(this, file, lineIndex, line\)/);
-  assert.match(macroTotalsMethod, /entry\.dateKey === normalizedDate/);
-  assert.match(macroTotalsMethod, /const totals = sumFoodLogNutrition\(entries\)/);
+  assert.doesNotMatch(macroTotalsMethod, /getMarkdownFiles|cachedRead|createFoodLogBaseEntry|sumFoodLogNutrition/);
+  assert.match(macroTotalsMethod, /readDailyFoodTotals\(normalizedDate\)/);
   assert.match(macroTotalsMethod, /logger\.flow\("FoodMacroTotals", "read"/);
 
   const barcodeMethod = mainSource.slice(
@@ -4802,22 +4801,17 @@ test("single-file food logs can be filtered by scheduled daily note path", () =>
   assert.equal(round(totals.proteinG), 21);
 });
 
-test("historical inline totals remain readable while Daily Note rollup writes fail clearly", async () => {
-  installDeterministicBrowserGlobals();
-  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
-  const fake = createFakeHealthApp();
-  const plugin = new TPSHealthPlugin(fake.app);
-  const path = "Daily Notes/2026-07-28.md";
-  const original = "- Apple [food:: Apple] [qty:: 1] [unit:: serving] [cal:: 95] [protein:: 1] [carbs:: 25] [fat:: 0.3]";
-  fake.files.set(path, original);
-  plugin.getTodayDailyNotePath = async () => path;
-  const totals = await plugin.getDailyRollup();
-  assert.equal(round(totals.calories), 95);
-  assert.equal(round(totals.proteinG), 1);
-  await assert.rejects(plugin.updateDailyRollupForFile(new globalThis.__TPSHealthTestTFile(path)), /read-only/);
-  await assert.rejects(plugin.updateDailyRollup(), /read-only/);
-  assert.equal(fake.files.get(path), original);
-  assert.deepEqual(fake.writes, []);
+test("retired inline rollup and Daily Note workout writer owners are absent", async () => {
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const plugin = new Plugin(createFakeHealthApp().app);
+  for (const name of ['getDailyRollup', 'countFoodLogsInFile', 'updateDailyRollup', 'updateDailyRollupForFile',
+    'readDailyFoodRollupContent', 'getFoodLogFile', 'insertWorkoutSessionIntoDailyNote',
+    'rollbackStartedWorkoutArtifacts', 'repairActiveDailyWorkoutBlock', 'appendNestedToDailyWorkout',
+    'applyWorkoutPlanToDailyNote']) {
+    assert.equal(plugin[name], undefined, name);
+    assert.equal(plugin.createApi()[name], undefined, `API ${name}`);
+  }
+  assert.doesNotMatch(mainSource, /automaticDailyRollups/);
 });
 
 test("earlier inline workout actions preserve the Daily Note and active pointer", async () => {
@@ -4838,8 +4832,8 @@ test("earlier inline workout actions preserve the Daily Note and active pointer"
   };
   const set = { exercise: "Row", reps: 8 };
   await assert.rejects(plugin.logSet(set), /read-only/);
-  await assert.rejects(plugin.logSetToWorkoutFile(path, set), /read-only/);
-  await assert.rejects(plugin.addSetForExerciseToWorkoutFile(path, "Row"), /read-only/);
+  assert.equal(plugin.logSetToWorkoutFile, undefined);
+  assert.equal(plugin.addSetForExerciseToWorkoutFile, undefined);
   await assert.rejects(plugin.updateWorkoutSetLine({ filePath: path, lineNumber: 2, line: "- [ ] Row [setId:: old-set]" }, { reps: 10 }), /read-only/);
   await plugin.finishWorkout();
   await plugin.discardWorkout();
@@ -5082,8 +5076,8 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.match(mainSource, /function stableSettingsValue\(value: unknown\): string/);
 });
 
-test("USDA credential references and legacy plaintext migrate without destructive overwrite", async () => {
-  const { normalizeTPSHealthSettings, normalizeUsdaApiKeySecrets, planLegacyUsdaApiKeyMigration, settingsPersistencePayload } = await importSettingsNormalizationUtility();
+test("USDA credential references and explicit persistence preserve credentials", async () => {
+  const { normalizeTPSHealthSettings, normalizeUsdaApiKeySecrets, settingsPersistencePayload } = await importSettingsNormalizationUtility();
   const { errorSummary } = await importLoggerUtility();
   const [settingsSource, typesSource, manifestSource, versionsSource, readmeSource] = await Promise.all([
     import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/connection-settings.ts", import.meta.url)), "utf8")),
@@ -5095,19 +5089,6 @@ test("USDA credential references and legacy plaintext migrate without destructiv
   const normalized = normalizeTPSHealthSettings({ usdaApiKey: " legacy-private-key " });
   assert.equal(Object.hasOwn(normalized, "usdaApiKey"), false);
   assert.deepEqual(normalized.usdaApiKeySecrets, ["tps-health-usda-api-key"]);
-  assert.deepEqual(
-    planLegacyUsdaApiKeyMigration({ usdaApiKey: " legacy-private-key " }, normalized, () => null),
-    { secretName: "tps-health-usda-api-key", secretNames: ["tps-health-usda-api-key"], value: "legacy-private-key" },
-  );
-  assert.equal(planLegacyUsdaApiKeyMigration({ usdaApiKey: "DEMO_KEY" }, normalized, () => null), null);
-  assert.equal(planLegacyUsdaApiKeyMigration({ usdaApiKey: "legacy-private-key" }, normalized, () => "legacy-private-key"), null);
-  const stacked = normalizeTPSHealthSettings({ usdaApiKeySecret: "occupied-ref", usdaApiKey: "legacy-private-key" });
-  assert.deepEqual(stacked.usdaApiKeySecrets, ["occupied-ref"]);
-  assert.deepEqual(
-    planLegacyUsdaApiKeyMigration({ usdaApiKey: "legacy-private-key" }, stacked, (name) => name === "occupied-ref" ? "different-key" : null),
-    { secretName: "tps-health-usda-api-key", secretNames: ["occupied-ref", "tps-health-usda-api-key"], value: "legacy-private-key" },
-    "an occupied different secret must be preserved while legacy plaintext receives a new reference",
-  );
   assert.deepEqual(normalizeUsdaApiKeySecrets([" one ", "one", "two", "three", "four", "five", "six"]), ["one", "two", "three", "four", "five"]);
   const persistedStack = settingsPersistencePayload(normalizeTPSHealthSettings({ usdaApiKeySecrets: ["primary-ref", "fallback-ref"] }));
   assert.deepEqual(persistedStack.usdaApiKeySecrets, ["primary-ref", "fallback-ref"]);
@@ -5118,11 +5099,7 @@ test("USDA credential references and legacy plaintext migrate without destructiv
   );
 
   const onloadSource = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("async saveSettings()"));
-  assert.match(onloadSource, /planLegacyUsdaApiKeyMigration/);
-  assert.ok(onloadSource.indexOf("secretStorage.setSecret") < onloadSource.indexOf("SecretStorage did not confirm"));
-  assert.ok(onloadSource.indexOf("SecretStorage did not confirm") < onloadSource.indexOf("saveData(settingsPersistencePayload(this.settings))"));
-  assert.match(onloadSource, /usda-api-key:migrated/);
-  assert.match(onloadSource, /usda-api-key:migration-failed/);
+  assert.doesNotMatch(onloadSource, /planLegacyUsdaApiKeyMigration|secretStorage\.setSecret|settingsNeedMigration/);
   assert.match(mainSource, /private readUsdaCredentials\(\): UsdaCredential\[\]/);
   assert.match(mainSource, /this\.settings\.usdaApiKeySecrets/);
   assert.match(mainSource, /credentialPosition: credential\.position/);
@@ -5140,7 +5117,7 @@ test("USDA credential references and legacy plaintext migrate without destructiv
   assert.match(readmeSource, /`DEMO_KEY` fallback/);
 });
 
-test("legacy USDA single-reference settings persist canonically before the stale field is removed", async () => {
+test("legacy USDA single-reference settings normalize in memory without startup saves", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -5165,36 +5142,23 @@ test("legacy USDA single-reference settings persist canonically before the stale
   plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
 
   await plugin.onload();
-  assert.equal(savedPayloads.length, 1);
-  assert.deepEqual(savedPayloads[0].usdaApiKeySecrets, ["legacy-reference"]);
-  assert.equal(Object.hasOwn(savedPayloads[0], "usdaApiKeySecret"), false);
+  assert.equal(savedPayloads.length, 0);
+  assert.deepEqual(plugin.settings.usdaApiKeySecrets, ["legacy-reference"]);
 });
 
-test("failed USDA SecretStorage migration keeps Health online without purging the retry value", async () => {
+test("Health startup preserves legacy credentials without accessing SecretStorage", async () => {
   const { normalizeTPSHealthSettings, settingsPersistencePayload } = await importSettingsNormalizationUtility();
   const normalized = normalizeTPSHealthSettings({ usdaApiKey: "legacy-private-key" });
   assert.equal(Object.hasOwn(settingsPersistencePayload(normalized), "usdaApiKey"), false);
   assert.equal(settingsPersistencePayload(normalized, " legacy-private-key ").usdaApiKey, "legacy-private-key");
 
-  const onloadSource = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("async saveSettings()"));
-  const migrationCatch = onloadSource.slice(onloadSource.indexOf("} catch (error) {"), onloadSource.indexOf("const migrationNeeded"));
-  const saveSource = mainSource.slice(mainSource.indexOf("async saveSettings()"), mainSource.indexOf("async updateBuiltInHealthGoalTarget"));
-  const readKeySource = mainSource.slice(mainSource.indexOf("private readUsdaCredentials()"), mainSource.indexOf("private availableUsdaCredentials()"));
-  assert.match(migrationCatch, /this\.retainedLegacyUsdaApiKey = legacyUsdaApiKey/);
-  assert.doesNotMatch(migrationCatch, /throw error/);
-  assert.match(migrationCatch, /TPS Health will stay available/);
-  assert.match(onloadSource, /initial-save:blocked-usda-migration/);
-  assert.match(onloadSource, /if \(this\.retainedLegacyUsdaApiKey\) \{[\s\S]+?\} else \{\s+await this\.saveData\(settingsPersistencePayload\(this\.settings\)\);/);
-  assert.match(saveSource, /mergeTPSHealthSettingsChanges\([\s\S]+?this\.retainedLegacyUsdaApiKey/);
-  assert.match(saveSource, /save:retaining-legacy-usda-key/);
-  assert.match(readKeySource, /const references = this\.retainedLegacyUsdaApiKey \? \[\] : this\.settings\.usdaApiKeySecrets/);
-
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
+  let secretReads = 0, secretWrites = 0;
   fake.app.secretStorage = {
-    getSecret: () => null,
-    setSecret: () => { throw new Error("simulated SecretStorage outage"); },
+    getSecret: () => { secretReads++; return null; },
+    setSecret: () => { secretWrites++; },
   };
   fake.app.workspace.on = () => ({});
   fake.app.workspace.onLayoutReady = () => {};
@@ -5217,15 +5181,16 @@ test("failed USDA SecretStorage migration keeps Health online without purging th
   plugin.saveData = async (payload) => { savedPayloads.push(JSON.parse(JSON.stringify(payload))); };
 
   await assert.doesNotReject(() => plugin.onload());
-  assert.equal(savedPayloads.length, 0, "initial sanitized save must be blocked when migration fails");
+  assert.equal(savedPayloads.length, 0, "startup must not rewrite saved settings");
+  assert.equal(secretReads, 0);
+  assert.equal(secretWrites, 0);
   assert.equal(plugin.readUsdaCredentials()[0].apiKey, "DEMO_KEY");
-  assert.ok(globalThis.__TPSHealthTestNotices.some((notice) => notice.includes("TPS Health will stay available")));
 
   plugin.settings.calorieGoal = 1900;
   await plugin.saveSettings();
   assert.equal(savedPayloads.length, 1);
   assert.equal(savedPayloads[0].calorieGoal, 1900);
-  assert.equal(savedPayloads[0].usdaApiKey, "legacy-private-key", "later settings saves must retain the migration retry value");
+  assert.equal(savedPayloads[0].usdaApiKey, "legacy-private-key", "explicit settings saves must retain the legacy value");
   assert.deepEqual(savedPayloads[0].usdaApiKeySecrets, ["tps-health-usda-api-key"]);
   assert.equal(Object.hasOwn(savedPayloads[0], "usdaApiKeySecret"), false);
 });
@@ -6015,7 +5980,7 @@ test("built-in scalar health goals migrate, save, reload, and render canonically
   assert.equal(rendered.get("fiber")?.min, 30);
 });
 
-test("workout starts use existing templates and blank starts open a clean Daily Note workout", () => {
+test("workout starts use existing templates and blank starts open a whole-note workout", () => {
   assert.match(mainSource, /workoutPlanList\.id = `tps-health-workout-plan-options-\$\{Date\.now\(\)\}`/);
   assert.match(mainSource, /this\.plugin\.searchWorkoutPlans\(""\)\.then\(\(items\) =>/);
   assert.match(mainSource, /const resolveSelectedPlanPath = async \(\): Promise<string \| undefined>/);
@@ -6035,13 +6000,13 @@ test("workout starts use existing templates and blank starts open a clean Daily 
   assert.match(mainSource, /logger\.flowError\("WorkoutExercisePicker", "choose:failed", error/);
   assert.match(mainSource, /new Notice\(`Could not add \$\{exercise\}: \$\{errorMessage\}`\)/);
   assert.match(mainSource, /status\.setText\("Adding…"\)/);
-  assert.match(mainSource, /focusAfter: false,\s+skipCatalogBuild: true/);
-  assert.match(mainSource, /focusLatestWorkoutSetAfterPicker/);
+
+  assert.doesNotMatch(mainSource, /focusLatestWorkoutSetAfterPicker/);
   assert.doesNotMatch(mainSource, /\.setName\("Superset group"\)/);
   assert.doesNotMatch(mainSource, /\.setName\("Dropset group"\)/);
   assert.match(mainSource, /repsInput\?\.focus\(\);\s+repsInput\?\.select\(\);/);
-  assert.match(mainSource, /openWorkoutSupersetLinker/);
-  assert.match(mainSource, /openWorkoutDropSetLinker/);
+  assert.match(mainSource, /openNativeWorkoutSupersetLinker/);
+  assert.match(mainSource, /openNativeWorkoutDropSetLinker/);
 });
 
 test("command palette only exposes polished everyday health actions", async () => {
@@ -6311,21 +6276,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /const BarcodeDetector = \(window as any\)\.BarcodeDetector/);
   assert.match(mainSource, /if \(this\.options\.adapters\?\.createNativeDetector\) \{\s+this\.nativeBarcodeDetector = this\.options\.adapters\.createNativeDetector\(\);/);
   assert.match(mainSource, /formats: \["ean_13", "ean_8", "upc_a", "upc_e", "code_128"\]/);
-  assert.match(mainSource, /const SHORTCUT_BARCODE_INBOX_PATH = "TPS Health Barcode Scan\.md"/);
-  assert.match(mainSource, /private shortcutInboxEventRefs: EventRef\[\] = \[\]/);
-  assert.match(mainSource, /private shortcutInboxProcessing = false/);
-  assert.match(mainSource, /this\.app\.vault\.on\("create", \(changed\) => \{/);
-  assert.match(mainSource, /this\.app\.vault\.on\("modify", \(changed\) => \{/);
-  assert.match(mainSource, /this\.shortcutInboxPollInterval = window\.setInterval\(\(\) => \{/);
-  assert.match(mainSource, /const barcode = shortcutBarcodeFromContent\(content\);/);
-  assert.match(mainSource, /content = await this\.app\.vault\.cachedRead\(file\);[\s\S]+if \(this\.stopped \|\| this\.lookupInProgress\) return;\s+const barcode = shortcutBarcodeFromContent\(content\);/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:watch-start"/);
-  assert.match(mainSource, /logger\.flowWarn\("Barcode", "shortcut-inbox:no-barcode"/);
-  assert.match(mainSource, /logger\.flow\("Barcode", "shortcut-inbox:duplicate"/);
-  assert.match(mainSource, /await this\.app\.vault\.modify\(file, `Processed by TPS Health at \$\{isoNow\(\)\}\\n`\);/);
-  assert.match(mainSource, /await this\.app\.vault\.modify\(file,[\s\S]+if \(this\.stopped \|\| this\.lookupInProgress\) return;\s+await this\.lookup\(barcode, statusEl\);/);
-  assert.match(mainSource, /await this\.lookup\(barcode, statusEl\);/);
-  assert.match(mainSource, /function shortcutBarcodeFromContent\(content: string\): string \| null \{\s+const match = content\.match\(\/\(\?:\^\|\\D\)\(\\d\{7,14\}\)\(\?:\\D\|\$\)\/\);/);
+  assert.doesNotMatch(mainSource, /SHORTCUT_BARCODE_INBOX_PATH|shortcutInbox|ShortcutInbox|shortcutBarcodeFromContent/);
   assert.match(mainSource, /function createBarcodeReader\(\): any/);
   assert.match(mainSource, /function createLiveBarcodeReader\(\): any/);
   assert.match(mainSource, /private createLiveBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createLiveReader\?\.\(\) \|\| createLiveBarcodeReader\(\);/);
@@ -7005,13 +6956,13 @@ test("legacy inline food autocomplete is unavailable", () => {
   assert.doesNotMatch(mainSource, /registerEditorSuggest\(new FoodLogEditorSuggest/);
 });
 
-test("historical food chips stay visible and open their source without edit actions", async () => {
+test("historical food source lookup remains explicit without automatic chip rendering", async () => {
   const { findFoodLogSourceLineIndex, looksLikeFoodLogVisibleLine } = await importPluginWithObsidianStub();
   const lines = ["# Food", "- 1 serving - [[Health/Foods/Greek yogurt|Greek yogurt]] <!-- [type:: foodLog] [food:: Greek yogurt] [qty:: 1] -->"];
   assert.equal(findFoodLogSourceLineIndex(lines, "1 serving - Greek yogurt", 1, 0), 1);
   assert.equal(looksLikeFoodLogVisibleLine("1 serving - Greek yogurt"), true);
-  assert.match(mainSource, /this\.registerEditorExtension\(createFoodLogChipExtension\(this\)\)/);
-  assert.match(mainSource, /function createFoodLogChipExtension\(plugin: TPSHealthPlugin\)/);
+  assert.doesNotMatch(mainSource, /createFoodLogChipExtension/);
+
   assert.match(mainSource, /async openFoodLogSourceLine\(entry: FoodLogBaseEntry\)/);
   assert.match(mainSource, /Earlier inline log \(read-only\)/);
 });
@@ -7156,7 +7107,7 @@ test("a native inline set reuses its attached exercise note without rebuilding t
   assert.equal(plugin.__pluginData.activeWorkoutSetCount, 1, "the first visible set count is persisted with the atomic session write");
 });
 
-test("legacy GCM workout cleanup stays lossless and current workouts start one no-workspace GCM task timer", async () => {
+test("legacy GCM workout cleanup stays lossless and retired inline timers do no work", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin, removeEmptyWorkoutTimerWorkspace } = await importPluginWithObsidianStub();
   const legacy = [
@@ -7214,25 +7165,18 @@ test("legacy GCM workout cleanup stays lossless and current workouts start one n
     activeWorkoutTitle: "Legacy Workout",
     activeWorkoutStartedAt: "2026-08-18T16:59:00.000Z",
   };
-  let startCall = null;
+  fake.app.vault.cachedRead = async () => assert.fail("Retired inline timer must not read its body");
   fake.app.plugins.plugins["tps-global-context-menu"] = {
-    api: {
-      timeTracking: {
-        isEnabled: () => true,
-        getActiveTimersForFile: async () => [],
-        startTimer: async (...args) => {
-          startCall = args;
-          return { id: "tt-workout", targetLineNumber: 5, targetId: "timer-workout" };
-        },
-      },
-    },
+    api: { timeTracking: {
+      getActiveTimersForFile: async () => assert.fail("Retired inline timer must not query timers"),
+      startTimer: async () => assert.fail("Retired inline timer must not start"),
+      stopTimerById: async () => assert.fail("Retired inline timer must not stop timers"),
+    } },
   };
-
   await plugin["ensureGcmWorkoutTimer"]();
-  assert.equal(startCall?.[0]?.type, "task");
-  assert.match(startCall?.[0]?.rawLine || "", /\[kind:: workout\].*\[workoutId:: workout-legacy\]/);
-  assert.deepEqual(startCall?.[2], { notesMode: "none", start: "2026-08-18T16:59:00.000Z" });
-  assert.equal(fake.files.get(dailyPath), current, "Health does not create or rewrite a GCM notes workspace");
+  await plugin["stopGcmWorkoutTimer"](plugin.getActiveWorkoutState());
+  assert.equal(fake.files.get(dailyPath), current);
+
 });
 
 test("live workout editor synchronization preserves its scroll anchor through a minimal change", async () => {
@@ -7301,21 +7245,33 @@ test("linked workout traversal finishes a drop chain before round-robin superset
   assert.equal(nextLinkedWorkoutSetIndex(lines, 2), 4, "the round continues on the other linked exercise");
 });
 
-test("workout GCM timer matching is scoped to the protected workout task id", async () => {
+test("native workout actions use whole-note timers without reading workout bodies", async () => {
   installDeterministicBrowserGlobals();
-  const { workoutGcmTimerMatches } = await importPluginWithObsidianStub();
-  const lines = [
-    "- [ ] [[#Workout|Push]] [kind:: workout] [workoutId:: workout-push] [id:: timer-push]",
-    "- [ ] Other timer [id:: timer-other]",
-  ];
-  const timers = [
-    { id: "tt-push", targetId: "timer-push", targetLineNumber: 0 },
-    { id: "tt-other", targetId: "timer-other", targetLineNumber: 1 },
-  ];
-  assert.deepEqual(workoutGcmTimerMatches(lines, "workout-push", timers).map((timer) => timer.id), ["tt-push"]);
-  assert.deepEqual(workoutGcmTimerMatches([lines[1], lines[0]], "workout-push", timers).map((timer) => timer.id), ["tt-push"], "stable id rebases a moved task");
-  const legacyLine = "- [ ] [[#Workout|Push]] [id:: timer-push] <!-- tps-health:workout-task [workoutId:: workout-push] -->";
-  assert.deepEqual(workoutGcmTimerMatches([legacyLine], "workout-push", [{ id: "legacy", targetId: "timer-push", targetLineNumber: 0 }]).map((timer) => timer.id), ["legacy"], "legacy comment identity remains readable");
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const path = "Inbox/Native workout timer.md";
+  fake.files.set(path, "Workout body remains unchanged");
+  const file = fake.app.vault.getAbstractFileByPath(path);
+  const plugin = new TPSHealthPlugin(fake.app);
+  const active = { id: "workout-native", path, title: "Native workout", startedAt: "2030-01-04T12:00:00Z" };
+  plugin.nativeRecordService = { isEnabled: () => true };
+  plugin.getActiveWorkoutState = () => active;
+  plugin.activeWorkoutFile = () => file;
+  fake.app.vault.cachedRead = async () => assert.fail("Timer bridge must not parse workout bodies");
+  const started = [], stopped = []; let timers = [];
+  fake.app.plugins.plugins["tps-global-context-menu"] = { api: { timeTracking: {
+    isEnabled: () => true,
+    getActiveTimersForFile: async (target) => { assert.equal(target.path, file.path); return timers; },
+    startTimer: async (...args) => { started.push(args); timers = [{ id: "timer-native" }]; },
+    stopTimerById: async (...args) => { stopped.push(args); },
+  } } };
+  await plugin.ensureGcmWorkoutTimer();
+  await plugin.ensureGcmWorkoutTimer();
+  assert.equal(started.length, 1);
+  assert.deepEqual(started[0], [{ file, type: "note", title: active.title }, undefined, { notesMode: "none", start: active.startedAt }]);
+  await plugin.stopGcmWorkoutTimer(active, "2030-01-04T12:02:00Z");
+  assert.deepEqual(stopped, [["timer-native", "2030-01-04T12:02:00Z"]]);
+  assert.equal(fake.files.get(path), "Workout body remains unchanged");
 });
 
 test("exercise and workout-plan searches preserve legacy order, counters, and one metadata lookup per file", async () => {
@@ -7520,7 +7476,7 @@ test("exercise picker creation remains usable without waiting for the vault cata
   assert.equal(catalogScans, 0);
 });
 
-test("native active workout recovery selects only the session record", async () => {
+test("native workout display resolves the session read-only without persisting recovery", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp();
@@ -7564,10 +7520,17 @@ test("native active workout recovery selects only the session record", async () 
     "---",
   ].join("\n"));
 
-  const recovered = plugin.activeWorkoutFile();
-  assert.equal(recovered?.path, "Workouts/Strength.md");
-  await plugin.saveSettings();
-  assert.equal(plugin.settings.activeWorkoutPath, "Workouts/Strength.md");
+  let writes = 0, inventories = 0;
+  plugin.persistActiveWorkoutStateMutation = async () => { writes++; return true; };
+  fake.app.vault.getMarkdownFiles = () => { inventories++; return []; };
+  for (let index = 0; index < 20; index++) {
+    const recovered = plugin.activeWorkoutFile();
+    assert.equal(recovered?.path, "Workouts/Strength.md");
+    assert.equal(plugin.isActiveNativeWorkoutSnapshot({ id: resolution.id, path: resolution.path, status: "active" }), true);
+  }
+  assert.equal(writes, 0, 'display must not persist a recovered path');
+  assert.equal(inventories, 0, 'display resolves from existing evidence without a vault inventory');
+  assert.equal(plugin.settings.activeWorkoutPath, "Records/Leg extension.md");
 
   fake.files.set("Workouts/Strength duplicate.md", [
     "---",
@@ -8216,7 +8179,7 @@ test("native Finish and Discard keep operation metadata bound to the revalidated
 test("workout exercise picker performs no catalog work on open and cancels typed searches", () => {
   const pickerSource = mainSource.slice(
     mainSource.indexOf("class WorkoutExercisePickerModal extends Modal"),
-    mainSource.indexOf("class WorkoutFileSetModal extends Modal"),
+    mainSource.indexOf("class WorkoutLayoutModal extends Modal"),
   );
   assert.match(pickerSource, /tps-health-workout-picker-actions/);
   assert.match(pickerSource, /text: "Cancel"/);
@@ -9609,7 +9572,7 @@ test("grounded food research rejects impossible Clubtails nutrition and preserve
   assert.deepEqual(outcome.sources, [{ title: "Clubtails", url: "https://clubtails.com/blue-hawaiian/" }]);
 });
 
-test("grounded food research accepts coherent serving evidence and uses a stable durable Gemini request", async () => {
+test("grounded food research accepts coherent serving evidence and uses direct Gemini requests", async () => {
   installDeterministicBrowserGlobals();
   const { default: TPSHealthPlugin, foodResearchOutcomeFromAi } = await importPluginWithObsidianStub();
   const coherent = {
@@ -9650,8 +9613,8 @@ test("grounded food research accepts coherent serving evidence and uses a stable
   assert.equal(requests[0].taskId, "health.research-packaged-food");
   assert.equal(requests[0].grounding, "google-search");
   assert.deepEqual(requests[0].preferredProviders, ["gemini"]);
-  assert.equal(requests[0].durableJobId, requests[1].durableJobId);
-  assert.match(requests[0].durableJobId, /^health-food-research-v1-[a-z0-9]{7}$/);
+  assert.equal(Object.hasOwn(requests[0], "durableJobId"), false);
+  assert.equal(Object.hasOwn(requests[1], "durableJobId"), false);
   assert.equal(second.sources[0].url, "https://clubtails.com/blue-hawaiian/");
   delete fake.app.tpsAiGateway.features;
   await assert.rejects(() => plugin.researchFoodWithAi("Clubtails"), /Update TPS AI Gateway/);
@@ -9767,7 +9730,7 @@ test("rotated barcode crops use opaque white margins before drawing", async () =
 });
 
 test("scanner uses accessible camera overlay actions without a Shortcut button", () => {
-  const opening = mainSource.slice(mainSource.indexOf('class BarcodeScannerModal'), mainSource.indexOf('private async startShortcutInboxWatcher'));
+  const opening = mainSource.slice(mainSource.indexOf('class BarcodeScannerModal'), mainSource.indexOf('private async startCamera'));
   assert.doesNotMatch(opening, /setButtonText\("Apple Shortcut"/);
   assert.doesNotMatch(mainSource, /shortcuts:\/\/run-shortcut/);
   assert.match(opening, /iconAction\("zap", "Turn flash on"/);
@@ -10477,7 +10440,7 @@ test('Activity and workout forms opt into the shared Health frame and retain the
     const body = mainSource.slice(mainSource.indexOf(`class ${name} `)).split('\nclass ')[0];
     assert.match(body, /this\.modalEl\.addClass\("tps-keyboard-aware-modal", "tps-health-modal-frame"\)/, name);
   }
-  for (const name of ['CustomFoodModal','ActivityLogModal','FoodLogModal','NativeFoodEntryEditModal','NativeActivityEntryEditModal','StartWorkoutModal','SetModal','WorkoutFileSetModal','WorkoutLayoutModal']) {
+  for (const name of ['CustomFoodModal','ActivityLogModal','FoodLogModal','NativeFoodEntryEditModal','NativeActivityEntryEditModal','StartWorkoutModal','SetModal','WorkoutLayoutModal']) {
     const body = mainSource.slice(mainSource.indexOf(`class ${name} `)).split('\nclass ')[0];
     assert.match(body, /setClass\("tps-health-modal-actions"\)/, name);
   }
@@ -10982,4 +10945,138 @@ test('actual native log route preserves explicitly supplied historical rest-star
   const saved=await h.plugin.logNativeWorkoutSet({...h.input,restStartedAt:stamp,restSeconds:25},h.path);
   assert.equal(saved.restStartedAt,stamp);assert.equal(h.calls.append[0].set.restStartedAt,stamp);
   assert.equal(saved.restSeconds,25);assert.equal(h.calls.append.length,1);
+});
+
+test('opening and closing the scanner never watches, reads, or writes a vault mailbox', async () => {
+  const { BarcodeScannerModal } = await importPluginWithObsidianStub();
+  const counts = { vault: 0, intervals: 0, listeners: 0 };
+  const priorWindow = globalThis.window, priorDocument = globalThis.document;
+  const element = () => ({ style: {}, dataset: {}, empty() {}, addClass() {}, setAttr() {}, addEventListener() {}, createEl: element, createDiv: element });
+  globalThis.window = { setInterval() { counts.intervals++; return 1; }, clearInterval() {} };
+  globalThis.document = { addEventListener() { counts.listeners++; }, removeEventListener() { counts.listeners--; } };
+  try {
+    for (let i = 0; i < 20; i++) {
+      const app = { vault: new Proxy({}, { get() { counts.vault++; return () => null; } }) };
+      const modal = new BarcodeScannerModal(app, { register() {} });
+      modal.contentEl = element(); modal.modalEl = element();
+      modal.navigatorInfo = () => ({ userAgent: '', platform: '', maxTouchPoints: 0 });
+      modal.updateCameraControlButtons = () => {};
+      modal.stopScanning = () => {};
+      modal.onOpen(); await Promise.resolve(); modal.onClose();
+    }
+    assert.deepEqual(counts, { vault: 0, intervals: 0, listeners: 0 });
+  } finally { globalThis.window = priorWindow; globalThis.document = priorDocument; }
+});
+
+
+test('Health startup cannot recover timers or pending AI work', () => {
+  const startup = mainSource.slice(mainSource.indexOf('async onload('), mainSource.indexOf('async previewLegacyHealthImport('));
+  assert.ok(startup.length > 0);
+  assert.doesNotMatch(startup, /ensureGcmWorkoutTimer|resumePendingFoodDescribeWorkflow|layout-ready:failed/);
+  assert.equal((mainSource.match(/await this\.ensureGcmWorkoutTimer\(\)/g) || []).length, 1, 'only explicit workout creation starts the companion timer');
+});
+
+test('repeated Health startup does not save settings or access secrets for absent, old, or current configuration', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const configurations = [null, {}, { usdaApiKey: 'test-legacy-value', futureExtension: { keep: true } }, normalizeTPSHealthSettings({ calorieGoal: 1900 })];
+  const counts = { saves: 0, secretReads: 0, secretWrites: 0 };
+  for (const stored of configurations) {
+    const original = JSON.stringify(stored);
+    for (let iteration = 0; iteration < 5; iteration++) {
+      const fake = createFakeHealthApp();
+      fake.app.workspace.on = () => ({});
+      fake.app.workspace.onLayoutReady = () => {};
+      fake.app.metadataCache.on = () => ({});
+      fake.app.secretStorage = { getSecret() { counts.secretReads++; return null; }, setSecret() { counts.secretWrites++; } };
+      const plugin = new Plugin(fake.app);
+      plugin.manifest = { id: 'tps-health' };
+      for (const method of ['registerEditorSuggest', 'registerMarkdownPostProcessor', 'register', 'refreshGcmFoodLogButtonRegistration', 'registerGcmFoodLogButtonTapFallback', 'registerInlineFoodLogMenuHandler', 'scheduleGcmMenuRefresh', 'scheduleWorkoutActionBars']) plugin[method] = () => {};
+      plugin.loadData = async () => stored;
+      plugin.saveData = async () => { counts.saves++; };
+      await plugin.onload();
+      plugin.nativeRecordService.dispose();
+      assert.equal(JSON.stringify(stored), original, 'normalization must not mutate the saved source');
+    }
+  }
+  assert.deepEqual(counts, { saves: 0, secretReads: 0, secretWrites: 0 });
+});
+
+
+test('macro totals never fall back to inline scans when records are unavailable or unloaded', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new Plugin(fake.app);
+  let scans = 0, reads = 0, writes = 0, indexed = 0;
+  fake.app.vault.getMarkdownFiles = () => { scans++; return []; };
+  fake.app.vault.cachedRead = async () => { reads++; return ''; };
+  fake.app.vault.read = async () => { reads++; return ''; };
+  fake.app.vault.modify = async () => { writes++; };
+  for (const service of [undefined, { isEnabled: () => false }]) {
+    plugin.nativeRecordService = service;
+    for (let i = 0; i < 20; i++) {
+      await assert.rejects(plugin.getDailyFoodMacroTotals('2026-10-06'), /native records are unavailable/);
+    }
+  }
+  const totals = { entryCount: 2, calories: 350, proteinG: 20 };
+  plugin.nativeRecordService = { isEnabled: () => true, readDailyFoodTotals: async date => {
+    indexed++; assert.equal(date, '2026-10-06'); return totals;
+  } };
+  assert.deepEqual(await plugin.getDailyFoodMacroTotals('2026-10-06'), {dateIso: '2026-10-06', ...totals});
+  plugin.nativeRecordService.readDailyFoodTotals = async () => { throw new Error('Discovery failed'); };
+  await assert.rejects(plugin.getDailyFoodMacroTotals('2026-10-06'), /Discovery failed/);
+  assert.deepEqual({scans, reads, writes, indexed}, {scans: 0, reads: 0, writes: 0, indexed: 1});
+});
+
+test("unused legacy workout modal and bullet-set writer are removed", () => {
+ assert.doesNotMatch(mainSource, /WorkoutFileSetModal|logSetToWorkoutFile|appendLoggedSetToWorkoutNote|appendSetToWorkoutNoteContent/);
+});
+
+test('orphaned legacy workout mutation helpers are absent', () => {
+ for(const name of ["addSetForExerciseToWorkoutFileNow","insertWorkoutSetLineAfter","updateWorkoutSetLineNow","completeDailyWorkoutLine","ensureWorkoutSessionFrontmatter","updateActiveWorkoutSetFrontmatter","normalizeWorkoutNoteSetTasks","getOrCreateDailyNote","isTodayDailyNote","readWorkoutTemplate","applyWorkoutPlanToSession","defaultWorkoutTemplate","renderWorkoutSessionTemplate"]) assert.doesNotMatch(mainSource, new RegExp("\\b" + name + "\\b"), name);
+});
+
+test('exercise addition without the native owner never starts a replacement workout or creates an exercise', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new TPSHealthPlugin(fake.app);
+  plugin.nativeRecordService = null;
+  plugin.getActiveWorkoutState = () => ({ id: 'preserved', path: 'Inbox/Existing workout.md' });
+  plugin.startWorkout = () => assert.fail('must not create a replacement workout');
+  plugin.clearActiveWorkoutState = () => assert.fail('must preserve the active pointer');
+  plugin.findOrCreateExercise = () => assert.fail('must not create an exercise before validating its owner');
+  await assert.rejects(plugin.addSetForExerciseToActiveWorkout('Row'), /No active native workout/);
+  assert.deepEqual(fake.writes, []);
+  for (const name of ['addExercisePlaceholderToDailyWorkout', 'addSetForExerciseToWorkoutFile',
+    'focusLatestWorkoutSetAfterPicker', 'serializeWorkoutMutation']) assert.equal(plugin[name], undefined, name);
+});
+
+test('Health unloaded during the settings read cannot start discovery or register a late owner', async () => {
+  installDeterministicBrowserGlobals();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  fake.app.workspace.iterateAllLeaves = () => {};
+  fake.app.workspace.trigger = () => {};
+  fake.app.workspace.on = () => ({});
+  fake.app.workspace.onLayoutReady = () => {};
+  fake.app.metadataCache.on = () => ({});
+  const plugin = new Plugin(fake.app);
+  plugin.manifest = { id: 'tps-health' };
+  let finish, registrations = 0;
+  plugin.loadData = () => new Promise(resolve => { finish = resolve; });
+  plugin.removeWorkoutActionBars = () => {}; // No mounted action bars in this lifecycle host.
+  plugin.addSettingTab = () => { registrations++; };
+  for (const method of ['registerEditorSuggest', 'registerMarkdownPostProcessor', 'register', 'refreshGcmFoodLogButtonRegistration', 'registerGcmFoodLogButtonTapFallback', 'registerInlineFoodLogMenuHandler', 'scheduleGcmMenuRefresh', 'scheduleWorkoutActionBars']) plugin[method] = () => {};
+  const priorDocument = globalThis.document;
+  globalThis.document = { querySelectorAll: () => [] };
+  try {
+    const loading = plugin.onload();
+    plugin.onunload(); finish({}); await loading;
+    assert.equal(registrations, 0);
+    assert.equal(plugin.nativeRecordService, undefined);
+    assert.equal(fake.app.tpsHealth, undefined);
+  } finally { plugin.nativeRecordService?.dispose(); globalThis.document = priorDocument; }
 });
