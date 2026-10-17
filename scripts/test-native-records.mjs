@@ -894,8 +894,9 @@ for (const boundary of ['resolve', 'source-read', 'atomic-callback']) test(`a fu
   } finally { h.service.dispose(); tasks.restore(); }
 });
 
-async function createLinkedProjectionHarness(count = 1, definition = {}) {
+async function createLinkedProjectionHarness(count = 1, definition = {}, trackedNutrients = []) {
   const h = createHarness();
+  h.plugin.settings.healthGoals.push(...trackedNutrients.map(propertyKey=>({propertyKey,kind:'counter'})));
   // Model the host's indexed link lookup without the facade's linear search.
   h.plugin.app.metadataCache.getFirstLinkpathDest = path => h.files.get(String(path).replace(/\.md$/u, '') + '.md') || null;
   const food = h.addFrontmatterFile('Inbox/Projection food.md', {
@@ -1197,8 +1198,7 @@ test('all serving inputs still refresh compatible food portions when a definitio
 test('every built-in core and extra nutrient remains a read-only live projection and explicit edits persist', async () => {
   const keys = [...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS];
   const initial = Object.fromEntries(keys.map(key => [key, 2]));
-  const h = await createLinkedProjectionHarness(1, initial);
-  h.plugin.settings.healthGoals.push(...EXTRA_NUTRIENT_KEYS.map(propertyKey=>({propertyKey,kind:'counter'})));
+  const h = await createLinkedProjectionHarness(1, initial, EXTRA_NUTRIENT_KEYS);
   try {
     for (const key of keys) {
       const projectionCount = h.counts.projections;
@@ -1222,8 +1222,7 @@ test('every built-in core and extra nutrient remains a read-only live projection
 test('configured and archived custom nutrient changes, known zero and removal keep their projections', async () => {
   const keys = ['healthNutrient_projection_active', 'healthNutrient_projection_archived'];
   configureCustomNutrients(keys.map((key, index) => ({ key, label: `Custom ${index}`, unit: 'mg', archived: index === 1 })));
-  const h = await createLinkedProjectionHarness(1, Object.fromEntries(keys.map(key => [key, 2])));
-  h.plugin.settings.healthGoals.push(...keys.map(propertyKey=>({propertyKey,kind:'counter'})));
+  const h = await createLinkedProjectionHarness(1, Object.fromEntries(keys.map(key => [key, 2])), keys);
   try {
     h.notifyDefinition({ ...h.frontmatters.get(h.food), [keys[0]]: 6 });
     assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[0]], 6);
@@ -1271,16 +1270,19 @@ test('scalar type changes are reprojected while identical scalar metadata does n
   } finally { h.service.dispose(); }
 });
 
-test('the existing custom-nutrient configuration rebuild projects a newly registered key from an unchanged definition', async () => {
+test('registering a custom nutrient does not backfill existing logs and the next log records it', async () => {
   const key = 'healthNutrient_registered_late';
   const h = await createLinkedProjectionHarness(2, { [key]: 12 });
   try {
     assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], undefined);
     configureCustomNutrients([{ key, label: 'Registered later', unit: 'mg' }]);
+    h.plugin.settings.healthGoals.push({propertyKey:key,kind:'counter'});
     h.service.refreshConfiguration();
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], 24,
-      'refreshConfiguration reindexes consumption records with the current registry');
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], 24);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], undefined,
+      'registering and tracking a nutrient does not add historical display data');
+    const next=await h.service.createFoodEntry({id:'registered-later',createdDate:'2026-10-06T12:00:00Z',item:{id:'food',name:'Projection food',source:'custom-note',sourcePath:h.food.path},quantity:1,unit:'serving'});
+    assert.equal((await h.api.resolve(next.file)).frontmatter[key],12);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key],12);
     assert.equal((await h.api.resolve(h.seed.file)).frontmatter[key], undefined, 'configuration discovery does not rewrite notes');
   } finally { h.service.dispose(); configureCustomNutrients([]); }
 });
@@ -5071,10 +5073,12 @@ test('food log creation and edits persist only selected nutrients through config
  // Selection is read at each owning mutation, not captured by discovery or a menu definition.
  h.plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
  await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:3,unit:'serving'});
- saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,7.2);assert.equal(saved.vitaminB12Mcg,undefined);
+ saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,undefined,'enabling a nutrient cannot backfill the previous log');
+ const future=await h.service.createFoodEntry({...input,id:'future-tracked-food',quantity:3});
+ saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,7.2);assert.equal(saved.vitaminB12Mcg,undefined);
  h.plugin.settings.healthGoals=h.plugin.settings.healthGoals.filter(g=>g.propertyKey!=='vitaminB12Mcg');
- await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:4,unit:'serving'});
- saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,7.2,'historical unselected data is not silently deleted or rewritten');
+ await h.service.updateDailyFoodEntry(future.file,{...h.service.getDailyFoodEntries('2026-08-25').find(entry=>entry.id===future.id),quantity:4,unit:'serving'});
+ saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,7.2,'historical unselected data is not silently deleted or rewritten');
  assert.deepEqual(h.frontmatters.get(food),sourceBefore,'logging never strips the reusable food definition');
  assert.deepEqual(h.readCalls,[]);h.service.dispose();
 });
@@ -5087,7 +5091,7 @@ test('an untracked-only food definition edit performs no linked log mutation',as
  const next={...h.frontmatters.get(food),vitaminB12Mcg:4.8};h.frontmatters.set(food,next);h.service.acceptFoodDefinitionCommit(food,next);
  await h.service.persistLinkedFoodEntries(food);
  assert.deepEqual(h.frontmatterCalls,[]);assert.deepEqual(h.updateCalls,[]);assert.equal(h.contents.get(record.path),before);
- assert.equal(h.service.getDailyFoodTotals('2026-08-25').vitaminB12Mcg,4.8,'read-only linked nutrition remains available from the source');
+ assert.equal(h.service.getDailyFoodTotals('2026-08-25').vitaminB12Mcg,undefined,'read-only display cannot introduce a nutrient absent from the saved log');
  h.service.dispose();
 });
 
@@ -5098,4 +5102,65 @@ test('unlinked food edits honor selected zeroes and leave existing untracked dat
  await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],fiberG:3,vitaminB12Mcg:5});
  const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.fiberG,3);assert.equal(saved.vitaminB12Mcg,undefined);
  h.service.dispose();
+});
+
+
+test('newly tracked definition nutrients apply to future logs without display or persisted backfill',async()=>{
+ const h=createHarness({settings:{healthGoals:[{propertyKey:'consumedCalories',kind:'counter'}],nativeRecordProperties:{calories:'energy',vitaminB12Mcg:'b12Dose'}}});
+ try{
+  const food=h.addFrontmatterFile('Future nutrient food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100});
+  const make=id=>({id,createdDate:'2026-10-17T12:00:00Z',item:{id:'f',name:'Future nutrient food',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'});
+  const old=await h.service.createFoodEntry(make('old-nutrient-log'));
+  const before=h.contents.get(old.path);h.frontmatterCalls.length=0;h.updateCalls.length=0;h.readCalls.length=0;
+  let scans=0;const enumerate=h.plugin.app.vault.getMarkdownFiles;
+  h.plugin.app.vault.getMarkdownFiles=(...args)=>{scans++;return enumerate(...args)};
+  h.plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
+  const changed={...h.frontmatters.get(food),vitaminB12Mcg:2.4};h.frontmatters.set(food,changed);
+  for(let event=0;event<20;event++)h.service.acceptFoodDefinitionCommit(food,{...changed});
+  assert.equal(h.service.getDailyFoodEntries('2026-10-17').find(x=>x.id===old.id).vitaminB12Mcg,undefined,'old logs must not acquire unsaved nutrients through display projection');
+  await h.service.persistLinkedFoodEntries(food);
+  assert.equal(h.contents.get(old.path),before,'adding a selected nutrient cannot rewrite historical logs');
+  assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0,'a new nutrient alone must skip the existing write queue');
+  assert.deepEqual(h.readCalls,[],'no authoritative reads for historical backfill');
+  assert.equal(scans,0,'definition event bursts do not enumerate the vault');
+  const next=await h.service.createFoodEntry(make('new-nutrient-log'));
+  assert.equal((await h.api.resolve(next.file)).frontmatter.b12Dose,2.4);
+  h.service.refreshConfiguration();
+  let rows=h.service.getDailyFoodEntries('2026-10-17');
+  assert.equal(rows.find(x=>x.id===old.id).vitaminB12Mcg,undefined,'reload must not visually backfill');
+  assert.equal(rows.find(x=>x.id===next.id).vitaminB12Mcg,2.4);
+  assert.equal(h.service.getDailyFoodTotals('2026-10-17').vitaminB12Mcg,2.4,'only the future log contributes the added nutrient');
+  await h.service.updateDailyFoodEntry(old.file,{...rows.find(x=>x.id===old.id),quantity:2});
+  const edited=(await h.api.resolve(old.file)).frontmatter;
+  assert.equal(edited.energy,200);assert.equal(edited.b12Dose,undefined,'portion changes recalculate the original nutrient set');
+ }finally{h.service.dispose();}
+});
+
+test('linked definition updates recheck nutrient membership against current source at the atomic boundary',async()=>{
+ const h=createHarness({settings:{healthGoals:[{propertyKey:'consumedCalories',kind:'counter'},{propertyKey:'vitaminB12Mcg',kind:'counter'}]}});
+ try{
+  const food=h.addFrontmatterFile('Concurrent nutrient food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100,vitaminB12Mcg:2.4});
+  const old=await h.service.createFoodEntry({id:'concurrent-nutrient-log',createdDate:'2026-10-17T12:00:00Z',item:{id:'f',name:'Concurrent nutrient food',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'});
+  const process=h.plugin.app.fileManager.processFrontMatter;
+  h.plugin.app.fileManager.processFrontMatter=async(file,mutate)=>{
+   const current={...h.frontmatters.get(file),userField:'concurrent edit'};delete current.vitaminB12Mcg;
+   h.frontmatters.set(file,current);return process(file,mutate);
+  };
+  const changed={...h.frontmatters.get(food),calories:200,vitaminB12Mcg:4.8};h.frontmatters.set(food,changed);h.service.acceptFoodDefinitionCommit(food,changed);
+  await h.service.persistLinkedFoodEntries(food);
+  const saved=(await h.api.resolve(old.file)).frontmatter;
+  assert.equal(saved.calories,200);assert.equal(saved.vitaminB12Mcg,undefined,'a concurrent removal cannot be restored from the old projection');assert.equal(saved.userField,'concurrent edit');
+ }finally{h.service.dispose();}
+});
+
+
+test('a read-only definition gap does not forget a previously recorded nutrient',async()=>{
+ const h=await createLinkedProjectionHarness(1,{vitaminB12Mcg:2.4},['vitaminB12Mcg']);
+ try{
+  const original=h.contents.get(h.seed.path),missing={...h.frontmatters.get(h.food)};delete missing.vitaminB12Mcg;
+  h.notifyDefinition(missing);assert.equal(h.service.getDailyFoodTotals('2026-10-06').vitaminB12Mcg,undefined);
+  h.notifyDefinition({...missing,vitaminB12Mcg:6});
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').vitaminB12Mcg,6,'the stored log still records this nutrient');
+  assert.equal(h.contents.get(h.seed.path),original);assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0);assert.deepEqual(h.readCalls,[]);
+ }finally{h.service.dispose();}
 });

@@ -1367,7 +1367,7 @@ export class HealthNativeRecordService {
       ...foodNutritionStorageValues(nutrition),
       note: entry.note,
     });
-    const projected = this.projectFoodEntry(properties, entry.item.sourcePath || '');
+    const projected = this.projectFoodEntry(properties, entry.item.sourcePath || '', true);
     if (projected) Object.assign(properties, foodNutritionStorageValues(projected.frontmatter, true));
     const api = this.requireApi();
     const record = await this.createRecord('food-entry', compactRecordProperties(properties), {
@@ -3338,7 +3338,7 @@ export class HealthNativeRecordService {
     return { path: foodPath, frontmatter: copy };
   }
 
-  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string): {
+  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string, newEntry = false): {
     frontmatter: Record<string, unknown>;
     needsPersist: boolean;
   } | null {
@@ -3346,9 +3346,13 @@ export class HealthNativeRecordService {
     if (!food) return null;
     const projection = deriveNativeFoodEntryProjection(frontmatter, food.frontmatter);
     if (!projection) return null;
+    // Existing logs retain their recorded nutrient set. New tracking choices
+    // apply when creating the next log, never by filling historical gaps.
+    const nutritionUpdates = Object.fromEntries(Object.entries(foodNutritionStorageValues(projection.nutrition, true))
+      .filter(([key]) => newEntry || Object.prototype.hasOwnProperty.call(frontmatter, key)));
     const updates: Record<string, unknown> = {
       ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
-      ...foodNutritionStorageValues(projection.nutrition, true),
+      ...nutritionUpdates,
     };
     const persistedKeys = this.foodLogWriteProperties(updates);
     const next = { ...frontmatter };
@@ -3356,7 +3360,10 @@ export class HealthNativeRecordService {
     for (const [key, value] of Object.entries(updates)) {
       if (value == null) {
         if (Object.prototype.hasOwnProperty.call(next, key)) {
-          delete next[key];
+          // Retain membership in the read-only projection until a source save
+          // actually removes it; temporary definition gaps cannot erase history.
+          if (Object.prototype.hasOwnProperty.call(nutritionUpdates, key)) next[key] = undefined;
+          else delete next[key];
           if (Object.prototype.hasOwnProperty.call(persistedKeys, key)) needsPersist = true;
         }
         continue;
