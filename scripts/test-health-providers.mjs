@@ -4368,6 +4368,7 @@ test("custom food creation validates manual input and writes to the configured d
   const { app, files, writes } = createFakeHealthApp();
   const plugin = new TPSHealthPlugin(app);
   plugin.settings = {
+    ...plugin.settings,
     foodsFolder: "Inbox/Health QA Foods",
     recipesFolder: "Health/Recipes",
     customFoodTag: "#tps/food",
@@ -9773,8 +9774,10 @@ test('supplements persist exact label nutrients and named doses through save, re
   installDeterministicBrowserGlobals();
   const { default: Plugin, resolveFoodLogServing } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+  plugin.settings = structuredClone(plugin.settings);
   plugin.settings.foodTemplatePath = '';
   const nutrition = { vitaminB12Mcg: 2.4, vitaminDMcg: 25, magnesiumMg: 100, creatineG: 5, caffeineMg: 200, betaAlanineG: 3.2, ironMg: 0 };
+  plugin.settings.healthGoals = [...plugin.settings.healthGoals,...Object.keys(nutrition).map(propertyKey=>({propertyKey,kind:'counter'}))];
   const saved = await plugin.createFoodFromInput({ name: 'QA supplement', servingAmount: 2, servingUnit: 'capsule', nutrition });
   const file = fake.app.vault.getAbstractFileByPath(saved.sourcePath);
   const reloaded = plugin.foodFromFrontmatter(file, parseFrontmatter(fake.files.get(file.path)));
@@ -9802,8 +9805,10 @@ test('custom templates retain supplement label amounts without adding required p
   installDeterministicBrowserGlobals();
   const { default: Plugin } = await importPluginWithObsidianStub();
   const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
+  plugin.settings = structuredClone(plugin.settings);
   fake.files.set('Templates/Supplement.md', '---\ntitle: "{{name}}"\nservingAmount: {{servingAmount}}\nservingUnit: "{{servingUnit}}"\n---\n');
   plugin.settings.foodTemplatePath = 'Templates/Supplement.md';
+  plugin.settings.healthGoals = [...plugin.settings.healthGoals,...['creatineG','caffeineMg','vitaminB12Mcg'].map(propertyKey=>({propertyKey,kind:'counter'}))];
   const saved = await plugin.createFoodFromInput({ name: 'QA preworkout', servingAmount: 1, servingUnit: 'scoop', nutrition: { creatineG: 3, caffeineMg: 175, vitaminB12Mcg: .08 } });
   const fm = parseFrontmatter(fake.files.get(saved.sourcePath));
   assert.equal(Number(fm.creatineG), 3); assert.equal(Number(fm.vitaminB12Mcg), .08);
@@ -9971,6 +9976,7 @@ test('user-defined nutrients save, reload, scale and log without a compiled nutr
  try {
   const definition=await plugin.addCustomNutrient('Polyphenols','mg');
   assert.equal(plugin.__pluginData.customNutrients[0].key,definition.key);
+  plugin.settings.healthGoals = [...plugin.settings.healthGoals,{propertyKey:definition.key,kind:'counter'}];
   const saved=await plugin.createFoodFromInput({name:'Custom QA',servingAmount:2,servingUnit:'capsule',nutrition:{[definition.key]:120}});
   const file=fake.app.vault.getAbstractFileByPath(saved.sourcePath);
   const reloaded=plugin.foodFromFrontmatter(file,parseFrontmatter(fake.files.get(file.path)));

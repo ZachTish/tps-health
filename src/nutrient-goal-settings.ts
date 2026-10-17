@@ -5,7 +5,7 @@ import { canonicalGoalKey, filterGoalNutrients, findNutrientGoal, goalNutrients 
 /** Only search, category and selection are transient. Goals use the existing settings contract. */
 export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHealthPlugin, onSaved: () => void): () => void {
   container.addClass('tps-health-settings-nutrient-goals');
-  container.createEl('p',{text:'Food logs save only the nutrients in Your nutrient goals, including Track only entries. Removing a goal stops future writes for it; existing values and reusable food definitions are retained.',cls:'setting-item-description'});
+  container.createEl('p',{text:'Foods, recipes, meals and food logs save only the nutrients in Your nutrient goals, including Track only entries. Removing a goal stops future writes for it; existing notes are not automatically rewritten.',cls:'setting-item-description'});
   let query = '', group = '', selected = 'consumedCalories';
   const status = container.createDiv({attr:{role:'status','aria-live':'polite'}});
   new Setting(container).setName('Find a nutrient').addSearch(search => {

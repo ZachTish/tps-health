@@ -1,5 +1,5 @@
 import { EXTRA_NUTRIENTS, CORE_NUTRIENT_KEYS, nutritionNumber } from './nutrients';
-import type { HealthGoal, TPSHealthSettings } from './types';
+import type { HealthGoal, TPSHealthSettings, Nutrition } from './types';
 
 export interface GoalNutrient { key: string; label: string; unit: string; group: string; archived?: boolean }
 const CORE: GoalNutrient[] = [
@@ -16,14 +16,22 @@ const CORE: GoalNutrient[] = [
 export const canonicalGoalKey = (key: string): string => key === 'cal' ? 'consumedCalories' : key;
 
 /** Tracking choices use logical nutrient names; physical property mapping happens at the writer. */
-export function trackedFoodNutrientKeys(goals: readonly HealthGoal[]): Set<string> {
+export function trackedFoodNutrientKeys(goals: readonly HealthGoal[] = []): Set<string> {
   const goalKeys: Record<string, string> = {
     consumedCalories: 'calories', protein: 'proteinG', carbs: 'carbsG', fat: 'fatG',
     fiber: 'fiberG', sugar: 'sugarG', sugarAlcohol: 'sugarAlcoholG', alcohol: 'alcoholG', sodium: 'sodiumMg',
   };
   const available = new Set<string>([...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENTS.map(n => n.key)]);
-  return new Set(goals.map(goal => goalKeys[canonicalGoalKey(goal.propertyKey)] || goal.propertyKey)
+  const selected = new Set(goals.map(goal => goalKeys[canonicalGoalKey(goal.propertyKey)] || goal.propertyKey)
     .filter(key => available.has(key)));
+  if (selected.has('sugarAlcoholG')) selected.add('sugarAlcoholCaloriesPerG');
+  return selected;
+}
+
+/** The same selection owns reusable foods, recipes and food-log nutrient output. */
+export function trackedFoodNutrition(nutrition: Nutrition | undefined, goals: readonly HealthGoal[] = []): Nutrition {
+  const selected = trackedFoodNutrientKeys(goals);
+  return Object.fromEntries(Object.entries(nutrition || {}).filter(([key]) => selected.has(key)));
 }
 
 /** Include saved legacy metrics so the editor never strands an existing goal. */

@@ -119,3 +119,13 @@ test('tracking selection resolves semantic aliases and custom nutrients without 
   assert.deepEqual([...m.trackedFoodNutrientKeys([])],[]);
  } finally {m.configureCustomNutrients([]);}
 });
+
+
+test('definition nutrition selection preserves selected zeroes and only retains a relevant polyol factor',()=>{
+ const source={calories:100,proteinG:0,sugarAlcoholG:2,sugarAlcoholCaloriesPerG:0,vitaminB12Mcg:2.4};
+ const before=structuredClone(source);
+ assert.deepEqual(m.trackedFoodNutrition(source,[]),{});
+ assert.deepEqual(m.trackedFoodNutrition(source,[{propertyKey:'protein',kind:'counter'}]),{proteinG:0});
+ assert.deepEqual(m.trackedFoodNutrition(source,[{propertyKey:'sugarAlcohol',kind:'counter'}]),{sugarAlcoholG:2,sugarAlcoholCaloriesPerG:0});
+ assert.deepEqual(source,before);
+});

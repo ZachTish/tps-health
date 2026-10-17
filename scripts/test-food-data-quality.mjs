@@ -10,7 +10,7 @@ const harnessSource = readFileSync(harnessUrl, "utf8")
   .replace('import test from "node:test";', 'const test = () => {};')
   .replace('import * as esbuild from "esbuild";', 'const esbuild = globalThis.__TPSFoodDataQualityEsbuild;')
   .replaceAll("import.meta.url", JSON.stringify(harnessUrl.href));
-const { importPluginWithObsidianStub, createFakeHealthApp, installDeterministicBrowserGlobals } = await import(`data:text/javascript;base64,${Buffer.from(harnessSource + "\nexport { importPluginWithObsidianStub, createFakeHealthApp, installDeterministicBrowserGlobals };\n//# sourceURL=food-data-quality-harness.mjs").toString("base64")}`);
+const { importPluginWithObsidianStub, createFakeHealthApp, installDeterministicBrowserGlobals, parseFrontmatter } = await import(`data:text/javascript;base64,${Buffer.from(harnessSource + "\nexport { importPluginWithObsidianStub, createFakeHealthApp, installDeterministicBrowserGlobals, parseFrontmatter };\n//# sourceURL=food-data-quality-harness.mjs").toString("base64")}`);
 delete globalThis.__TPSFoodDataQualityEsbuild;
 
 const qualityBuild = await esbuild.build({ entryPoints: [fileURLToPath(new URL('../src/food-data-quality.ts', import.meta.url))], bundle: true, platform: 'node', format: 'esm', write: false });
@@ -237,4 +237,59 @@ test('nutrition details list all base macros and reported extras without audit p
   assert.doesNotMatch(details,/tracked|completeness|Imported|Provider flag|Retrieved|http/);
   assert.equal(food.nutrition.vitaminCMg,1.234);
   food.nutrition.vitaminCMg=0.001; assert.match(foodDataDetail(food),/Vitamin C: <0.1 mg/);
+});
+
+
+test('new reusable foods save only selected nutrients, after energy calculation and without mutating provider data',async()=>{
+ const fake=createFakeHealthApp(),plugin=new m.default(fake.app);plugin.settings=structuredClone(plugin.settings);plugin.settings.foodTemplatePath='';
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'}];
+ const nutrition={proteinG:10,carbsG:20,fatG:5,vitaminB12Mcg:2.4};const before=structuredClone(nutrition);
+ const saved=await plugin.createFoodFromInput({name:'Selected definition',servingAmount:1,servingUnit:'serving',nutrition});
+ const fm=parseFrontmatter(fake.files.get(saved.sourcePath));
+ assert.equal(Number(fm.calories),165);for(const key of ['proteinG','carbsG','fatG','vitaminB12Mcg'])assert.equal(fm[key],undefined,key);
+ assert.deepEqual(nutrition,before);
+ plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
+ const selected=await plugin.createFoodFromInput({name:'Selected B12 definition',servingAmount:1,servingUnit:'serving',nutrition:{calories:10,vitaminB12Mcg:0}});
+ assert.equal(Number(parseFrontmatter(fake.files.get(selected.sourcePath)).vitaminB12Mcg),0);
+});
+
+test('custom food templates cannot reintroduce unselected nutrient properties or erase authored body text',async()=>{
+ const fake=createFakeHealthApp(),plugin=new m.default(fake.app);plugin.settings=structuredClone(plugin.settings);
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'}];
+ const body='## Keep this body\nvitaminB12Mcg: this is prose, not frontmatter\n';
+ fake.files.set('Templates/Selected.md','---\ntitle: "{{name}}"\ncalories: {{calories}}\nproteinG: {{proteinG}}\nvitaminB12Mcg: 99\nvitaminCMg:\n  nested: 99\ncustomField: keep\n---\n'+body);
+ plugin.settings.foodTemplatePath='Templates/Selected.md';
+ const saved=await plugin.createFoodFromInput({name:'Selected template',servingAmount:1,servingUnit:'serving',nutrition:{calories:100,proteinG:20,carbsG:5,fatG:0,vitaminB12Mcg:2.4,vitaminCMg:90}});
+ const content=fake.files.get(saved.sourcePath),fm=parseFrontmatter(content);
+ assert.equal(Number(fm.calories),100);assert.equal(fm.customField,'keep');
+ for(const key of ['proteinG','vitaminB12Mcg','vitaminCMg'])assert.equal(fm[key],undefined,key);
+ assert.ok(content.endsWith(body),'creation must preserve the authored body exactly');
+});
+
+test('recipe and meal definitions apply the same tracking selection while keeping ingredients and source notes',async()=>{
+ const fake=createFakeHealthApp(),plugin=new m.default(fake.app);plugin.settings=structuredClone(plugin.settings);plugin.settings.foodTemplatePath='';
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'},{propertyKey:'vitaminB12Mcg',kind:'counter'}];
+ const food=await plugin.createFoodFromInput({name:'Source for selected recipes',servingAmount:1,servingUnit:'serving',nutrition:{calories:100,proteinG:10,carbsG:15,fatG:0,vitaminB12Mcg:2.4}});
+ const sourceBefore=fake.files.get(food.sourcePath);
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'}];
+ for(const type of ['recipe','meal']){
+  const saved=await plugin.createFoodFromInput({type,name:'Selected '+type,servingAmount:1,servingUnit:type==='meal'?'meal':'serving',recipeServings:2,ingredients:`- 2 serving - [[${food.sourcePath}|Source for selected recipes]]`,notes:'Keep recipe notes.'});
+  const content=fake.files.get(saved.sourcePath),fm=parseFrontmatter(content);
+  assert.equal(Number(fm.calories),type==='meal'?200:100,type);assert.equal(fm.vitaminB12Mcg,undefined,type);assert.match(content,/Keep recipe notes/);
+  assert.ok(fm.ingredients?.length);assert.equal(Number(fm.recipeServings),type==='meal'?1:2);
+  await plugin.upsertFoodFromInput({path:saved.sourcePath,type,name:saved.name,servingAmount:1,servingUnit:type==='meal'?'meal':'serving',recipeServings:2,ingredients:`- 4 serving - [[${food.sourcePath}|Source for selected recipes]]`});
+  const edited=parseFrontmatter(fake.files.get(saved.sourcePath));
+  assert.equal(Number(edited.calories),type==='meal'?400:200,type+' edit');assert.equal(edited.vitaminB12Mcg,undefined,type+' edit');
+ }
+ assert.equal(fake.files.get(food.sourcePath),sourceBefore,'selection changes do not rewrite existing source notes');
+});
+
+test('explicit food saves ignore untracked incoming values without purging existing nutrient history',async()=>{
+ const fake=createFakeHealthApp(),plugin=new m.default(fake.app);plugin.settings=structuredClone(plugin.settings);plugin.settings.foodTemplatePath='';
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'},{propertyKey:'vitaminB12Mcg',kind:'counter'}];
+ const first=await plugin.createFoodFromInput({name:'Existing selected food',servingAmount:1,servingUnit:'serving',nutrition:{calories:100,proteinG:10,carbsG:15,fatG:0,vitaminB12Mcg:2.4},notes:'Keep notes.'});
+ const before=parseFrontmatter(fake.files.get(first.sourcePath));
+ plugin.settings.healthGoals=[{propertyKey:'consumedCalories',kind:'counter'}];
+ await plugin.upsertFoodFromInput({path:first.sourcePath,name:first.name,servingAmount:1,servingUnit:'serving',nutrition:{calories:200,proteinG:20,carbsG:30,fatG:0,vitaminB12Mcg:99}});
+ const saved=parseFrontmatter(fake.files.get(first.sourcePath));assert.equal(Number(saved.calories),200);assert.equal(saved.vitaminB12Mcg,before.vitaminB12Mcg,'untracked history is retained, not rewritten from the incoming payload');
 });

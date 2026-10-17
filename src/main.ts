@@ -5,7 +5,7 @@ import { HealthKindCodec, libraryIdentity, matchesLibraryIdentity, applyLibraryI
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
 import { energyActivitySourceSignature, type EnergyActivitySettings } from "./energy-activity";
 import { renderEnergyOverview } from "./energy-overview";
-import { nutrientGoalChange } from "./nutrient-goals";
+import { nutrientGoalChange, trackedFoodNutrientKeys, trackedFoodNutrition } from "./nutrient-goals";
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
 import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
@@ -3175,7 +3175,7 @@ export default class TPSHealthPlugin extends Plugin {
     const renderedBody = template
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
-    const body = sanitizePermanentFoodNoteContent(renderedBody);
+    const body = sanitizePermanentFoodNoteContent(renderedBody, this.settings);
     const file = await this.app.vault.create(path, body);
     await this.ensureAtomicHealthNote(file, type, normalizedItem.name);
     this.localFoodIndexDirty = true;
@@ -3191,7 +3191,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private defaultFoodNoteTemplate(item: FoodItem, type: FoodNoteType, tag: string): string {
-    const nutrition = item.nutrition || {};
+    const nutrition = trackedFoodNutrition(item.nutrition, this.settings.healthGoals);
     const writesMetadata = !this.configuredKindCodec() && foodIdentificationWritesMetadata(this.settings.foodIdentificationMode);
     const writesTag = !this.configuredKindCodec() && foodIdentificationWritesTag(this.settings.foodIdentificationMode);
     return [
@@ -3234,7 +3234,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private renderFoodTemplate(template: string, item: FoodItem, type: FoodNoteType, tag: string): string {
-    const nutrition = item.nutrition || {};
+    const nutrition = trackedFoodNutrition(item.nutrition, this.settings.healthGoals);
     const replacements: Record<string, string> = {
       name: item.name,
       brand: item.brand || "",
@@ -3632,7 +3632,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
-      for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (updated[key] == null) delete frontmatter[key];
+      for (const key of [...trackedFoodNutrientKeys(this.settings.healthGoals), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -4010,7 +4010,7 @@ export default class TPSHealthPlugin extends Plugin {
     else delete itemFrontmatter.aliases;
     const originalFrontmatter = { ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}) };
     const updatedFrontmatter = { ...originalFrontmatter, ...itemFrontmatter };
-    for (const key of [...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG", "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
+    for (const key of [...trackedFoodNutrientKeys(this.settings.healthGoals), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     let returnedFrontmatter = updatedFrontmatter;
     if (codec) {
@@ -15899,11 +15899,28 @@ const EXERCISE_SESSION_OWNED_FRONTMATTER_KEYS = [
 ] as const;
 
 function removeYamlFrontmatterProperties(content: string, keys: readonly string[]): string {
-  return keys.reduce((current, key) => removeYamlFrontmatterProperty(current, key), content);
+  const lines = content.split("\n");
+  const end = frontmatterLineEnd(lines);
+  if (!end) return content;
+  const remaining = new Set(keys);
+  const kept: string[] = [];
+  let removed = false;
+  for (let index = 0; index < lines.length; index++) {
+    const key = index > 0 && index < end - 1 ? lines[index].match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:/)?.[1] : undefined;
+    if (key && remaining.delete(key)) {
+      removed = true;
+      while (index + 1 < end - 1 && (/^\s+/.test(lines[index + 1]) || !lines[index + 1].trim())) index++;
+    } else kept.push(lines[index]);
+  }
+  return removed ? kept.join("\n") : content;
 }
 
-function sanitizePermanentFoodNoteContent(content: string): string {
-  return removeYamlFrontmatterProperties(content, FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS);
+function sanitizePermanentFoodNoteContent(content: string, settings: TPSHealthSettings = DEFAULT_SETTINGS): string {
+  const selected = trackedFoodNutrientKeys(settings.healthGoals);
+  return removeYamlFrontmatterProperties(content, [
+    ...FOOD_CONSUMPTION_OWNED_FRONTMATTER_KEYS,
+    ...[...NUTRIENT_KEYS, "sugarAlcoholCaloriesPerG"].filter(key => !selected.has(key)),
+  ]);
 }
 
 function sanitizePermanentExerciseNoteContent(content: string): string {
@@ -16124,7 +16141,7 @@ function foodFrontmatter(
   type: FoodNoteType,
   settings: TPSHealthSettings = DEFAULT_SETTINGS,
 ): Record<string, unknown> {
-  const nutrition = item.nutrition || {};
+  const nutrition = trackedFoodNutrition(item.nutrition, settings.healthGoals);
   const recipeIngredients = isRecipeLikeFoodType(type)
     ? recipeIngredientPropertyValuesFromMarkdown(item.ingredients || "")
     : [];
