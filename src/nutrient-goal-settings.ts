@@ -5,6 +5,7 @@ import { canonicalGoalKey, filterGoalNutrients, findNutrientGoal, goalNutrients 
 /** Only search, category and selection are transient. Goals use the existing settings contract. */
 export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHealthPlugin, onSaved: () => void): () => void {
   container.addClass('tps-health-settings-nutrient-goals');
+  container.createEl('p',{text:'Food logs save only the nutrients in Your nutrient goals, including Track only entries. Removing a goal stops future writes for it; existing values and reusable food definitions are retained.',cls:'setting-item-description'});
   let query = '', group = '', selected = 'consumedCalories';
   const status = container.createDiv({attr:{role:'status','aria-live':'polite'}});
   new Setting(container).setName('Find a nutrient').addSearch(search => {
@@ -61,7 +62,7 @@ export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHe
         button.disabled = true;
         try {
           await plugin.saveNutrientGoal(nutrient.key, minimum, maximum, remove);
-          status.setText(remove ? 'Goal removed. Recorded amounts are retained.' : 'Daily target saved.');
+          status.setText(remove ? 'Tracking stopped for future log writes. Existing amounts are retained.' : 'Tracking and daily target saved.');
           render(); onSaved(); picker.querySelector<HTMLSelectElement>('select')?.focus();
         } catch (error) { status.setText((error as Error).message); button.disabled = false; }
       };

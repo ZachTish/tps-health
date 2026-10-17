@@ -213,7 +213,8 @@ function createHarness(options = {}) {
     },
   };
   const plugin = {
-    settings: { storageMode: 'native-records', ...(options.settings || {}) },
+    // Generic round-trip fixtures explicitly track all core nutrients; selection tests override this list.
+    settings: { storageMode: 'native-records', healthGoals: ['consumedCalories','protein','carbs','fat','fiber','sugar','sugarAlcohol','alcohol','sodium'].map(propertyKey => ({propertyKey,kind:'counter'})), ...(options.settings || {}) },
     manifest: { id: 'tps-health' },
     app: {
       fileManager: {
@@ -1197,6 +1198,7 @@ test('every built-in core and extra nutrient remains a read-only live projection
   const keys = [...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS];
   const initial = Object.fromEntries(keys.map(key => [key, 2]));
   const h = await createLinkedProjectionHarness(1, initial);
+  h.plugin.settings.healthGoals.push(...EXTRA_NUTRIENT_KEYS.map(propertyKey=>({propertyKey,kind:'counter'})));
   try {
     for (const key of keys) {
       const projectionCount = h.counts.projections;
@@ -1221,6 +1223,7 @@ test('configured and archived custom nutrient changes, known zero and removal ke
   const keys = ['healthNutrient_projection_active', 'healthNutrient_projection_archived'];
   configureCustomNutrients(keys.map((key, index) => ({ key, label: `Custom ${index}`, unit: 'mg', archived: index === 1 })));
   const h = await createLinkedProjectionHarness(1, Object.fromEntries(keys.map(key => [key, 2])));
+  h.plugin.settings.healthGoals.push(...keys.map(propertyKey=>({propertyKey,kind:'counter'})));
   try {
     h.notifyDefinition({ ...h.frontmatters.get(h.food), [keys[0]]: 6 });
     assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[0]], 6);
@@ -4217,8 +4220,8 @@ test('deleting an atomic workout set preserves neighbors and clears a singleton 
 });
 
 
-test('supplement label amounts survive native creation, serving edits, daily totals and removal', async () => {
-  const { service, api, addFrontmatterFile, frontmatters } = createHarness();
+test('tracked supplement label amounts survive native creation, serving edits, daily totals and removal', async () => {
+  const { service, api, addFrontmatterFile, frontmatters } = createHarness({settings:{healthGoals:['vitaminB12Mcg','vitaminDMcg','calciumMg','creatineG'].map(propertyKey=>({propertyKey,kind:'counter'}))}});
   const food = addFrontmatterFile('Supplement.md', {
     kind: 'food', servingAmount: 2, servingUnit: 'capsule', vitaminB12Mcg: 2.4, vitaminDMcg: 25, calciumMg: 200, creatineG: 0,
   });
@@ -4249,7 +4252,7 @@ test('supplement label amounts survive native creation, serving edits, daily tot
 });
 
 test('supplement properties honor configured atomic keys and aliases', async () => {
- const { service, createCalls } = createHarness({ settings: { nativeRecordProperties: { creatineG: 'creatineDose' }, nativeRecordPropertyAliases: {} } });
+ const { service, createCalls } = createHarness({ settings: { healthGoals:[{propertyKey:'creatineG',kind:'counter'}], nativeRecordProperties: { creatineG: 'creatineDose' }, nativeRecordPropertyAliases: {} } });
  await service.createFoodEntry({ id:'dose-key', createdDate:'2026-08-25T17:20:00.000Z', completedDate:'2026-08-25T17:20:00.000Z', item:{id:'dose',name:'Creatine',source:'manual'}, quantity:1, unit:'serving', nutritionOverride:{creatineG:3} });
  assert.equal(createCalls[0].properties.creatineDose, 3);
  assert.equal(createCalls[0].properties.creatineG, undefined);
@@ -4269,26 +4272,26 @@ test('edited metric food serving governs atomic gram conversions and serving amo
 });
 
 
-test('tracking nutrients requires the record bridge but no GCM menu definitions or Health goals', async () => {
+test('no selected nutrients writes no nutrient properties, regardless of supplied nutrition', async () => {
   const { service, api, createCalls } = createHarness({ settings: {healthGoals:[],nativeRecordProperties:{},nativeRecordPropertyAliases:{}} });
   const nutrients = {creatineG:2.5,alcoholG:14,fiberG:3.5,vitaminCMg:90,magnesiumMg:125};
   const created = await service.createFoodEntry({ id:'independent-nutrients',createdDate:'2026-08-25T17:20:00.000Z',completedDate:'2026-08-25T17:20:00.000Z',item:{id:'independent',name:'Synthetic nutrition',source:'manual'},quantity:1,unit:'serving',nutritionOverride:nutrients });
   const persisted = (await api.resolve(created.file)).frontmatter;
   const totals = service.getDailyFoodTotals('2026-08-25');
   for (const [key,value] of Object.entries(nutrients)) {
-    assert.equal(createCalls[0].properties[key], value, key);
-    assert.equal(persisted[key], value, key);
-    assert.equal(totals[key], value, key);
-    assert.equal(service.getDailyFoodEntries('2026-08-25')[0][key], value, key);
+    assert.equal(createCalls[0].properties[key], undefined, key);
+    assert.equal(persisted[key], undefined, key);
+    assert.equal(totals[key] || 0, 0, key);
+    assert.equal(service.getDailyFoodEntries('2026-08-25')[0][key] || 0, 0, key);
   }
 });
 
 
-test('custom nutrients persist through native creation, food serving edits and removal with no configured properties', async () => {
+test('selected custom nutrients persist through native creation, food serving edits and removal with no configured properties', async () => {
  const key='healthNutrient_polyphenols';
  configureCustomNutrients([{key,label:'Polyphenols',unit:'mg'}]);
  try {
-  const {service,api,addFrontmatterFile,frontmatters}=createHarness();
+  const {service,api,addFrontmatterFile,frontmatters}=createHarness({settings:{healthGoals:[{propertyKey:key,kind:'counter'}]}});
   const food=addFrontmatterFile('Custom.md',{kind:'food',servingAmount:2,servingUnit:'capsule',[key]:120});
   const record=await service.createFoodEntry({id:'custom-nutrient',nutritionOverride:{[key]:60},createdDate:'2026-08-25T17:20:00Z',completedDate:'2026-08-25T17:20:00Z',item:{id:'food',name:'Custom',source:'custom-note',sourcePath:food.path},quantity:.5,unit:'serving',servingQuantity:1,servingUnit:'capsule'});
   assert.equal((await api.resolve(record.file)).frontmatter[key],60);
@@ -5051,4 +5054,48 @@ test('100 incoming workout deletions preserve child notes without reads or mutat
     assert.equal(h.files.get(child.path), child);
     assert.equal(h.contents.get(child.path), original);
   }
+});
+
+
+test('food log creation and edits persist only selected nutrients through configured property names', async () => {
+ const h=createHarness({settings:{healthGoals:[{propertyKey:'cal',kind:'max'},{propertyKey:'protein',kind:'counter'}],nativeRecordProperties:{calories:'energy',vitaminB12Mcg:'b12Dose',proteinG:'proteinAmount'}}});
+ const food=h.addFrontmatterFile('Tracked food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100,proteinG:10,carbsG:20,vitaminB12Mcg:2.4});
+ const sourceBefore=structuredClone(h.frontmatters.get(food));
+ const input={id:'tracked-food',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Tracked food',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'};
+ const record=await h.service.createFoodEntry(input);
+ assert.equal(h.createCalls[0].properties.energy,100);assert.equal(h.createCalls[0].properties.proteinAmount,10);
+ for(const key of ['calories','proteinG','carbsG','fatG','vitaminB12Mcg','b12Dose'])assert.equal(h.createCalls[0].properties[key],undefined,key);
+ await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:2,unit:'serving'});
+ let saved=(await h.api.resolve(record.file)).frontmatter;
+ assert.equal(saved.energy,200);assert.equal(saved.proteinAmount,20);assert.equal(saved.b12Dose,undefined);
+ // Selection is read at each owning mutation, not captured by discovery or a menu definition.
+ h.plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
+ await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:3,unit:'serving'});
+ saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,7.2);assert.equal(saved.vitaminB12Mcg,undefined);
+ h.plugin.settings.healthGoals=h.plugin.settings.healthGoals.filter(g=>g.propertyKey!=='vitaminB12Mcg');
+ await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:4,unit:'serving'});
+ saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,7.2,'historical unselected data is not silently deleted or rewritten');
+ assert.deepEqual(h.frontmatters.get(food),sourceBefore,'logging never strips the reusable food definition');
+ assert.deepEqual(h.readCalls,[]);h.service.dispose();
+});
+
+test('an untracked-only food definition edit performs no linked log mutation',async()=>{
+ const h=createHarness({settings:{healthGoals:[{propertyKey:'consumedCalories',kind:'counter'}]}});
+ const food=h.addFrontmatterFile('Food selection.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100,vitaminB12Mcg:2.4});
+ const record=await h.service.createFoodEntry({id:'selection',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Food selection',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'});
+ const before=h.contents.get(record.path);h.frontmatterCalls.length=0;h.updateCalls.length=0;
+ const next={...h.frontmatters.get(food),vitaminB12Mcg:4.8};h.frontmatters.set(food,next);h.service.acceptFoodDefinitionCommit(food,next);
+ await h.service.persistLinkedFoodEntries(food);
+ assert.deepEqual(h.frontmatterCalls,[]);assert.deepEqual(h.updateCalls,[]);assert.equal(h.contents.get(record.path),before);
+ assert.equal(h.service.getDailyFoodTotals('2026-08-25').vitaminB12Mcg,4.8,'read-only linked nutrition remains available from the source');
+ h.service.dispose();
+});
+
+test('unlinked food edits honor selected zeroes and leave existing untracked data and content alone',async()=>{
+ const h=createHarness({settings:{healthGoals:[{propertyKey:'fiber',kind:'counter'}]}});
+ const record=await h.service.createFoodEntry({id:'unlinked-selection',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Unlinked food',source:'manual'},quantity:1,unit:'serving',nutritionOverride:{fiberG:0,vitaminB12Mcg:2.4,calories:100}});
+ assert.equal(h.createCalls[0].properties.fiberG,0);assert.equal(h.createCalls[0].properties.calories,undefined);assert.equal(h.createCalls[0].properties.vitaminB12Mcg,undefined);
+ await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],fiberG:3,vitaminB12Mcg:5});
+ const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.fiberG,3);assert.equal(saved.vitaminB12Mcg,undefined);
+ h.service.dispose();
 });

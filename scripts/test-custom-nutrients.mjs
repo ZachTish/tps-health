@@ -109,3 +109,13 @@ test('arbitrary and archived nutrients share the same goal picker',()=>{
   assert.equal(m.buildNativeDailyDashboardModel({entryCount:1,healthNutrient_cultures:3},[goal]).metrics[0].state,'within');
  } finally {m.configureCustomNutrients([]);}
 });
+
+
+test('tracking selection resolves semantic aliases and custom nutrients without requiring physical field names',()=>{
+ try {
+  m.configureCustomNutrients(definitions);
+  const goals=['cal','protein','sodium','vitaminB12Mcg','healthNutrient_polyphenols','activity','unregistered'].map(propertyKey=>({propertyKey,kind:'counter'}));
+  assert.deepEqual([...m.trackedFoodNutrientKeys(goals)],['calories','proteinG','sodiumMg','vitaminB12Mcg','healthNutrient_polyphenols']);
+  assert.deepEqual([...m.trackedFoodNutrientKeys([])],[]);
+ } finally {m.configureCustomNutrients([]);}
+});

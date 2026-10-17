@@ -1,9 +1,10 @@
 import { migrateWorkoutTiming } from './workout-timing-migration';
 import { authoredMetricServing } from "./food-serving";
 import type { ExtraNutrition } from "./nutrients";
-import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey } from "./nutrients";
+import { EXTRA_NUTRIENT_KEYS, CORE_NUTRIENT_KEYS, extraNutrition, addExtraNutrition, isExtraNutrientKey, nutritionNumber } from "./nutrients";
 import type { NutritionTotals } from "./types";
 import { normalizeFoodLogTags } from "./food-log-tags";
+import { trackedFoodNutrientKeys } from './nutrient-goals';
 import { assertHealthIdentityMappings } from "./settings-normalization";
 import { parseEnergyActivitySettings, projectEnergyActivity } from './energy-activity';
 import { getFrontMatterInfo, parseYaml, TFile } from 'obsidian';
@@ -328,7 +329,6 @@ const HEALTH_KINDS = new Set<NativeHealthKind>(['food-entry', 'activity-entry', 
 const foodNutritionKeys = () => [
   ...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS,
 ] as const;
-const CORE_FOOD_NUTRITION_KEYS = new Set<string>(['calories', 'proteinG', 'carbsG', 'fatG']);
 const REDUNDANT_FOOD_ENTRY_KEYS = [
   'status', 'date', 'foodName', 'brand', 'amount', 'amountUnit',
   'foodPath', 'foodId', 'servingQuantity', 'servingUnit',
@@ -356,8 +356,8 @@ function foodNutritionStorageValues(
       const value = additional[key];
       return [key, value ?? (clearMissing ? null : undefined)];
     }
-    const value = stableNumber(numberValue(values[key]));
-    return [key, CORE_FOOD_NUTRITION_KEYS.has(key) || value !== 0 ? value : clearMissing ? null : undefined];
+    const known = nutritionNumber(values[key]);
+    return [key, known == null ? (clearMissing ? null : undefined) : stableNumber(known)];
   }).filter(([, value]) => value !== undefined));
 }
 
@@ -1282,12 +1282,18 @@ export class HealthNativeRecordService {
     if (useFreshIdentity) delete createOptions.id;
     const created = await (useFreshIdentity ? api.createFresh! : api.create).call(api,
       configuredKind,
-      encodeNativeRecordProperties(this.plugin.settings, properties),
+      encodeNativeRecordProperties(this.plugin.settings, kind === 'food-entry' ? this.foodLogWriteProperties(properties) : properties),
       createOptions,
     );
     const canonical = this.canonicalHandle(created);
     if (!canonical) throw new Error(`TPS GCM returned an unrecognized Health record kind for ${kind}.`);
     return canonical;
+  }
+
+  private foodLogWriteProperties(properties: Record<string, unknown>): Record<string, unknown> {
+    const tracked = trackedFoodNutrientKeys(this.plugin.settings.healthGoals || []);
+    const nutrients = new Set<string>(foodNutritionKeys());
+    return Object.fromEntries(Object.entries(properties).filter(([key]) => !nutrients.has(key) || tracked.has(key)));
   }
 
   private async updateRecord(
@@ -2229,7 +2235,7 @@ export class HealthNativeRecordService {
     };
     const updated = linkedFood
       ? await this.processFoodEntry(current, updates)
-      : await this.updateRecord(current.file, updates,
+      : await this.updateRecord(current.file, this.foodLogWriteProperties(updates),
         { kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-food-edit' });
     if (!updated) throw new Error('Food log entry changed before it could be saved.');
     if (!linkedFood) this.trackHandle(updated);
@@ -3344,17 +3350,18 @@ export class HealthNativeRecordService {
       ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
       ...foodNutritionStorageValues(projection.nutrition, true),
     };
+    const persistedKeys = this.foodLogWriteProperties(updates);
     const next = { ...frontmatter };
     let needsPersist = false;
     for (const [key, value] of Object.entries(updates)) {
       if (value == null) {
         if (Object.prototype.hasOwnProperty.call(next, key)) {
           delete next[key];
-          needsPersist = true;
+          if (Object.prototype.hasOwnProperty.call(persistedKeys, key)) needsPersist = true;
         }
         continue;
       }
-      if (next[key] !== value) needsPersist = true;
+      if (next[key] !== value && Object.prototype.hasOwnProperty.call(persistedKeys, key)) needsPersist = true;
       next[key] = value;
     }
     return { frontmatter: next, needsPersist };
@@ -3440,13 +3447,13 @@ export class HealthNativeRecordService {
         if (current.archived === true) return null;
         if (expectedFoodPath && this.resolveFoodSourcePath(foodReference(current), entry.file.path) !== expectedFoodPath) return null;
         const projected = this.projectFoodEntry({ ...current, ...updates }, entry.file.path);
-        return encodeNativeRecordProperties(this.plugin.settings, {
+        return encodeNativeRecordProperties(this.plugin.settings, this.foodLogWriteProperties({
           ...updates,
           ...(projected ? {
             ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
             ...foodNutritionStorageValues(projected.frontmatter, true),
           } : {}),
-        });
+        }));
       }, {kind: expectedFoodPath ? 'automation' : 'user', sourcePluginId: this.plugin.manifest.id,
         surface: expectedFoodPath ? 'health-food-definition-edit' : 'health-daily-food-edit'}));
     if (updated) this.trackHandle(updated);
