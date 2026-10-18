@@ -1,6 +1,6 @@
 import { EXTRA_NUTRIENT_PROPERTIES, type ExtraNutrientKey, type CustomNutrientDefinition, type ExtraNutrition } from "./nutrients";
 export type RestTimerMode = "count-up" | "count-down";
-export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label" | "ai-research";
+export type FoodSource = "custom-note" | "custom-inline" | "open-food-facts" | "usda" | "curated" | "manual" | "nutrition-label" | "ai-research" | "edamam" | "nutritionix";
 export type FoodNoteType = "food" | "recipe" | "meal";
 export type HealthGoalKind = "min" | "max" | "range" | "counter";
 export type FoodLogTarget = "daily-note" | "single-file";
@@ -106,6 +106,12 @@ export interface TPSHealthSettings {
   rollupHeading: string;
   openFoodFactsUserAgent: string;
   usdaApiKeySecrets: string[];
+  edamamEnabled: boolean;
+  edamamAppIdSecret: string;
+  edamamApiKeySecret: string;
+  nutritionixEnabled: boolean;
+  nutritionixAppIdSecret: string;
+  nutritionixApiKeySecret: string;
   activeWorkoutPath: string;
   activeWorkoutId: string;
   activeWorkoutTarget: WorkoutLogTarget | "";
@@ -139,7 +145,7 @@ export type NutritionTotals = Required<CoreNutrition> & ExtraNutrition;
 export type NutritionBasis = "labeled-serving" | "per-100g" | "per-100ml" | "estimated-serving";
 
 export interface FoodNutritionProvenance {
-  provider: "usda" | "open-food-facts" | "curated";
+  provider: "usda" | "open-food-facts" | "curated" | "edamam" | "nutritionix";
   recordId?: string;
   dataset?: string;
   url?: string;
@@ -428,6 +434,12 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   rollupHeading: "Health Rollup",
   openFoodFactsUserAgent: "TPSHealth/0.1 (Obsidian plugin)",
   usdaApiKeySecrets: [USDA_API_KEY_SECRET],
+  edamamEnabled: false,
+  edamamAppIdSecret: "tps-health-edamam-app-id",
+  edamamApiKeySecret: "tps-health-edamam-api-key",
+  nutritionixEnabled: false,
+  nutritionixAppIdSecret: "tps-health-nutritionix-app-id",
+  nutritionixApiKeySecret: "tps-health-nutritionix-api-key",
   activeWorkoutPath: "",
   activeWorkoutId: "",
   activeWorkoutTarget: "",

@@ -8,7 +8,7 @@ export function foodNutritionProvenance(value: unknown): FoodNutritionProvenance
   if (typeof value === "string") { try { value = JSON.parse(value); } catch { return undefined; } }
   if (!value || typeof value !== "object") return undefined;
   const input = value as Record<string, unknown>;
-  if (!["usda", "open-food-facts", "curated"].includes(String(input.provider))) return undefined;
+  if (!["usda", "open-food-facts", "curated", "edamam", "nutritionix"].includes(String(input.provider))) return undefined;
   const result: FoodNutritionProvenance = { provider: input.provider as FoodNutritionProvenance["provider"] };
   for (const key of ["recordId", "dataset", "updatedAt", "retrievedAt"] as const) {
     const field = input[key];
@@ -33,6 +33,13 @@ export function assessFoodData(item: FoodItem): { coreKnown: number; nutrientsKn
   if (grams && [n.proteinG, n.carbsG, n.fatG, n.alcoholG].some(v => v != null && v > grams * 1.1 + 1)) issues.push("Nutrient exceeds the serving weight; check units");
   if (grams && n.calories != null && n.calories > grams * 10 + 10) issues.push("Energy exceeds the serving weight's plausible range");
   if (n.carbsG != null && [n.sugarG, n.sugarAlcoholG].some(v => v != null && v > n.carbsG! * 1.15 + 2)) issues.push("Sugar or polyols exceed reported carbohydrate");
+  // A conservative lower bound: fiber/polyols are removed entirely here, so
+  // legitimate label factors/rounding do not become false accuracy failures.
+  if ([n.calories, n.proteinG, n.carbsG, n.fatG].every(v => nutritionNumber(v) != null)) {
+    const lowerBound = n.proteinG! * 4 + n.fatG! * 9 + (n.alcoholG || 0) * 7
+      + Math.max(0, n.carbsG! - (n.fiberG || 0) - (n.sugarAlcoholG || 0)) * 4;
+    if (Number.isFinite(lowerBound) && lowerBound > n.calories! + Math.max(15, n.calories! * 0.2)) issues.push("Reported calories are lower than the listed macros support; verify the label and serving");
+  }
   if (NUTRIENT_KEYS.some(key => n[key] != null && nutritionNumber(n[key]) == null)) issues.push("Invalid nutrient value; review the source");
   return { coreKnown, nutrientsKnown, issues: Array.from(new Set(issues)) };
 }

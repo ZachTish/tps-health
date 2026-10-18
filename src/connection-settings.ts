@@ -13,6 +13,7 @@ export class HealthConnectionSettings {
     const scrollTop = this.parent.scrollTop;
     this.parent.empty();
     this.renderProviderCredentials(this.parent);
+    this.renderAdditionalProviders(this.parent);
     if (selector) this.parent.querySelector<HTMLElement>(selector)?.focus({preventScroll: true});
     this.parent.scrollTop = scrollTop;
   }
@@ -129,6 +130,24 @@ export class HealthConnectionSettings {
       addSetting.settingEl.dataset.tpsHealthUsdaAdd = "true";
     }
 
+  }
+
+  private renderAdditionalProviders(section: HTMLElement): void {
+    for (const [provider, label, attribution] of [["edamam", "Edamam", "Food Database results use their supplied per-100 g nutrients."], ["nutritionix", "Nutritionix", "Search previews load full nutrition only when selected. Provider API access is required."]] as const) {
+      new Setting(section).setName(label).setDesc(`${attribution} Uses your own API account; no requests until enabled and you search.`)
+        .addToggle(toggle => toggle.setValue(this.plugin.settings[`${provider}Enabled`] || false).onChange(async value => {
+          this.plugin.settings[`${provider}Enabled`] = value;
+          await this.plugin.saveSettings();
+        }));
+      for (const [suffix, field] of [["AppIdSecret", "App ID"], ["ApiKeySecret", "API key"]] as const) {
+        const key = `${provider}${suffix}` as const;
+        new Setting(section).setName(`${label} ${field}`).setDesc("Select a device-local Obsidian secret. Only its reference is saved in plugin settings.")
+          .addComponent(element => new SecretComponent(this.plugin.app, element).setValue(this.plugin.settings[key] || "").onChange(async value => {
+            this.plugin.settings[key] = value;
+            await this.plugin.saveSettings();
+          }));
+      }
+    }
   }
 
   private usdaSecretFocusSelector(index: number): string {

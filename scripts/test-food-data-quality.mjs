@@ -293,3 +293,12 @@ test('explicit food saves ignore untracked incoming values without purging exist
  await plugin.upsertFoodFromInput({path:first.sourcePath,name:first.name,servingAmount:1,servingUnit:'serving',nutrition:{calories:200,proteinG:20,carbsG:30,fatG:0,vitaminB12Mcg:99}});
  const saved=parseFrontmatter(fake.files.get(first.sourcePath));assert.equal(Number(saved.calories),200);assert.equal(saved.vitaminB12Mcg,before.vitaminB12Mcg,'untracked history is retained, not rewritten from the incoming payload');
 });
+
+test('accuracy audit flags impossible low energy without replacing label calories or unknown nutrients',()=>{
+ const impossible=item('usda','Bad serving',{nutrition:{calories:20,proteinG:20,carbsG:10,fatG:10}});const before=JSON.stringify(impossible);
+ assert.ok(assessFoodData(impossible).issues.some(v=>v.includes('lower than the listed macros')));assert.equal(JSON.stringify(impossible),before);
+ const beer=item('open-food-facts','Light beer fixture',{servingGrams:undefined,servingMl:355,nutrition:{calories:95,carbsG:2.6,proteinG:.6,fatG:0,alcoholG:11.8}});
+ assert.ok(!assessFoodData(beer).issues.some(v=>v.includes('lower than the listed macros')));const half=m.resolveFoodLogServing(beer,177.5,'ml');assert.equal(half.servings,.5);assert.equal(beer.nutrition.calories*half.servings,47.5);
+ const incomplete={...beer,nutrition:{calories:95,carbsG:2.6}};assert.equal(assessFoodData(incomplete).coreKnown,2);assert.equal(incomplete.nutrition.proteinG,undefined);
+ const polyols=item('usda','Zero-energy sweetener',{servingGrams:20,nutrition:{calories:0,proteinG:0,carbsG:20,sugarAlcoholG:20,fatG:0}});assert.ok(!assessFoodData(polyols).issues.some(v=>v.includes('lower than the listed macros')));
+});

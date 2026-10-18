@@ -108,6 +108,8 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
       : DEFAULT_SETTINGS.usdaApiKeySecrets;
   settings.usdaApiKeySecrets = normalizeUsdaApiKeySecrets(storedUsdaReferences);
   if (!settings.usdaApiKeySecrets.length && legacyUsdaApiKeyValue(storedRecord)) settings.usdaApiKeySecrets = [USDA_API_KEY_SECRET];
+  for (const key of ["edamamEnabled", "nutritionixEnabled"] as const) settings[key] = settings[key] === true;
+  for (const key of ["edamamAppIdSecret", "edamamApiKeySecret", "nutritionixAppIdSecret", "nutritionixApiKeySecret"] as const) settings[key] = stringSetting(settings[key], DEFAULT_SETTINGS[key]);
   settings.activeWorkoutPath = optionalStringSetting(settings.activeWorkoutPath);
   settings.activeWorkoutId = optionalStringSetting(settings.activeWorkoutId);
   settings.activeWorkoutDailyNotePath = optionalStringSetting(settings.activeWorkoutDailyNotePath);

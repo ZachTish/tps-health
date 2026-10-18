@@ -173,7 +173,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
+            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, BarcodeFoodReviewModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
             loader: "ts",
           };
         });
@@ -6105,7 +6105,7 @@ test("food log modal displays serving conversion and food log lines persist scal
   const formatSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/format.ts", import.meta.url)), "utf8"));
   assert.match(mainSource, /const summaryEl = this\.contentEl\.createDiv\(\{ cls: "tps-health-log-summary" \}\)/);
   assert.match(mainSource, /servingEl\.setText\(parts\.join\(" = "\)\)/);
-  assert.match(mainSource, /renderMacroPills\(nutritionEl, multiplyNutrition\(this\.item\.nutrition \|\| \{\}, resolved\.servings\)\)/);
+  assert.match(mainSource, /renderMacroPills\(nutritionEl, scaleKnownNutrition\(this\.item\.nutrition \|\| \{\}, resolved\.servings\)\)/);
   assert.match(formatSource, /if \(entry\.nutritionOverride\) return entry\.nutritionOverride;\s+return scaleNutrition\(entry\.item\.nutrition \|\| \{\}, entry\.quantity\);/);
 
 });
@@ -6913,7 +6913,7 @@ test("direct recipe mutations fail closed when the active editor changes during 
 test("create from food search upserts canonical local foods instead of creating duplicate copies", async () => {
   const mainSource = await import("node:fs/promises").then((fs) => fs.readFile(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8"));
   assert.doesNotMatch(mainSource, /\$\{item\.name\} copy/);
-  assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, await this\.plugin\.enrichFoodSearchItem\(item\), this\.dateContext\)\.open\(\)/);
+  assert.match(mainSource, /new CustomFoodModal\(this\.app, this\.plugin, "food", item\.name, true, enriched, this\.dateContext\)\.open\(\)/);
   assert.match(mainSource, /const upsertInput: UpsertFoodInput = \{[\s\S]+?const saved = await this\.plugin\.upsertFoodFromInput\(/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "submit:done"/);
   assert.match(mainSource, /logger\.flow\("CustomFoodModal", "edit:done"/);
@@ -8989,7 +8989,7 @@ test("food search expands colloquial grocery queries like protein doritos", asyn
   assert.match(mainSource, /if \(item\.source === "usda" && item\.brand\) score -= 24/);
   assert.match(mainSource, /tokens\.length === 1 && item\.source === "open-food-facts" && !usage\.count/);
   assert.match(mainSource, /function isUnloggedBroadExternalFoodResult\(item: FoodItem, tokens: string\[\], usageStats: Map<string, FoodUsageStats>\): boolean/);
-  assert.match(mainSource, /item\.source !== "open-food-facts" && !\(item\.source === "usda" && item\.brand\)/);
+  assert.match(mainSource, /!isExternalFoodProviderResult\(item\) \|\| \(item\.source !== "open-food-facts" && !item\.brand\)/);
   assert.doesNotMatch(mainSource, /item\.source === "open-food-facts" && !metricServingForFood\(item\)\) return true/);
   assert.match(mainSource, /function foodSearchTrustedSingleTokenExternalMatch\(item: FoodItem, token: string\): boolean/);
   assert.match(mainSource, /COMMON_FOOD_BRANDS\.has\(variant\) && normalizedBrand\.includes\(variant\)/);

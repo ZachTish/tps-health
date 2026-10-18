@@ -18,6 +18,7 @@ class Setting {
  setName(name){this.name=name;return this;} setDesc(desc){this.desc=desc;return this;}
  addButton(fn){const c=new Control();fn(c);this.buttons.push(c);return this;}
  addExtraButton(fn){return this.addButton(fn);}
+ addToggle(fn){this.toggle=new Control();fn(this.toggle);return this;}
  addText(fn){this.text=new Control();fn(this.text);return this;}
  addComponent(fn){this.secret=fn(this.settingEl.createDiv());return this;}
 }
@@ -33,4 +34,10 @@ test('moving food credentials retains reference order and writes only on user ed
  const backup=rows(root).find(r=>r.name.includes('Fallback 1'));await backup.secret.change('new-backup');assert.equal(saves,1);assert.deepEqual(plugin.settings.usdaApiKeySecrets,['primary','new-backup']);
  const primary=rows(root).find(r=>r.name.includes('Primary'));await primary.buttons[0].click();assert.deepEqual(plugin.settings.usdaApiKeySecrets,['new-backup','primary']);
  const children=root.children;panel.dispose();panel.render();assert.equal(root.children,children);
+});
+
+test('optional provider controls keep configuration reachable while disabled and never request on display',async()=>{
+ let saves=0;const root=new Element();const plugin={app:{},settings:{openFoodFactsUserAgent:'Synthetic',usdaApiKeySecrets:[],edamamEnabled:false,nutritionixEnabled:false},saveSettings:async()=>saves++};
+ const panel=new HealthConnectionSettings(plugin,root);panel.render();const settings=rows(root);assert.equal(saves,0);assert.equal(settings.filter(r=>r.name.startsWith('Edamam')).length,3);assert.equal(settings.filter(r=>r.name.startsWith('Nutritionix')).length,3);
+ await settings.find(r=>r.name==='Nutritionix App ID').secret.change('device-secret-reference');assert.equal(plugin.settings.nutritionixAppIdSecret,'device-secret-reference');assert.equal(plugin.settings.nutritionixEnabled,false);await settings.find(r=>r.name==='Nutritionix').toggle.change(true);assert.equal(plugin.settings.nutritionixEnabled,true);assert.equal(saves,2);
 });
