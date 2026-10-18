@@ -379,7 +379,9 @@ test('an exact Michelob Ultra product ranks ahead of a curated seltzer variant',
   plugin.searchUsdaFoods = async () => [];
   plugin.searchOpenFoodFacts = async () => [{...food('Michelob Ultra'), source:'open-food-facts', brand:'Michelob', nutrition:{calories:95,carbsG:2.6}}];
   const results=await plugin.searchFoods('michelob ultra');
-  assert.equal(results[0].name,'Michelob Ultra');
+  assert.equal(results[0].name,'Michelob ULTRA Superior Light Beer');
+  assert.equal(results[0].nutrition.calories,95);
+  assert.ok(results.findIndex(item=>item.name==='Michelob Ultra') < results.findIndex(item=>item.name.includes('Seltzer')));
 });
 
 

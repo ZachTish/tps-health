@@ -36,8 +36,7 @@ test('moving food credentials retains reference order and writes only on user ed
  const children=root.children;panel.dispose();panel.render();assert.equal(root.children,children);
 });
 
-test('optional provider controls keep configuration reachable while disabled and never request on display',async()=>{
- let saves=0;const root=new Element();const plugin={app:{},settings:{openFoodFactsUserAgent:'Synthetic',usdaApiKeySecrets:[],edamamEnabled:false,nutritionixEnabled:false},saveSettings:async()=>saves++};
- const panel=new HealthConnectionSettings(plugin,root);panel.render();const settings=rows(root);assert.equal(saves,0);assert.equal(settings.filter(r=>r.name.startsWith('Edamam')).length,3);assert.equal(settings.filter(r=>r.name.startsWith('Nutritionix')).length,3);
- await settings.find(r=>r.name==='Nutritionix App ID').secret.change('device-secret-reference');assert.equal(plugin.settings.nutritionixAppIdSecret,'device-secret-reference');assert.equal(plugin.settings.nutritionixEnabled,false);await settings.find(r=>r.name==='Nutritionix').toggle.change(true);assert.equal(plugin.settings.nutritionixEnabled,true);assert.equal(saves,2);
+test('food connections expose only free providers even with historical paid settings',async()=>{
+ let saves=0;const root=new Element();const plugin={app:{},settings:{openFoodFactsUserAgent:'Synthetic',usdaApiKeySecrets:[],edamamEnabled:true,nutritionixEnabled:true},saveSettings:async()=>saves++};
+ const panel=new HealthConnectionSettings(plugin,root);panel.render();const settings=rows(root);assert.equal(saves,0);assert.equal(settings.filter(r=>/Edamam|Nutritionix/.test(r.name)).length,0);assert.ok(settings.some(r=>r.name==='Open Food Facts User-Agent'));assert.ok(root.all().some(el=>el.text?.includes('free USDA')));
 });

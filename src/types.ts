@@ -108,12 +108,6 @@ export interface TPSHealthSettings {
   rollupHeading: string;
   openFoodFactsUserAgent: string;
   usdaApiKeySecrets: string[];
-  edamamEnabled: boolean;
-  edamamAppIdSecret: string;
-  edamamApiKeySecret: string;
-  nutritionixEnabled: boolean;
-  nutritionixAppIdSecret: string;
-  nutritionixApiKeySecret: string;
   activeWorkoutPath: string;
   activeWorkoutId: string;
   activeWorkoutTarget: WorkoutLogTarget | "";
@@ -436,12 +430,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   rollupHeading: "Health Rollup",
   openFoodFactsUserAgent: "TPSHealth/0.1 (Obsidian plugin)",
   usdaApiKeySecrets: [USDA_API_KEY_SECRET],
-  edamamEnabled: false,
-  edamamAppIdSecret: "tps-health-edamam-app-id",
-  edamamApiKeySecret: "tps-health-edamam-api-key",
-  nutritionixEnabled: false,
-  nutritionixAppIdSecret: "tps-health-nutritionix-app-id",
-  nutritionixApiKeySecret: "tps-health-nutritionix-api-key",
   activeWorkoutPath: "",
   activeWorkoutId: "",
   activeWorkoutTarget: "",

@@ -2189,11 +2189,11 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     const [firstResults, joinedResults] = await Promise.all([first, joined]);
     assert.equal(firstResults[0]?.name, "Acme Protein Bar");
     assert.equal(joinedResults[0]?.name, "Acme Protein Bar");
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
 
     const cached = await plugin.searchOpenFoodFacts("acme protein bar");
     assert.equal(cached[0]?.name, "Acme Protein Bar");
-    assert.equal(requests.length, 2, "cached searches should not spend another OFF request");
+    assert.equal(requests.length, 1, "cached searches should not spend another OFF request");
 
     globalThis.__TPSHealthTestRequestUrl = async (options) => {
       requests.push(options);
@@ -2204,13 +2204,13 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     };
     const fallbackResults = await plugin.searchOpenFoodFacts("legacy snack");
     assert.equal(fallbackResults[0]?.name, "Legacy Snack");
-    assert.equal(requests.length, 4, "a miss should make one primary request and at most one legacy fallback");
+    assert.equal(requests.length, 3, "a miss should make one primary request and at most one legacy fallback");
     assert.equal(requests.filter((request) => request.url.startsWith("https://search.openfoodfacts.org/")).length, 2);
     assert.equal(requests.filter((request) => request.url.startsWith("https://world.openfoodfacts.org/cgi/search.pl")).length, 1);
     assert.ok(requests.every((request) => request.headers?.["User-Agent"] === USER_AGENT));
 
     await plugin.searchOpenFoodFacts(" legacy  snack ");
-    assert.equal(requests.length, 4, "the fallback result should also be cached");
+    assert.equal(requests.length, 3, "the fallback result should also be cached");
 
     globalThis.__TPSHealthTestRequestUrl = async (options) => {
       requests.push(options);
@@ -2218,7 +2218,7 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     };
     assert.deepEqual(await plugin.searchOpenFoodFacts("temporary outage probe"), []);
     const failedRequestCount = requests.length;
-    assert.equal(failedRequestCount, 6, "a failed primary route may spend only one legacy fallback request");
+    assert.equal(failedRequestCount, 5, "a failed primary route may spend only one legacy fallback request");
 
     globalThis.__TPSHealthTestRequestUrl = async (options) => {
       requests.push(options);
@@ -2230,7 +2230,7 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     };
     const retryAfterFailure = await plugin.searchOpenFoodFacts("temporary outage probe");
     assert.equal(retryAfterFailure[0]?.name, "Temporary Outage Probe");
-    assert.equal(requests.length, failedRequestCount + 2, "transient provider failures must not become cached misses");
+    assert.equal(requests.length, failedRequestCount + 1, "transient provider failures must not become cached misses");
 
     globalThis.__TPSHealthTestRequestUrl = async (options) => {
       requests.push(options);
@@ -2252,7 +2252,7 @@ test("Open Food Facts text search coalesces requests, caches results, and caps r
     };
     const retryAfterPartialFailure = await plugin.searchOpenFoodFacts("partial outage probe");
     assert.equal(retryAfterPartialFailure[0]?.name, "Partial Outage Probe");
-    assert.equal(requests.length, partialFailureRequestCount + 2, "a partially failed empty search must remain retryable");
+    assert.equal(requests.length, partialFailureRequestCount + 1, "a partially failed empty search must remain retryable");
 
     globalThis.__TPSHealthTestRequestUrl = async (options) => {
       requests.push(options);
@@ -2317,6 +2317,7 @@ test("Open Food Facts preserves alternate product identity fields as searchable 
   };
   globalThis.__TPSHealthTestRequestUrl = async (options) => {
     requests.push(options);
+    if (options.url.includes("/api/v2/product/")) return {status:200,json:{status:1,product:options.url.includes(juice.code)?juice:wafer}};
     return {
       status: 200,
       headers: {},
@@ -2337,14 +2338,14 @@ test("Open Food Facts preserves alternate product identity fields as searchable 
     assert.ok(results[0]?.aliases?.some((alias) => alias === "Chocolate wafer snack"));
     assert.ok(results[0]?.aliases?.some((alias) => alias === "target"));
     assert.equal(results[0]?.aliases?.some((alias) => alias === "wheat flour"), false, "ingredients are searchable context, not identity aliases");
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
     assert.match(requests[0].url, /page_size=40/);
     assert.match(requests[0].url, /generic_name/);
     assert.match(requests[0].url, /abbreviated_product_name/);
     assert.match(requests[0].url, /stores_tags/);
     assert.match(requests[0].url, /serving_quantity_unit/);
 
-    const juiceResults = await plugin.searchOpenFoodFacts("test juice");
+    const juiceResults = await Promise.all((await plugin.searchOpenFoodFacts("test juice")).map(item=>plugin.enrichFoodSearchItem(item)));
     assert.equal(juiceResults[0]?.name, "Test Apple Juice");
     assert.equal(juiceResults[0]?.servingGrams, undefined);
     assert.equal(juiceResults[0]?.servingMl, 250);
@@ -2356,7 +2357,7 @@ test("Open Food Facts preserves alternate product identity fields as searchable 
   }
 });
 
-test("provider search resolves Joseph's lavash labeled serving before display and reuses the product cache", async () => {
+test("provider search resolves Joseph's lavash labeled serving on selection and reuses the product cache", async () => {
   installDeterministicBrowserGlobals();
   const deterministicSetTimeout = window.setTimeout;
   const deterministicClearTimeout = window.clearTimeout;
@@ -2408,10 +2409,12 @@ test("provider search resolves Joseph's lavash labeled serving before display an
     if (options.url.startsWith("https://search.openfoodfacts.org/")) {
       return { status: 200, headers: {}, json: { hits: [searchProduct] } };
     }
-    return { status: 200, headers: {}, json: { products: [detailProduct] } };
+    return { status: 200, headers: {}, json: {status:1,product:detailProduct} };
   };
   try {
-    const [searchItem] = await plugin.searchOpenFoodFacts("joseph lavash");
+    const [preview] = await plugin.searchOpenFoodFacts("joseph lavash");
+    assert.deepEqual(preview.nutrition, {});assert.equal(requests.length,1);
+    const searchItem = await plugin.enrichFoodSearchItem(preview);
     assert.equal(searchItem?.nutritionBasis, "labeled-serving");
     assert.equal(searchItem?.servingAmount, 0.5);
     assert.equal(searchItem?.servingUnit, "lavash");
@@ -2423,7 +2426,7 @@ test("provider search resolves Joseph's lavash labeled serving before display an
     assert.deepEqual(householdServingFromText("32 g (0.5 LAVASH)"), { amount: 0.5, unit: "lavash" });
     const enriched = await plugin.enrichFoodSearchItem(searchItem);
     assert.equal(requests.length, 2, JSON.stringify(requests.map((request) => request.url)));
-    assert.equal(enriched.name, searchItem.name, "detail enrichment must retain the more descriptive search name");
+    assert.equal(enriched.name, searchItem.name, "current product name must stay authoritative after selection");
     assert.equal(enriched.name, "Lavash Bread");
     assert.equal(enriched.nutritionBasis, "labeled-serving");
     assert.equal(enriched.servingAmount, 0.5);
@@ -2444,7 +2447,7 @@ test("provider search resolves Joseph's lavash labeled serving before display an
     assert.equal(rankFoodSearchResults("joseph lavash", [searchItem, enriched])[0]?.nutritionBasis, "labeled-serving");
 
     await plugin.enrichFoodSearchItem(searchItem);
-    assert.equal(requests.filter((request) => request.url.includes("/api/v2/product/")).length, 0, "repeated selection should reuse the exact-product cache");
+    assert.equal(requests.filter((request) => request.url.includes("/api/v2/product/")).length, 1, "repeated selection should reuse the exact-product cache");
 
     globalThis.__TPSHealthTestRequestUrl = async () => ({
       status: 200,
@@ -2617,12 +2620,13 @@ test("upserting an explicit labeled can keeps manual macros and skips legacy dri
 
 test("Open Food Facts trusts normalized serving quantity, parses fractional cups, and does not mix unscalable per-100 nutrients", async () => {
   installDeterministicBrowserGlobals();
+  window.setTimeout=globalThis.setTimeout;window.clearTimeout=globalThis.clearTimeout;
   const { default: TPSHealthPlugin } = await importPluginWithObsidianStub();
   const plugin = new TPSHealthPlugin(createFakeHealthApp().app);
   plugin.settings = { ...plugin.settings, openFoodFactsUserAgent: USER_AGENT };
   globalThis.__TPSHealthTestRequestUrl = async (options) => {
-    const partial = decodeURIComponent(options.url).includes("partial+cookie") || new URL(options.url).searchParams.get("code") === "012345678905";
-    return {
+    const partial = decodeURIComponent(options.url).includes("partial+cookie") || options.url.includes("/product/012345678905");
+    const response = {
       status: 200,
       headers: {},
       json: {
@@ -2653,9 +2657,11 @@ test("Open Food Facts trusts normalized serving quantity, parses fractional cups
         }],
       },
     };
+    if(options.url.includes("/api/v2/product/"))response.json={status:1,product:response.json.hits[0]};
+    return response;
   };
   try {
-    const [fraction] = await plugin.searchOpenFoodFacts("fraction cup juice");
+    const [fraction] = await Promise.all((await plugin.searchOpenFoodFacts("fraction cup juice")).map(item=>plugin.enrichFoodSearchItem(item)));
     assert.equal(fraction?.nutritionBasis, "labeled-serving");
     assert.equal(fraction?.servingAmount, 0.5);
     assert.equal(fraction?.servingUnit, "cup");
@@ -2665,7 +2671,7 @@ test("Open Food Facts trusts normalized serving quantity, parses fractional cups
       { calories: 48, proteinG: 2.4, carbsG: 9.6, fatG: 1.2 },
     );
 
-    const [partial] = await plugin.searchOpenFoodFacts("partial cookie");
+    const [partial] = await Promise.all((await plugin.searchOpenFoodFacts("partial cookie")).map(item=>plugin.enrichFoodSearchItem(item)));
     assert.equal(partial?.nutritionBasis, "labeled-serving");
     assert.equal(partial?.servingAmount, 1);
     assert.equal(partial?.servingUnit, "cookie");
@@ -2933,15 +2939,15 @@ test("provider brand canonicalization is typo-tolerant, order-independent, and d
     assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:\"quest\"/);
 
     assert.equal((await plugin.searchOpenFoodFacts("kirklnad pretzel"))[0]?.name, "Peanut Butter Pretzel Nuggets");
-    assert.match(decodeURIComponent(requests[2].url), /q=kirkland\+pretzel/);
-    assert.doesNotMatch(decodeURIComponent(requests[2].url), /brands:/);
+    assert.match(decodeURIComponent(requests[1].url), /q=kirkland\+pretzel/);
+    assert.doesNotMatch(decodeURIComponent(requests[1].url), /brands:/);
 
     assert.equal((await plugin.searchOpenFoodFacts("pretzel kirkland"))[0]?.name, "Peanut Butter Pretzel Nuggets");
-    assert.equal(requests.length, 4, "the corrected typo and reordered exact brand should share one provider cache key");
+    assert.equal(requests.length, 2, "the corrected typo and reordered exact brand should share one provider cache key");
 
     await plugin.searchOpenFoodFacts("breyers vanilla");
-    assert.match(decodeURIComponent(requests[4].url), /q=breyers\+vanilla/);
-    assert.doesNotMatch(decodeURIComponent(requests[4].url), /brands:/);
+    assert.match(decodeURIComponent(requests[2].url), /q=breyers\+vanilla/);
+    assert.doesNotMatch(decodeURIComponent(requests[2].url), /brands:/);
   } finally {
     delete globalThis.__TPSHealthTestRequestUrl;
   }
@@ -2981,15 +2987,16 @@ test("provider search reconstructs split branded identities without product fall
     assert.equal(online[0]?.name, "North Harbor Storm Hard Seltzer");
     assert.equal(online[0]?.brand, undefined, "a missing provider brand must not be guessed from a hardcoded brand list");
     assert.equal(online[0]?.nutrition?.alcoholG, undefined, "ABV cannot become grams without a volume serving");
-    assert.ok(online[0]?.nutritionProvenance?.warnings.some(w => w.includes("Alcohol grams unknown")));
+    assert.equal(online[0]?.nutritionProvenance?.dataset,"Search preview");
+    assert.deepEqual(online[0]?.nutrition,{});
     assert.ok(online[0]?.aliases?.some((alias) => /storm hard seltzer/i.test(alias)));
     assert.match(decodeURIComponent(requests[0].url), /q=north\+harbor\+storm/);
     assert.doesNotMatch(decodeURIComponent(requests[0].url), /brands:/);
 
     const reordered = await plugin.searchOpenFoodFacts("storm north harbor");
     assert.equal(reordered[0]?.id, online[0]?.id);
-    assert.match(decodeURIComponent(requests[2].url), /q=storm\+north\+harbor/);
-    assert.doesNotMatch(decodeURIComponent(requests[2].url), /brands:/);
+    assert.match(decodeURIComponent(requests[1].url), /q=storm\+north\+harbor/);
+    assert.doesNotMatch(decodeURIComponent(requests[1].url), /brands:/);
 
     plugin.searchCustomFoods = async () => [];
     plugin.searchUsdaFoods = async () => [];

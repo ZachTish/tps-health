@@ -17,7 +17,7 @@ export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "work
 
 type SettingsRecord = Record<string, unknown>;
 
-const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "dailyNoteFormat", "dailyNoteFolder", "usdaApiKeySecret", "usdaApiKey"] as const;
+const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "dailyNoteFormat", "dailyNoteFolder", "usdaApiKeySecret", "usdaApiKey", "edamamEnabled", "edamamAppIdSecret", "edamamApiKeySecret", "nutritionixEnabled", "nutritionixAppIdSecret", "nutritionixApiKeySecret"] as const;
 
 const WORKOUT_LOG_TARGETS = ["session-note", "daily-note", "both"];
 const WORKOUT_DAILY_NOTE_PLACEMENTS = ["after-frontmatter", "before-first-h2", "bottom"];
@@ -108,8 +108,6 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
       : DEFAULT_SETTINGS.usdaApiKeySecrets;
   settings.usdaApiKeySecrets = normalizeUsdaApiKeySecrets(storedUsdaReferences);
   if (!settings.usdaApiKeySecrets.length && legacyUsdaApiKeyValue(storedRecord)) settings.usdaApiKeySecrets = [USDA_API_KEY_SECRET];
-  for (const key of ["edamamEnabled", "nutritionixEnabled"] as const) settings[key] = settings[key] === true;
-  for (const key of ["edamamAppIdSecret", "edamamApiKeySecret", "nutritionixAppIdSecret", "nutritionixApiKeySecret"] as const) settings[key] = stringSetting(settings[key], DEFAULT_SETTINGS[key]);
   settings.activeWorkoutPath = optionalStringSetting(settings.activeWorkoutPath);
   settings.activeWorkoutId = optionalStringSetting(settings.activeWorkoutId);
   settings.activeWorkoutDailyNotePath = optionalStringSetting(settings.activeWorkoutDailyNotePath);

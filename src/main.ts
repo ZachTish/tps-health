@@ -1,5 +1,4 @@
 import { MACRO_KCAL_PER_GRAM, macroInputGrams, macroInputDisplay, type EnergyMacro, type MacroInputUnit } from "./macro-input";
-import { searchAdditionalFoodProvider, loadNutritionixFood, nutritionixSearchPreview, type AdditionalFoodProvider, type FoodProviderCredentials } from "./food-providers";
 import { HealthDashboardView, HEALTH_DASHBOARD_VIEW, healthDashboardWeek, healthWeekDates, localHealthDate, dashboardDate } from "./health-dashboard-view";
 import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
@@ -8,7 +7,7 @@ import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } fr
 import { energyActivitySourceSignature, type EnergyActivitySettings } from "./energy-activity";
 import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange, trackedFoodNutrientKeys, trackedFoodNutrition } from "./nutrient-goals";
-import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
+import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail, assertSupportedFoodSelection, isOpenFoodFactsSearchPreview } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
 import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { HealthGoal, NutritionTotals } from "./types";
@@ -3108,6 +3107,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async logFood(item: FoodItem, quantity: number, unit: string, section?: string, completedDate?: string, persistFoodNote = true, targetOverride?: FoodLogTarget, options: LogFoodOptions = {}): Promise<FoodLogEntry> {
+    if (isOpenFoodFactsSearchPreview(item)) item = await this.enrichFoodSearchItem(item);
+    assertSupportedFoodSelection(item);
     return this.measureFoodLogging("food", 1, async timing => {
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
       if (persistFoodNote) this.nativeRecordService.requireApi();
@@ -3122,7 +3123,7 @@ export default class TPSHealthPlugin extends Plugin {
         createdDate: isoNow(),
         completedDate: completedDate || isoNow(),
         item: loggedItem,
-        nutritionOverride: multiplyNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
+        nutritionOverride: scaleKnownNutrition(loggedItem.nutrition || {}, resolvedServing.servings),
         quantity: resolvedServing.servings,
         unit: "serving",
         servingQuantity: resolvedServing.inputQuantity,
@@ -3294,7 +3295,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private prepareFoodNoteItem(item: FoodItem, type: FoodNoteType): FoodItem {
-    if (nutritionixSearchPreview(item)) throw new Error("Load the Nutritionix result before saving its nutrition.");
+    assertSupportedFoodSelection(item);
     if (!isRecipeLikeFoodType(type)) {
       return normalizeFoodMetricServing({
         ...item,
@@ -3316,16 +3317,21 @@ export default class TPSHealthPlugin extends Plugin {
         .filter((line) => !parseRecipeIngredientLine(line, (name) => this.findRecipeIngredientFoodByName(name)))
         .join("\n"));
     const normalizedIngredients = this.normalizeRecipeIngredientLines(ingredientLines);
-    const ingredientWeight = recipeIngredientWeight(normalizedIngredients.split(/\r?\n/).map(line => {
+    const ingredientEntries = normalizedIngredients.split(/\r?\n/).map(line => {
       const ingredient = parseRecipeIngredientLine(line, name => this.findRecipeIngredientFoodByName(name));
       const file = ingredient?.foodPath ? this.app.vault.getAbstractFileByPath(ingredient.foodPath) : null;
       return ingredient ? { ...ingredient, food: file instanceof TFile ? foodFromFileCache(this, file) : this.findRecipeIngredientFoodByName(ingredient.foodName) } : null;
-    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null));
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const ingredientWeight = recipeIngredientWeight(ingredientEntries);
     const serving = recipeServingDefinition(item, type, ingredientWeight);
     const recipeServings = serving.recipeServings;
     const totalNutrition = normalizedIngredients
       ? this.calculateFoodTotals(normalizedIngredients)
       : hasExplicitIngredients ? zeroNutrition() : (item.nutrition || {});
+    // A recipe total is known only when every ingredient reports that nutrient.
+    const knownNutrition = normalizedIngredients && ingredientEntries.length
+      ? Object.fromEntries(Object.entries(totalNutrition).filter(([key]) => !NUTRIENT_KEYS.some(nutrientKey => nutrientKey === key) || ingredientEntries.every(entry => nutritionNumber(entry.food?.nutrition?.[key as keyof Nutrition]) != null))) as Nutrition
+      : totalNutrition;
     return normalizeFoodMetricServing({
       ...item,
       aliases: foodAliasesForItem(item),
@@ -3334,7 +3340,7 @@ export default class TPSHealthPlugin extends Plugin {
       notes: item.notes,
       ...serving,
       servingMl: undefined,
-      nutrition: multiplyNutrition(totalNutrition, 1 / recipeServings),
+      nutrition: Object.fromEntries(Object.entries(multiplyNutrition(knownNutrition, 1 / recipeServings)).filter(([key]) => nutritionNumber(knownNutrition[key as keyof Nutrition]) != null)) as Nutrition,
     });
   }
 
@@ -3474,7 +3480,8 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   async findOrCreateFoodNote(item: FoodItem): Promise<FoodItem> {
-    if (nutritionixSearchPreview(item)) item = await this.enrichFoodSearchItem(item);
+    if (isOpenFoodFactsSearchPreview(item)) item = await this.enrichFoodSearchItem(item);
+    assertSupportedFoodSelection(item);
     return this.serializeFoodIdentityMutation(item, "find-or-create", () => this.findOrCreateFoodNoteNow(item));
   }
 
@@ -3858,11 +3865,6 @@ export default class TPSHealthPlugin extends Plugin {
       const openFoodFactsSearch = providerBrandedSearch && shouldContinue()
         ? this.withTimeout(this.searchOpenFoodFacts(query), 6000, [], { scope: "FoodSearch", event: "open-food-facts", data: { query, branded: true } })
         : Promise.resolve([]);
-      const additionalSearches = (["edamam", "nutritionix"] as const).map(provider => {
-        let active = this.settings[`${provider}Enabled`] && shouldContinue();
-        return active ? this.withTimeout(this.searchAdditionalFoods(provider, query, providerBrandedSearch, () => active && shouldContinue()), 6000, [],
-          { scope: "FoodSearch", event: provider, data: { query } }, () => { active = false; }) : Promise.resolve([]);
-      });
       const [custom, curated, loggedStats] = await Promise.all([
         this.searchCustomFoods(query),
         Promise.resolve(searchCuratedFoods(query)),
@@ -3873,16 +3875,14 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flow("FoodSearch", "search:stale-local-only", { query, returned: local.length });
         return local;
       }
-      const [usda, openFoodFacts, edamam, nutritionix] = await Promise.all([usdaSearch, openFoodFactsSearch, ...additionalSearches]);
-      const baseResults = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts, ...edamam, ...nutritionix]), loggedStats);
+      const [usda, openFoodFacts] = await Promise.all([usdaSearch, openFoodFactsSearch]);
+      const baseResults = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts]), loggedStats);
       logger.flow("FoodSearch", "search:counts", {
         query,
         custom: custom.length,
         curated: curated.length,
         usda: usda.length,
         openFoodFacts: openFoodFacts.length,
-        edamam: edamam.length,
-        nutritionix: nutritionix.length,
         returned: Math.min(baseResults.length, 30),
       });
       return baseResults.slice(0, 30);
@@ -4742,34 +4742,20 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.assertOpenFoodFactsSearchResponse(response, "search");
     const hits = Array.isArray(response.json?.hits) ? response.json.hits : [];
-    // The search index is discovery only: serving fields and nutrients can be
-    // missing or stale even when the current product has a complete label.
-    const candidates = hits
+    // Search is discovery only. Load the selected current label through the
+    // existing barcode owner; never bulk-hydrate a page or save index nutrition.
+    return hits
       .filter((product: any) => /^\d{8,14}$/.test(String(product.code || "")))
       .filter((product: any) => foodFactsProductName(product, matchQuery))
       .filter((product: any) => isRelevantFoodResult(matchQuery, foodFactsProductSearchFields(product)))
-      .slice(0, OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE);
-    if (!candidates.length) return [];
-    const codes = Array.from(new Set<string>(candidates.map((product: any) => String(product.code))));
-    const detailParams = new URLSearchParams({ code: codes.join(","), page_size: String(codes.length), fields: OPEN_FOOD_FACTS_SEARCH_FIELDS });
-    const details = await requestUrl({
-      url: `https://world.openfoodfacts.org/api/v2/search?${detailParams.toString()}`,
-      headers: this.foodFactsHeaders(), throw: false,
-    });
-    this.assertOpenFoodFactsSearchResponse(details, "products");
-    if (!Array.isArray(details.json?.products)) throw new Error("Open Food Facts returned invalid product records");
-    const byCode = new Map<string, any>(details.json.products.map((product: any) => [openFoodFactsBarcodeCacheKey(String(product.code || "")), product]));
-    const items: FoodItem[] = [];
-    for (const hit of candidates) {
-      const product = byCode.get(openFoodFactsBarcodeCacheKey(String(hit.code)));
-      if (!product) continue; // A deleted/missing record must not resurrect index nutrition.
-      const item = this.foodFactsSearchProductToItem({ ...product, product_name: product.product_name || foodFactsProductName(hit, matchQuery) }, matchQuery);
-      if (!hasSearchableMacroData(item.nutrition) || !isRelevantFoodResult(matchQuery, foodSearchFields(item))) continue;
-      items.push(item);
-      this.writeBarcodeResultCache(openFoodFactsBarcodeCacheKey(item.barcode!), item, BARCODE_RESULT_CACHE_TTL_MS);
-    }
-    logger.flow("FoodSearch", "open-food-facts:products", { requested: codes.length, returned: items.length });
-    return items;
+      .slice(0, OPEN_FOOD_FACTS_SEARCH_PAGE_SIZE)
+      .map((product: any) => ({
+        id: String(product.code), name: foodFactsProductName(product, matchQuery),
+        brand: foodFactsProductBrand(product), aliases: foodFactsProductAliases(product, matchQuery),
+        barcode: String(product.code), source: "open-food-facts" as const,
+        imageUrl: product.image_small_url || product.image_thumb_url || undefined,
+        nutrition: {}, nutritionProvenance: { provider: "open-food-facts" as const, recordId: String(product.code), dataset: "Search preview" },
+      }));
   }
 
   private async searchOpenFoodFactsLegacySearch(query: string, matchQuery = query): Promise<FoodItem[]> {
@@ -4832,7 +4818,8 @@ export default class TPSHealthPlugin extends Plugin {
     try {
       const normalizedQuery = normalizeLookup(query);
       const providerQuery = foodSearchProviderQuery(normalizedQuery);
-      const dataTypes = includeBranded
+      const brandQuery = includeBranded && Boolean(foodSearchProviderQueryParts(normalizedQuery).brand);
+      const dataTypes = brandQuery ? ["Branded"] : includeBranded
         ? ["Foundation", "SR Legacy", "Survey (FNDDS)", "Branded"]
         : ["Foundation", "SR Legacy", "Survey (FNDDS)"];
       const pageSize = includeBranded ? 50 : 25;
@@ -4861,7 +4848,7 @@ export default class TPSHealthPlugin extends Plugin {
             servingMl: serving.servingMl,
             nutritionBasis: serving.nutritionBasis,
             source: "usda",
-            nutritionProvenance: { provider: "usda", recordId: String(food.fdcId), dataset: String(food.dataType || "Unknown dataset"), url: `https://fdc.nal.usda.gov/food-details/${encodeURIComponent(food.fdcId)}/nutrients`, updatedAt: food.publicationDate ? String(food.publicationDate) : undefined, retrievedAt: new Date().toISOString() },
+            nutritionProvenance: { provider: "usda", recordId: String(food.fdcId), dataset: String(food.dataType || "Unknown dataset"), url: `https://fdc.nal.usda.gov/food-details/${encodeURIComponent(food.fdcId)}/nutrients`, updatedAt: food.publishedDate || food.publicationDate ? String(food.publishedDate || food.publicationDate) : undefined, retrievedAt: new Date().toISOString() },
             nutrition,
           } as FoodItem;
         })
@@ -4876,7 +4863,7 @@ export default class TPSHealthPlugin extends Plugin {
         foods = await this.searchUsdaByDataTypes(providerQuery, dataTypes, pageSize, shouldContinue, false);
         items = mapFoods(foods);
       }
-      logger.flow("FoodSearch", "usda:done", { query, providerQueryChanged: providerQuery !== normalizedQuery, branded: includeBranded, dataTypes: dataTypes.length, relaxed, raw: foods.length, returned: items.length });
+      logger.flow("FoodSearch", "usda:done", { query, providerQueryChanged: providerQuery !== normalizedQuery, branded: includeBranded, brandQuery, dataTypes: dataTypes.length, relaxed, raw: foods.length, returned: items.length });
       return items;
     } catch (error) {
       logger.flowWarn("FoodSearch", "usda:failed", { query, error: logger.errorSummary(error) });
@@ -5159,41 +5146,22 @@ export default class TPSHealthPlugin extends Plugin {
     this.barcodeResultCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, item });
   }
 
-  private additionalFoodCredentials(provider: AdditionalFoodProvider): FoodProviderCredentials | null {
-    if (!this.settings[`${provider}Enabled`]) return null;
-    const appId = String(this.app.secretStorage?.getSecret(this.settings[`${provider}AppIdSecret`]) || "").trim();
-    const apiKey = String(this.app.secretStorage?.getSecret(this.settings[`${provider}ApiKeySecret`]) || "").trim();
-    if (!appId || !apiKey) throw new Error(`Configure ${provider} App ID and API key on this device in TPS Controller → Connections → Food databases.`);
-    return { appId, apiKey };
-  }
-
-  private async searchAdditionalFoods(provider: AdditionalFoodProvider, query: string, branded: boolean, shouldContinue: () => boolean = () => true): Promise<FoodItem[]> {
-    if (!query.trim() || !shouldContinue()) return [];
-    try {
-      const credentials = this.additionalFoodCredentials(provider);
-      if (!credentials) return [];
-      return await searchAdditionalFoodProvider(provider, query, credentials, branded);
-    } catch (error) {
-      logger.flowWarn("FoodSearch", "provider:failed", { provider, error: logger.errorSummary(error) });
-      if (shouldContinue()) new Notice(error instanceof Error ? error.message : `${provider} search failed.`);
-      return [];
-    }
-  }
-
   async enrichFoodSearchItem(item: FoodItem): Promise<FoodItem> {
-    if (nutritionixSearchPreview(item)) {
-      const credentials = this.additionalFoodCredentials("nutritionix");
-      if (!credentials) throw new Error("Enable Nutritionix in TPS Controller → Connections → Food databases before selecting this result.");
-      return loadNutritionixFood(item, credentials);
-    }
+    const preview = isOpenFoodFactsSearchPreview(item);
+    if (!preview) assertSupportedFoodSelection(item);
     if (!item.barcode || item.source !== "open-food-facts") return item;
     try {
       const full = await this.lookupOpenFoodFactsBarcode(item.barcode);
-      if (!full) return item;
+      if (!full) {
+        if (preview) throw new Error("No usable nutrition is available for this product. Enter its package label manually.");
+        return item;
+      }
+      if (preview) return full;
       const enriched = mergeEnrichedFoodSearchItem(item, full);
       return enriched;
     } catch (error) {
       logger.flowWarn("FoodSearch", "open-food-facts:enrich-failed", { barcode: maskBarcode(item.barcode), error: logger.errorSummary(error) });
+      if (preview) throw error;
       return item;
     }
   }
@@ -5224,6 +5192,7 @@ export default class TPSHealthPlugin extends Plugin {
       if (response.json?.status !== 1 || !response.json?.product) {
         throw new Error("Food database returned an invalid response. Please try again.");
       }
+      if (response.json.product.code && openFoodFactsBarcodeCacheKey(String(response.json.product.code)) !== openFoodFactsBarcodeCacheKey(code)) throw new Error("Food database returned a different barcode. Nothing was added.");
       const item = this.foodFactsProductToItem(response.json.product, code);
       if (!hasSearchableMacroData(item.nutrition)) {
         logger.flowWarn("Barcode", "lookup-candidate:no-macros", { barcode: maskBarcode(code), route: "v2", name: item.name });
@@ -7803,7 +7772,7 @@ export default class TPSHealthPlugin extends Plugin {
   private async resolveFoodInput(input: LogFoodInput): Promise<FoodItem> {
     if (input.item) {
       logger.flow("Food", "resolve-input:item", { name: input.item.name, source: input.item.source, sourcePath: input.item.sourcePath || "" });
-      return nutritionixSearchPreview(input.item) ? this.enrichFoodSearchItem(input.item) : input.item;
+      return input.item;
     }
     if (input.barcode) {
       const resolved = await this.lookupFoodByBarcode(input.barcode);
@@ -7817,7 +7786,7 @@ export default class TPSHealthPlugin extends Plugin {
       const matches = await this.searchFoods(input.query);
       if (matches[0]) {
         logger.flow("Food", "resolve-input:query-hit", { query: input.query, name: matches[0].name, source: matches[0].source, returned: matches.length });
-        return nutritionixSearchPreview(matches[0]) ? this.enrichFoodSearchItem(matches[0]) : matches[0];
+        return matches[0];
       }
       logger.flowWarn("Food", "resolve-input:query-miss", { query: input.query });
     }
@@ -11748,7 +11717,7 @@ class RecipeIngredientModal extends Modal {
       this.macrosEl.setText("Unsupported unit.");
       return;
     }
-    const parts = compactMacroParts(multiplyNutrition(food.nutrition || {}, resolved.servings));
+    const parts = compactMacroParts(scaleKnownNutrition(food.nutrition || {}, resolved.servings));
     this.macrosEl.setText(parts.length ? parts.join(" ") : "No macro data");
   }
 
@@ -14831,7 +14800,8 @@ class CustomFoodModal extends FoodInputModal {
         recipeMacroPreview?.empty();
         try {
           const serving = recipeServing();
-          const perServing = multiplyNutrition(ingredientTotals, 1 / serving.recipeServings);
+          const perServing = Object.fromEntries(Object.entries(multiplyNutrition(ingredientTotals, 1 / serving.recipeServings))
+            .filter(([key]) => !NUTRIENT_KEYS.some(nutrientKey => nutrientKey === key) || (recipeIngredients.length > 0 && recipeIngredients.every(ingredient => nutritionNumber(recipeIngredientFoodItem(ingredient)?.nutrition?.[key as keyof Nutrition]) != null)))) as Nutrition;
           const weight = serving.servingGrams == null ? "weight unavailable" : `${round(serving.servingGrams)} g`;
           caloriePreview.setText(recipeByWeight
             ? `Total weight: ${round(serving.recipeServings * 100)} g · Nutrition per 100 g`
@@ -16123,7 +16093,7 @@ function normalizeFoodMetricServing(item: FoodItem): FoodItem {
   }
   if (serving.servingGrams || serving.servingMl) return serving;
   const metric = parseMetricServing(serving.servingAmount || 1, serving.servingUnit || "");
-  const inferredDrinkServing = !metric && serving.nutritionBasis == null
+  const inferredDrinkServing = !metric && serving.nutritionBasis == null && serving.recipeServings == null
     ? inferredDrinkServingForFood(serving)
     : null;
   const inferredMultiplier = inferredDrinkServing && shouldTreatNutritionAsPer100ml(serving, inferredDrinkServing.ml) ? inferredDrinkServing.ml / 100 : 1;
@@ -17439,10 +17409,10 @@ interface FoodSearchProviderQueryParts {
 function foodSearchProviderQueryParts(query: string): FoodSearchProviderQueryParts {
   const normalized = normalizeLookup(query);
   const corrected = foodSearchCorrectedQuery(normalized) || normalized;
-  const tokens = corrected.split(" ").filter(Boolean);
+  const tokens = corrected.split(" ").filter(token => token && !FOOD_SEARCH_CONNECTOR_WORDS.has(token));
   if (!tokens.length) return { query: corrected, productTokens: [] };
   const brandMatch = knownFoodBrandMatch(tokens);
-  if (!brandMatch) return { query: corrected, productTokens: tokens };
+  if (!brandMatch) return { query: tokens.join(" "), productTokens: tokens };
   const productTokens = tokens.filter((_token, index) => !brandMatch.matchedIndexes.has(index));
   return {
     query: [brandMatch.brand, ...productTokens].join(" ").trim(),
@@ -17656,7 +17626,8 @@ function searchCuratedFoods(query: string): FoodItem[] {
       servingGrams: item.servingGrams,
       servingMl: item.servingMl,
       source: "curated",
-      nutritionProvenance: { provider: "curated", dataset: "Unverified built-in estimate" },
+      nutritionBasis: item.nutritionProvenance ? "labeled-serving" : undefined,
+      nutritionProvenance: item.nutritionProvenance || { provider: "curated", dataset: "Unverified built-in estimate" },
       nutrition: item.nutrition,
     }));
 }
@@ -17671,6 +17642,7 @@ interface CuratedCommonFood {
   servingGrams?: number;
   servingMl?: number;
   nutrition: Nutrition;
+  nutritionProvenance?: FoodItem["nutritionProvenance"];
 }
 
 function curatedFoodByBarcode(barcode: string): FoodItem | null {
@@ -17689,12 +17661,17 @@ function curatedFoodByBarcode(barcode: string): FoodItem | null {
     servingMl: curated.servingMl,
     nutritionBasis: "labeled-serving",
     source: "curated",
-    nutritionProvenance: { provider: "curated", dataset: "Unverified built-in estimate" },
+    nutritionProvenance: curated.nutritionProvenance || { provider: "curated", dataset: "Unverified built-in estimate" },
     nutrition: curated.nutrition,
   };
 }
 
 const CURATED_COMMON_FOODS: CuratedCommonFood[] = [
+  { name: "Michelob ULTRA Superior Light Beer", brand: "Michelob", aliases: ["michelob ultra", "michelob ultra beer", "michelob ultra original", "michelob ultra light beer"],
+    servingAmount: 12, servingUnit: "fl oz", servingMl: 354.9,
+    nutrition: { calories: 95, proteinG: 0.6, carbsG: 2.6, fatG: 0, alcoholG: alcoholGramsFromAbv(4.2, 354.9) },
+    nutritionProvenance: { provider: "curated", dataset: "Manufacturer label · US · 12 fl oz", url: "https://www.tapintoyourbeer.com/beer/en/michelob-ultra", retrievedAt: "2026-10-18",
+      warnings: ["Alcohol grams estimated from labeled 4.2% ABV and 12 US fl oz; reported 95 kcal is retained", "US original beer label; other sizes and variants differ"] } },
   { name: "Honeycrisp apple, large", aliases: ["large honeycrisp apple", "honeycrisp apple", "honey crisp apple", "large apple"], servingUnit: "apple", servingGrams: 242, nutrition: { calories: 126, proteinG: 0.7, carbsG: 33.4, fatG: 0.5, fiberG: 5.8, sugarG: 25.2, sodiumMg: 2 } },
   { name: "Apple, raw, with skin", aliases: ["apples"], nutrition: { calories: 52, proteinG: 0.3, carbsG: 13.8, fatG: 0.2, fiberG: 2.4, sugarG: 10.4, sodiumMg: 1 } },
   { name: "Banana, raw", aliases: ["bananas"], nutrition: { calories: 89, proteinG: 1.1, carbsG: 22.8, fatG: 0.3, fiberG: 2.6, sugarG: 12.2, sodiumMg: 1 } },
@@ -17748,7 +17725,7 @@ function rankFoodSearchResults(query: string, items: FoodItem[], usageStats = ne
   const normalizedQuery = normalizeLookup(query);
   const tokens = foodSearchTokens(query);
   return items
-    .filter((item) => item.name && (nutritionixSearchPreview(item) || hasSearchableMacroData(item.nutrition)))
+    .filter((item) => item.name && (isOpenFoodFactsSearchPreview(item) || hasSearchableMacroData(item.nutrition)))
     .filter((item) => isRelevantFoodResult(query, foodSearchFields(item)))
     .filter((item) => !isUnloggedBroadExternalFoodResult(item, tokens, usageStats))
     .map((item) => ({
@@ -17797,7 +17774,8 @@ function closeProviderServingPreference(
 }
 
 function isExternalFoodProviderResult(item: FoodItem): boolean {
-  return item.source === "usda" || item.source === "open-food-facts" || item.source === "edamam" || item.source === "nutritionix";
+  return item.source === "usda" || item.source === "open-food-facts"
+    || (item.source === "curated" && Boolean(item.nutritionProvenance?.url));
 }
 
 function providerFoodsAreIdentityClose(left: FoodItem, right: FoodItem): boolean {
@@ -19779,8 +19757,9 @@ function foodResultMeta(item: FoodItem): string {
     "custom-inline": "Inline",
     curated: "Built-in",
     usda: "USDA",
-    edamam: "Edamam",
-    nutritionix: "Nutritionix",
+    // Historical receipts remain readable; these sources have no connector.
+    edamam: "Edamam (retired)",
+    nutritionix: "Nutritionix (retired)",
     "open-food-facts": "Open Food Facts",
     "nutrition-label": "Nutrition label",
     "ai-research": "Gemini research",
@@ -19788,8 +19767,8 @@ function foodResultMeta(item: FoodItem): string {
   }[item.source] || item.source;
   const quality = assessFoodData(item);
   return [item.brand, source, item.nutritionProvenance?.dataset, serving,
-    item.source === "curated" ? "Unverified estimate" : "",
-    quality.coreKnown < 4 ? `${quality.coreKnown}/4 calorie/macro fields` : "",
+    item.source === "curated" && !item.nutritionProvenance?.url ? "Unverified estimate" : "",
+    isOpenFoodFactsSearchPreview(item) ? "Nutrition loads when selected" : quality.coreKnown < 4 ? `${quality.coreKnown}/4 calorie/macro fields` : "",
     quality.issues.some(issue => !issue.includes("fields missing")) ? "Review data" : "",
   ].filter(Boolean).join(" • ");
 }

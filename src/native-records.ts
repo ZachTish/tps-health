@@ -835,7 +835,7 @@ interface NativeFoodEntryProjection {
   servings: number;
   amount?: number;
   amountUnit?: 'g' | 'ml';
-  nutrition: Record<(typeof CORE_NUTRIENT_KEYS)[number], number> & ExtraNutrition;
+  nutrition: Partial<Record<(typeof CORE_NUTRIENT_KEYS)[number], number>> & ExtraNutrition;
 }
 
 const positiveNumber = (value: unknown, fallback = 0): number => {
@@ -933,9 +933,11 @@ export function deriveNativeFoodEntryProjection(
   const portion = foodEntryPortion(entry, food);
   if (!portion) return null;
   const { servings, amount, amountUnit } = portion;
-  const nutrition = Object.fromEntries(CORE_NUTRIENT_KEYS.map((key) => (
-    [key, stableNumber(numberValue(food[key]) * servings)]
-  ))) as NativeFoodEntryProjection['nutrition'];
+  const nutrition = Object.fromEntries(CORE_NUTRIENT_KEYS.flatMap(key => {
+    const value = food[key];
+    return value == null || String(value).trim() === '' || !Number.isFinite(Number(value))
+      ? [] : [[key, stableNumber(Number(value) * servings)]];
+  })) as NativeFoodEntryProjection['nutrition'];
   Object.assign(nutrition, extraNutrition(food, servings));
   return {
     servings: stableNumber(servings),

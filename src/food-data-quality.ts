@@ -14,7 +14,7 @@ export function foodNutritionProvenance(value: unknown): FoodNutritionProvenance
     const field = input[key];
     if (typeof field === "string") result[key] = field.slice(0, 160);
   }
-  if (typeof input.url === "string" && /^https:\/\/(?:fdc\.nal\.usda\.gov|world\.openfoodfacts\.org)\//.test(input.url)) result.url = input.url;
+  if (typeof input.url === "string" && /^https:\/\/(?:fdc\.nal\.usda\.gov|world\.openfoodfacts\.org|www\.tapintoyourbeer\.com)\//.test(input.url)) result.url = input.url;
   if (Array.isArray(input.warnings)) result.warnings = input.warnings.filter((v): v is string => typeof v === "string").slice(0, 20).map(v => v.slice(0, 200));
   return result;
 }
@@ -24,7 +24,7 @@ export function assessFoodData(item: FoodItem): { coreKnown: number; nutrientsKn
   const coreKnown = [n.calories, n.proteinG, n.carbsG, n.fatG].filter(v => nutritionNumber(v) != null).length;
   const nutrientsKnown = NUTRIENT_KEYS.filter(key => nutritionNumber(n[key]) != null).length;
   const issues: string[] = [];
-  if (item.source === "curated" || item.nutritionProvenance?.provider === "curated") issues.push("Built-in estimate; source evidence is not recorded");
+  if ((item.source === "curated" || item.nutritionProvenance?.provider === "curated") && !item.nutritionProvenance?.url) issues.push("Built-in estimate; source evidence is not recorded");
   if (coreKnown < 4) issues.push(`${4 - coreKnown} of 4 calorie/macro fields missing`);
   if (item.nutritionProvenance?.warnings?.length) issues.push(...item.nutritionProvenance.warnings);
   // Broad plausibility checks, not a 4/4/9 calorie rewrite: fiber, polyols,
@@ -64,5 +64,19 @@ export function foodDataDetail(item: FoodItem, servingLabel = ""): string {
       const value = nutritionNumber(item.nutrition?.[spec.key]);
       return `${spec.label}: ${value == null ? "—" : `${value > 0 && value < 0.05 ? "<0.1" : Number(value.toFixed(1))} ${spec.unit}`}`;
     }),
+    foodNutritionProvenance(item.nutritionProvenance)?.url ? `Source: ${foodNutritionProvenance(item.nutritionProvenance)!.url}` : "",
+    ...assessFoodData(item).issues.map(issue => `Note: ${issue}`),
   ].filter(Boolean).join("\n");
+}
+
+export function isOpenFoodFactsSearchPreview(item: FoodItem): boolean {
+  return item.source === "open-food-facts" && item.nutritionProvenance?.dataset === "Search preview";
+}
+
+/** Old pending previews are preserved, but cannot acquire nutrition from a retired API. */
+export function assertSupportedFoodSelection(item: FoodItem): void {
+  if (isOpenFoodFactsSearchPreview(item)) throw new Error("Load the current product label before saving its nutrition.");
+  if (item.source === "nutritionix" && item.nutritionProvenance?.dataset === "Search preview") {
+    throw new Error("This saved preview uses a retired food provider. Search again with USDA/Open Food Facts or enter the label manually.");
+  }
 }

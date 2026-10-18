@@ -2795,8 +2795,6 @@ test('native food projection derives every macro from the consumed amount and li
       fatG: 0,
       fiberG: 4.5,
       sugarG: 21,
-      sugarAlcoholG: 0,
-      alcoholG: 0,
       sodiumMg: 135,
     },
   });
@@ -5164,3 +5162,13 @@ test('a read-only definition gap does not forget a previously recorded nutrient'
   assert.equal(h.contents.get(h.seed.path),original);assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0);assert.deepEqual(h.readCalls,[]);
  }finally{h.service.dispose();}
 });
+
+ test('linked food logging never projects unknown selected core nutrients as zero',async()=>{
+ const h=createHarness({settings:{healthGoals:['consumedCalories','protein','carbs','fat','fiber','sodium','alcohol'].map(propertyKey=>({propertyKey,kind:'counter'}))}});
+ try {
+ const food=h.addFrontmatterFile('Sourced beer.md',{kind:'food',servingAmount:12,servingUnit:'fl oz',servingMl:354.9,calories:95,proteinG:.6,carbsG:2.6,fatG:0,alcoholG:11.8});
+ const record=await h.service.createFoodEntry({id:'known-beer',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Sourced beer',source:'custom-note',sourcePath:food.path},quantity:2,unit:'serving'});
+ const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.calories,190);assert.equal(saved.fatG,0);assert.equal(saved.fiberG,undefined);assert.equal(saved.sodiumMg,undefined);assert.equal(saved.sugarAlcoholG,undefined);
+ h.service.refreshConfiguration();const row=h.service.getDailyFoodEntries('2026-08-25').find(x=>x.id===record.id);assert.equal(row.calories,190);assert.equal((await h.api.resolve(record.file)).frontmatter.fiberG,undefined);
+ }finally{h.service.dispose();}
+ });
