@@ -276,11 +276,11 @@ test('appearance defaults inherit without overriding explicit block choices', ()
   assert.equal(parseNativeDailyDisplayOptions('nutrients: hidden\nnutrients: expanded', defaults).kind, 'invalid');
 });
 
-test('only energy and main macros become rings; tracked nutrients stay in rows', () => {
+test('default primary macros also appear in secondary bars', () => {
   const metrics = ['consumedCalories', 'protein', 'carbs', 'fat', 'fiber', 'sodium'].map(propertyKey => ({ propertyKey }));
   const groups = splitNativeDailyMetrics(metrics);
   assert.deepEqual(groups.primary.map(m => m.propertyKey), ['consumedCalories','protein','carbs','fat']);
-  assert.deepEqual(groups.other.map(m => m.propertyKey), ['fiber','sodium']);
+  assert.deepEqual(groups.other.map(m => m.propertyKey), ['protein','carbs','fat','fiber','sodium']);
 });
 
 
@@ -328,4 +328,31 @@ test('Health nutrient choices include alcohol without a goal and preserve custom
   const model = buildNativeDailyDashboardModel({...totals, alcoholG: 14}, [goal]);
   assert.equal(model.metrics[0].targetLabel, 'at least 25 g');
   assert.equal(model.metrics.filter(m => m.propertyKey === 'fiber').length, 1);
+});
+
+
+test('independent display flags support both, either or neither without changing totals or targets', () => {
+ const model = buildNativeDailyDashboardModel({...totals, vitaminB12Mcg: 3}, [
+  {propertyKey:'protein',label:'My protein',unit:'g',kind:'min',min:125,showInPrimary:false,showInSecondary:true},
+  {propertyKey:'carbs',label:'Carbs',unit:'g',kind:'max',max:260,showInPrimary:true,showInSecondary:false},
+  {propertyKey:'fat',label:'Fat',unit:'g',kind:'counter',showInPrimary:false,showInSecondary:false},
+  {propertyKey:'vitaminB12Mcg',label:'B12',unit:'mcg',kind:'min',min:2,showInPrimary:true,showInSecondary:true},
+ ]);
+ const before=JSON.stringify(model);
+ for(let i=0;i<100;i++) {
+  const groups=splitNativeDailyMetrics(model.metrics);
+  assert.deepEqual(groups.primary.map(m=>m.propertyKey),['carbs','vitaminB12Mcg']);
+  assert.deepEqual(groups.other.slice(0,2).map(m=>m.propertyKey),['protein','vitaminB12Mcg']);
+  assert.equal(groups.primary[1],groups.other[1], 'both surfaces use the same calculated metric');
+  assert.equal(groups.other[0].value,.7);
+  assert.equal(groups.other[0].targetLabel,'at least 125 g');
+ }
+ assert.equal(JSON.stringify(model),before,'selection is read-only; no duplicate totals or rounding');
+});
+
+test('all primary metrics may be hidden while bars remain and custom selections wrap at four columns', () => {
+ const groups=splitNativeDailyMetrics(['protein','carbs','fat'].map(propertyKey=>({propertyKey,showInPrimary:false,showInSecondary:true})));
+ assert.deepEqual(groups.primary,[]);assert.equal(groups.other.length,3);
+ assert.match(mainSource,/String\(Math.min\(4, metricModels.length\)\)/);
+ assert.match(mainSource,/if \(!metricModels.length\) return;/);
 });

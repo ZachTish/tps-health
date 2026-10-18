@@ -321,3 +321,14 @@ test('workout calendar Apply repairs the current key and scopes key/style change
   assert.match(calendar,/toLowerCase\(\), "workout-timing"\)/);
   assert.match(calendar,/Workout interval style: \$\{value\}`,[\s]*"workout-timing"/);
 });
+
+
+test('each nutrient has independent accessible primary and secondary display controls without a new settings route',()=>{
+ for(const label of ['Show in primary totals','Show in nutrient bars']) {
+  assert.ok(nutrientGoalSource.includes(label));
+ }
+ assert.match(nutrientGoalSource,/toggle.toggleEl.setAttribute\('aria-label', 'Show '\+nutrient.label\+' in primary totals'\)/);
+ assert.match(nutrientGoalSource,/toggle.toggleEl.setAttribute\('aria-label', 'Show '\+nutrient.label\+' in nutrient bars'\)/);
+ assert.match(nutrientGoalSource,/minimum, maximum, remove, display\)/);
+ assert.match(settingsSource,/Choose which nutrients appear in primary totals and lower bars/);
+});

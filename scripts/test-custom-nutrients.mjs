@@ -129,3 +129,23 @@ test('definition nutrition selection preserves selected zeroes and only retains 
  assert.deepEqual(m.trackedFoodNutrition(source,[{propertyKey:'sugarAlcohol',kind:'counter'}]),{sugarAlcoholG:2,sugarAlcoholCaloriesPerG:0});
  assert.deepEqual(source,before);
 });
+
+
+test('display choices survive goal saves and reload independently from tracking membership and physical mappings',()=>{
+ let settings=m.normalizeTPSHealthSettings({nativeRecordProperties:{proteinG:'myProtein'}});
+ const tracked=[...m.trackedFoodNutrientKeys(settings.healthGoals)];
+ Object.assign(settings,m.nutrientGoalChange(settings,'protein','125','',false,{showInPrimary:false,showInSecondary:true}));
+ settings=m.normalizeTPSHealthSettings(JSON.parse(JSON.stringify(settings)));
+ assert.equal(settings.healthGoals.find(g=>g.propertyKey==='protein').showInPrimary,false);
+ assert.equal(settings.healthGoals.find(g=>g.propertyKey==='protein').showInSecondary,true);
+ assert.deepEqual([...m.trackedFoodNutrientKeys(settings.healthGoals)],tracked);
+ assert.equal(settings.nativeRecordProperties.proteinG,'myProtein');
+ Object.assign(settings,m.nutrientGoalChange(settings,'protein','130',''));
+ assert.equal(settings.healthGoals.find(g=>g.propertyKey==='protein').showInPrimary,false,'editing targets alone preserves display');
+ const bad=m.normalizeHealthGoalDefinition({propertyKey:'fiber',showInPrimary:'false',showInSecondary:1});
+ assert.equal(bad.showInPrimary,undefined);assert.equal(bad.showInSecondary,undefined);
+ const alias=m.normalizeTPSHealthSettings({healthGoals:[{propertyKey:'cal',label:'Energy',unit:'kcal',kind:'max',max:2000,showInPrimary:false,showInSecondary:true}]});
+ const model=m.buildNativeDailyDashboardModel({calories:100,entryCount:1},alias.healthGoals);
+ assert.deepEqual(m.splitNativeDailyMetrics(model.metrics).primary,[]);
+ assert.equal(m.splitNativeDailyMetrics(model.metrics).other[0].propertyKey,'cal');
+});

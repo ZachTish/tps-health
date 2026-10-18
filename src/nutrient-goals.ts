@@ -13,6 +13,13 @@ const CORE: GoalNutrient[] = [
   {key:'alcohol',label:'Alcohol',unit:'g',group:'Other nutrients'},
   {key:'sodium',label:'Sodium',unit:'mg',group:'Minerals'},
 ];
+/** Independent display choices; defaults never change nutrient tracking or note output. */
+export function nutrientDisplayDefaults(key: string): { showInPrimary: boolean; showInSecondary: boolean } {
+  return {
+    showInPrimary: ['consumedCalories', 'cal', 'protein', 'carbs', 'fat'].includes(key),
+    showInSecondary: !['consumedCalories', 'cal'].includes(key),
+  };
+}
 export const canonicalGoalKey = (key: string): string => key === 'cal' ? 'consumedCalories' : key;
 
 /** Tracking choices use logical nutrient names; physical property mapping happens at the writer. */
@@ -55,7 +62,7 @@ function bound(raw: string, label: string): number | undefined {
   if (value == null) throw new Error(label+' must be a finite number of zero or more.');
   return value;
 }
-export function nutrientGoalChange(settings: TPSHealthSettings, key: string, minimum: string, maximum: string, remove = false): Pick<TPSHealthSettings,'healthGoals'|'calorieGoal'|'proteinGoalG'> {
+export function nutrientGoalChange(settings: TPSHealthSettings, key: string, minimum: string, maximum: string, remove = false, display: Pick<HealthGoal, 'showInPrimary' | 'showInSecondary'> = {}): Pick<TPSHealthSettings,'healthGoals'|'calorieGoal'|'proteinGoalG'> {
   const nutrient = goalNutrients(settings.healthGoals).find(n => n.key === canonicalGoalKey(key));
   if (!nutrient) throw new Error('Select an available nutrient.');
   const previous = findNutrientGoal(settings.healthGoals, key);
@@ -69,6 +76,8 @@ export function nutrientGoalChange(settings: TPSHealthSettings, key: string, min
     ...previous, propertyKey: previous?.propertyKey || canonical, label: previous?.label || nutrient.label,
     unit: nutrient.unit, kind: min != null && max != null ? 'range' : min != null ? 'min' : max != null ? 'max' : 'counter',
     min, max,
+    ...(typeof display.showInPrimary === 'boolean' ? {showInPrimary: display.showInPrimary} : {}),
+    ...(typeof display.showInSecondary === 'boolean' ? {showInSecondary: display.showInSecondary} : {}),
   };
   const goals = settings.healthGoals.filter(g => canonicalGoalKey(g.propertyKey) !== canonical);
   const index = previous ? settings.healthGoals.indexOf(previous) : goals.length;

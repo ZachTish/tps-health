@@ -1,4 +1,5 @@
 import { EXTRA_NUTRIENTS, extraNutrition, isExtraNutrientKey } from "./nutrients";
+import { nutrientDisplayDefaults } from "./nutrient-goals";
 import type { DailyFoodMacroTotals, HealthMetricRenderConfig } from "./api";
 
 export type NativeDailyMetricState = "below" | "within" | "above" | "neutral";
@@ -79,6 +80,8 @@ export interface NativeDailyMetricModel {
   progress: number;
   state: NativeDailyMetricState;
   color?: string;
+  showInPrimary?: boolean;
+  showInSecondary?: boolean;
 }
 
 export interface NativeDailyDashboardModel {
@@ -210,6 +213,8 @@ export function buildNativeDailyDashboardModel(
       progress: metricProgress(value, config),
       state: metricState(value, config),
       color: config.color,
+      ...(typeof config.showInPrimary === "boolean" ? {showInPrimary: config.showInPrimary} : {}),
+      ...(typeof config.showInSecondary === "boolean" ? {showInSecondary: config.showInSecondary} : {}),
     };
     return [model];
   });
@@ -260,9 +265,8 @@ export function nativeDailyNutrientContributors<T extends { title: string; path:
 
 /** UI grouping only; no property names are written to notes. */
 export function splitNativeDailyMetrics(metrics: NativeDailyMetricModel[]) {
-  const primaryKeys = new Set(["consumedCalories", "cal", "protein", "carbs", "fat"]);
   return {
-    primary: metrics.filter(metric => primaryKeys.has(metric.propertyKey)),
-    other: metrics.filter(metric => !primaryKeys.has(metric.propertyKey)),
+    primary: metrics.filter(metric => metric.showInPrimary ?? nutrientDisplayDefaults(metric.propertyKey).showInPrimary),
+    other: metrics.filter(metric => metric.showInSecondary ?? nutrientDisplayDefaults(metric.propertyKey).showInSecondary),
   };
 }

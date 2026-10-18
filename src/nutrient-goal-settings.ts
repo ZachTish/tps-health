@@ -1,6 +1,6 @@
 import { Setting } from 'obsidian';
 import type TPSHealthPlugin from './main';
-import { canonicalGoalKey, filterGoalNutrients, findNutrientGoal, goalNutrients } from './nutrient-goals';
+import { canonicalGoalKey, nutrientDisplayDefaults, filterGoalNutrients, findNutrientGoal, goalNutrients } from './nutrient-goals';
 
 /** Only search, category and selection are transient. Goals use the existing settings contract. */
 export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHealthPlugin, onSaved: () => void): () => void {
@@ -57,12 +57,29 @@ export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHe
           if (field === 'Minimum') minimum = value; else maximum = value;
         });
       });
+      const defaults = nutrientDisplayDefaults(nutrient.key);
+      const display = {
+        showInPrimary: saved?.showInPrimary ?? defaults.showInPrimary,
+        showInSecondary: saved?.showInSecondary ?? defaults.showInSecondary,
+      };
+      new Setting(editor).setName('Show in primary totals')
+        .setDesc('Shown as a ring, or a primary row when Macros block is set to Rows.')
+        .addToggle(toggle => {
+          toggle.toggleEl.setAttribute('aria-label', 'Show '+nutrient.label+' in primary totals');
+          toggle.setValue(display.showInPrimary).onChange(value => { display.showInPrimary = value; });
+        });
+      new Setting(editor).setName('Show in nutrient bars')
+        .setDesc('Shown in the lower Nutrients section. A nutrient can appear in both places. Save target to apply.')
+        .addToggle(toggle => {
+          toggle.toggleEl.setAttribute('aria-label', 'Show '+nutrient.label+' in nutrient bars');
+          toggle.setValue(display.showInSecondary).onChange(value => { display.showInSecondary = value; });
+        });
       const actions = new Setting(editor);
       const save = async (remove: boolean, button: HTMLButtonElement) => {
         button.disabled = true;
         try {
-          await plugin.saveNutrientGoal(nutrient.key, minimum, maximum, remove);
-          status.setText(remove ? 'Tracking stopped for future log writes. Existing amounts are retained.' : 'Tracking and daily target saved.');
+          await plugin.saveNutrientGoal(nutrient.key, minimum, maximum, remove, display);
+          status.setText(remove ? 'Tracking stopped for future log writes. Existing amounts are retained.' : 'Tracking, target and display choices saved.');
           render(); onSaved(); picker.querySelector<HTMLSelectElement>('select')?.focus();
         } catch (error) { status.setText((error as Error).message); button.disabled = false; }
       };

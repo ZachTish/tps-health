@@ -11,7 +11,7 @@ import { nutrientGoalChange, trackedFoodNutrientKeys, trackedFoodNutrition } fro
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail } from "./food-data-quality";
 import { authoredMetricServing } from "./food-serving";
 import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
-import type { NutritionTotals } from "./types";
+import type { HealthGoal, NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
 import { FoodInputModal, preserveFoodModalScroll } from "./food-modal-interaction";
 import { FoodLogTimings, type FoodLogTiming } from "./food-log-timings";
@@ -1403,10 +1403,10 @@ export default class TPSHealthPlugin extends Plugin {
       mode:this.settings.energyEstimateMode});
   }
 
-  async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false): Promise<void> {
+  async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false, display: Pick<HealthGoal, "showInPrimary" | "showInSecondary"> = {}): Promise<void> {
     if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing goals.");
     const previous = {healthGoals:this.settings.healthGoals,calorieGoal:this.settings.calorieGoal,proteinGoalG:this.settings.proteinGoalG};
-    const next = nutrientGoalChange(this.settings, key, minimum, maximum, remove);
+    const next = nutrientGoalChange(this.settings, key, minimum, maximum, remove, display);
     Object.assign(this.settings, next);
     try {
       await this.saveSettings();
@@ -7624,6 +7624,8 @@ export default class TPSHealthPlugin extends Plugin {
       min: goal.min,
       max: goal.max,
       color: goal.color,
+      ...(goal.showInPrimary != null ? {showInPrimary: goal.showInPrimary} : {}),
+      ...(goal.showInSecondary != null ? {showInSecondary: goal.showInSecondary} : {}),
     }));
   }
 
@@ -10730,7 +10732,7 @@ function renderNativeDailyMacrosBlock(
       const nutrients = root.createEl("details", { cls: "tps-health-native-daily-nutrients" });
       rememberDailyDisclosure(nutrients, "nutrients", actions.disclosures, display.nutrientRows === "expanded");
       nutrients.createEl("summary", { text: "Nutrients" });
-      renderNativeDailyMetrics(nutrients, groups.other, "Other tracked nutrients", foodEntries, actions);
+      renderNativeDailyMetrics(nutrients, groups.other, "Tracked nutrient bars", foodEntries, actions);
     }
   }
   if (!model.entryCount) root.createDiv({ cls: "tps-health-native-daily-empty", text: actions.indexing ? "Checking remaining notes for food entries." : "No food logged yet." });
@@ -10860,7 +10862,7 @@ function renderNativeDailyComponents(
 function renderNativeDailyMetricRings(root: HTMLElement, metricModels: NativeDailyDashboardModel["metrics"], entries: NativeDailyFoodEntrySnapshot[], actions: NativeDailyDashboardActions): void {
   if (!metricModels.length) return;
   const rings = root.createDiv({ cls: "tps-health-native-daily-rings", attr: { role: "list", "aria-label": "Daily macro rings" } });
-  rings.style.setProperty("--tps-health-macro-columns", String(metricModels.length));
+  rings.style.setProperty("--tps-health-macro-columns", String(Math.min(4, metricModels.length)));
   const sources = root.createDiv({ cls: "tps-health-native-ring-sources" });
   const buttons = new Map<string, HTMLButtonElement>();
   const showSources = (metric: NativeDailyDashboardModel["metrics"][number] | null) => {

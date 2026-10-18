@@ -234,7 +234,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
         this.plugin.app.workspace.trigger("tps-health:appearance-changed");
       }));
-    new Setting(appearance).setName("Nutrient rows").addDropdown(dropdown => dropdown
+    new Setting(appearance).setName("Nutrient rows").setDesc("Choose which nutrients appear in primary totals and lower bars under Food & goals → Nutrient targets.").addDropdown(dropdown => dropdown
       .addOption("collapsed", "Collapsed").addOption("expanded", "Expanded").addOption("hidden", "Hidden")
       .setValue(this.plugin.settings.macroNutrientRows)
       .onChange(async value => {

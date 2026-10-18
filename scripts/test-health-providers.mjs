@@ -10215,11 +10215,13 @@ test('nutrient goal saves persist, refresh presentation and roll back on failure
  const {default:Plugin}=await importPluginWithObsidianStub();
  const fake=createFakeHealthApp();const plugin=new Plugin(fake.app);
  plugin.settings=JSON.parse(JSON.stringify(plugin.settings));
- await plugin.saveNutrientGoal('leucineG','2','4');
+ await plugin.saveNutrientGoal('leucineG','2','4',false,{showInPrimary:true,showInSecondary:false});
+ assert.equal(plugin.__pluginData.healthGoals.find(g=>g.propertyKey==='leucineG').showInPrimary,true);
+ assert.equal(plugin.getMetricRenderConfigs().find(g=>g.propertyKey==='leucineG').showInSecondary,false);
  assert.equal(plugin.__pluginData.healthGoals.find(g=>g.propertyKey==='leucineG').max,4);
  const before=JSON.stringify(plugin.settings.healthGoals);
  const save=plugin.saveData; plugin.saveData=async()=>{throw new Error('Synthetic goal save failure');};
- await assert.rejects(plugin.saveNutrientGoal('leucineG','3','5'),/Synthetic goal save failure/);
+ await assert.rejects(plugin.saveNutrientGoal('leucineG','3','5',false,{showInPrimary:false,showInSecondary:true}),/Synthetic goal save failure/);
  assert.equal(JSON.stringify(plugin.settings.healthGoals),before);
  plugin.saveData=save;
  await plugin.saveNutrientGoal('leucineG','','',true);

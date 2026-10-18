@@ -395,6 +395,8 @@ export function normalizeHealthGoalDefinition(value: unknown): HealthGoal | null
     min: lower,
     max: upper,
     color: typeof input.color === "string" ? input.color : undefined,
+    ...(typeof input.showInPrimary === "boolean" ? {showInPrimary: input.showInPrimary} : {}),
+    ...(typeof input.showInSecondary === "boolean" ? {showInSecondary: input.showInSecondary} : {}),
   };
 }
 

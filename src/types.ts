@@ -38,6 +38,8 @@ export interface HealthGoal {
   min?: number;
   max?: number;
   color?: string;
+  showInPrimary?: boolean;
+  showInSecondary?: boolean;
 }
 
 export interface TPSHealthSettings {

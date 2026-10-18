@@ -142,6 +142,8 @@ export interface FinishWorkoutInput {
 }
 
 export interface HealthMetricRenderConfig {
+  showInPrimary?: boolean;
+  showInSecondary?: boolean;
   propertyKey: string;
   label: string;
   unit: string;
