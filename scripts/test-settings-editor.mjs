@@ -1,0 +1,132 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import ts from 'typescript';
+import { build } from 'esbuild';
+
+const source = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
+const ast = ts.createSourceFile('settings.ts', source, ts.ScriptTarget.Latest, true);
+const wanted = new Set(['renderNativeFrontmatterSettings', 'addNativePropertyKeySetting', 'addMappingSetting',
+  'renderEarlierLogsSettings', 'renderDailyLoggingPage', 'renderIntegrationsPage', 'createOptionalDisclosure']);
+const methods = [];
+let settingsGroup;
+(function visit(node) {
+  if (ts.isMethodDeclaration(node) && wanted.has(node.name?.getText(ast))) methods.push(node.getText(ast));
+  if (ts.isVariableDeclaration(node) && node.name?.getText(ast) === 'createSettingsGroup') settingsGroup = node.getText(ast);
+  ts.forEachChild(node, visit);
+})(ast);
+async function load(entry) {
+  const result = await build({entryPoints:[entry],bundle:true,write:false,platform:'node',format:'esm'});
+  return import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+}
+const defaults = await load('src/types.ts');
+const schema = await load('src/native-record-schema.ts');
+const nutrients = await load('src/nutrients.ts');
+
+class Element {
+  constructor(tag='div', options={}, parent=null) {
+    Object.assign(this,{tag,parentElement:parent,children:[],attrs:{...options.attr},dataset:{},events:{},style:{},open:false,value:options.value||'',text:options.text||''});
+  }
+  createEl(tag, options={}) { const child = new Element(tag,options,this); this.children.push(child); return child; }
+  createDiv(options) { return this.createEl('div',options); }
+  createSpan(options) { return this.createEl('span',options); }
+  all() { return this.children.flatMap(child => [child,...child.all()]); }
+  empty() { this.children=[]; }
+  setAttribute(key,value) { this.attrs[key]=value; }
+  addEventListener(type,callback) { this.events[type]=callback; }
+  after(child) {
+    child.parentElement.children=child.parentElement.children.filter(el=>el!==child);
+    const siblings=this.parentElement.children; child.parentElement=this.parentElement;
+    siblings.splice(siblings.indexOf(this)+1,0,child);
+  }
+  querySelector(tag) { return this.all().find(el=>el.tag===tag)||null; }
+  focus() { this.focused=true; }
+}
+class Setting {
+  constructor(parent) { this.settingEl=parent.createDiv(); this.settingEl.setting=this; this.controls=[]; }
+  setName(value) { this.name=value; return this; }
+  setDesc(value) { this.description=value; return this; }
+  add(tag,callback) {
+    const el=this.settingEl.createEl(tag);
+    const control={inputEl:el,selectEl:el,toggleEl:el,buttonEl:el,
+      setValue(value){el.value=value;return this;},getValue(){return el.value;},
+      setButtonText(text){this.text=text;return this;},setPlaceholder(){return this;},setTooltip(){return this;},setDisabled(){return this;},setCta(){return this;},
+      addOption(value,text){el.createEl('option',{value,text});return this;},
+      onChange(callback){this.change=callback;return this;},onClick(callback){this.click=callback;return this;}};
+    this.controls.push(control); callback(control); return this;
+  }
+  addText(callback){return this.add('input',callback);}
+  addDropdown(callback){return this.add('select',callback);}
+  addButton(callback){return this.add('button',callback);}
+  addToggle(callback){return this.add('input',callback);}
+}
+const compiled=ts.transpileModule(`const ${settingsGroup}; export class Tab { ${methods.join('\n')} }`,{
+  compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+}).outputText;
+function harness() {
+  const calls={saves:0,migrations:[],preview:0,copy:0,review:0,connection:[],focus:[]};
+  const dependencies={Setting,EXTRA_NUTRIENTS:nutrients.BUILT_IN_NUTRIENTS,...schema,Notice:class{},
+    changeHealthMapping:async(plugin,next,label,scope)=>{calls.migrations.push({next,label,scope});return false;}};
+  const exports={};new Function('exports',...Object.keys(dependencies),compiled)(exports,...Object.values(dependencies));
+  const settings=structuredClone(defaults.DEFAULT_SETTINGS);
+  const plugin={settings,saveSettings:async()=>{calls.saves++;},
+    getGcmNativeRecordsApi:()=>({getStorageProfile:()=>({identityPropertyKey:'id',titlePropertyKey:'title',kindPropertyKey:'kind',createdPropertyKey:'createdDate',modifiedPropertyKey:'modifiedDate'})}),
+    previewLegacyHealthImport(){calls.preview++;},copyLegacyHealthLogs:async()=>{calls.copy++;},acknowledgeLegacyHealthHistory:async()=>{calls.review++;},
+    refreshGcmFoodLogButtonRegistration(){},
+  };
+  const tab=Object.assign(new exports.Tab(),{plugin,activeNativePropertyKey:'completedDate',disclosureState:new Map(),
+    app:{plugins:{plugins:{'tps-controller':{api:{openConnectionSettings(section){calls.connection.push(section);}}}}}},
+    redisplayPreservingContext(selector){calls.focus.push(selector);},openPluginSettings(){},
+  });
+  const container=new Element();
+  const rows=()=>container.all().filter(el=>el.setting).map(el=>el.setting);
+  const row=name=>rows().find(row=>row.name===name);
+  return {tab,plugin,container,calls,rows,row};
+}
+
+test('every Health property remains selectable while only one mapping editor is mounted',()=>{
+  const h=harness();const before=structuredClone(h.plugin.settings);
+  h.tab.renderNativeFrontmatterSettings(h.container);
+  const picker=h.row('Property to configure').controls[0];
+  assert.equal(picker.selectEl.attrs['aria-label'],'Health property to configure');
+  const options=picker.selectEl.all().filter(el=>el.tag==='option');
+  assert.deepEqual(options.map(el=>el.value).sort(),Object.keys(schema.DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES).sort());
+  assert.equal(picker.selectEl.children.filter(el=>el.tag==='optgroup').length,3);
+  for(let repeat=0;repeat<5;repeat++)for(const option of options){
+    picker.change(option.value);
+    assert.equal(h.container.all().filter(el=>el.tag==='input').length,1);
+    assert.equal(h.container.all().filter(el=>el.tag==='input')[0].value,h.plugin.settings.nativeRecordProperties[option.value]);
+  }
+  assert.equal(h.calls.saves,0);assert.deepEqual(h.calls.migrations,[]);assert.deepEqual(h.plugin.settings,before);
+});
+
+test('selected property survives a rerender and Apply still requests the existing confirmed migration',async()=>{
+  const h=harness();h.tab.renderNativeFrontmatterSettings(h.container);
+  h.row('Property to configure').controls[0].change('proteinG');
+  h.container.empty();h.tab.renderNativeFrontmatterSettings(h.container);
+  assert.equal(h.row('Property to configure').controls[0].selectEl.value,'proteinG');
+  const mapping=h.row('Protein');const before=structuredClone(h.plugin.settings);
+  mapping.controls[0].setValue('proteinAmount');await mapping.controls[1].click();
+  assert.equal(h.calls.migrations.length,1);
+  assert.equal(h.calls.migrations[0].next.nativeRecordProperties.proteinG,'proteinAmount');
+  assert.equal(h.calls.migrations[0].scope,'all');assert.deepEqual(h.plugin.settings,before);
+  assert.equal(h.calls.saves,0);assert.match(h.calls.focus[0],/tps-health-mapping="protein"/);
+});
+
+test('Daily logging keeps appearance and daily actions without rendering history import controls',()=>{
+  const h=harness();h.tab.renderDailyLoggingPage(h.container);
+  assert.deepEqual(h.rows().map(row=>row.name),['Macros block','Nutrient rows','Show food log button in GCM','Daily Notes source']);
+  assert.equal(h.calls.saves,0);assert.equal(h.calls.preview,0);assert.equal(h.calls.copy,0);
+});
+
+test('Advanced keeps history actions in one closed disclosure and opening it performs no import or save',async()=>{
+  const h=harness();h.plugin.settings.storageMode='legacy';h.tab.renderIntegrationsPage(h.container);
+  const history=h.container.all().find(el=>el.dataset.tpsHealthSettingsDisclosure==='earlier-logs');
+  assert.equal(history.open,false);assert.equal(history.parentElement,h.container);
+  for(const name of ['Earlier inline logs need review','Earlier inline logs'])assert.ok(h.row(name));
+  const actions=h.row('Earlier inline logs').controls;
+  assert.deepEqual(actions.map(control=>control.text),['Preview import','Copy into notes']);
+  assert.equal(h.calls.saves,0);assert.equal(h.calls.preview,0);assert.equal(h.calls.copy,0);
+  actions[0].click();await actions[1].click();await h.row('Earlier inline logs need review').controls[0].click();
+  assert.equal(h.calls.preview,1);assert.equal(h.calls.copy,1);assert.equal(h.calls.review,1);
+});

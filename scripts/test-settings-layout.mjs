@@ -45,17 +45,17 @@ test("GCM v2 kind configuration has one settings owner while legacy controls rem
   assert.match(libraryPage, /"Recipe\/meal tag"/);
 });
 
-test("Health settings keep only the three intentional optional disclosures", () => {
+test("Health settings keep optional editors and historical imports one level deep", () => {
   const disclosureIds = [...settingsSource.matchAll(
     /this\.createOptionalDisclosure\(\s*page,\s*"([^"]+)"/g,
   )].map((match) => match[1]);
-  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter"]);
+  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter", "earlier-logs"]);
   assert.equal((settingsSource.match(/createEl\("details"/g) || []).length, 1);
   assert.doesNotMatch(settingsSource, /createCollapsibleSection|tps-collapsible-section/);
   assert.match(settingsSource, /"Custom goal JSON"/);
   assert.match(settingsSource, /"Templates"/);
   assert.doesNotMatch(settingsSource, /"Provider credentials"/);
-  assert.match(settingsSource, /"Health record frontmatter"/);
+  assert.match(settingsSource, /"Property names"/);
 });
 
 test("Every active user preference remains bound and exerciseTag is editable", () => {
@@ -153,7 +153,7 @@ test("Reusable entity destinations can be typed atomically or selected from exis
   assert.ok(settingsSource.includes('entry.path.replace(/^\\/+|\\/+$/g, "")'), "the vault root must not appear as a selectable entity folder");
   assert.match(settingsSource, /\.setPlaceholder\("Choose a vault folder"\)/);
   for (const [key, label] of [
-    ["workoutsFolder", "Workouts destination"],
+    ["workoutsFolder", "Existing workout folder"],
     ["workoutPlansFolder", "Workout plans destination"],
     ["exercisesFolder", "Exercises destination"],
     ["foodsFolder", "Foods destination"],
@@ -195,15 +195,17 @@ test("USDA rerenders retain disclosure, scroll, and reachable focus", () => {
   assert.match(connectionSource, /\[data-tps-health-usda-secret-index="\$\{index\}"\] input/);
 });
 
-test("Daily logging offers only whole-note records and explicit historical import", () => {
+test("Daily logging keeps daily actions while historical imports stay in Advanced", () => {
   const dailySource = settingsSource.slice(
     settingsSource.indexOf("private renderDailyLoggingPage"),
-    settingsSource.indexOf("private renderFoodGoalsPage"),
+    settingsSource.indexOf("private renderEarlierLogsSettings"),
   );
-  assert.match(dailySource, /setName\("Earlier inline logs need review"\)/);
-  assert.match(dailySource, /setButtonText\("Mark reviewed"\)/);
-  assert.match(dailySource, /setButtonText\("Preview import"\)/);
-  assert.match(dailySource, /setButtonText\("Copy into notes"\)/);
+  assert.doesNotMatch(dailySource, /Earlier inline logs|Preview import|Copy into notes/);
+  assert.match(dailySource, /setName\("Show food log button in GCM"\)/);
+  const earlierLogs = settingsSource.slice(settingsSource.indexOf("private renderEarlierLogsSettings"), settingsSource.indexOf("private renderFoodGoalsPage"));
+  for (const action of ["Mark reviewed", "Preview import", "Copy into notes"]) assert.ok(earlierLogs.includes(`setButtonText("${action}")`));
+  const advanced = settingsSource.slice(settingsSource.indexOf("private renderIntegrationsPage"), settingsSource.indexOf("private renderNativeKindSettings"));
+  assert.match(advanced, /this\.renderEarlierLogsSettings\(earlierLogs\)/);
   for (const retired of ["Health storage", "Food log target", "Food log file", "Default food log section", "Automatic daily rollups"]) {
     assert.ok(!dailySource.includes(`setName("${retired}")`), retired);
   }
@@ -266,9 +268,12 @@ test("recipe expansion omits the generic explanation", () => {
   assert.doesNotMatch(main, /Current recipe, scaled to the logged portion/);
 });
 
-test('supplement fields use one transient selector and bounded narrow-editor controls', () => {
- assert.match(settingsSource, /setName\("Vitamin, mineral or supplement field"\)/);
- assert.match(settingsSource, /dropdown\.onChange\(renderNutrientKey\)/);
+test('all Health property names share one transient selector and bounded narrow-editor controls', () => {
+ assert.match(settingsSource, /setName\("Property to configure"\)/);
+ assert.match(settingsSource, /private activeNativePropertyKey: HealthNativeRecordPropertyKey/);
+ assert.doesNotMatch(settingsSource, /settings\.activeNativePropertyKey/);
+ assert.match(settingsSource, /EXTRA_NUTRIENTS\.map/);
+ assert.match(settingsSource, /createEl\("optgroup"/);
  assert.match(stylesSource, /\.tps-health-form-grid \.tps-health-nutrient-editor \.setting-item\s*\{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) 110px;/);
  assert.match(stylesSource, /\.tps-health-nutrient-editor \.setting-item\[hidden\]/);
 });

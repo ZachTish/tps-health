@@ -18,7 +18,7 @@ import {
 } from "./native-record-schema";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
-type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter";
+type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter" | "earlier-logs";
 type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exercisesFolder" | "foodsFolder" | "recipesFolder";
 
 interface HealthSettingsDestination {
@@ -89,6 +89,7 @@ class HealthFolderSuggestModal extends FuzzySuggestModal<TFolder> {
 export class TPSHealthSettingTab extends PluginSettingTab {
   plugin: TPSHealthPlugin;
   private activeSettingsPage: HealthSettingsPage = "daily";
+  private activeNativePropertyKey: HealthNativeRecordPropertyKey = "completedDate";
   private readonly disclosureState = new Map<OptionalDisclosureId, boolean>();
 
   constructor(app: App, plugin: TPSHealthPlugin) {
@@ -242,11 +243,30 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
         this.plugin.app.workspace.trigger("tps-health:appearance-changed");
       }));
-    const records = createSettingsGroup(
-      page,
-      "Health records",
-      "New food, activity, and workout logs are saved as individual Markdown notes.",
-    );
+    const dailyNotes = createSettingsGroup(page, "Daily notes");
+    new Setting(dailyNotes)
+      .setName("Show food log button in GCM")
+      .setDesc("Adds Log food to the menu on notes matching your Daily notes folder and filename format.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.showFoodLogButtonInGcm)
+        .onChange(async (value) => {
+          this.plugin.settings.showFoodLogButtonInGcm = value;
+          await this.plugin.saveSettings();
+          this.plugin.refreshGcmFoodLogButtonRegistration();
+        }));
+    new Setting(dailyNotes)
+      .setName("Daily Notes source")
+      .setDesc("Folder and date format come from Obsidian → Core plugins → Daily notes. Change them there and TPS Health will use the new values automatically.")
+      .addButton((button) => button
+        .setButtonText("Open Daily Notes settings")
+        .onClick(() => {
+          const setting = (this.app as any).setting;
+          setting?.open?.();
+          setting?.openTabById?.("daily-notes");
+        }));
+  }
+
+  private renderEarlierLogsSettings(records: HTMLElement): void {
     if (this.plugin.settings.storageMode === "legacy") {
       new Setting(records)
         .setName("Earlier inline logs need review")
@@ -269,21 +289,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         .onClick(async () => {
           await this.plugin.copyLegacyHealthLogs();
           this.redisplayPreservingContext();
-        }));
-
-    const dailyNotes = createSettingsGroup(
-      page,
-      "Daily notes",
-    );
-    new Setting(dailyNotes)
-      .setName("Daily Notes source")
-      .setDesc("Folder and date format come from Obsidian → Core plugins → Daily notes. Change them there and TPS Health will use the new values automatically.")
-      .addButton((button) => button
-        .setButtonText("Open Daily Notes settings")
-        .onClick(() => {
-          const setting = (this.app as any).setting;
-          setting?.open?.();
-          setting?.openTabById?.("daily-notes");
         }));
 
   }
@@ -481,20 +486,20 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   private renderNoteLibraryPage(page: HTMLElement): void {
     const folders = createSettingsGroup(
       page,
-      "Reusable note folders",
-      "Enter / to use the vault root. Existing notes are not moved.",
+      "Library folders",
+      "Choose where new foods, recipes, exercises and plans are saved. New log notes use GCM’s record destination. Enter / for the vault root; existing notes are not moved.",
     );
-    this.addLibraryFolderSetting(folders, "workoutsFolder", "Workouts destination", "Canonical workout notes created by Start workout. Existing notes are not moved.");
-    this.addLibraryFolderSetting(folders, "workoutPlansFolder", "Workout plans destination", "Reusable workout/routine notes. Session logs stay in the workouts destination. Existing notes are not moved.");
+    this.addLibraryFolderSetting(folders, "workoutPlansFolder", "Workout plans destination", "Reusable workout/routine notes. New session logs use GCM’s record destination. Existing notes are not moved.");
     this.addLibraryFolderSetting(folders, "exercisesFolder", "Exercises destination", "New exercise notes are created here. Existing exercise notes remain where they are.");
     this.addLibraryFolderSetting(folders, "foodsFolder", "Foods destination", "New food notes are created here. Recipes and meals use their separate destination. Existing food notes remain where they are.");
     this.addLibraryFolderSetting(folders, "recipesFolder", "Recipes destination", "New recipe and meal notes are created here. Existing notes are not moved.");
+    this.addLibraryFolderSetting(folders, "workoutsFolder", "Existing workout folder", "Used to recognize workout notes when matching includes folders. It does not set the destination for new workout sessions.");
 
     if (this.plugin.getGcmApi()?.frontmatterKinds?.version === 2) {
-      const classification = createSettingsGroup(page, "Note classification", "TPS GCM owns the visible kind paths and their earlier read aliases. Health uses these settings for food, recipes, meals, exercises, plans, and logged records; it does not add identity tags.");
+      const classification = createSettingsGroup(page, "Record types", "GCM → Properties → Records controls how foods, recipes, meals, exercises, plans and logs are identified. Health uses those mappings.");
       new Setting(classification)
         .setName("Configure kinds in TPS GCM")
-        .setDesc("Choose each kind's list path and review existing notes in GCM. Reusable note destinations remain above.")
+        .setDesc("Choose each type’s properties and review existing notes in GCM. Library folders remain above.")
         .addButton(button => button.setButtonText("Open GCM settings").onClick(() => this.openPluginSettings("tps-global-context-menu")));
     } else {
     const identification = createSettingsGroup(
@@ -717,19 +722,8 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       "TPS Global Context Menu",
     );
     new Setting(gcm)
-      .setName("Show food log button in GCM")
-      .setDesc("Adds the Log food action to TPS Global Context Menu only when the active note exactly matches the Core Daily Notes folder and filename format.")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.showFoodLogButtonInGcm)
-        .onChange(async (value) => {
-          this.plugin.settings.showFoodLogButtonInGcm = value;
-          await this.plugin.saveSettings();
-          this.plugin.refreshGcmFoodLogButtonRegistration();
-        }));
-
-    new Setting(gcm)
-      .setName("Shared record envelope")
-      .setDesc("GCM owns the shared identity, kind, title, created, and modified keys used by every TPS plugin. Configure Health record values in Note library and Health-specific fields below.")
+      .setName("Record IDs, dates and log destination")
+      .setDesc("GCM → Advanced owns shared ID, title, created and modified properties and the destination for new logs. Record types are under GCM → Properties → Records; Health-specific property names are below.")
       .addButton((button) => button
         .setButtonText("Open GCM settings")
         .onClick(() => this.openPluginSettings("tps-global-context-menu")));
@@ -737,8 +731,8 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const nativeFrontmatter = this.createOptionalDisclosure(
       page,
       "native-frontmatter",
-      "Health record frontmatter",
-      "Configure Health-owned property keys. Apply previews existing records and asks for confirmation before migrating notes and saving the mapping. Record kind values are in Note library.",
+      "Property names",
+      "Choose one Health property to rename. Apply previews existing records and asks for confirmation before changing notes and saving the mapping. Nutrient tracking is configured under Food & goals.",
     );
     this.renderNativeFrontmatterSettings(nativeFrontmatter);
 
@@ -751,6 +745,14 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           else new Notice("Enable or update TPS Controller to 2.6.0+ to manage connections.");
         }));
     }
+
+    const earlierLogs = this.createOptionalDisclosure(
+      page,
+      "earlier-logs",
+      "Earlier inline logs",
+      "Optional one-time import of older food, activity and workout lines. Current logging saves individual notes; nothing is imported automatically.",
+    );
+    this.renderEarlierLogsSettings(earlierLogs);
 
     const diagnostics = createSettingsGroup(
       page,
@@ -782,12 +784,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
   private renderNativeFrontmatterSettings(section: HTMLElement): void {
 
-    section.createEl("h5", { cls: "tps-health-settings-subheading", text: "Food and nutrition fields" });
     const propertyGroups: Array<[string, Array<[HealthNativeRecordPropertyKey, string]>]> = [
       ["Food and nutrition fields", [
         ["completedDate", "Logged/completed time"], ["food", "Food link"], ["quantity", "Quantity"], ["unit", "Unit"],
         ["calories", "Calories"], ["proteinG", "Protein"], ["carbsG", "Carbohydrates"], ["fatG", "Fat"],
         ["fiberG", "Fiber"], ["sugarG", "Sugar"], ["sugarAlcoholG", "Sugar alcohol"], ["alcoholG", "Alcohol"], ["sodiumMg", "Sodium"],
+        ...EXTRA_NUTRIENTS.map(nutrient => [nutrient.key, `${nutrient.label} (${nutrient.unit})`] as [HealthNativeRecordPropertyKey, string]),
       ]],
       ["Activity fields", [
         ["activity", "Activity name"], ["activityType", "Activity type"], ["startedAt", "Activity start"],
@@ -800,27 +802,32 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         ["note", "Note"], ["archived", "Archived"], ["archivedDate", "Archived time"],
       ]],
     ];
-    for (const [groupLabel, fields] of propertyGroups) {
-      if (groupLabel !== "Food and nutrition fields") {
-        section.createEl("h5", { cls: "tps-health-settings-subheading", text: groupLabel });
-      }
-      for (const [key, label] of fields) this.addNativePropertyKeySetting(section, key, label);
-      if (groupLabel === "Food and nutrition fields") {
-        const fieldEditor = section.createDiv();
-        const renderNutrientKey = (key: string) => {
-          fieldEditor.empty();
-          const nutrient = EXTRA_NUTRIENTS.find(n => n.key === key);
-          if (nutrient) this.addNativePropertyKeySetting(fieldEditor, nutrient.key, `${nutrient.label} property`);
-        };
-        const selector = new Setting(section).setName("Vitamin, mineral or supplement field").addDropdown(dropdown => {
-          for (const nutrient of EXTRA_NUTRIENTS) dropdown.addOption(nutrient.key, `${nutrient.label} (${nutrient.unit})`);
-          dropdown.onChange(renderNutrientKey);
+    const fields = propertyGroups.flatMap(([, entries]) => entries);
+    const fieldEditor = section.createDiv();
+    const renderField = () => {
+      fieldEditor.empty();
+      const field = fields.find(([key]) => key === this.activeNativePropertyKey)!;
+      this.addNativePropertyKeySetting(fieldEditor, field[0], field[1]);
+    };
+    const selector = new Setting(section)
+      .setName("Property to configure")
+      .setDesc("Browsing names does not enable tracking or add properties to notes.")
+      .addDropdown(dropdown => {
+        dropdown.selectEl.setAttribute("aria-label", "Health property to configure");
+        for (const [groupLabel, entries] of propertyGroups) {
+          const group = dropdown.selectEl.createEl("optgroup", { attr: { label: groupLabel } });
+          for (const [key, label] of entries) group.createEl("option", {
+            value: key, text: `${label} · ${this.plugin.settings.nativeRecordProperties[key]}`,
+          });
+        }
+        dropdown.setValue(this.activeNativePropertyKey).onChange(value => {
+          this.activeNativePropertyKey = value as HealthNativeRecordPropertyKey;
+          renderField();
+          fieldEditor.querySelector<HTMLInputElement>("input")?.focus();
         });
-        selector.settingEl.after(fieldEditor);
-        renderNutrientKey(EXTRA_NUTRIENTS[0].key);
-      }
-
-    }
+      });
+    selector.settingEl.after(fieldEditor);
+    renderField();
   }
 
   private addNativePropertyKeySetting(
