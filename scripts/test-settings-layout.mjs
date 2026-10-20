@@ -72,7 +72,6 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "defaultRestSeconds",
     "defaultWorkoutCooldownDays",
     "defaultWorkoutEstimateMinutes",
-    "workoutSetNotation",
     "workoutControlPlacement",
     "workoutsFolder",
     "workoutPlansFolder",
@@ -91,7 +90,6 @@ test("Every active user preference remains bound and exerciseTag is editable", (
     "exerciseTag",
     "customFoodTag",
     "recipeTag",
-    "workoutTemplatePath",
     "workoutPlanTemplatePath",
     "exerciseTemplatePath",
     "foodTemplatePath",
@@ -145,6 +143,14 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeWorkoutPath|activeWorkoutId|pendingFoodLogDraft|rollupHeading)/);
+});
+
+test("Retired session-template and set-notation controls are removed while reusable templates remain", () => {
+  assert.doesNotMatch(settingsSource, /workoutTemplatePath|workoutSetNotation|"Workout template path"|"Set notation"/);
+  for (const name of ["Workout plan template path", "Exercise template path", "Food template path"]) {
+    assert.ok(settingsSource.includes(`.setName("${name}")`), name);
+  }
+  assert.match(settingsSource, /Optional note templates used when TPS Health creates reusable foods, exercises and workout plans/);
 });
 
 test("Reusable entity destinations can be typed atomically or selected from existing vault folders", () => {

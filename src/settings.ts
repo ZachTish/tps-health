@@ -8,7 +8,7 @@ import { App, Notice, FuzzySuggestModal, PluginSettingTab, Setting, TFolder, Tex
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
 import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition } from "./settings-normalization";
-import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode, WorkoutSetNotation } from "./types";
+import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 import {
   DEFAULT_HEALTH_NATIVE_RECORD_KINDS,
@@ -470,17 +470,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(sessionDefaults)
-      .setName("Set notation")
-      .setDesc("Compact uses gym-log style text like 225 lb x 15. Verbose uses separate reps/weight phrases.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("compact", "Compact")
-        .addOption("verbose", "Verbose")
-        .setValue(this.plugin.settings.workoutSetNotation)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutSetNotation = value as WorkoutSetNotation;
-          await this.plugin.saveSettings();
-        }));
   }
 
   private renderNoteLibraryPage(page: HTMLElement): void {
@@ -627,17 +616,8 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       page,
       "templates",
       "Templates",
-      "Optional note templates used when TPS Health creates reusable notes or workout sessions.",
+      "Optional note templates used when TPS Health creates reusable foods, exercises and workout plans.",
     );
-    new Setting(templates)
-      .setName("Workout template path")
-      .setDesc("Optional note used when creating a workout session file. Supports {{title}}, {{startedAt}}, {{workoutPlanPath}}, and {{cooldownDays}}.")
-      .addText((text) => text
-        .setValue(this.plugin.settings.workoutTemplatePath)
-        .onChange(async (value) => {
-          this.plugin.settings.workoutTemplatePath = value.trim();
-          await this.plugin.saveSettings();
-        }));
 
     new Setting(templates)
       .setName("Workout plan template path")

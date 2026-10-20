@@ -699,7 +699,7 @@ export default class TPSHealthPlugin extends Plugin {
     this.settings = normalizeTPSHealthSettings(storedSettings as Partial<TPSHealthSettings> || {}, profile?.identityMode === "property" ? profile.identityPropertyKey : "id");
     if (this.settings.storageMode === "legacy") {
       logger.flowWarn("Settings", "inline-history:review-needed");
-      new Notice("TPS Health now saves whole-note records. Earlier inline logs remain in their notes; use Daily logging → Earlier inline logs to preview and copy them.", 12000);
+      new Notice("TPS Health now saves whole-note records. Earlier inline logs remain in their notes; use Integrations & advanced → Earlier inline logs to preview and copy them.", 12000);
     }
     configureCustomNutrients(this.settings.customNutrients);
     logger.setLoggingEnabled(this.settings.enableLogging);
@@ -708,10 +708,7 @@ export default class TPSHealthPlugin extends Plugin {
       logger.flowWarn("Settings", "future-schema:read-only", { settingsVersion: this.settings.settingsVersion });
       new Notice("TPS Health settings were written by a newer plugin version. This version will use the compatible values but will not overwrite that settings file.", 12000);
     }
-    logger.flow("Lifecycle", "load", {
-      foodLogTarget: this.settings.foodLogTarget,
-      workoutLogTarget: this.settings.workoutLogTarget,
-    });
+    logger.flow("Lifecycle", "load", { storage: "native-records" });
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
@@ -1309,8 +1306,6 @@ export default class TPSHealthPlugin extends Plugin {
           changedKeys,
           changedCount: changedKeys.length,
           enableLogging: persistencePayload.enableLogging,
-          foodLogTarget: persistencePayload.foodLogTarget,
-          workoutLogTarget: persistencePayload.workoutLogTarget,
           activeWorkoutPath: persistencePayload.activeWorkoutPath || "",
           activeWorkoutSetCount: persistencePayload.activeWorkoutSetCount || 0,
         });
@@ -1330,8 +1325,6 @@ export default class TPSHealthPlugin extends Plugin {
           logger.flow("Settings", "save:done", {
             changedKeys,
             changedCount: changedKeys.length,
-            foodLogTarget: persistedSnapshot.foodLogTarget,
-            workoutLogTarget: persistedSnapshot.workoutLogTarget,
             activeWorkoutPath: persistedSnapshot.activeWorkoutPath || "",
             activeWorkoutSetCount: persistedSnapshot.activeWorkoutSetCount || 0,
           });
@@ -1347,8 +1340,6 @@ export default class TPSHealthPlugin extends Plugin {
             this.pendingActiveWorkoutStateMutation = activeWorkoutStateMutation;
           }
           logger.flowError("Settings", "save:failed", error, {
-            foodLogTarget: localSnapshot.foodLogTarget,
-            workoutLogTarget: localSnapshot.workoutLogTarget,
             activeWorkoutPath: localSnapshot.activeWorkoutPath || "",
             activeWorkoutSetCount: localSnapshot.activeWorkoutSetCount || 0,
           });
@@ -19137,17 +19128,6 @@ export function removeEmptyWorkoutTimerWorkspace(content: string, blockId: strin
   return lines.join(eol);
 }
 
-function normalizeWorkoutLogTarget(target: WorkoutLogTarget): WorkoutLogTarget {
-  return target === "session-note" || target === "daily-note" || target === "both" ? target : "both";
-}
-
-function workoutDailyNoteBlock(sessionLine: string): string {
-  const record = sessionLine.replace(/^\s*-\s*/, "").trim();
-  const workoutId = readStringField(record, "workoutId") || "";
-  const marker = `<!-- tps-health:workout ${record} -->`;
-  return `${workoutDailyTaskLine(marker)}\n## Workout\n${marker}\n${workoutDailyEndMarkerLine(workoutId)}`;
-}
-
 function workoutDailyTaskLine(marker: string, completed = false): string {
   const workoutId = readStringField(marker, "workoutId") || "";
   const title = (readStringField(marker, "activity") || "Workout")
@@ -20022,32 +20002,6 @@ function nutritionFromInlineOverrides(overrides: InlineFoodDraft["overrides"]): 
     nutrition.calories = caloriesFromMacros(nutrition);
   }
   return nutrition;
-}
-
-function removeLegacyRollupBlock(content: string, rollupHeading: string): string {
-  const startToken = "<!-- tps-health-rollup:start -->";
-  const endToken = "<!-- tps-health-rollup:end -->";
-  const start = content.indexOf(startToken);
-  const end = content.indexOf(endToken);
-  if (start < 0 || end <= start) return content;
-
-  const beforeStart = content.slice(0, start);
-  const afterEnd = content.slice(end + endToken.length);
-  const headingPatterns = [
-    `## ${rollupHeading}`,
-    "## DailyHealth",
-    "## Health Rollup",
-  ];
-  let replaceStart = start;
-  for (const heading of headingPatterns) {
-    const headingStart = beforeStart.lastIndexOf(heading);
-    if (headingStart >= 0 && beforeStart.slice(headingStart).trim().startsWith(heading)) {
-      replaceStart = headingStart;
-      break;
-    }
-  }
-
-  return `${content.slice(0, replaceStart).trimEnd()}${afterEnd.startsWith("\n") ? afterEnd : `\n${afterEnd}`}`.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
 function cloneSettingsSnapshot(settings: TPSHealthSettings): TPSHealthSettings {

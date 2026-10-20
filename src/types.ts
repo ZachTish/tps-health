@@ -9,7 +9,6 @@ export type WorkoutDailyNotePlacement = "after-frontmatter" | "before-first-h2" 
 export type ActivitySource = "manual" | "workout" | "apple-health";
 export type HealthStorageMode = "legacy" | "native-records";
 export type EnergyEstimateMode = "calculated" | "fixed" | "activity-notes";
-export type WorkoutSetNotation = "compact" | "verbose";
 export type WorkoutIntervalMode = "duration" | "end";
 export type WorkoutControlPlacement = "inline" | "floating";
 export type HealthEntityIdentificationMode = "metadata-folder-tag" | "folder" | "tag" | "metadata";
@@ -44,13 +43,12 @@ export interface HealthGoal {
 
 export interface TPSHealthSettings {
   settingsVersion: number;
-  storageMode: HealthStorageMode;
+  storageMode: HealthStorageMode; // Earlier-log review status; new writes always use whole-note records.
   workoutsFolder: string;
   workoutPlansFolder: string;
   exercisesFolder: string;
   foodsFolder: string;
   recipesFolder: string;
-  workoutTemplatePath: string;
   workoutPlanTemplatePath: string;
   exerciseTemplatePath: string;
   foodTemplatePath: string;
@@ -58,16 +56,11 @@ export interface TPSHealthSettings {
   defaultRestSeconds: number;
   defaultWorkoutCooldownDays: number;
   defaultWorkoutEstimateMinutes: number;
-  workoutSetNotation: WorkoutSetNotation;
   workoutControlPlacement: WorkoutControlPlacement;
   workoutStartPropertyKey: string;
   workoutIntervalMode: WorkoutIntervalMode;
   workoutIntervalPropertyKey: string;
-  appendWorkoutSummaryToDailyNote: boolean;
-  defaultFoodLogSection: string;
-  foodLogFilePath: string;
-  workoutLogTarget: WorkoutLogTarget;
-  workoutDailyNotePlacement: WorkoutDailyNotePlacement;
+  foodLogFilePath: string; // Scope for the explicit historical inline Food Log Base, not a write destination.
   foodIdentificationMode: HealthEntityIdentificationMode;
   workoutIdentificationMode: HealthEntityIdentificationMode;
   workoutFrontmatterKey: string;
@@ -85,7 +78,6 @@ export interface TPSHealthSettings {
   exerciseTag: string;
   customFoodTag: string;
   recipeTag: string;
-  foodLogTarget: FoodLogTarget;
   showFoodLogButtonInGcm: boolean;
   includeBrandedFoodSearch: boolean;
   macroBlockStyle: "rings" | "table";
@@ -105,7 +97,6 @@ export interface TPSHealthSettings {
   calorieGoal: number;
   proteinGoalG: number;
   activityGoalMinutes: number;
-  rollupHeading: string;
   openFoodFactsUserAgent: string;
   usdaApiKeySecrets: string[];
   activeWorkoutPath: string;
@@ -326,7 +317,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   exercisesFolder: "Health/Exercises",
   foodsFolder: "Health/Foods",
   recipesFolder: "Health/Recipes",
-  workoutTemplatePath: "",
   workoutPlanTemplatePath: "",
   exerciseTemplatePath: "",
   foodTemplatePath: "",
@@ -334,16 +324,11 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   defaultRestSeconds: 90,
   defaultWorkoutCooldownDays: 0,
   defaultWorkoutEstimateMinutes: 60,
-  workoutSetNotation: "compact",
   workoutControlPlacement: "inline",
   workoutStartPropertyKey: "scheduled",
   workoutIntervalMode: "duration",
   workoutIntervalPropertyKey: "timeEstimate",
-  appendWorkoutSummaryToDailyNote: true,
-  defaultFoodLogSection: "",
   foodLogFilePath: "Health/Food Log.md",
-  workoutLogTarget: "both",
-  workoutDailyNotePlacement: "after-frontmatter",
   foodIdentificationMode: "metadata-folder-tag",
   workoutIdentificationMode: "metadata-folder-tag",
   workoutFrontmatterKey: "kind",
@@ -399,7 +384,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   exerciseTag: "#tps/exercise",
   customFoodTag: "#tps/food",
   recipeTag: "#tps/recipe",
-  foodLogTarget: "daily-note",
   showFoodLogButtonInGcm: false,
   includeBrandedFoodSearch: true,
   macroBlockStyle: "rings",
@@ -427,7 +411,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   calorieGoal: 2400,
   proteinGoalG: 180,
   activityGoalMinutes: 45,
-  rollupHeading: "Health Rollup",
   openFoodFactsUserAgent: "TPSHealth/0.1 (Obsidian plugin)",
   usdaApiKeySecrets: [USDA_API_KEY_SECRET],
   activeWorkoutPath: "",

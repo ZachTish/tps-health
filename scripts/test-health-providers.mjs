@@ -4890,6 +4890,103 @@ test("Health logging routes through whole-note records and retains explicit lega
   assert.doesNotMatch(mainSource, /await this\.repairActiveDailyWorkoutBlock\(\)/);
 });
 
+const retiredInlineLoggingSettings = {
+  appendWorkoutSummaryToDailyNote: true,
+  defaultFoodLogSection: "Old meals",
+  workoutLogTarget: "both",
+  workoutDailyNotePlacement: "bottom",
+  foodLogTarget: "single-file",
+  rollupHeading: "Old rollup",
+  workoutTemplatePath: "Templates/Old session.md",
+  workoutSetNotation: "verbose",
+};
+
+test("retired inline logging options are absent from defaults, normalization and persistence", async () => {
+  const { normalizeTPSHealthSettings, settingsPersistencePayload, mergeTPSHealthSettingsChanges } = await importSettingsNormalizationUtility();
+  const stored = {
+    ...retiredInlineLoggingSettings,
+    storageMode: "legacy",
+    foodLogFilePath: "History/Meals.md",
+    workoutPlanTemplatePath: "Templates/Plan.md",
+    exerciseTemplatePath: "Templates/Exercise.md",
+    foodTemplatePath: "Templates/Food.md",
+    extensionOwnedSetting: { keep: ["custom"] },
+  };
+  const original = JSON.stringify(stored);
+  const normalized = normalizeTPSHealthSettings(stored);
+  const local = { ...normalized, showFoodLogButtonInGcm: false };
+  for (const result of [
+    normalizeTPSHealthSettings({}),
+    normalized,
+    settingsPersistencePayload({ ...normalized, ...retiredInlineLoggingSettings }),
+    mergeTPSHealthSettingsChanges(stored, local, ["showFoodLogButtonInGcm"]),
+  ]) {
+    for (const key of Object.keys(retiredInlineLoggingSettings)) assert.equal(Object.hasOwn(result, key), false, key);
+  }
+  assert.equal(JSON.stringify(stored), original, "normalization cannot mutate the stored source");
+  for (const key of ["storageMode", "foodLogFilePath", "workoutPlanTemplatePath", "exerciseTemplatePath", "foodTemplatePath", "extensionOwnedSetting"]) {
+    assert.deepEqual(normalized[key], stored[key], `${key} has a supported reader`);
+  }
+});
+
+test("normal settings saves retire inert options without losing concurrent preferences or workout and food state", async () => {
+  installDeterministicBrowserGlobals();
+  const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
+  const { default: Plugin } = await importPluginWithObsidianStub();
+  const fake = createFakeHealthApp();
+  const plugin = new Plugin(fake.app);
+  let stored = {
+    ...retiredInlineLoggingSettings,
+    foodLogFilePath: "History/Meals.md",
+    showFoodLogButtonInGcm: true,
+    activeWorkoutId: "existing-workout",
+    activeWorkoutPath: "History/Workout.md",
+    activeWorkoutTarget: "daily-note",
+    activeWorkoutDailyNotePath: "Journal/2026-10-20.md",
+    activeWorkoutStartedAt: "2026-10-20T08:00:00",
+    activeWorkoutSetCount: 3,
+    lastSetEndedAt: "2026-10-20T08:10:00",
+    pendingFoodLogDraft: {
+      id: "existing-draft", updatedAt: "2026-10-20T09:00:00", activeTab: "search",
+      consumedDateInput: "2026-10-20T09:00", searchInput: "Eggs",
+      dateContext: { dateIso: "2026-10-20", label: "Today", isToday: true, foodLogTarget: "daily-note" },
+      selectionItems: [{ item: { id: "egg", name: "Egg", source: "manual", nutrition: { calories: 70 } }, quantity: 2, unit: "serving" }],
+    },
+    usdaApiKey: "synthetic-private-value",
+    usdaApiKeySecrets: ["existing-device-reference"],
+    extensionOwnedSetting: { keep: ["custom"] },
+  };
+  plugin.settings = normalizeTPSHealthSettings(stored);
+  plugin.lastSavedSettingsSnapshot = JSON.parse(JSON.stringify(plugin.settings));
+  plugin.retainedLegacyUsdaApiKey = "synthetic-private-value";
+  const expectedState = JSON.parse(JSON.stringify(plugin.settings));
+  stored.recipesFolder = "Synced Recipes";
+  stored.extensionOwnedSetting.keep.push("concurrent");
+  plugin.loadData = async () => structuredClone(stored);
+  let saves = 0;
+  plugin.saveData = async payload => { saves++; stored = JSON.parse(JSON.stringify(payload)); };
+  for (const method of ["read", "cachedRead", "modify", "process", "create", "getMarkdownFiles"]) {
+    fake.app.vault[method] = () => { throw new Error(`Settings cleanup cannot call vault.${method}`); };
+  }
+
+  await plugin.saveSettings();
+  assert.equal(saves, 0, "loading retired options cannot schedule a cleanup save");
+  plugin.settings.showFoodLogButtonInGcm = false;
+  await plugin.saveSettings();
+  assert.equal(saves, 1);
+  for (const key of Object.keys(retiredInlineLoggingSettings)) assert.equal(Object.hasOwn(stored, key), false, key);
+  for (const key of ["activeWorkoutId", "activeWorkoutPath", "activeWorkoutTarget", "activeWorkoutDailyNotePath", "activeWorkoutStartedAt", "activeWorkoutSetCount", "lastSetEndedAt", "pendingFoodLogDraft", "foodLogFilePath"]) {
+    assert.deepEqual(stored[key], expectedState[key], key);
+  }
+  assert.equal(stored.showFoodLogButtonInGcm, false);
+  assert.equal(stored.recipesFolder, "Synced Recipes");
+  assert.deepEqual(stored.extensionOwnedSetting, { keep: ["custom", "concurrent"] });
+  assert.equal(stored.usdaApiKey, "synthetic-private-value");
+  assert.deepEqual(stored.usdaApiKeySecrets, ["existing-device-reference"]);
+  await plugin.saveSettings();
+  assert.equal(saves, 1, "an unchanged save cannot repeat cleanup");
+});
+
 test("settings normalization removes stale fields while preserving live vault config", async () => {
   const { applyBuiltInHealthGoalTargets, isFutureTPSHealthSettings, normalizeTPSHealthSettings, normalizeHealthGoalDefinition } = await importSettingsNormalizationUtility();
   const [mainSource, settingsSource] = await Promise.all([
@@ -4937,15 +5034,15 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(Object.hasOwn(normalized, "foodLogHeading"), false);
   assert.equal(Object.hasOwn(normalized, "dailyNoteFormat"), false);
   assert.equal(Object.hasOwn(normalized, "dailyNoteFolder"), false);
-  assert.equal(normalized.foodLogTarget, "single-file");
+  assert.equal(Object.hasOwn(normalized, "foodLogTarget"), false);
   assert.equal(normalized.foodLogFilePath, "Tracked/Food.md");
-  assert.equal(normalized.workoutLogTarget, "both");
-  assert.equal(normalized.workoutDailyNotePlacement, "bottom");
+  assert.equal(Object.hasOwn(normalized, "workoutLogTarget"), false);
+  assert.equal(Object.hasOwn(normalized, "workoutDailyNotePlacement"), false);
   assert.equal(Object.hasOwn(normalized, "workoutLogHeading"), false);
   assert.equal(normalized.foodIdentificationMode, "metadata-folder-tag");
   assert.equal(normalized.workoutIdentificationMode, "tag");
   assert.equal(normalized.workoutTag, "#custom/workout");
-  assert.equal(normalized.rollupHeading, "Legacy Rollup");
+  assert.equal(Object.hasOwn(normalized, "rollupHeading"), false);
   assert.equal(normalized.includeBrandedFoodSearch, true);
   assert.equal(normalized.defaultWorkoutCooldownDays, 3);
   assert.equal(normalized.activeWorkoutSetCount, 0);
@@ -5025,12 +5122,12 @@ test("settings normalization removes stale fields while preserving live vault co
     workoutExerciseLayout: "flat",
     activeWorkoutTarget: "daily-note",
   });
-  assert.equal(migratedWorkout.workoutLogTarget, "daily-note");
-  assert.equal(migratedWorkout.workoutDailyNotePlacement, "after-frontmatter");
+  assert.equal(Object.hasOwn(migratedWorkout, "workoutLogTarget"), false);
+  assert.equal(Object.hasOwn(migratedWorkout, "workoutDailyNotePlacement"), false);
   assert.equal(migratedWorkout.activeWorkoutTarget, "daily-note");
   assert.equal(Object.hasOwn(migratedWorkout, "workoutSessionBodyMode"), false);
   assert.equal(Object.hasOwn(migratedWorkout, "workoutExerciseLayout"), false);
-  assert.equal(normalizeTPSHealthSettings({ workoutLogTarget: "session-note" }).workoutLogTarget, "both", "legacy dedicated-only storage must retain its note and add the Daily Note surface");
+  assert.equal(Object.hasOwn(normalizeTPSHealthSettings({ workoutLogTarget: "session-note" }), "workoutLogTarget"), false);
   const customCalendar = normalizeTPSHealthSettings({
     workoutStartPropertyKey: "calendarStart",
     workoutIntervalMode: "end",
@@ -10995,7 +11092,7 @@ test('repeated Health startup does not save settings or access secrets for absen
   installDeterministicBrowserGlobals();
   const { default: Plugin } = await importPluginWithObsidianStub();
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
-  const configurations = [null, {}, { usdaApiKey: 'test-legacy-value', futureExtension: { keep: true } }, normalizeTPSHealthSettings({ calorieGoal: 1900 })];
+  const configurations = [null, {}, { usdaApiKey: 'test-legacy-value', futureExtension: { keep: true } }, retiredInlineLoggingSettings, normalizeTPSHealthSettings({ calorieGoal: 1900 })];
   const counts = { saves: 0, secretReads: 0, secretWrites: 0 };
   for (const stored of configurations) {
     const original = JSON.stringify(stored);

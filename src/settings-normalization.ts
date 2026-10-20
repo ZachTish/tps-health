@@ -13,17 +13,18 @@ import {
   isValidNativeRecordKindValue,
 } from "./native-record-schema";
 
-export const LEGACY_SETTING_KEYS = ["foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage"] as const;
+export const LEGACY_SETTING_KEYS = [
+  "foodLogHeading", "workoutLogHeading", "workoutSessionBodyMode", "workoutExerciseLayout", "workoutSetStorage",
+  "appendWorkoutSummaryToDailyNote", "defaultFoodLogSection", "workoutLogTarget", "workoutDailyNotePlacement",
+  "foodLogTarget", "rollupHeading", "workoutTemplatePath", "workoutSetNotation",
+] as const;
 
 type SettingsRecord = Record<string, unknown>;
 
 const REMOVED_SETTING_KEYS = [...LEGACY_SETTING_KEYS, "dailyNoteFormat", "dailyNoteFolder", "usdaApiKeySecret", "usdaApiKey", "edamamEnabled", "edamamAppIdSecret", "edamamApiKeySecret", "nutritionixEnabled", "nutritionixAppIdSecret", "nutritionixApiKeySecret"] as const;
 
 const WORKOUT_LOG_TARGETS = ["session-note", "daily-note", "both"];
-const WORKOUT_DAILY_NOTE_PLACEMENTS = ["after-frontmatter", "before-first-h2", "bottom"];
-const FOOD_LOG_TARGETS = ["daily-note", "single-file"];
 const REST_TIMER_MODES = ["count-up", "count-down"];
-const WORKOUT_SET_NOTATIONS = ["compact", "verbose"];
 const WORKOUT_CONTROL_PLACEMENTS = ["inline", "floating"];
 const WORKOUT_INTERVAL_MODES = ["duration", "end"];
 const HEALTH_ENTITY_IDENTIFICATION_MODES: HealthEntityIdentificationMode[] = ["metadata-folder-tag", "folder", "tag", "metadata"];
@@ -67,11 +68,9 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
   settings.foodsFolder = folderSetting(settings.foodsFolder, DEFAULT_SETTINGS.foodsFolder);
   settings.recipesFolder = folderSetting(settings.recipesFolder, DEFAULT_SETTINGS.recipesFolder);
   if (!HEALTH_STORAGE_MODES.includes(settings.storageMode)) settings.storageMode = DEFAULT_SETTINGS.storageMode;
-  settings.workoutTemplatePath = optionalStringSetting(settings.workoutTemplatePath);
   settings.workoutPlanTemplatePath = optionalStringSetting(settings.workoutPlanTemplatePath);
   settings.exerciseTemplatePath = optionalStringSetting(settings.exerciseTemplatePath);
   settings.foodTemplatePath = optionalStringSetting(settings.foodTemplatePath);
-  settings.defaultFoodLogSection = optionalStringSetting(settings.defaultFoodLogSection);
   settings.foodLogFilePath = stringSetting(settings.foodLogFilePath, DEFAULT_SETTINGS.foodLogFilePath);
   settings.workoutTag = optionalStringSetting(settings.workoutTag);
   settings.exerciseTag = optionalStringSetting(settings.exerciseTag);
@@ -99,7 +98,6 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
       ? "workoutDuration"
       : DEFAULT_SETTINGS.workoutIntervalPropertyKey;
   }
-  settings.rollupHeading = stringSetting(settings.rollupHeading, DEFAULT_SETTINGS.rollupHeading);
   settings.openFoodFactsUserAgent = stringSetting(settings.openFoodFactsUserAgent, DEFAULT_SETTINGS.openFoodFactsUserAgent);
   const storedUsdaReferences = Object.prototype.hasOwnProperty.call(storedRecord, "usdaApiKeySecrets")
     ? storedRecord.usdaApiKeySecrets
@@ -116,12 +114,7 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
   settings.activeWorkoutStartedAt = optionalStringSetting(settings.activeWorkoutStartedAt);
   settings.lastSetEndedAt = optionalStringSetting(settings.lastSetEndedAt);
 
-  if (!WORKOUT_LOG_TARGETS.includes(settings.workoutLogTarget)) settings.workoutLogTarget = DEFAULT_SETTINGS.workoutLogTarget;
-  if (settings.workoutLogTarget === "session-note") settings.workoutLogTarget = "both";
-  if (!WORKOUT_DAILY_NOTE_PLACEMENTS.includes(settings.workoutDailyNotePlacement)) settings.workoutDailyNotePlacement = DEFAULT_SETTINGS.workoutDailyNotePlacement;
-  if (!FOOD_LOG_TARGETS.includes(settings.foodLogTarget)) settings.foodLogTarget = DEFAULT_SETTINGS.foodLogTarget;
   if (!REST_TIMER_MODES.includes(settings.restTimerMode)) settings.restTimerMode = DEFAULT_SETTINGS.restTimerMode;
-  if (!WORKOUT_SET_NOTATIONS.includes(settings.workoutSetNotation)) settings.workoutSetNotation = DEFAULT_SETTINGS.workoutSetNotation;
   if (!WORKOUT_CONTROL_PLACEMENTS.includes(settings.workoutControlPlacement)) settings.workoutControlPlacement = DEFAULT_SETTINGS.workoutControlPlacement;
   if (!WORKOUT_INTERVAL_MODES.includes(settings.workoutIntervalMode)) settings.workoutIntervalMode = DEFAULT_SETTINGS.workoutIntervalMode;
   if (!HEALTH_ENTITY_IDENTIFICATION_MODES.includes(settings.foodIdentificationMode)) settings.foodIdentificationMode = DEFAULT_SETTINGS.foodIdentificationMode;
@@ -152,7 +145,6 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
   settings.activeWorkoutSetCount = nonNegativeInteger(settings.activeWorkoutSetCount, 0);
   settings.pendingFoodLogDraft = normalizePendingFoodLogDraft(settings.pendingFoodLogDraft);
 
-  settings.appendWorkoutSummaryToDailyNote = booleanSetting(settings.appendWorkoutSummaryToDailyNote, DEFAULT_SETTINGS.appendWorkoutSummaryToDailyNote);
   settings.showFoodLogButtonInGcm = booleanSetting(settings.showFoodLogButtonInGcm, DEFAULT_SETTINGS.showFoodLogButtonInGcm);
   settings.includeBrandedFoodSearch = booleanSetting(settings.includeBrandedFoodSearch, DEFAULT_SETTINGS.includeBrandedFoodSearch);
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
