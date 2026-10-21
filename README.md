@@ -2,6 +2,8 @@
 
 ## Development workflow
 
+Cross-plugin tests use the current sibling checkouts named by manifest ID in the dedicated development workspace. They no longer inspect archived `Dev` sources. Relocation changes test/tooling paths only; shipped behavior and version are unchanged.
+
 Run `npm test`, then `npm run build` for the separate final production-mode build. Both commands stay inside this checkout and never deploy or reload a vault. The build needs only this repository and its declared dependencies; no parent workspace helper is imported. Deployment is an explicit test-vault operation owned by the workspace release checklist. Runtime artifacts and private settings are never copied back into source. This tooling-only change does not alter the plugin version or runtime behavior.
 
 ## 8.0.0 — Remove unused logging configuration

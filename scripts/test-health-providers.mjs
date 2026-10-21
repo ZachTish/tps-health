@@ -3,19 +3,15 @@ import test from "node:test";
 import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 const USER_AGENT = "TPSHealth/0.1 (Obsidian plugin test)";
 const mainEntryPoint = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const mainSource = readFileSync(mainEntryPoint, "utf8");
 const apiSource = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-const sharedOverlayCandidates = [
-  new URL("../../TPS-Global-Context-Menu (Dev)/src/utils/mobile-overlay.ts", import.meta.url),
-  new URL("../../TPS Global Context Menu/src/utils/mobile-overlay.ts", import.meta.url),
-];
 const sharedMobileOverlaySource = readFileSync(
-  sharedOverlayCandidates.find(candidate => existsSync(candidate)) ?? sharedOverlayCandidates[0],
+  new URL("../../tps-global-context-menu/src/utils/mobile-overlay.ts", import.meta.url),
   "utf8"
 );
 
