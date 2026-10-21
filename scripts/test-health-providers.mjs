@@ -128,6 +128,7 @@ async function importPluginWithObsidianStub() {
         ? { exists: true, frontmatter: match[1], from: 4, to: 4 + match[1].length, contentStart: match[0].length }
         : { exists: false, frontmatter: "", from: 0, to: 0, contentStart: 0 };
     }
+    export function stringifyYaml(value) { return JSON.stringify(value); }
     export function parseYaml(value) {
       const result = {};
       for (const line of String(value || "").split(/\\r?\\n/)) {
@@ -5046,7 +5047,7 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.equal(normalized.workoutIntervalMode, "duration");
   assert.equal(normalized.workoutIntervalPropertyKey, "timeEstimate");
   assert.equal(Object.hasOwn(normalized, "workoutSetStorage"), false);
-  assert.equal(normalized.settingsVersion, 9);
+  assert.equal(normalized.settingsVersion, 10);
   assert.equal(normalized.workoutControlPlacement, "inline");
   assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "floating" }).workoutControlPlacement, "floating");
   assert.equal(normalizeTPSHealthSettings({ workoutControlPlacement: "sideways" }).workoutControlPlacement, "inline");
@@ -5154,19 +5155,18 @@ test("settings normalization removes stale fields while preserving live vault co
   assert.deepEqual(preservedUnknown.extensionOwnedSetting, { enabled: true, nested: ["one"] });
   assert.equal(Object.hasOwn(preservedUnknown, "dailyNoteFolder"), false);
   const futureSettings = normalizeTPSHealthSettings({
-    settingsVersion: 10,
+    settingsVersion: 11,
     dailyNoteFolder: "Future Dailynotes",
     futureOnlySetting: { mode: "new" },
   });
   assert.equal(isFutureTPSHealthSettings(futureSettings), true);
-  assert.equal(futureSettings.settingsVersion, 10, "normalization must never downgrade a future schema");
+  assert.equal(futureSettings.settingsVersion, 11, "normalization must never downgrade a future schema");
   assert.deepEqual(futureSettings.futureOnlySetting, { mode: "new" });
   assert.match(settingsSource, /import \* as logger from "\.\/logger"/);
-  assert.match(settingsSource, /import \{[^}]*normalizeHealthGoalDefinition[^}]*\} from "\.\/settings-normalization"/);
-  assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-shape"/);
-  assert.match(settingsSource, /\.map\(\(goal\) => normalizeHealthGoalDefinition\(goal\)\)/);
-  assert.match(settingsSource, /logger\.flow\("Settings", "health-goals:parsed", \{ count: this\.plugin\.settings\.healthGoals\.length \}\)/);
-  assert.match(settingsSource, /logger\.flowWarn\("Settings", "health-goals:invalid-json", \{ error: logger\.errorSummary\(error\) \}\)/);
+  assert.doesNotMatch(settingsSource, /normalizeHealthGoalDefinition/);
+  assert.match(settingsSource, /openHealthGoalsBase/);
+  assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.healthGoals =/);
+  assert.match(settingsSource, /Move goals to notes/);
   assert.match(mainSource, /goal: goal\.kind === "counter" \? undefined : goal\.max \?\? goal\.min/);
   assert.match(mainSource, /private lastSavedSettingsSnapshot: TPSHealthSettings \| null = null/);
   assert.match(mainSource, /this\.lastSavedSettingsSnapshot = cloneSettingsSnapshot\(this\.settings\)/);
@@ -6028,7 +6028,7 @@ test("all Health-owned Markdown frontmatter writes share the explicit routing he
   assert.equal((mainSource.match(/this\.app\.fileManager\.processFrontMatter\(/g) || []).length, 1);
 });
 
-test("built-in scalar health goals migrate, save, reload, and render canonically", async () => {
+test("legacy goal targets remain readable until explicit note adoption", async () => {
   const { normalizeTPSHealthSettings } = await importSettingsNormalizationUtility();
   const stale = normalizeTPSHealthSettings({
     calorieGoal: 1675,
@@ -6064,21 +6064,17 @@ test("built-in scalar health goals migrate, save, reload, and render canonically
     persisted = JSON.parse(JSON.stringify(settings));
   };
 
-  await plugin.updateBuiltInHealthGoalTarget("calorieGoal", 1800);
-  await plugin.updateBuiltInHealthGoalTarget("proteinGoalG", 150);
-  await plugin.updateBuiltInHealthGoalTarget("activityGoalMinutes", 60);
-  assert.ok(persisted);
+  await assert.rejects(plugin.updateBuiltInHealthGoalTarget("calorieGoal", 1800), /metadata indexing/);
+  assert.equal(persisted, null, "an unready goal index must never switch authority");
+  const rendered = new Map(plugin.getMetricRenderConfigs().map(config => [config.propertyKey,config]));
+  assert.equal(rendered.get("consumedCalories").max,1675);
+  assert.equal(rendered.get("protein").min,140);
+  assert.equal(rendered.get("activity").min,45);
+  // Once adopted, even disagreeing legacy scalar values cannot override note targets.
+  plugin.settings.goalStorage = "notes";
+  plugin.nativeRecordService = {goalNotes:{entries:()=> [{goal:{propertyKey:"protein",label:"Protein",unit:"g",kind:"min",min:150}}]}};
+  assert.equal(plugin.getMetricRenderConfigs()[0].min,150);
 
-  const reloaded = normalizeTPSHealthSettings(persisted);
-  plugin.settings = reloaded;
-  const rendered = new Map(plugin.getMetricRenderConfigs().map((config) => [config.propertyKey, config]));
-  assert.equal(rendered.get("consumedCalories")?.max, 1800);
-  assert.equal(rendered.get("consumedCalories")?.goal, 1800);
-  assert.equal(rendered.get("protein")?.min, 150);
-  assert.equal(rendered.get("protein")?.goal, 150);
-  assert.equal(rendered.get("activity")?.min, 60);
-  assert.equal(rendered.get("activity")?.goal, 60);
-  assert.equal(rendered.get("fiber")?.min, 30);
 });
 
 test("workout starts use existing templates and blank starts open a whole-note workout", () => {
@@ -7041,7 +7037,8 @@ test("food detail editors use a compact responsive field grid", () => {
 });
 
 test("historical TPS Table remains available with read-only inline actions", () => {
-  assert.match(mainSource, /const LEGACY_FOOD_LOG_BASE_VIEW_TYPE = "tps-health-food-log"/);
+  assert.doesNotMatch(mainSource, /function repairFoodLogBaseContent/);
+  assert.match(mainSource, /foodGoalsBaseDefinition/);
   assert.doesNotMatch(mainSource, /registerBasesView\([^)]*LEGACY_FOOD_LOG_BASE_VIEW_TYPE/);
   assert.match(mainSource, /id: "open-food-log-base"/);
   assert.match(mainSource, /const GCM_TABLE_BASE_VIEW_TYPE = "tps-table"/);
@@ -8897,9 +8894,10 @@ test("daily note destinations follow Core Daily Notes without Health-owned overr
   assert.equal((await plugin.getFoodLogDateContextForFile(created))?.dateIso, "2026-08-15", "slash-containing Core formats must still identify the generated Daily Note");
   assert.equal(await plugin.getFoodLogDateContextForFile(new TFile("Other/2026/08/15.md")), null);
   assert.deepEqual([...fake.folders], ["Core Daily", "Core Daily/2026", "Core Daily/2026/08"]);
+  await assert.rejects(plugin.ensureFoodLogBase(), /Move goals to notes/);
+  fake.files.set("Food & Goals.base", "views: []\n# user authored\n");
   const foodLogBase = await plugin.ensureFoodLogBase();
-  assert.match(fake.files.get(foodLogBase.path), /file\.folder == "Core Daily"/);
-  assert.doesNotMatch(fake.files.get(foodLogBase.path), /Health Legacy/);
+  assert.equal(fake.files.get(foodLogBase.path), "views: []\n# user authored\n", "opening an existing Base never repairs or regenerates it");
 
   corePlugin = null;
   fake.app.internalPlugins.plugins = {};
@@ -10310,22 +10308,14 @@ test("daily macros mount from startup settings without waiting for another mobil
   await render;
 });
 
-test('nutrient goal saves persist, refresh presentation and roll back on failure', async () => {
+test('nutrient goal edits require ready note adoption and reject future schema without writes', async () => {
  installDeterministicBrowserGlobals();
  const {default:Plugin}=await importPluginWithObsidianStub();
- const fake=createFakeHealthApp();const plugin=new Plugin(fake.app);
- plugin.settings=JSON.parse(JSON.stringify(plugin.settings));
- await plugin.saveNutrientGoal('leucineG','2','4',false,{showInPrimary:true,showInSecondary:false});
- assert.equal(plugin.__pluginData.healthGoals.find(g=>g.propertyKey==='leucineG').showInPrimary,true);
- assert.equal(plugin.getMetricRenderConfigs().find(g=>g.propertyKey==='leucineG').showInSecondary,false);
- assert.equal(plugin.__pluginData.healthGoals.find(g=>g.propertyKey==='leucineG').max,4);
- const before=JSON.stringify(plugin.settings.healthGoals);
- const save=plugin.saveData; plugin.saveData=async()=>{throw new Error('Synthetic goal save failure');};
- await assert.rejects(plugin.saveNutrientGoal('leucineG','3','5',false,{showInPrimary:false,showInSecondary:true}),/Synthetic goal save failure/);
- assert.equal(JSON.stringify(plugin.settings.healthGoals),before);
- plugin.saveData=save;
- await plugin.saveNutrientGoal('leucineG','','',true);
- assert.equal(plugin.__pluginData.healthGoals.some(g=>g.propertyKey==='leucineG'),false);
+ const fake=createFakeHealthApp(),plugin=new Plugin(fake.app);
+ const before=JSON.stringify(plugin.settings);
+ await assert.rejects(plugin.saveNutrientGoal('leucineG','2','4'),/metadata indexing/);
+ assert.equal(JSON.stringify(plugin.settings),before);
+ assert.deepEqual(fake.writes,[]);
  plugin.settingsPersistenceBlockedByFutureSchema=true;
  await assert.rejects(plugin.saveNutrientGoal('leucineG','2','4'),/Update Health/);
 });

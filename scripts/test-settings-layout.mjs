@@ -49,10 +49,12 @@ test("Health settings keep optional editors and historical imports one level dee
   const disclosureIds = [...settingsSource.matchAll(
     /this\.createOptionalDisclosure\(\s*page,\s*"([^"]+)"/g,
   )].map((match) => match[1]);
-  assert.deepEqual(disclosureIds, ["custom-goals", "templates", "native-frontmatter", "earlier-logs"]);
+  assert.deepEqual(disclosureIds, ["templates", "native-frontmatter", "earlier-logs"]);
   assert.equal((settingsSource.match(/createEl\("details"/g) || []).length, 1);
   assert.doesNotMatch(settingsSource, /createCollapsibleSection|tps-collapsible-section/);
-  assert.match(settingsSource, /"Custom goal JSON"/);
+  assert.doesNotMatch(settingsSource, /"Custom goal JSON"/);
+  assert.match(settingsSource, /Open goals Base/);
+  assert.match(settingsSource, /Open food comparison/);
   assert.match(settingsSource, /"Templates"/);
   assert.doesNotMatch(settingsSource, /"Provider credentials"/);
   assert.match(settingsSource, /"Property names"/);
@@ -61,10 +63,6 @@ test("Health settings keep optional editors and historical imports one level dee
 test("Every active user preference remains bound and exerciseTag is editable", () => {
   const preferenceKeys = [
     "includeBrandedFoodSearch",
-    "calorieGoal",
-    "proteinGoalG",
-    "activityGoalMinutes",
-    "healthGoals",
     "workoutStartPropertyKey",
     "workoutIntervalMode",
     "workoutIntervalPropertyKey",
@@ -264,7 +262,7 @@ test("README documents the routed settings contract", () => {
     assert.match(readmeSource, new RegExp(`\\*\\*${label.replace(/[&]/g, "\\&")}\\*\\*`));
   }
   assert.match(readmeSource, /Exercise tag/);
-  assert.match(readmeSource, /Custom goal JSON/);
+  assert.match(readmeSource, /goal notes/);
   assert.match(readmeSource, /Provider credentials/);
   assert.match(readmeSource, /route and scroll position/);
 });

@@ -5172,3 +5172,45 @@ test('a read-only definition gap does not forget a previously recorded nutrient'
  h.service.refreshConfiguration();const row=h.service.getDailyFoodEntries('2026-08-25').find(x=>x.id===record.id);assert.equal(row.calories,190);assert.equal((await h.api.resolve(record.file)).frontmatter.fiberG,undefined);
  }finally{h.service.dispose();}
  });
+
+test('goal notes share metadata discovery and do no body reads, scans or writes on unchanged/burst events',()=>{
+ const h=createHarness({deferSetup:true}),events=[];
+ h.plugin.app.workspace.trigger=name=>events.push(name);
+ const fields={healthGoal:'protein',goalLabel:'Protein',goalUnit:'g',goalMinimum:125};
+ const file=h.addFrontmatterFile('Inbox/Protein.md',fields);
+ let scans=0;const getFiles=h.plugin.app.vault.getMarkdownFiles;
+ h.plugin.app.vault.getMarkdownFiles=()=>{scans++;return getFiles();};
+ h.service.setup();assert.equal(scans,1);assert.equal(h.service.goalNotes.entries()[0].goal.min,125);
+ events.length=0;
+ for(let i=0;i<25;i++){h.emitMetadata('changed',file,undefined,{frontmatter:{...fields,user:'changed '+i}});h.emitMetadata('resolved');}
+ assert.equal(scans,1);assert.deepEqual(events,[]);assert.deepEqual(h.cachedReadCalls,[]);assert.deepEqual(h.readCalls,[]);assert.deepEqual(h.updateCalls,[]);assert.deepEqual(h.createCalls,[]);
+ h.emitMetadata('changed',file,undefined,{frontmatter:{...fields,goalMinimum:150}});
+ assert.equal(h.service.goalNotes.entries()[0].goal.min,150);assert.deepEqual(events,['tps-health:appearance-changed']);
+ h.emitMetadata('changed',file,undefined,{frontmatter:{...fields,archived:true}});assert.deepEqual(h.service.goalNotes.entries(),[]);
+ h.emitMetadata('changed',file,undefined,{frontmatter:fields});
+ const previous=file.path;h.files.delete(previous);file.path='Moved/Protein renamed.md';h.files.set(file.path,file);h.emitVault('rename',file,previous);
+ assert.equal(h.service.goalNotes.entries()[0].path,file.path);
+ h.files.delete(file.path);h.emitVault('delete',file);assert.deepEqual(h.service.goalNotes.entries(),[]);
+ assert.equal(scans,1);assert.deepEqual(h.cachedReadCalls,[]);assert.deepEqual(h.updateCalls,[]);
+ h.service.dispose();
+});
+
+test('reload projects linked food before goal discovery without consulting mutation readiness',async()=>{
+ const h=createHarness({deferSetup:true});
+ h.plugin.app.workspace.trigger=()=>{};
+ try {
+  h.plugin.app.metadataCache.getFirstLinkpathDest=path=>h.files.get(String(path).replace(/\.md$/u,'')+'.md')||null;
+  const food=h.addFrontmatterFile('Inbox/Reload food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:200,proteinG:20});
+  h.addFrontmatterFile('Inbox/Reload log.md',{id:'reload-log',tpsSchemaVersion:1,kind:'food-entry',completedDate:'2026-10-06T12:00:00Z',food:'[[Inbox/Reload food]]',quantity:1,unit:'serving',calories:100,proteinG:10});
+  h.addFrontmatterFile('Inbox/Reload goal.md',{healthGoal:'protein',goalLabel:'Protein',goalUnit:'g',goalMinimum:125});
+  let goalReads=0;
+  h.plugin.getHealthGoals=write=>{goalReads++;if(write)throw Error('mutation readiness must not gate display');return h.service.goalNotes.entries().map(e=>e.goal);};
+  h.service.setup();await waitForIndexPass(h);
+  assert.equal(h.service.getDailyIndexStatus(),'ready');assert.equal(goalReads,0);
+  assert.equal(h.service.goalNotes.entries()[0].goal.min,125);
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,200);
+  assert.deepEqual(h.updateCalls,[]);assert.deepEqual(h.cachedReadCalls,[]);
+  // Explicit persistence keeps the guard; changing only a target never writes logs.
+  await assert.rejects(h.service.persistLinkedFoodEntries(food),/mutation readiness/);
+ } finally {h.service.dispose();}
+});

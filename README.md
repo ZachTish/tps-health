@@ -1,6 +1,6 @@
 # TPS Health
 
-TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **9.0.1** requires Obsidian **1.12.0** or newer.
+TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.0.0** requires Obsidian **1.12.0** or newer.
 
 ## Start here
 
@@ -12,7 +12,15 @@ Use **Log food** to select a saved food, recipe, catalog item, barcode or online
 
 The standalone **Health** dashboard, its command and ribbon icon are removed. Health no longer registers that custom view. Existing records, authored Bases, Canvas files and settings are untouched; no replacement page or Base is generated on startup. Close any saved obsolete dashboard tab and open your own Base or Canvas.
 
-A native Macros Base can filter food-entry notes, group by the consumed date, and sum the configured calorie/protein/carbs/fat fields. Such summaries are owned by Obsidian and update from note metadata. Health continues to provide Log food, Log activity, workout controls, tracked-nutrient rules and goal/property APIs. Optional embedded Health blocks remain supported; removing the standalone view does not rewrite existing notes that contain them.
+**Health goals are editable goal notes.** Food & goals → Move goals to notes adopts existing settings targets once, preserving all configured values, labels, units, colors and primary/secondary display choices. After adoption, `goalStorage: notes` is the only persisted selection; `healthGoals`, `calorieGoal`, `proteinGoalG` and `activityGoalMinutes` are removed from settings. No target values are copied into food entries. Startup never migrates notes. A partial adoption leaves created notes recoverable and refuses conflicting values before switching authority.
+
+**Open food comparison** (also the existing Open Food Log base command) opens `Food & Goals.base`, an ordinary Obsidian table with Today and All tracked nutrients today views. Food rows contain actual nutrient amounts; each target row links to its goal note. Column summaries compare the total to the minimum, maximum or range and report the amount below/remaining/over. Unknown nutrient values report a known subtotal and incomplete comparison, never zero or an asserted goal success. Duplicate/invalid targets are reported. Food dates are compared as local calendar days.
+
+The goal rows participate in the same query as the logs. Their formula links include the target bounds, so an edit invalidates the native summary. Renaming or moving a goal, editing its bounds, and adding/editing/deleting today's logs update the open Base without regenerating it. Goal identity is the `healthGoal` metric property, independent of filename/folder. No backlink scan, maintenance writer, copied rollup, new watcher or background repair is used. Existing Health metadata discovery also projects goal notes; unchanged/unrelated events do not emit goal updates.
+
+The initial goal destination is `Health Goals/`; goals may subsequently live anywhere. `Health Goals.base` edits `goalMinimum`, `goalMaximum`, `goalUnit` and `goalLabel` directly. Blank bounds mean track only; `goalEnabled: false` stops that metric's future writes while retaining its note and existing data. `goalColor`, `goalPrimary` and `goalSecondary` configure the optional Health blocks. GCM retains ownership of shared note identity. Goal fields are Health-owned; no GCM recognition rules are silently installed.
+
+The comparison Base is created once with the nutrient columns and physical food-property mappings active at creation. Existing authored Bases, including Macros, are never repaired or replaced by opening a command. To show an additional nutrient added later, add its column/formula to that Base or create another authored view; target edits do not require this. Activity and other non-food goals remain in the Goals Base; the food comparison does not mix activity totals into nutrition. Current recurring targets apply to the selected day, not historical effective-date snapshots. Bases continue working with Health disabled; food logging/interactive editing still uses Health and GCM.
 
 ## Settings and ownership
 
@@ -26,7 +34,7 @@ The hub shows one destination at a time:
 | **Note library** | Reusable food/recipe/exercise/workout-plan destinations, supported templates and identification. GCM v2 owns note types and inline property visibility. The existing-workout folder appears only for folder matching. Older installations retain their matching-mode controls; food/workout tags appear only for tag matching, while Exercise tag remains independent. |
 | **Integrations & advanced** | Food databases, the GCM handoff, Health property names, AI connection handoff, explicit earlier-log review/import and diagnostics. |
 
-**Tracking, recognition and display are separate choices.** Food & goals selects nutrients to save in future food records and their targets. Note library links to GCM → Properties: Records identifies note types; Custom fields controls inline property visibility. Hiding a GCM field does not disable Health tracking. Native Bases own their columns, filters and comparison formulas; Health settings do not rewrite them. Daily logging appearance applies only to optional embedded Health blocks.
+**Tracking, recognition and display are separate choices.** Food & goals selects nutrients to save in future food records and their targets. Note library links to GCM → Properties: Records identifies note types; Custom fields controls inline property visibility. Hiding a GCM field does not disable Health tracking. The supplied native Bases read the same goal notes; Health settings do not rewrite an existing Base. Daily logging appearance applies only to optional embedded Health blocks.
 
 The energy estimate’s **Activity input filter** selects existing notes to read for that calculation only. It does not define a GCM record type, migrate notes or change their properties. Choose individual activities or daily summaries to avoid double counting. Its property/tag fields remain conditional on the selected energy method and input filter.
 
@@ -34,7 +42,7 @@ The energy estimate’s **Activity input filter** selects existing notes to read
 
 USDA credentials use **device-local Obsidian SecretStorage**. References are ordered, editable and removable through the existing controls. The `DEMO_KEY` fallback has much lower public limits. Open Food Facts needs no credential. Editing references uses Health's existing settings-save owner; opening the panel does not fetch food. AI-assisted Describe still uses AI Gateway and the existing Controller connection-settings handoff; neither is required for ordinary food setup or logging.
 
-Custom goal JSON, Templates, Property names and Earlier inline logs are the only intentional disclosures, all one level deep. One property-name editor is mounted at a time; Apply uses the existing confirmed migration. No automatic migration runs when browsing settings. Hidden folder/tag values are retained unchanged; switching matching modes restores their controls. These visibility and copy changes introduce no settings keys, default changes or migration. The route and scroll position are transient, as are selected editors and disclosures; no navigation state is persisted.
+Templates, Property names and Earlier inline logs are the only intentional disclosures, all one level deep. One property-name editor is mounted at a time; Apply uses the existing confirmed migration. No automatic migration runs when browsing settings. Hidden folder/tag values are retained unchanged; switching matching modes restores their controls. Custom goal JSON is retired; goal-note properties replace that competing settings editor. The route and scroll position are transient, as are selected editors and disclosures; no navigation state is persisted.
 
 The mobile route hub scrolls horizontally, labels wrap and control grids stack. Controls are native, selected routes expose `aria-pressed`, keyboard focus is restored after navigation, and settings CSS is Health-scoped. Leaving the provider page disposes its existing panel so late saves cannot repaint the abandoned page.
 
@@ -68,11 +76,13 @@ The retired Macros Base and `tps-health-food-log` Base layouts are not registere
 
 Use the workspace source map and release checklist. Each repository remains independently buildable; `npm test` and a separate final `npm run build` never deploy or reload. Deployment to the named test vault is explicit. Cross-plugin tests use current sibling sources, not historical Dev checkouts. Never copy runtime settings or private data into source.
 
-Focused checks execute the existing food-provider panel with Controller absent, preserve ordered synthetic secret references, verify disposal, and count zero settings saves/provider requests on open. Food-search checks use the actual search/modal methods with controlled provider responses: both arrival orders, local selection, portions, cancellation, timeouts, request counts and unchanged final ranking. Existing serving/nutrition and native-index operation-count checks remain. These source/host tests do not establish installed response times. Release acceptance requires the full suite, separate final build and installed test-vault UI inspection; see [9.0.1 validation and release status](release-notes/9.0.1.md).
+Focused checks execute the existing food-provider panel with Controller absent, preserve ordered synthetic secret references, verify disposal, and count zero settings saves/provider requests on open. Food-search checks use the actual search/modal methods with controlled provider responses: both arrival orders, local selection, portions, cancellation, timeouts, request counts and unchanged final ranking. Existing serving/nutrition and native-index operation-count checks remain. These source/host tests do not establish installed response times. Release acceptance requires the full suite, separate final build and installed test-vault UI inspection; see [10.0.0 validation and release status](release-notes/10.0.0.md).
 
 Settings coverage also executes the current and older GCM branches across all four matching modes, checks conditional folder/tag visibility, preserves inactive values, and verifies focus restoration. Installed test-vault inspection covers all five routes, the actual GCM handoff, energy-method/filter visibility, one-level disclosures and a narrow desktop settings window. Synthetic recognition configurations are temporary; no settings are saved. Narrow desktop checks do not establish physical-phone acceptance.
 
 ## Release history
+
+**10.0.0** makes adopted goal notes canonical, replaces the old inline Food Log Base generator with native food/goal comparisons, and removes the separate custom-goal JSON editor. Settings schema 10 prevents older Health versions from overwriting the adopted settings. Older devices must reload the updated plugin before goal editing or food logging.
 
 **9.0.1** clarifies Health nutrient tracking/targets, GCM note types/inline visibility and Bases presentation. Unused folder/tag controls are hidden by matching mode; inactive values and all behavior remain supported. Energy activity filters are explicitly scoped to their read-only calculation.
 

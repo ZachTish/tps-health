@@ -2,7 +2,7 @@ import { Setting } from 'obsidian';
 import type TPSHealthPlugin from './main';
 import { canonicalGoalKey, nutrientDisplayDefaults, filterGoalNutrients, findNutrientGoal, goalNutrients } from './nutrient-goals';
 
-/** Only search, category and selection are transient. Goals use the existing settings contract. */
+/** Only search, category and selection are transient. Targets are edited in their canonical goal notes. */
 export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHealthPlugin, onSaved: () => void): () => void {
   container.addClass('tps-health-settings-nutrient-goals');
   container.createEl('p',{text:'Foods, recipes, meals and food logs save only the nutrients in Your nutrient goals, including Track only entries. Newly tracked nutrients apply to future logs; existing logs are not backfilled. Removing a goal stops future writes for it; existing notes are not automatically rewritten.',cls:'setting-item-description'});
@@ -23,7 +23,7 @@ export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHe
     dropdown.onChange(value => { group = value; render(); });
   });
   const render = () => {
-    const catalog = goalNutrients(plugin.settings.healthGoals);
+    const catalog = goalNutrients((plugin.getHealthGoals?.() ?? plugin.settings.healthGoals));
     categorySelect.empty();
     categorySelect.createEl('option', {value:'',text:'All categories'});
     for (const name of [...new Set(catalog.map(n => n.group))]) categorySelect.createEl('option',{value:name,text:name});
@@ -41,11 +41,10 @@ export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHe
     const nutrient = catalog.find(n => n.key === selected);
     if (!nutrient) editor.createDiv({text:'No matching nutrients. Try another name or category.'});
     else {
-      const saved = findNutrientGoal(plugin.settings.healthGoals, selected);
-      // The existing scalar fields remain canonical for these two targets.
-      let minimum = selected === 'protein' ? String(plugin.settings.proteinGoalG) : saved?.min == null ? '' : String(saved.min);
-      let maximum = selected === 'consumedCalories' ? String(plugin.settings.calorieGoal) : saved?.max == null ? '' : String(saved.max);
-      const description = selected === 'consumedCalories' ? 'Calories keep a positive maximum target.'
+      const saved = findNutrientGoal((plugin.getHealthGoals?.() ?? plugin.settings.healthGoals), selected);
+      let minimum = saved?.min == null ? '' : String(saved.min);
+      let maximum = saved?.max == null ? '' : String(saved.max);
+      const description = plugin.settings.goalStorage === 'notes' ? 'Leave either bound blank, or both blank to track without a target.' : selected === 'consumedCalories' ? 'Calories keep a positive maximum target.'
         : selected === 'protein' ? 'Protein keeps a positive minimum target.'
         : 'Leave either bound blank, or both blank to track without a target.';
       editor.createEl('p',{text:nutrient.label+' · per day · '+nutrient.unit});
@@ -79,16 +78,16 @@ export function renderNutrientGoalSettings(container: HTMLElement, plugin: TPSHe
         button.disabled = true;
         try {
           await plugin.saveNutrientGoal(nutrient.key, minimum, maximum, remove, display);
-          status.setText(remove ? 'Tracking stopped for future log writes. Existing amounts are retained.' : 'Tracking, target and display choices saved.');
+          status.setText(remove ? 'Goal note disabled. Existing amounts are retained.' : 'Goal note saved. Open Bases update from this note.');
           render(); onSaved(); picker.querySelector<HTMLSelectElement>('select')?.focus();
         } catch (error) { status.setText((error as Error).message); button.disabled = false; }
       };
       actions.addButton(button => button.setButtonText('Save target').setCta().onClick(() => void save(false,button.buttonEl)));
-      if (saved && !['consumedCalories','protein'].includes(selected)) actions.addButton(button =>
+      if (saved && (plugin.settings.goalStorage === 'notes' || !['consumedCalories','protein'].includes(selected))) actions.addButton(button =>
         button.setButtonText('Remove goal').onClick(() => void save(true,button.buttonEl)));
     }
     configured.createEl('p',{text:'Your nutrient goals'});
-    for (const goal of plugin.settings.healthGoals.filter(g => g.propertyKey !== 'activity')) {
+    for (const goal of (plugin.getHealthGoals?.() ?? plugin.settings.healthGoals).filter(g => g.propertyKey !== 'activity')) {
       const key = canonicalGoalKey(goal.propertyKey);
       const label = catalog.find(n => n.key === key)?.label || goal.label;
       const bounds = goal.kind === 'counter' ? 'Track only' : [goal.min == null ? '' : '≥ '+goal.min, goal.max == null ? '' : '≤ '+goal.max].filter(Boolean).join(' · ')+' '+goal.unit;

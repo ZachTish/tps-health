@@ -20,7 +20,7 @@ export type WorkflowRunType = "workout" | "workflow";
 export const USDA_API_KEY_SECRET = "tps-health-usda-api-key";
 export const USDA_API_KEY_SECRET_MAX = 5;
 export const USDA_DEMO_API_KEY = "DEMO_KEY";
-export const TPS_HEALTH_SCHEMA_VERSION = 9;
+export const TPS_HEALTH_SCHEMA_VERSION = 10;
 
 export type HealthNativeRecordKindKey = "foodEntry" | "activityEntry" | "workoutSession" | "workoutExercise";
 export type HealthNativeRecordPropertyKey = ExtraNutrientKey
@@ -82,6 +82,8 @@ export interface TPSHealthSettings {
   includeBrandedFoodSearch: boolean;
   macroBlockStyle: "rings" | "table";
   macroNutrientRows: "collapsed" | "expanded" | "hidden";
+  goalStorage: "settings" | "notes";
+  /** Legacy adoption source only when goalStorage is settings. Never persisted in notes mode. */
   healthGoals: HealthGoal[];
   customNutrients: CustomNutrientDefinition[];
   energyBmrKcal: number | null;
@@ -389,6 +391,7 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   macroBlockStyle: "rings",
   macroNutrientRows: "collapsed",
   customNutrients: [],
+  goalStorage: "settings",
   healthGoals: [
     { propertyKey: "consumedCalories", label: "Consumed calories", unit: "kcal", kind: "max", max: 2400, color: "var(--interactive-accent)" },
     { propertyKey: "protein", label: "Protein", unit: "g", kind: "min", min: 180, color: "var(--color-green)" },

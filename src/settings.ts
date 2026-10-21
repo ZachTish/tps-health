@@ -8,7 +8,6 @@ import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
 import { App, Notice, FuzzySuggestModal, PluginSettingTab, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
 import TPSHealthPlugin from "./main";
-import { applyBuiltInHealthGoalTargets, normalizeHealthGoalDefinition } from "./settings-normalization";
 import { DEFAULT_SETTINGS, HealthEntityIdentificationMode, HealthNativeRecordKindKey, HealthNativeRecordPropertyKey, TPSHealthSettings, RestTimerMode, WorkoutControlPlacement, WorkoutIntervalMode } from "./types";
 import { isValidWorkoutPropertyKey } from "./workout-properties";
 import {
@@ -319,58 +318,36 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const energy = createSettingsGroup(page, "Energy estimate", "Choose a fixed TDEE, BMR × activity factor, or BMR plus calories from activity notes.");
     renderEnergySettings(energy, this.plugin);
 
-    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Choose which nutrients Health saves and set their daily targets. GCM controls which properties appear inline on notes; Bases control their own columns and formulas. Missing nutrients are never inferred. Targets are your own, not dietary recommendations.");
-    let goalJson: HTMLTextAreaElement | undefined;
-    const refreshGoals = renderNutrientGoalSettings(nutrientGoals, this.plugin, () => {
-      if (goalJson) goalJson.value = JSON.stringify(this.plugin.settings.healthGoals, null, 2);
-    });
+    const goalActions = createSettingsGroup(page, "Goals in Bases", "Each metric has one editable goal note. Changing its bounds updates Health and the open Food & Goals Base. Rename or move goal notes freely. No targets are copied into food logs.");
+    const status = goalActions.createDiv({attr: {role: "status", "aria-live": "polite"}});
+    const run = async (action: () => Promise<void>) => {
+      try { await action(); this.redisplayPreservingContext("button[data-health-goals-open]"); } catch (error) { status.setText((error as Error).message); }
+    };
+    new Setting(goalActions).setName("Daily goals and food totals")
+      .setDesc("Health Goals edits the canonical notes. Food & Goals compares today’s logged totals with those notes, including remaining amounts. Existing Bases are opened unchanged.")
+      .addButton(button => {button.buttonEl.setAttribute("data-health-goals-open", "true"); button.setButtonText("Open goals Base").onClick(() => void run(() => this.plugin.openHealthGoalsBase()));})
+      .addButton(button => button.setButtonText("Open food comparison").onClick(() => void run(() => this.plugin.openFoodLogBase())));
+    if (this.plugin.settings.goalStorage !== "notes") new Setting(goalActions)
+      .setName("Move saved targets to goal notes")
+      .setDesc("Preserves current targets, labels, units and display choices. After adoption, goal notes become the only target source; the old goal settings are removed.")
+      .addButton(button => button.setButtonText("Move goals to notes").setCta().onClick(() => void run(() => this.plugin.adoptGoalNotes())));
 
+    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "These controls edit the same goal notes shown in Bases. Goals also select nutrients saved in future logs. Targets are your own, not dietary recommendations.");
+    let refreshGoals = () => {};
+    try { refreshGoals = renderNutrientGoalSettings(nutrientGoals, this.plugin, () => {}); }
+    catch (error) { nutrientGoals.createEl("p", {text: (error as Error).message}); }
     const customNutrients = createSettingsGroup(page, "Custom nutrients", "Add a nutrient name and unit for Health’s food editor and target picker. This does not add an inline property control in GCM.");
     renderCustomNutrientSettings(customNutrients, this.plugin, refreshGoals);
-
-    const goals = createSettingsGroup(page, "Activity goal");
-    new Setting(goals)
-      .setName("Activity goal minutes")
-      .addText((text) => text
-        .setValue(String(this.plugin.settings.activityGoalMinutes))
-        .onChange(async (value) => {
-          await this.plugin.updateBuiltInHealthGoalTarget("activityGoalMinutes", positiveNumber(value, DEFAULT_SETTINGS.activityGoalMinutes));
-        }));
-
-    const customGoals = this.createOptionalDisclosure(
-      page,
-      "custom-goals",
-      "Custom goal JSON",
-      "Advanced labels, colors and other saved metrics. Nutrient targets above cover everyday goal editing.",
-    );
-    new Setting(customGoals)
-      .setName("Health goals")
-      .setDesc("One JSON goal per metric. Calorie maximum, protein minimum and activity minimum remain canonical; use the target controls above to change those bounds.")
-      .addTextArea((text) => {
-        goalJson = text.inputEl;
-        text.inputEl.rows = 8;
-        text.inputEl.addClass("tps-health-settings-json");
-        text
-          .setValue(JSON.stringify(this.plugin.settings.healthGoals, null, 2))
-          .onChange(async (value) => {
-            try {
-              const parsed = JSON.parse(value);
-              if (!Array.isArray(parsed)) {
-                logger.flowWarn("Settings", "health-goals:invalid-shape", { parsedType: typeof parsed });
-                return;
-              }
-              this.plugin.settings.healthGoals = applyBuiltInHealthGoalTargets(parsed
-                .map((goal) => normalizeHealthGoalDefinition(goal))
-                .filter((goal): goal is NonNullable<typeof goal> => Boolean(goal)), this.plugin.settings);
-              logger.flow("Settings", "health-goals:parsed", { count: this.plugin.settings.healthGoals.length });
-              await this.plugin.saveSettings();
-              refreshGoals();
-            } catch (error) {
-              logger.flowWarn("Settings", "health-goals:invalid-json", { error: logger.errorSummary(error) });
-              // Leave the last valid goal config in place while the user edits JSON.
-            }
-          });
-      });
+    try {
+      const activity = this.plugin.getHealthGoals().find(goal => goal.propertyKey === "activity");
+      if (activity) {
+        const goals = createSettingsGroup(page, "Activity goal");
+        let value = String(activity.min ?? "");
+        new Setting(goals).setName("Activity goal minutes").setDesc("Edits the Activity goal note. Food & Goals compares nutrients; activity remains a separate metric.")
+          .addText(text => text.setValue(value).onChange(next => {value = next;}))
+          .addButton(button => button.setButtonText("Save activity goal").onClick(() => void run(() => this.plugin.updateBuiltInHealthGoalTarget("activityGoalMinutes", Number(value)))));
+      }
+    } catch (error) { status.setText((error as Error).message); }
   }
 
   private renderWorkoutsPage(page: HTMLElement): void {

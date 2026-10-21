@@ -1,3 +1,4 @@
+import { HealthGoalNotes } from "./goal-notes";
 import { migrateWorkoutTiming } from './workout-timing-migration';
 import { authoredMetricServing } from "./food-serving";
 import type { ExtraNutrition } from "./nutrients";
@@ -21,6 +22,7 @@ import {
 import {
   canonicalNativeKind,
   configuredNativeKind,
+  configuredNativePropertyKey,
   decodeNativeRecordFrontmatter,
   encodeNativeRecordProperties,
   hasCustomNativeKindValues,
@@ -964,6 +966,7 @@ interface HealthDiscoveryPass {
 /** Incremental frontmatter index plus the narrow GCM native-record bridge. */
 export class HealthNativeRecordService {
   readonly version = TPS_HEALTH_NATIVE_RECORDS_VERSION;
+  readonly goalNotes = new HealthGoalNotes();
   private readonly recordsByPath = new Map<string, IndexedHealthRecord>();
   private readonly pathsByKind = new Map<NativeHealthKind, Set<string>>();
   private readonly pathsByDate = new Map<string, Set<string>>();
@@ -1130,6 +1133,7 @@ export class HealthNativeRecordService {
       const current = vault.getAbstractFileByPath(oldPath);
       if (current instanceof TFile && current !== file) return;
       const previousStatus = this.getDailyIndexStatus();
+      this.goalNotes.rename(oldPath, file.path);
       const wasPending = this.pendingMetadataPaths.delete(oldPath);
       if (wasPending && file instanceof TFile) this.pendingMetadataPaths.set(file.path, file);
       this.refreshGenerations.delete(oldPath);
@@ -1293,7 +1297,7 @@ export class HealthNativeRecordService {
   }
 
   private foodLogWriteProperties(properties: Record<string, unknown>): Record<string, unknown> {
-    const tracked = trackedFoodNutrientKeys(this.plugin.settings.healthGoals || []);
+    const tracked = trackedFoodNutrientKeys(this.plugin.getHealthGoals?.(true) ?? this.plugin.settings.healthGoals ?? []);
     const nutrients = new Set<string>(foodNutritionKeys());
     return Object.fromEntries(Object.entries(properties).filter(([key]) => !nutrients.has(key) || tracked.has(key)));
   }
@@ -3141,6 +3145,8 @@ export class HealthNativeRecordService {
     const cache = frontmatter === undefined || (physicalSource && this.plugin.settings.energyEstimateMode === 'activity-notes' && tags === undefined)
       ? this.plugin.app.metadataCache.getFileCache(file) : undefined;
     const resolved = frontmatter === undefined ? cache?.frontmatter : frontmatter;
+    if (physicalSource && (frontmatter !== undefined || cache) && this.goalNotes.project(file.path, resolved?.[configuredNativePropertyKey(this.plugin.settings, 'archived')] === true ? null : resolved ?? null))
+      this.plugin.app.workspace.trigger("tps-health:appearance-changed");
     if (physicalSource && (frontmatter !== undefined || cache)) this.projectEnergyFile(file, resolved ?? null, tags ?? cache?.tags?.map(tag => tag.tag));
     // Provider startup/reload is not evidence that a record was deleted.
     if (!api) return;
@@ -3226,7 +3232,10 @@ export class HealthNativeRecordService {
   private removePath(path: string, notify = true, energyNotify = notify): void {
     // Native replacement removes its own indexes temporarily. Only a real
     // removal may discard the independent read-only energy projection.
-    if (notify) this.setEnergyActivity(path, null, energyNotify);
+    if (notify) {
+      this.setEnergyActivity(path, null, energyNotify);
+      if (this.goalNotes.project(path, null)) this.plugin.app.workspace.trigger("tps-health:appearance-changed");
+    }
     const record = this.recordsByPath.get(path);
     this.recordsByPath.delete(path);
     if (!record) return;
@@ -3276,6 +3285,10 @@ export class HealthNativeRecordService {
     if (!dates.length) return;
     const change: NativeHealthRecordChange = { path, kinds: ['activity-entry'], dates };
     for (const listener of this.changeListeners) listener(change);
+  }
+
+  async refreshGoalNote(file: TFile): Promise<void> {
+    await this.refreshFile(file);
   }
 
   private async refreshFile(file: TFile): Promise<void> {
@@ -3340,7 +3353,7 @@ export class HealthNativeRecordService {
     return { path: foodPath, frontmatter: copy };
   }
 
-  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string, newEntry = false): {
+  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string, newEntry = false, forPersistence = false): {
     frontmatter: Record<string, unknown>;
     needsPersist: boolean;
   } | null {
@@ -3356,7 +3369,10 @@ export class HealthNativeRecordService {
       ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
       ...nutritionUpdates,
     };
-    const persistedKeys = this.foodLogWriteProperties(updates);
+    // Read projections must not depend on goal-index readiness (or goal validity).
+    // Existing logs retain their recorded fields; the actual create/edit boundary
+    // below still applies current tracked nutrients and its readiness guard.
+    const persistedKeys = newEntry || forPersistence ? this.foodLogWriteProperties(updates) : updates;
     const next = { ...frontmatter };
     let needsPersist = false;
     for (const [key, value] of Object.entries(updates)) {
@@ -3429,7 +3445,7 @@ export class HealthNativeRecordService {
       if (!inspected || inspected.id !== entry.id || canonicalNativeKind(this.plugin.settings, inspected.kind) !== 'food-entry') continue;
       const current = decodeNativeRecordFrontmatter(this.plugin.settings, inspected.frontmatter);
       if (this.resolveFoodSourcePath(foodReference(current), path) !== food.path
-        || current.archived === true || !this.projectFoodEntry(current, path)?.needsPersist) continue;
+        || current.archived === true || !this.projectFoodEntry(current, path, false, true)?.needsPersist) continue;
       await this.processFoodEntry(entry, {}, food.path);
     }
   }

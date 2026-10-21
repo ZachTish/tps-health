@@ -1,3 +1,4 @@
+import { GOAL_SETTINGS_KEYS } from "./goal-notes";
 import { nutritionNumber, normalizeCustomNutrients } from "./nutrients";
 import { MAX_DAILY_ENERGY_KCAL } from "./energy-estimate";
 import { normalizeFoodLogTags } from "./food-log-tags";
@@ -150,7 +151,8 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
   settings.enableLogging = booleanSetting(settings.enableLogging, DEFAULT_SETTINGS.enableLogging);
 
   settings.customNutrients = normalizeCustomNutrients(settings.customNutrients);
-  settings.healthGoals = normalizeHealthGoals(settings.healthGoals, settings);
+  settings.goalStorage = storedRecord.goalStorage === "notes" ? "notes" : "settings";
+  settings.healthGoals = settings.goalStorage === "notes" ? [] : normalizeHealthGoals(settings.healthGoals, settings);
   settings.settingsVersion = isFutureTPSHealthSettings(storedRecord)
     ? healthSettingsVersion(storedRecord)
     : TPS_HEALTH_SCHEMA_VERSION;
@@ -256,6 +258,7 @@ export function settingsPersistencePayload(
 ): TPSHealthSettings & { usdaApiKey?: string } {
   const payload: TPSHealthSettings & { usdaApiKey?: string } = { ...settings };
   for (const key of REMOVED_SETTING_KEYS) delete (payload as unknown as SettingsRecord)[key];
+  if (settings.goalStorage === "notes") for (const key of GOAL_SETTINGS_KEYS) delete (payload as unknown as SettingsRecord)[key];
   const retained = retainedLegacyUsdaApiKey.trim();
   if (retained) payload.usdaApiKey = retained;
   return payload;

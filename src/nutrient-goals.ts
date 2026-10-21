@@ -70,8 +70,8 @@ export function nutrientGoalChange(settings: TPSHealthSettings, key: string, min
   const min = remove ? undefined : bound(minimum, 'Minimum');
   const max = remove ? undefined : bound(maximum, 'Maximum');
   if (min != null && max != null && min > max) throw new Error('Minimum cannot exceed maximum.');
-  if (canonical === 'consumedCalories' && (max == null || max <= 0)) throw new Error('Calories need a positive maximum target.');
-  if (canonical === 'protein' && (min == null || min <= 0)) throw new Error('Protein needs a positive minimum target.');
+  if (settings.goalStorage !== 'notes' && canonical === 'consumedCalories' && (max == null || max <= 0)) throw new Error('Calories need a positive maximum target.');
+  if (settings.goalStorage !== 'notes' && canonical === 'protein' && (min == null || min <= 0)) throw new Error('Protein needs a positive minimum target.');
   const next: HealthGoal = {
     ...previous, propertyKey: previous?.propertyKey || canonical, label: previous?.label || nutrient.label,
     unit: nutrient.unit, kind: min != null && max != null ? 'range' : min != null ? 'min' : max != null ? 'max' : 'counter',

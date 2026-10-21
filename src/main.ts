@@ -1,3 +1,5 @@
+import { GOAL_FIELDS, goalNoteFields, goalNoteSignature, legacyGoalSignature, readGoalNote } from "./goal-notes";
+import { HEALTH_GOALS_BASE, FOOD_GOALS_BASE, healthGoalsBaseDefinition, foodGoalsBaseDefinition } from "./goal-bases";
 import { MACRO_KCAL_PER_GRAM, macroInputGrams, macroInputDisplay, type EnergyMacro, type MacroInputUnit } from "./macro-input";
 import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
@@ -17,7 +19,7 @@ import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile } from "obsidian";
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile, stringifyYaml } from "obsidian";
 import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
@@ -381,10 +383,8 @@ const FOOD_RESEARCH_AI_SCHEMA: Record<string, unknown> = {
   },
 };
 
-const LEGACY_FOOD_LOG_BASE_VIEW_TYPE = "tps-health-food-log";
 const GCM_TABLE_BASE_VIEW_TYPE = "tps-table";
-const GCM_LEGACY_LOG_BASE_VIEW_TYPE = "tps-log-table";
-const DEFAULT_FOOD_LOG_BASE_PATH = "Food Log.base";
+const DEFAULT_FOOD_LOG_BASE_PATH = FOOD_GOALS_BASE;
 const DEFAULT_ACTIVITY_LOG_BASE_PATH = "Activity Log.base";
 const LEGACY_WORKOUT_LOG_BASE_PATH = "Workout Log.base";
 const DAILY_NOTE_TEMPLATER_CREATE_HOOK_DELAY_MS = 300;
@@ -827,6 +827,10 @@ export default class TPSHealthPlugin extends Plugin {
       }),
     });
     this.addCommand({
+      id: "open-health-goals-base", name: "Open Health Goals base",
+      callback: () => void this.openHealthGoalsBase().catch(error => new Notice((error as Error).message)),
+    });
+    this.addCommand({
       id: "open-food-log-base",
       name: "Open Food Log base",
       callback: () => this.traceCommand("open-food-log-base", () => this.openFoodLogBase()),
@@ -1217,6 +1221,7 @@ export default class TPSHealthPlugin extends Plugin {
           return;
         }
         const latestNormalized = normalizeTPSHealthSettings(latestStored);
+        if (this.pendingGoalAdoptionSource != null && legacyGoalSignature(latestNormalized) !== this.pendingGoalAdoptionSource) throw new Error("Goal settings changed before adoption could commit.");
         let activeWorkoutFilenameMigrationApplied = false;
         if (activeWorkoutFilenameMigration) {
           const currentActiveWorkout = activeWorkoutFilenameState(this.settings);
@@ -1389,26 +1394,121 @@ export default class TPSHealthPlugin extends Plugin {
       mode:this.settings.energyEstimateMode});
   }
 
-  async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false, display: Pick<HealthGoal, "showInPrimary" | "showInSecondary"> = {}): Promise<void> {
-    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing goals.");
-    const previous = {healthGoals:this.settings.healthGoals,calorieGoal:this.settings.calorieGoal,proteinGoalG:this.settings.proteinGoalG};
-    const next = nutrientGoalChange(this.settings, key, minimum, maximum, remove, display);
-    Object.assign(this.settings, next);
-    try {
-      await this.saveSettings();
-      this.app.workspace.trigger("tps-health:appearance-changed");
-      logger.flow("Settings", "nutrient-goal:updated", {key, removed:remove});
-    } catch (error) { Object.assign(this.settings, previous); throw error; }
+  getHealthGoals(forWrite = false): HealthGoal[] {
+    if (this.settings.goalStorage !== "notes") return applyBuiltInHealthGoalTargets(this.settings.healthGoals, this.settings);
+    if (forWrite && this.nativeRecordService?.getDailyIndexStatus() !== "ready") throw new Error("Health goal metadata is still loading. Try again when indexing finishes.");
+    return this.nativeRecordService?.goalNotes.entries().map(entry => ({...entry.goal})) || [];
   }
 
-  async updateBuiltInHealthGoalTarget(
-    key: "calorieGoal" | "proteinGoalG" | "activityGoalMinutes",
-    value: number,
-  ): Promise<void> {
-    this.settings[key] = value;
-    this.settings.healthGoals = applyBuiltInHealthGoalTargets(this.settings.healthGoals, this.settings);
-    logger.flow("Settings", "built-in-goal:changed", { key, value });
-    await this.saveSettings();
+  getGoalAwareSettings(forWrite = false): TPSHealthSettings {
+    return {...this.settings, healthGoals: this.getHealthGoals(forWrite)};
+  }
+
+  private goalAdoptionPromise: Promise<void> | null = null;
+  private pendingGoalAdoptionSource: string | null = null;
+
+  /** Explicit adoption only. Startup and opening existing Bases never write notes. */
+  async adoptGoalNotes(folder = "Health Goals"): Promise<void> {
+    if (this.settings.goalStorage === "notes") return;
+    if (this.goalAdoptionPromise) return this.goalAdoptionPromise;
+    const operation = this.performGoalAdoption(folder);
+    this.goalAdoptionPromise = operation;
+    try { await operation; } finally { if (this.goalAdoptionPromise === operation) this.goalAdoptionPromise = null; }
+  }
+
+  private async performGoalAdoption(folder: string): Promise<void> {
+    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before moving goals to notes.");
+    if (this.nativeRecordService?.getDailyIndexStatus() !== "ready") throw new Error("Wait for Health metadata indexing before moving goals.");
+    const expected = legacyGoalSignature(normalizeTPSHealthSettings(await this.loadData()));
+    if (expected !== legacyGoalSignature(this.settings)) throw new Error("Goal settings changed. Reopen Health settings before moving goals.");
+    const goals = this.getHealthGoals();
+    const keys = goals.map(goal => goalNoteFields(goal).healthGoal);
+    if (new Set(keys).size !== keys.length) throw new Error("Resolve duplicate goal metrics before moving goals.");
+    const existing = this.nativeRecordService.goalNotes.entries();
+    const plans = goals.map(goal => {
+      const fields = goalNoteFields(goal);
+      readGoalNote(fields);
+      const found = existing.find(entry => entry.goal.propertyKey === fields.healthGoal);
+      if (found && goalNoteSignature(found.fields) !== goalNoteSignature(fields)) throw new Error("An existing goal note differs for " + goal.label + ". No values were replaced.");
+      const path = normalizePath(folder + "/" + goal.label.replace(/[\\/:*?"<>|]/g, "-") + ".md");
+      if (!found && this.app.vault.getAbstractFileByPath(path)) throw new Error("Goal destination already exists: " + path);
+      return {goal, fields, found, path};
+    });
+    if (new Set(plans.map(plan => plan.path)).size !== plans.length) throw new Error("Goal labels must have distinct filenames for initial adoption.");
+    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+    for (const plan of plans) {
+      if (plan.found) continue;
+      const identity = this.getGcmAtomicHealthIdentityApi();
+      if (!identity) throw new Error("GCM identity support is required to create goal notes.");
+      identity.ensureInternalIdInFrontmatter(plan.fields);
+      const file = await this.app.vault.create(plan.path, "---\n" + stringifyYaml(plan.fields) + "---\n");
+      await this.nativeRecordService.refreshGoalNote(file);
+    }
+    // A concurrent settings edit cannot be discarded by completing adoption.
+    if (expected !== legacyGoalSignature(normalizeTPSHealthSettings(await this.loadData())) || expected !== legacyGoalSignature(this.settings)) throw new Error("Goal settings changed during adoption. Goal notes are preserved; settings remain the source until reconciled.");
+    this.pendingGoalAdoptionSource = expected;
+    this.settings.goalStorage = "notes";
+    try { await this.saveSettings(); }
+    catch (error) { this.settings.goalStorage = "settings"; throw error; }
+    finally { this.pendingGoalAdoptionSource = null; }
+    this.app.workspace.trigger("tps-health:appearance-changed");
+  }
+
+  async saveNutrientGoal(key: string, minimum: string, maximum: string, remove = false, display: Pick<HealthGoal, "showInPrimary" | "showInSecondary"> = {}): Promise<void> {
+    if (this.settingsPersistenceBlockedByFutureSchema) throw new Error("Update Health before editing goals.");
+    const next = nutrientGoalChange(this.getGoalAwareSettings(true), key, minimum, maximum, remove, display);
+    await this.adoptGoalNotes();
+    await this.writeGoalNote(key, remove ? null : next.healthGoals.find(goal => goalNoteFields(goal).healthGoal === (key === "cal" ? "consumedCalories" : key))!);
+  }
+
+  private async writeGoalNote(key: string, goal: HealthGoal | null): Promise<void> {
+    this.getHealthGoals(true);
+    const entry = this.nativeRecordService!.goalNotes.entries().find(entry => entry.goal.propertyKey === (key === "cal" ? "consumedCalories" : key));
+    if (!entry) {
+      if (!goal) return;
+      const folder = "Health Goals";
+      if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+      const path = normalizePath(folder + "/" + goal.label.replace(/[\\/:*?"<>|]/g, "-") + ".md");
+      if (this.app.vault.getAbstractFileByPath(path)) throw new Error("Goal destination already exists. Enable or edit that goal note directly.");
+      const fields = goalNoteFields(goal), identity = this.getGcmAtomicHealthIdentityApi();
+      if (!identity) throw new Error("GCM identity support is required to create goal notes.");
+      identity.ensureInternalIdInFrontmatter(fields);
+      const file = await this.app.vault.create(path, "---\n" + stringifyYaml(fields) + "---\n");
+      await this.nativeRecordService!.refreshGoalNote(file);
+    } else {
+      if (goal && goalNoteSignature({...goalNoteFields(goal), goalEnabled: entry.fields.goalEnabled}) === goalNoteSignature(entry.fields)) return;
+      const file = this.app.vault.getAbstractFileByPath(entry.path);
+      if (!(file instanceof TFile)) throw new Error("Goal moved or was deleted. Reopen the goal editor.");
+      const expected = goalNoteSignature(entry.fields);
+      const disk = await this.app.vault.read(file);
+      let dirty = false;
+      this.app.workspace.iterateAllLeaves(leaf => {
+        const view = leaf.view;
+        if (view instanceof MarkdownView && view.getMode() === "source" && view.file === file && view.editor?.getValue() !== disk) dirty = true;
+      });
+      if (dirty) throw new Error("The goal has unsaved editor changes. Save it before editing its target here.");
+      await this.processHealthFrontmatter(file, fields => {
+        if (goalNoteSignature(fields) !== expected) throw new Error("The goal changed while editing. Reopen the goal editor.");
+        if (!goal) fields.goalEnabled = false;
+        else {
+          const updates = goalNoteFields(goal);
+          for (const key of GOAL_FIELDS) {
+            if (key === "goalEnabled") continue;
+            if (key in updates) fields[key] = updates[key]; else delete fields[key];
+          }
+        }
+      });
+      await this.nativeRecordService!.refreshGoalNote(file);
+    }
+    this.app.workspace.trigger("tps-health:appearance-changed");
+  }
+
+  async updateBuiltInHealthGoalTarget(key: "calorieGoal" | "proteinGoalG" | "activityGoalMinutes", value: number): Promise<void> {
+    const metric = key === "activityGoalMinutes" ? "activity" : key === "calorieGoal" ? "consumedCalories" : "protein";
+    const previous = this.getHealthGoals().find(goal => goal.propertyKey === metric);
+    if (!Number.isFinite(value) || value <= 0 || !previous) throw new Error("Enter a positive target for an existing goal.");
+    await this.adoptGoalNotes();
+    await this.writeGoalNote(metric, {...previous, ...(metric === "consumedCalories" ? {max: value} : {min: value})});
   }
 
   onunload(): void {
@@ -1522,7 +1622,7 @@ export default class TPSHealthPlugin extends Plugin {
       file = await this.ensureFoodLogBase();
     } catch (error) {
       logger.flowError("BaseOpen", "food-log:ensure-failed", error, { path: DEFAULT_FOOD_LOG_BASE_PATH });
-      new Notice("Food Log base path is not a file.");
+      new Notice((error as Error).message);
       return;
     }
     try {
@@ -1535,23 +1635,26 @@ export default class TPSHealthPlugin extends Plugin {
     }
   }
 
-  async ensureFoodLogBase(): Promise<TFile> {
-    const { folder: dailyFolder } = await this.getDailyNoteSettings();
-    let file = this.app.vault.getAbstractFileByPath(DEFAULT_FOOD_LOG_BASE_PATH);
-    if (!file) {
-      logger.flow("Base", "food-log:create", { path: DEFAULT_FOOD_LOG_BASE_PATH });
-      file = await this.app.vault.create(DEFAULT_FOOD_LOG_BASE_PATH, defaultFoodLogBaseContent(this.settings, dailyFolder));
-    }
-    if (!(file instanceof TFile)) {
-      logger.flowWarn("Base", "food-log:path-not-file", { path: DEFAULT_FOOD_LOG_BASE_PATH });
-      throw new Error("Food Log base path is not a file.");
-    }
-    const repaired = repairFoodLogBaseContent(await this.app.vault.cachedRead(file), this.settings, dailyFolder);
-    if (repaired) {
-      logger.flow("Base", "food-log:repair", { path: file.path });
-      await this.app.vault.modify(file, repaired);
-    }
-    return file;
+  async ensureFoodLogBase(basePath = FOOD_GOALS_BASE): Promise<TFile> {
+    const file = this.app.vault.getAbstractFileByPath(basePath);
+    if (file instanceof TFile) return file;
+    if (file) throw new Error("Food & Goals base path is not a file.");
+    if (this.settings.goalStorage !== "notes") throw new Error("Use Food & goals → Move goals to notes before creating the comparison Base.");
+    const codec = this.configuredKindCodec();
+    const encoded = codec ? codec.encode({kind: this.settings.nativeRecordKinds.foodEntry}, {}) : {kind: this.settings.nativeRecordKinds.foodEntry};
+    const foodFilter = Object.entries(encoded).map(([key, value]) => Array.isArray(value)
+      ? value.map(item => `list(note[${JSON.stringify(key)}]).contains(${JSON.stringify(item)})`).join(" && ")
+      : `note[${JSON.stringify(key)}] == ${JSON.stringify(value)}`).join(" && ");
+    if (!foodFilter) throw new Error("Configure food-entry recognition in GCM first.");
+    return await this.app.vault.create(basePath, stringifyYaml(foodGoalsBaseDefinition(this.settings, this.getHealthGoals(true), foodFilter)));
+  }
+
+  async openHealthGoalsBase(basePath = HEALTH_GOALS_BASE): Promise<void> {
+    if (this.settings.goalStorage !== "notes") throw new Error("Use Food & goals → Move goals to notes first.");
+    let file = this.app.vault.getAbstractFileByPath(basePath);
+    if (!file) file = await this.app.vault.create(basePath, stringifyYaml(healthGoalsBaseDefinition()));
+    if (!(file instanceof TFile)) throw new Error("Health Goals base path is not a file.");
+    await this.app.workspace.getLeaf(false).openFile(file);
   }
 
   async openActivityLogBase(): Promise<void> {
@@ -3165,7 +3268,7 @@ export default class TPSHealthPlugin extends Plugin {
     const renderedBody = template
       ? this.renderFoodTemplate(template, normalizedItem, type, tag)
       : this.defaultFoodNoteTemplate(normalizedItem, type, tag);
-    const body = sanitizePermanentFoodNoteContent(renderedBody, this.settings);
+    const body = sanitizePermanentFoodNoteContent(renderedBody, this.getGoalAwareSettings(true));
     const file = await this.app.vault.create(path, body);
     await this.ensureAtomicHealthNote(file, type, normalizedItem.name);
     this.localFoodIndexDirty = true;
@@ -3181,7 +3284,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private defaultFoodNoteTemplate(item: FoodItem, type: FoodNoteType, tag: string): string {
-    const nutrition = trackedFoodNutrition(item.nutrition, this.settings.healthGoals);
+    const nutrition = trackedFoodNutrition(item.nutrition, this.getHealthGoals(true));
     const writesMetadata = !this.configuredKindCodec() && foodIdentificationWritesMetadata(this.settings.foodIdentificationMode);
     const writesTag = !this.configuredKindCodec() && foodIdentificationWritesTag(this.settings.foodIdentificationMode);
     return [
@@ -3224,7 +3327,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   private renderFoodTemplate(template: string, item: FoodItem, type: FoodNoteType, tag: string): string {
-    const nutrition = trackedFoodNutrition(item.nutrition, this.settings.healthGoals);
+    const nutrition = trackedFoodNutrition(item.nutrition, this.getHealthGoals(true));
     const replacements: Record<string, string> = {
       name: item.name,
       brand: item.brand || "",
@@ -3622,7 +3725,7 @@ export default class TPSHealthPlugin extends Plugin {
 
     await this.processHealthFrontmatter(file, (frontmatter) => {
       const original = { ...frontmatter };
-      const updated = foodFrontmatter(normalized, type, this.settings);
+      const updated = foodFrontmatter(normalized, type, this.getGoalAwareSettings(true));
       if (this.configuredKindCodec() && updated[foodFrontmatterKey(this.settings)] === foodFrontmatterValue(this.settings, type)) {
         delete updated[foodFrontmatterKey(this.settings)];
       }
@@ -3630,7 +3733,7 @@ export default class TPSHealthPlugin extends Plugin {
       else if (explicitAliases?.length) updated.aliases = explicitAliases;
       else delete updated.aliases;
       Object.assign(frontmatter, updated);
-      for (const key of [...trackedFoodNutrientKeys(this.settings.healthGoals), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (updated[key] == null) delete frontmatter[key];
+      for (const key of [...trackedFoodNutrientKeys(this.getHealthGoals(true)), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (updated[key] == null) delete frontmatter[key];
       if (replaceAliases && !explicitAliases?.length) delete frontmatter.aliases;
       if (recipeLike && (replaceRecipeBody || normalized.ingredients !== undefined) && !recipeIngredientPropertyValuesFromMarkdown(normalized.ingredients || "").length) {
         delete frontmatter.ingredients;
@@ -4014,7 +4117,7 @@ export default class TPSHealthPlugin extends Plugin {
     const normalizedItem = isRecipeLikeFoodType(type)
       ? await this.serializeRecipeMutation(file.path, "food-note-update", updateNote)
       : await updateNote();
-    const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.settings);
+    const itemFrontmatter = foodFrontmatter(normalizedItem, type, this.getGoalAwareSettings(true));
     const codec = this.configuredKindCodec();
     const legacyKey = foodFrontmatterKey(this.settings);
     const legacyValue = foodFrontmatterValue(this.settings, type);
@@ -4025,7 +4128,7 @@ export default class TPSHealthPlugin extends Plugin {
     else delete itemFrontmatter.aliases;
     const originalFrontmatter = { ...(this.app.metadataCache.getFileCache(file)?.frontmatter || {}) };
     const updatedFrontmatter = { ...originalFrontmatter, ...itemFrontmatter };
-    for (const key of [...trackedFoodNutrientKeys(this.settings.healthGoals), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
+    for (const key of [...trackedFoodNutrientKeys(this.getHealthGoals(true)), "servingGrams", "servingMl", "nutritionBasis", "recipeTotalGrams"]) if (itemFrontmatter[key] == null) delete updatedFrontmatter[key];
     if (replaceAliases && !explicitAliases?.length) delete updatedFrontmatter.aliases;
     let returnedFrontmatter = updatedFrontmatter;
     if (codec) {
@@ -7588,7 +7691,7 @@ export default class TPSHealthPlugin extends Plugin {
   }
 
   getMetricRenderConfigs(): HealthMetricRenderConfig[] {
-    return applyBuiltInHealthGoalTargets(this.settings.healthGoals, this.settings).map((goal) => ({
+    return this.getHealthGoals().map((goal) => ({
       propertyKey: goal.propertyKey,
       label: goal.label,
       unit: goal.unit,
@@ -7700,7 +7803,7 @@ export default class TPSHealthPlugin extends Plugin {
       getSettings: () => ({
         ...this.settings,
         customNutrients: this.settings.customNutrients.map(definition => ({...definition})),
-        healthGoals: this.settings.healthGoals.map((goal) => ({ ...goal })),
+        healthGoals: this.getHealthGoals().map((goal) => ({ ...goal })),
         nativeRecordKinds: { ...this.settings.nativeRecordKinds },
         nativeRecordProperties: { ...this.settings.nativeRecordProperties },
         nativeRecordKindAliases: Object.fromEntries(Object.entries(this.settings.nativeRecordKindAliases).map(([key, values]) => [key, [...(values || [])]])),
@@ -7708,7 +7811,7 @@ export default class TPSHealthPlugin extends Plugin {
       }),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
-      getPropertyCatalog: () => buildHealthPropertyCatalog(this.settings, this.configuredKindCodec()),
+      getPropertyCatalog: () => buildHealthPropertyCatalog(this.getGoalAwareSettings(), this.configuredKindCodec()),
       openFoodLogEntryMenuFromLine: (event, filePath, lineNumber, line) => this.openFoodLogEntryMenuFromLine(event, filePath, lineNumber, line),
     };
   }
@@ -18806,47 +18909,6 @@ function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
-function defaultFoodLogBaseContent(settings: TPSHealthSettings, dailyFolder: string): string {
-  const filters = foodLogBaseDefaultFilters(settings, dailyFolder);
-  return [
-    "model:",
-    "  version: 1",
-    "  kind: Table",
-    "  columns: []",
-    "pluginVersion: 1.0.0",
-    "filters:",
-    "  or:",
-    ...filters.map((filter) => `    - ${filter}`),
-    "views:",
-    `  - type: ${GCM_TABLE_BASE_VIEW_TYPE}`,
-    "    name: Food Log",
-    "    lineFilterKey: food",
-    "    totalsRow: top",
-    "    createAction: command",
-    "    createCommandId: tps-health:log-food",
-    "    order:",
-    "      - food",
-    "      - qty",
-    "      - unit",
-    "      - amount",
-    "      - amountUnit",
-    "      - cal",
-    "      - protein",
-    "      - carbs",
-    "      - fat",
-    "      - completedDate",
-    "    groupBy:",
-    "      property: completedDate",
-    "      direction: DESC",
-    "    sort:",
-    "      - property: completedDate",
-    "        direction: DESC",
-    "      - property: file.mtime",
-    "        direction: DESC",
-    "",
-  ].join("\n");
-}
-
 function defaultActivityLogBaseContent(): string {
   return [
     "model:",
@@ -18891,170 +18953,6 @@ function repairActivityLogBaseContent(content: string): string | null {
   const normalized = content.trimEnd();
   if (!normalized || !normalized.includes(`type: ${GCM_TABLE_BASE_VIEW_TYPE}`) || !normalized.includes("lineFilterAnyKeys:")) return defaultActivityLogBaseContent();
   return null;
-}
-
-function legacyBroadFoodLogBaseContent(): string {
-  return [
-    "model:",
-    "  version: 1",
-    "  kind: Table",
-    "  columns: []",
-    "pluginVersion: 1.0.0",
-    "filters:",
-    "  and:",
-    "    - file.name != \"\"",
-    "views:",
-    `  - type: ${LEGACY_FOOD_LOG_BASE_VIEW_TYPE}`,
-    "    name: Food Log",
-    "",
-  ].join("\n");
-}
-
-function repairFoodLogBaseContent(content: string, settings: TPSHealthSettings, dailyFolder: string): string | null {
-  const normalized = content.trimEnd();
-  if (normalized === legacyBroadFoodLogBaseContent().trimEnd()) return defaultFoodLogBaseContent(settings, dailyFolder);
-  if (!normalized) return defaultFoodLogBaseContent(settings, dailyFolder);
-  if (content.includes(`type: ${LEGACY_FOOD_LOG_BASE_VIEW_TYPE}`)) {
-    const migrated = replaceLegacyFoodLogBaseViewConfig(normalized);
-    return migrated === normalized ? null : `${migrated}\n`;
-  }
-  if (content.includes(`type: ${GCM_TABLE_BASE_VIEW_TYPE}`) || content.includes(`type: ${GCM_LEGACY_LOG_BASE_VIEW_TYPE}`)) {
-    const repairedView = repairLogBaseViewConfig(normalized);
-    return repairedView === normalized ? null : `${repairedView}\n`;
-  }
-  const next = normalized;
-  const foodLogView = [
-    `  - type: ${GCM_TABLE_BASE_VIEW_TYPE}`,
-    "    name: Food Log",
-    "    lineFilterKey: food",
-    "    totalsRow: top",
-    "    createAction: command",
-    "    createCommandId: tps-health:log-food",
-    "    order:",
-    "      - food",
-    "      - qty",
-    "      - unit",
-    "      - amount",
-    "      - amountUnit",
-    "      - cal",
-    "      - protein",
-    "      - carbs",
-    "      - fat",
-    "      - completedDate",
-    "    groupBy:",
-    "      property: completedDate",
-    "      direction: DESC",
-    "    sort:",
-    "      - property: completedDate",
-    "        direction: DESC",
-    "      - property: file.mtime",
-    "        direction: DESC",
-  ].join("\n");
-  if (/^views:\s*$/m.test(next)) return `${next}\n${foodLogView}\n`;
-  return `${next}\nviews:\n${foodLogView}\n`;
-}
-
-function replaceLegacyFoodLogBaseViewConfig(content: string): string {
-  const viewPattern = new RegExp(`(^\\s*-\\s+type:\\s+${LEGACY_FOOD_LOG_BASE_VIEW_TYPE}\\s*$)([\\s\\S]*?)(?=^\\s*-\\s+type:\\s+|(?![\\s\\S]))`, "m");
-  return content.replace(viewPattern, () => [
-    `  - type: ${GCM_TABLE_BASE_VIEW_TYPE}`,
-    "    name: Food Log",
-    "    lineFilterKey: food",
-    "    totalsRow: top",
-    "    createAction: command",
-    "    createCommandId: tps-health:log-food",
-    "    order:",
-    "      - food",
-    "      - qty",
-    "      - unit",
-    "      - amount",
-    "      - amountUnit",
-    "      - cal",
-    "      - protein",
-    "      - carbs",
-    "      - fat",
-    "      - completedDate",
-    "    groupBy:",
-    "      property: completedDate",
-    "      direction: DESC",
-    "    sort:",
-    "      - property: completedDate",
-    "        direction: DESC",
-    "      - property: file.mtime",
-    "        direction: DESC",
-  ].join("\n") + "\n");
-}
-
-function repairLogBaseViewConfig(content: string): string {
-  const viewPattern = new RegExp(`(^\\s*-\\s+type:\\s+(?:${GCM_TABLE_BASE_VIEW_TYPE}|${GCM_LEGACY_LOG_BASE_VIEW_TYPE})\\s*$)([\\s\\S]*?)(?=^\\s*-\\s+type:\\s+|(?![\\s\\S]))`, "m");
-  return content.replace(viewPattern, (_match, _header: string, body: string) => {
-    let nextBody = body.replace(
-      /^(\s+-\s+property:\s+)createdDate\s*$/gmu,
-      "$1file.mtime",
-    );
-    if (!/^\s+lineFilterKey:\s+food\s*$/m.test(nextBody) && !/^\s+lineProperty:\s+food\s*$/m.test(nextBody)) {
-      nextBody += "    lineFilterKey: food\n";
-    }
-    if (!/^\s+totalsRow:\s+(?:off|top|bottom)\s*$/m.test(nextBody)) {
-      nextBody += "    totalsRow: top\n";
-    }
-    if (!/^\s+createAction:\s+command\s*$/m.test(nextBody)) {
-      nextBody += "    createAction: command\n";
-    }
-    if (!/^\s+createCommandId:\s+tps-health:log-food\s*$/m.test(nextBody)) {
-      nextBody += "    createCommandId: tps-health:log-food\n";
-    }
-    if (!/^\s+order:\s*$/m.test(nextBody)) {
-      nextBody += [
-        "    order:",
-        "      - food",
-        "      - qty",
-        "      - unit",
-        "      - amount",
-        "      - amountUnit",
-        "      - cal",
-        "      - protein",
-        "      - carbs",
-        "      - fat",
-        "      - completedDate",
-      ].join("\n") + "\n";
-    }
-    if (!/^\s+groupBy:\s*$/m.test(nextBody)) {
-      nextBody += [
-        "    groupBy:",
-        "      property: completedDate",
-        "      direction: DESC",
-      ].join("\n") + "\n";
-    }
-    if (!/^\s+sort:\s*$/m.test(nextBody)) {
-      nextBody += [
-        "    sort:",
-        "      - property: completedDate",
-        "        direction: DESC",
-        "      - property: file.mtime",
-        "        direction: DESC",
-      ].join("\n") + "\n";
-    }
-    return `  - type: ${GCM_TABLE_BASE_VIEW_TYPE}${nextBody}`;
-  });
-}
-
-function foodLogBaseDefaultFilters(settings: TPSHealthSettings, dailyFolder: string): string[] {
-  const filters = new Set<string>();
-  const foodLogPath = normalizePath(settings.foodLogFilePath || DEFAULT_SETTINGS.foodLogFilePath).replace(/^\/+/, "");
-  if (foodLogPath) {
-    filters.add(`file.path == ${baseString(foodLogPath)}`);
-    if (/\.md$/i.test(foodLogPath)) filters.add(`file.path == ${baseString(foodLogPath.replace(/\.md$/i, ""))}`);
-  }
-  const normalizedDailyFolder = normalizePath(dailyFolder || "").replace(/^\/+/, "").replace(/\/+$/, "");
-  if (normalizedDailyFolder) filters.add(`file.folder == ${baseString(normalizedDailyFolder)}`);
-  else filters.add(`file.name != ${baseString("")}`);
-  filters.add(`file.folder == ${baseString("Dailynotes")}`);
-  return [...filters];
-}
-
-function baseString(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }
 
 export function workoutEditorContentChange(
