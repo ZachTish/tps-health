@@ -149,8 +149,8 @@ async function importPluginWithObsidianStub() {
     }
   `;
   const emptyModule = "export class RangeSetBuilder { add() {} finish() { return {}; } } export const StateField = { define: (spec) => spec }; export const StateEffect = { define: () => ({of: () => ({is: () => false})}) }; export class EditorState { static transactionFilter = { of: (filter) => filter }; } export class Decoration { static none = {}; static widget() { return {}; } static replace() { return {}; } } export class ViewPlugin { static fromClass() { return {}; } } export class WidgetType {} export const EditorView = { decorations: { from: () => ({}) } }; export const DecorationSet = {}; export class ViewUpdate {}";
-  const zxingBrowserStub = "export class BrowserMultiFormatOneDReader {} export class BrowserMultiFormatReader {}";
-  const zxingLibraryStub = "export const BarcodeFormat = {}; export const DecodeHintType = {};";
+  const zxingBrowserStub = "export class BrowserMultiFormatOneDReader {} export class BrowserMultiFormatReader {} export class HTMLCanvasElementLuminanceSource {}";
+  const zxingLibraryStub = "export const BarcodeFormat = {}; export const DecodeHintType = {}; export class RGBLuminanceSource {} export class BinaryBitmap {} export class HybridBinarizer {}";
   const virtualModules = new Map([
     ["obsidian", obsidianStub],
     ["@codemirror/state", emptyModule],
@@ -170,7 +170,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, BarcodeFoodReviewModal, cropCanvas, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
+            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, BarcodeFoodReviewModal, cropCanvas, barcodeScanCanvases, barcodeLiveScanCanvases, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
             loader: "ts",
           };
         });
@@ -6368,7 +6368,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /scanner\.startScan/);
   assert.match(mainSource, /Native scanner bridge unavailable; using web camera scanner\./);
   assert.match(mainSource, /nativeBarcodeBridgeValue\(result\)/);
-  assert.match(mainSource, /import \{ BrowserMultiFormatOneDReader, BrowserMultiFormatReader \} from "@zxing\/browser"/);
+  assert.match(mainSource, /import \{ OrientationAwareBarcodeReader \} from "\.\/barcode-reader"/);
   assert.match(mainSource, /import \{ BarcodeFormat, DecodeHintType \} from "@zxing\/library"/);
   assert.match(mainSource, /const BarcodeDetector = \(window as any\)\.BarcodeDetector/);
   assert.match(mainSource, /if \(this\.options\.adapters\?\.createNativeDetector\) \{\s+this\.nativeBarcodeDetector = this\.options\.adapters\.createNativeDetector\(\);/);
@@ -6378,7 +6378,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /function createLiveBarcodeReader\(\): any/);
   assert.match(mainSource, /private createLiveBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createLiveReader\?\.\(\) \|\| createLiveBarcodeReader\(\);/);
   assert.match(mainSource, /private createCanvasBarcodeReader\(\): any \{\s+return this\.options\.adapters\?\.createCanvasReader\?\.\(\) \|\| createBarcodeReader\(\);/);
-  assert.match(mainSource, /new BrowserMultiFormatOneDReader\(createBarcodeHints\(true\), \{/);
+  assert.match(mainSource, /new OrientationAwareBarcodeReader\(createBarcodeHints\(true\), \{/);
   assert.match(mainSource, /delayBetweenScanAttempts: 80/);
   assert.match(mainSource, /await this\.startZxingVideoScan\(statusEl, sessionId\)/);
   assert.match(mainSource, /void this\.optimizeCameraTrack\(sessionId\);\s+await this\.startZxingVideoScan\(statusEl, sessionId\)/);
@@ -6455,7 +6455,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
 });
 
-test("barcode assist covers arbitrary orientation and adapts camera distance", async () => {
+test("barcode assist schedules diagonal candidates and adapts camera distance", async () => {
   const {
     BARCODE_ASSIST_ROTATION_ANGLES,
     barcodeAssistZoomPlan,
@@ -9826,6 +9826,55 @@ test("rotated barcode crops use opaque white margins before drawing", async () =
     assert.ok(canvas.width<=1600 && canvas.height<=1600);
     assert.deepEqual(calls,[['fill','#fff',0,0,canvas.width,canvas.height],['draw']]);
   } finally {globalThis.document=previous;}
+});
+
+test("barcode image rotations preserve the whole frame and stay lazy", async () => {
+  const { barcodeScanCanvases, barcodeLiveScanCanvases } = await importPluginWithObsidianStub();
+  const previous = globalThis.document;
+  const canvases = [];
+  globalThis.document = { createElement: () => {
+    const canvas = { width: 0, height: 0, angle: 0, crop: null };
+    canvas.getContext = () => ({ fillRect() {}, translate() {},
+      rotate(angle) { canvas.angle = angle; },
+      drawImage(source, ...args) { canvas.crop = args.slice(0, 4); },
+    });
+    canvases.push(canvas);
+    return canvas;
+  } };
+  try {
+    const source = { width: 960, height: 640 };
+    const images = barcodeScanCanvases(source, true);
+    assert.equal(canvases.length, 0);
+    assert.equal(images.next().value, source);
+    assert.equal(canvases.length, 0, "a direct hit never allocates rotated canvases");
+    for (const degrees of [22.5, 45, 67.5]) {
+      const canvas = images.next().value;
+      assert.deepEqual(canvas.crop, [0, 0, 960, 640]);
+      assert.equal(canvas.angle, degrees * Math.PI / 180);
+      assert.ok(canvas.width <= 1600 && canvas.height <= 1600);
+    }
+    images.return();
+    assert.equal(canvases.length, 3, "closing the iterator never builds unused crops");
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const live = barcodeLiveScanCanvases(source, attempt);
+      assert.equal(live.next().value, source);
+      assert.deepEqual(live.next().value.crop, [0, 0, 960, 640]);
+      live.return();
+    }
+  } finally { globalThis.document = previous; }
+});
+
+test("a missed barcode canvas is decoded once and decode-only adapters still work", async () => {
+  const { BarcodeScannerModal } = await importPluginWithObsidianStub();
+  const modal = new BarcodeScannerModal({}, {});
+  let calls = 0;
+  const reader = { decodeFromCanvas() { calls++; throw Object.assign(new Error(), { name: 'NotFoundException' }); },
+    decode() { throw Error('must not repeat the same failed canvas'); } };
+  assert.equal(await modal.tryDecodeCanvas(reader, {}), null);
+  assert.equal(calls, 1);
+  assert.equal(await modal.tryDecodeCanvas({ decode: () => ({ getText: () => '737628064502', format: 'upc_a' }) }, {}), '737628064502');
+  assert.match(modal.cameraHelpText(), /any angle/);
+  assert.doesNotMatch(mainSource, /Use your phone’s Rotation Lock/);
 });
 
 test("scanner uses accessible camera overlay actions without a Shortcut button", () => {

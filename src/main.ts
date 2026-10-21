@@ -20,7 +20,7 @@ import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile, stringifyYaml } from "obsidian";
-import { BrowserMultiFormatOneDReader, BrowserMultiFormatReader } from "@zxing/browser";
+import { OrientationAwareBarcodeReader } from "./barcode-reader";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
 import { buildHealthPropertyCatalog } from "./health-property-catalog";
@@ -12464,15 +12464,10 @@ class BarcodeScannerModal extends Modal {
   private visibilityHandler: (() => void) | null = null;
   private resumeCameraWhenVisible = false;
   private cameraAssistTimers: number[] = [];
-  private orientationNoticeShown = false;
   private orientationLock = new BarcodeOrientationLock(
     () => barcodeOrientationDrivers(window),
     (result) => {
       logger.flow("Barcode", `orientation:${result}`);
-      if (result === "unavailable" && !this.orientationNoticeShown && !this.stopped) {
-        this.orientationNoticeShown = true;
-        new Notice("Automatic portrait lock is unavailable in this app. Use your phone’s Rotation Lock while scanning.");
-      }
     },
   );
 
@@ -13038,18 +13033,12 @@ class BarcodeScannerModal extends Modal {
   }
 
   private async tryDecodeCanvas(reader: any, canvas: HTMLCanvasElement): Promise<string | null> {
-    const methods = [
-      () => reader.decodeFromCanvas?.(canvas),
-      () => reader.decode?.(canvas),
-    ];
-    for (const method of methods) {
-      try {
-        const result = await method();
-        const barcode = barcodeFromDecodedResult(result);
-        if (barcode) return barcode;
-      } catch (error: any) {
-        if (error?.name && error.name !== "NotFoundException") logger.flowWarn("Barcode", "canvas-decode:failed", { error: logger.errorSummary(error) });
-      }
+    try {
+      // decode() also calls decodeFromCanvas(); do not decode a missed frame twice.
+      const decode = reader.decodeFromCanvas || reader.decode;
+      return barcodeFromDecodedResult(await decode?.call(reader, canvas));
+    } catch (error: any) {
+      if (error?.name && error.name !== "NotFoundException") logger.flowWarn("Barcode", "canvas-decode:failed", { error: logger.errorSummary(error) });
     }
     return null;
   }
@@ -13168,9 +13157,7 @@ class BarcodeScannerModal extends Modal {
   }
 
   private cameraHelpText(): string {
-    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-    if (isIOS) return "Allow camera access, then tilt reflective packaging until glare moves outside the guide. The scanner adjusts exposure automatically.";
-    return "Center the UPC/EAN barcode. On white or metallic packaging, tilt it slightly so glare moves outside the guide.";
+    return "Keep the whole UPC/EAN barcode visible at any angle. Hold your phone naturally and avoid glare on the label.";
   }
 
   private cameraErrorMessage(error: any): string {
@@ -18544,11 +18531,11 @@ function blobBase64(blob: Blob): Promise<string> {
 }
 
 function createBarcodeReader(): any {
-  return new BrowserMultiFormatReader(createBarcodeHints(true)) as any;
+  return new OrientationAwareBarcodeReader(createBarcodeHints(true));
 }
 
 function createLiveBarcodeReader(): any {
-  return new BrowserMultiFormatOneDReader(createBarcodeHints(true), {
+  return new OrientationAwareBarcodeReader(createBarcodeHints(true), {
     delayBetweenScanAttempts: 80,
     delayBetweenScanSuccess: 90,
   }) as any;
@@ -18591,6 +18578,12 @@ function nativeBarcodeBridgeValue(result: unknown): string | null {
 
 function* barcodeScanCanvases(source: HTMLCanvasElement, heavy: boolean): IterableIterator<HTMLCanvasElement> {
   if (source.width > 0 && source.height > 0) yield source;
+  // Preserve the whole label at diagonal angles before trying tighter crops.
+  // The reader handles each candidate's quarter-turn and reversed direction.
+  for (const angle of BARCODE_ASSIST_ROTATION_ANGLES) {
+    if (angle === 0) continue;
+    yield cropCanvas(source, { x: 0, y: 0, width: 1, height: 1, scale: 1 }, 1, {}, angle);
+  }
   const regions = barcodeScanRegions(source.width, source.height, heavy);
   for (const region of regions) {
     for (const rotationDegrees of region.rotationDegrees || [0]) {
