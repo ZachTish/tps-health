@@ -170,7 +170,7 @@ async function importPluginWithObsidianStub() {
         build.onLoad({ filter: /main\.ts$/ }, (args) => {
           if (args.path !== mainEntryPoint) return null;
           return {
-            contents: `${mainSource}\nexport { TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, BarcodeFoodReviewModal, cropCanvas, barcodeScanCanvases, barcodeLiveScanCanvases, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
+            contents: `${mainSource}\nexport { SetModal, TPSHealthNativeDailyDashboardChild, HealthDashboardView, HealthNativeRecordService, configureCustomNutrients, foodEntryLine, foodItemFromInput, foodFrontmatter, foodFactsServing, foodFactsNutritionBasis, usdaFoodNutrition, hasSearchableMacroData, compactMacroParts, searchCuratedFoods, CURATED_COMMON_FOODS, openFoodFactsProvenance, renderNativeDailyMacrosBlock, renderNativeDailyComponents, BarcodeScannerModal, BarcodeFoodReviewModal, cropCanvas, barcodeScanCanvases, barcodeLiveScanCanvases, BatchFoodRecipeModal, CustomFoodModal, FoodLogModal, FoodSearchModal, RecipeIngredientModal, describeSelectionItem, alcoholGramsFromAbv, customFoodServingMetadataForSave, dedupeFoods, defaultFoodLogQuantity, ensureFoodIdentityTagInContent, foodNoteTypeFromFrontmatter, foodResearchNutritionIsPlausible, foodResearchOutcomeFromAi, foodResultMeta, foodServingLabel, foodFactsNutrition, householdServingFromText, rankFoodSearchResults, recipeBodyWithIngredientDrafts, resolveFoodLogServing, dailyNoteDateIsoFromFrontmatter };`,
             loader: "ts",
           };
         });
@@ -6101,9 +6101,80 @@ test("workout starts use existing templates and blank starts open a whole-note w
   assert.doesNotMatch(mainSource, /focusLatestWorkoutSetAfterPicker/);
   assert.doesNotMatch(mainSource, /\.setName\("Superset group"\)/);
   assert.doesNotMatch(mainSource, /\.setName\("Dropset group"\)/);
-  assert.match(mainSource, /repsInput\?\.focus\(\);\s+repsInput\?\.select\(\);/);
   assert.match(mainSource, /openNativeWorkoutSupersetLinker/);
   assert.match(mainSource, /openNativeWorkoutDropSetLinker/);
+});
+
+test("workout set entry opens, picks exercises and logs repeatedly without focusing inputs", async () => {
+  const { SetModal } = await importPluginWithObsidianStub();
+  installDeterministicBrowserGlobals();
+  const previousControl = globalThis.__TPSHealthTestSettingControl;
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const document = { activeElement: null, inputFocuses: 0 };
+  class Element {
+    constructor(tag = "div", options = {}) { this.tag = tag; this.children = []; this.listeners = new Map(); this.textContent = options.text || ""; this.value = ""; }
+    addClass() {}
+    setAttr() {}
+    empty() { this.children = []; }
+    setText(value) { this.textContent = value; }
+    get childElementCount() { return this.children.length; }
+    createEl(tag, options) { const child = new Element(tag, options); this.children.push(child); return child; }
+    createDiv(options) { return this.createEl("div", options); }
+    addEventListener(type, fn) { this.listeners.set(type, fn); }
+    dispatchEvent(event) { this.listeners.get(event.type)?.(event); }
+    focus() { document.activeElement = this; if (this.tag === "input") document.inputFocuses++; }
+    select() { throw Error("Set entry must not select a field automatically"); }
+  }
+  try {
+    for (const initialExercise of ["", "Bench press"]) {
+      const fields = new Map(), buttons = new Map(), saved = [];
+      globalThis.__TPSHealthTestSettingControl = (type, name, configure) => {
+        const control = {
+          inputEl: new Element("input"),
+          setValue(value) { this.inputEl.value = value; return this; },
+          setPlaceholder() { return this; }, setCta() { return this; }, addOption() { return this; },
+          setButtonText(label) { buttons.set(label, this); return this; },
+          onClick(fn) { this.click = fn; return this; },
+          onChange(fn) { this.change = fn; this.inputEl.addEventListener("input", () => fn(this.inputEl.value)); this.inputEl.addEventListener("change", () => fn(this.inputEl.value)); return this; },
+        };
+        configure(control);
+        if (type !== "button") fields.set(name, control);
+      };
+      const previousSet = { reps: 8, weight: 100, weightUnit: "lb", setType: "normal" };
+      const plugin = {
+        getActiveWorkoutState: () => ({path:"Inbox/QA workout.md", title:"QA workout", setCount:saved.length}),
+        nativeRecordService: {isEnabled: () => true, getWorkoutSnapshot: () => ({exercises:[{name:"Bench press", sets:[previousSet]}]})},
+        searchExercises: async () => [{name:"Bench press"}],
+        getActiveWorkoutExerciseNames: async () => ["Bench press"],
+        logSet: async value => { saved.push(value); return {...value, restSeconds:value.restSeconds ?? 30}; },
+      };
+      const modal = new SetModal({}, plugin, initialExercise);
+      modal.contentEl = new Element(); modal.modalEl = new Element();
+      document.activeElement = modal.modalEl;
+      const initialFocuses = document.inputFocuses;
+      assert.equal(modal.hasInitialInputFocus, false, "also opt out of Obsidian's initial input focus");
+      modal.onOpen(); await tick();
+      assert.equal(document.inputFocuses, initialFocuses);
+      if (initialExercise) assert.equal(fields.get("Reps").inputEl.value, "8", "previous values still load");
+      const all = element => [element, ...element.children.flatMap(all)];
+      all(modal.contentEl).find(element => element.tag === "button" && element.textContent === "Bench press").dispatchEvent({type:"click"});
+      await tick();
+      assert.equal(document.inputFocuses, initialFocuses, "exercise selection leaves the keyboard closed");
+      const reps = fields.get("Reps"); reps.inputEl.focus(); reps.inputEl.value = "10"; reps.inputEl.dispatchEvent({type:"input"});
+      assert.equal(document.activeElement, reps.inputEl, "explicit input focus is unchanged");
+      fields.get("Weight").change("120"); fields.get("Rest seconds").change("45");
+      const action = new Element("button"); action.focus();
+      for (let index = 0; index < 3; index++) { buttons.get("Log set").click(); await tick(); }
+      assert.equal(document.activeElement, action);
+      assert.equal(document.inputFocuses, initialFocuses + 1, "saving never opens the keyboard again");
+      assert.equal(saved.length, 3);
+      assert.ok(saved.every(set => set.exercise === "Bench press" && set.reps === 10 && set.weight === 120));
+      assert.deepEqual(saved.map(set => set.restSeconds), [45, undefined, undefined]);
+      assert.equal(fields.get("Rest seconds").inputEl.value, "");
+      buttons.get("Log & close").click(); await tick();
+      assert.equal(saved.length, 4); assert.equal(modal.__closed, true);
+    }
+  } finally { globalThis.__TPSHealthTestSettingControl = previousControl; }
 });
 
 test("command palette only exposes polished everyday health actions", async () => {

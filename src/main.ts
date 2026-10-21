@@ -14068,6 +14068,8 @@ class StartWorkoutModal extends Modal {
 }
 
 class SetModal extends Modal {
+  // Keep the keyboard closed until the user chooses an input.
+  hasInitialInputFocus = false;
 
   constructor(
     app: App,
@@ -14142,7 +14144,6 @@ class SetModal extends Modal {
       for (const item of items.slice(0, 80)) exerciseList.createEl("option", { attr: { value: item.name } });
     });
     let exerciseInput: HTMLInputElement | null = null;
-    let repsInput: HTMLInputElement | null = null;
     let restInput: HTMLInputElement | null = null;
     new Setting(formEl).setClass("tps-health-form-wide").setName("Exercise").addText((text) => {
       exerciseInput = text.inputEl;
@@ -14159,7 +14160,6 @@ class SetModal extends Modal {
         exerciseInput.dispatchEvent(new Event("input", { bubbles: true }));
         exerciseInput.dispatchEvent(new Event("change", { bubbles: true }));
       }
-      window.setTimeout(() => repsInput?.focus(), 0);
     };
     const renderExercisePicker = async (query = "") => {
       const token = ++exercisePickerToken;
@@ -14210,7 +14210,6 @@ class SetModal extends Modal {
     };
     void renderExercisePicker(exercise);
     new Setting(formEl).setName("Reps").addText((text) => {
-      repsInput = text.inputEl;
       text.inputEl.setAttr("inputmode", "decimal");
       text.setValue(reps == null ? "" : String(reps)).onChange((value) => reps = numberOrUndefined(value));
     });
@@ -14283,11 +14282,6 @@ class SetModal extends Modal {
         if (restInput) restInput.value = "";
         if (closeAfterLog) {
           this.close();
-        } else {
-          window.setTimeout(() => {
-            repsInput?.focus();
-            repsInput?.select();
-          }, 0);
         }
       } catch (error) {
         logger.flowError("WorkoutSetModal", "failed", error, { exercise, closeAfterLog });
@@ -14302,7 +14296,6 @@ class SetModal extends Modal {
         await this.plugin.finishWorkout();
       this.close();
       }));
-    window.setTimeout(() => (exercise ? repsInput : exerciseInput)?.focus(), 0);
   }
 
   onClose(): void {

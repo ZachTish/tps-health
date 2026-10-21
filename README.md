@@ -1,12 +1,14 @@
 # TPS Health
 
-TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.0.0** requires Obsidian **1.12.0** or newer.
+TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.0.2** requires Obsidian **1.12.0** or newer.
 
 ## Start here
 
 Install the public numeric release with BRAT from [ZachTish/tps-health](https://github.com/ZachTish/tps-health). Configure food goals and reusable-note destinations in Health settings. Core Daily notes supplies the daily-note naming convention; GCM owns shared record identity, classification and log destinations.
 
 Use **Log food** to select a saved food, recipe, catalog item, barcode or online result, review its serving and date, and save a whole-note food entry. Workouts use whole-note sessions, reusable plans/exercises and explicit set controls. Optional `tps-health-macros` blocks read those records; ordinary note navigation does not normalize or repair them.
+
+The workout set dialog leaves the keyboard closed on opening, choosing an exercise and logging another set. Tap or tab into a field to edit it. Previous-set defaults and repeat logging stay available; saving clears only the explicit rest override. No new setting or record migration is needed.
 
 ## Bases and Canvas
 
