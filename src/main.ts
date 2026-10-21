@@ -1,5 +1,4 @@
 import { MACRO_KCAL_PER_GRAM, macroInputGrams, macroInputDisplay, type EnergyMacro, type MacroInputUnit } from "./macro-input";
-import { HealthDashboardView, HEALTH_DASHBOARD_VIEW, healthDashboardWeek, healthWeekDates, localHealthDate, dashboardDate } from "./health-dashboard-view";
 import { HealthConnectionSettings } from "./connection-settings";
 import { canonicalNativeKind } from "./native-record-schema";
 import { HealthKindCodec, libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
@@ -722,9 +721,6 @@ export default class TPSHealthPlugin extends Plugin {
     });
     this.addSettingTab(new TPSHealthSettingTab(this.app, this));
     this.registerFoodSearchIndexInvalidation();
-    this.registerView(HEALTH_DASHBOARD_VIEW, leaf => new HealthDashboardView(leaf, this));
-    this.addCommand({ id: "open-health-dashboard", name: "Open health dashboard", callback: () => this.openHealthDashboard() });
-    this.addRibbonIcon("heart-pulse", "Open health dashboard", () => void this.openHealthDashboard());
 
 
     this.addCommand({
@@ -3840,7 +3836,12 @@ export default class TPSHealthPlugin extends Plugin {
     return rankFoodSearchResults("", dedupeFoods(saved), stats);
   }
 
-  async searchFoods(query: string, usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>, shouldContinue: () => boolean = () => true): Promise<FoodItem[]> {
+  async searchFoods(
+    query: string,
+    usageStats?: Map<string, FoodUsageStats> | Promise<Map<string, FoodUsageStats>>,
+    shouldContinue: () => boolean = () => true,
+    onResults?: (items: FoodItem[]) => void,
+  ): Promise<FoodItem[]> {
     const providerBrandedSearch = this.settings.includeBrandedFoodSearch;
     return logger.timeAsync("FoodSearch", "search", { query, branded: providerBrandedSearch, brandedSetting: this.settings.includeBrandedFoodSearch }, async () => {
       let usdaSearchActive = shouldContinue();
@@ -3866,17 +3867,29 @@ export default class TPSHealthPlugin extends Plugin {
         logger.flow("FoodSearch", "search:stale-local-only", { query, returned: local.length });
         return local;
       }
-      const [usda, openFoodFacts] = await Promise.all([usdaSearch, openFoodFactsSearch]);
-      const baseResults = rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts]), loggedStats);
+      let usda: FoodItem[] = [];
+      let openFoodFacts: FoodItem[] = [];
+      const currentResults = () => rankFoodSearchResults(query, dedupeFoods([...custom, ...curated, ...usda, ...openFoodFacts]), loggedStats).slice(0, 30);
+      const publishResults = () => {
+        if (onResults && shouldContinue()) onResults(currentResults());
+      };
+      // Keep local matches usable and publish each provider as it finishes.
+      // Final ranking/deduplication keeps the same order regardless of timing.
+      publishResults();
+      await Promise.all([
+        usdaSearch.then(items => { usda = items; if (items.length) publishResults(); }),
+        openFoodFactsSearch.then(items => { openFoodFacts = items; if (items.length) publishResults(); }),
+      ]);
+      const baseResults = currentResults();
       logger.flow("FoodSearch", "search:counts", {
         query,
         custom: custom.length,
         curated: curated.length,
         usda: usda.length,
         openFoodFacts: openFoodFacts.length,
-        returned: Math.min(baseResults.length, 30),
+        returned: baseResults.length,
       });
-      return baseResults.slice(0, 30);
+      return baseResults;
     });
   }
 
@@ -7629,32 +7642,6 @@ export default class TPSHealthPlugin extends Plugin {
     return activeWorkoutStateFromSettings(this.settings);
   }
 
-  async openHealthDashboard(): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(HEALTH_DASHBOARD_VIEW)[0];
-    const leaf = existing || this.app.workspace.getLeaf("tab");
-    if (!existing) await leaf.setViewState({ type: HEALTH_DASHBOARD_VIEW, active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
-
-  dashboardEnabled(): boolean { return this.nativeRecordService?.isEnabled() === true; }
-  dashboardWeek(date: string) { return healthDashboardWeek(this.nativeRecordService, this.settings, date); }
-  private dashboardDateContext(dateIso: string): FoodLogDateContext {
-    return { dateIso, label: dashboardDate(dateIso)!.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" }), isToday: dateIso === localHealthDate(), focusAfterLog: false };
-  }
-  dashboardAction(action: "food" | "activity" | "workout" | "recipe" | "settings", date: string): void {
-    const context = this.dashboardDateContext(date);
-    if (action === "food") this.openFoodLogger(context);
-    else if (action === "activity") this.openActivityLogger(context);
-    else if (action === "workout") this.openWorkoutStarter(context);
-    else if (action === "recipe") new CustomFoodModal(this.app, this, "recipe", "", true, undefined, context).open();
-    else { const setting = (this.app as any).setting; setting?.open(); setting?.openTabById(this.manifest.id); }
-  }
-  mountDashboardDay(container: HTMLElement, date: string, onRendered: (indexing: boolean) => void): MarkdownRenderChild {
-    return new TPSHealthNativeDailyDashboardChild(container, this, this.dashboardDateContext(date), "overview",
-      { macroStyle: this.settings.macroBlockStyle, foodList: "expanded", nutrientRows: "expanded" },
-      "foods: expanded\nnutrients: expanded", { dates: healthWeekDates(date), onRendered });
-  }
-
   async getDailyFoodMacroTotals(dateIso: string): Promise<DailyFoodMacroTotals> {
     const normalizedDate = String(dateIso || "").trim();
     if (!window.moment(normalizedDate, "YYYY-MM-DD", true).isValid()) {
@@ -8398,7 +8385,7 @@ class FoodSearchModal extends FoodInputModal {
   private searchTimer: number | null = null;
   private draftPersistTimer: number | null = null;
   private onlineSearchActive = false;
-  private completedOnlineToken = -1;
+  private onlineResultsToken = -1;
   private barcodeScannerModal: BarcodeScannerModal | null = null;
   private restoredPendingDraft = false;
   private describeRequestActive = false;
@@ -8827,7 +8814,7 @@ class FoodSearchModal extends FoodInputModal {
       logger.flowError("FoodModal", "search:local-failed", error, { query: trimmed });
       return;
     }
-    if (token !== this.searchToken || this.activeFoodLogTab !== "search" || this.completedOnlineToken === token) return;
+    if (token !== this.searchToken || this.activeFoodLogTab !== "search" || this.onlineResultsToken === token) return;
     logger.flow("FoodModal", "search:local-done", {
       query: trimmed,
       results: items.length,
@@ -8873,7 +8860,13 @@ class FoodSearchModal extends FoodInputModal {
     this.statusEl.setText("Checking USDA and Open Food Facts...");
     const start = performance.now();
     try {
-      const items = await this.plugin.searchFoods(trimmed, usageStats, () => token === this.searchToken && this.activeFoodLogTab === "search");
+      const items = await this.plugin.searchFoods(trimmed, usageStats, () => token === this.searchToken && this.activeFoodLogTab === "search", (items) => {
+        if (token !== this.searchToken || this.activeFoodLogTab !== "search" || !this.onlineSearchActive) return;
+        this.onlineResultsToken = token;
+        this.renderSearchResults(trimmed, items,
+          items.length ? `${items.length} results · checking online databases...` : "Checking online databases...",
+          "All results");
+      });
       if (token !== this.searchToken || this.activeFoodLogTab !== "search") {
         logger.flow("FoodModal", "search:stale", { query: trimmed, token, activeTab: this.activeFoodLogTab });
         return;
@@ -8883,7 +8876,7 @@ class FoodSearchModal extends FoodInputModal {
         results: items.length,
         durationMs: Math.round(performance.now() - start),
       });
-      this.completedOnlineToken = token;
+      this.onlineResultsToken = token;
       this.renderSearchResults(
         trimmed,
         items,
@@ -10377,7 +10370,6 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
     private section: NativeDailyDashboardSection,
     private display: NativeDailyDisplayOptions,
     private displaySource: string = "",
-    private dashboard?: { dates: string[]; onRendered(indexing: boolean): void },
   ) {
     super(containerEl);
   }
@@ -10423,7 +10415,7 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       scheduleRefresh();
     }));
     const unsubscribe = this.plugin.nativeRecordService?.onRecordsChanged((change) => {
-      if (!change.dates.some(date => (this.dashboard?.dates ?? [this.dateContext.dateIso]).includes(date))) return;
+      if (!change.dates.some(date => date === this.dateContext.dateIso)) return;
       const relevantKinds = this.section === "macros"
         ? ["food-entry"]
         : this.section === "activity"
@@ -10473,7 +10465,6 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       const activeWorkout = this.section === "macros" ? null : this.plugin.getActiveNativeWorkoutPresentation();
       const actions: NativeDailyDashboardActions = {
         indexing: indexStatus === "partial",
-        expandedActivity: Boolean(this.dashboard),
         disclosures: this.disclosures,
         components: (container, entry) => renderNativeDailyComponents(container, this.plugin, entry, this.disclosures),
         addFood: () => this.plugin.openFoodLogger({ ...this.dateContext }),
@@ -10554,7 +10545,6 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
       );
       showIndexing();
       this.syncActiveWorkoutTimer(activeWorkout);
-      this.dashboard?.onRendered(currentStatus === "partial");
     } catch (error) {
       if (generation !== this.renderGeneration) return;
       logger.flowError("NativeDailyDashboard", "render:failed", error, { dateIso: this.dateContext.dateIso });
@@ -10580,7 +10570,6 @@ class TPSHealthNativeDailyDashboardChild extends MarkdownRenderChild {
 
 interface NativeDailyDashboardActions {
   indexing?: boolean;
-  expandedActivity?: boolean;
   disclosures: Map<string, boolean>;
   components(container: HTMLElement, entry: NativeDailyFoodEntrySnapshot): void;
   addFood(): void;
@@ -10975,9 +10964,6 @@ function renderNativeDailyActivityBlock(
   } else {
     addActivityAction("Start workout", "dumbbell", actions.startWorkout);
   }
-  if (actions.expandedActivity && model.entryCount) {
-    activity.createDiv({ cls: "tps-health-dashboard-activity-facts", text: `${formatNativeDailyMetricValue(model.steps)} logged steps · ${formatNativeDailyMetricValue(model.caloriesBurned)} logged activity kcal` });
-  }
   if (!model.entryCount) {
     activity.createDiv({ cls: "tps-health-native-daily-empty", text: actions.indexing ? "Checking remaining notes for activity entries." : "No activity logged for this day yet." });
   } else {
@@ -10993,7 +10979,7 @@ function renderNativeDailyActivityEntries(
   toggleButton: HTMLButtonElement | null,
 ): void {
   const details = root.createEl("details", { cls: "tps-health-native-daily-activities" });
-  rememberDailyDisclosure(details, "activities", actions.disclosures, actions.expandedActivity);
+  rememberDailyDisclosure(details, "activities", actions.disclosures, false);
   toggleButton?.setAttr("aria-expanded", details.open ? "true" : "false");
   const summary = details.createEl("summary", { cls: "tps-health-native-daily-foods-summary" });
   summary.createSpan({ text: entries.length === 1 ? "1 activity item" : `${entries.length} activity items` });
@@ -11593,7 +11579,11 @@ class RecipeIngredientModal extends Modal {
     this.statusEl.setText("Checking saved foods and online databases...");
     logger.flow("RecipeIngredient", "add-search-online:start", { sourcePath: this.sourcePath || "", query: trimmed, token });
     try {
-      const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken);
+      const items = await this.plugin.searchFoods(trimmed, undefined, () => token === this.searchToken, (items) => {
+        if (token !== this.searchToken || !this.onlineSearchActive) return;
+        this.renderResults(items);
+        this.statusEl.setText(items.length ? `${items.length} results · checking online databases...` : "Checking online databases...");
+      });
       if (token !== this.searchToken) return;
       this.renderResults(items);
     } catch (error) {
@@ -11636,6 +11626,9 @@ class RecipeIngredientModal extends Modal {
 
   private async selectFood(item: FoodItem): Promise<void> {
     const token = ++this.searchToken;
+    this.onlineSearchActive = false;
+    if (this.onlineSearchButton) this.onlineSearchButton.disabled = false;
+    this.statusEl.setAttr("aria-busy", "false");
     this.statusEl.setText(`Loading labeled serving for ${item.name}…`);
     let enriched: FoodItem;
     try { enriched = await this.plugin.enrichFoodSearchItem(item); }

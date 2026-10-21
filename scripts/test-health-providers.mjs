@@ -1220,7 +1220,7 @@ test("recipe notes keep ingredient lines editable and food buttons open linked n
   assert.match(mainSource, /const canPreserveInitial = Boolean\(this\.action === "replace" && this\.initialAmount && isFoodLogUnitSupported\(enriched, this\.initialAmount\.unit\)\)/);
   assert.match(mainSource, /new RecipeIngredientModal\(plugin\.app, plugin, sourcePath\)\.open\(\)/);
   assert.match(mainSource, /this\.plugin\.searchLocalFoods\(trimmed\)/);
-  assert.match(mainSource, /this\.plugin\.searchFoods\(trimmed, undefined, \(\) => token === this\.searchToken\)/);
+  // Search ordering and cancellation execute in test-food-search-explicit.mjs.
   assert.match(mainSource, /FOOD_LOCAL_SEARCH_DEBOUNCE_MS = 100/);
   assert.match(mainSource, /setTooltip\("Search foods"\)/);
   assert.match(mainSource, /if \(this\.searchTimer !== null\) window\.clearTimeout\(this\.searchTimer\)/);
@@ -6454,7 +6454,7 @@ test("log food command seeds search and amount from the active inline food draft
   assert.match(readmeSource, /probes for known native barcode bridge shapes/);
   assert.match(readmeSource, /When no bridge exists, is cancelled, or errors/);
   assert.match(readmeSource, /no longer shows an Apple Shortcut button/);
-  assert.match(readmeSource, /Legacy Shortcut inbox compatibility remains/);
+  assert.match(readmeSource, /Shortcut inbox reader, poller and mailbox writer were removed in 6\.0\.0/);
   assert.match(mainSource, /let quantity = this\.initialDraft\?\.quantity \?\? defaultFoodLogQuantity\(this\.item\);/);
   assert.match(mainSource, /let unit = this\.initialDraft\?\.unit \|\| preferredFoodLogUnit\(this\.item\);/);
 });
@@ -10564,20 +10564,6 @@ test('Recipe editor keeps ingredients before yield, add before the list, and ali
   assert.match(body, /servingsSetting\.settingEl\.hidden = recipeByWeight/);
 });
 
-
-test('standalone Health dashboard reuses an existing leaf and creates only the view when absent', async () => {
-  const { default: Plugin } = await importPluginWithObsidianStub();
-  const fake = createFakeHealthApp(); const plugin = new Plugin(fake.app);
-  const calls = []; const leaf = { setViewState: async state => calls.push(state) };
-  fake.app.workspace.getLeavesOfType = () => [leaf];
-  fake.app.workspace.getLeaf = () => { throw Error('Duplicate tab'); };
-  fake.app.workspace.revealLeaf = async value => { assert.equal(value, leaf); calls.push('reveal'); };
-  await plugin.openHealthDashboard(); assert.deepEqual(calls, ['reveal']);
-  fake.app.workspace.getLeavesOfType = () => [];
-  fake.app.workspace.getLeaf = mode => { assert.equal(mode, 'tab'); return leaf; };
-  await plugin.openHealthDashboard(); assert.deepEqual(calls.slice(1), [{type:'tps-health-dashboard',active:true},'reveal']);
-});
-
 test('daily dashboard unload invalidates pending successes and errors before detached DOM commits', async () => {
   installDeterministicBrowserGlobals();
   const { TPSHealthNativeDailyDashboardChild: Child } = await importPluginWithObsidianStub();
@@ -10892,62 +10878,6 @@ test('daily dashboard visibility, refresh timers and disposal use its popout own
   await flush(); assert.equal(reads, 3); assert.equal(mainTimers, 0);
 });
 
-test('restored hidden Health view opens before layout readiness and discovers saved nutrition afterward without a startup wait cycle', async () => {
-  installDeterministicBrowserGlobals();
-  const timers = new Map(); let nextTimer = 0;
-  window.setTimeout = callback => { timers.set(++nextTimer, callback); return nextTimer; };
-  window.clearTimeout = id => timers.delete(id);
-  const {default: Plugin, HealthDashboardView: View, TPSHealthNativeDailyDashboardChild: Child, HealthNativeRecordService: Service} = await importPluginWithObsidianStub();
-  const fake = createFakeHealthApp(), plugin = new Plugin(fake.app), layout = [], metadata = new Map(), cleanup = [];
-  fake.app.workspace.layoutReady = false;
-  fake.app.workspace.onLayoutReady = callback => layout.push(callback);
-  fake.app.vault.on = () => ({});
-  fake.app.metadataCache.initialized = false;
-  fake.app.metadataCache.on = (event, callback) => { metadata.set(event, callback); return {}; };
-  fake.files.set('Inbox/Startup food.md', '---\nid: startup-food\ntpsSchemaVersion: 1\nkind: food-entry\ntitle: Saved food\ncompletedDate: 2026-10-06T12:00:00\ncalories: 250\n---\nSaved body.');
-  plugin.getGcmNativeRecordsApi = () => ({version: 7, isEnabled: () => true, create() {}, resolve() {}, update() {},
-    inspect: fm => fm?.id ? {id: fm.id, kind: fm.kind, schemaVersion: 1, frontmatter: {...fm}} : null});
-  plugin.scheduleWorkoutActionBars = () => {};
-  plugin.nativeRecordService = new Service(plugin);
-  plugin.nativeRecordService.setup();
-  let shown = false, reads = 0;
-  plugin.getMetricRenderConfigs = () => [];
-  const totals = plugin.getDailyFoodMacroTotals.bind(plugin);
-  plugin.getDailyFoodMacroTotals = async date => { reads++; return totals(date); };
-  const makeEl = (options = {}) => ({
-    text: options.text || '', attrs: options.attr || {}, children: [], dataset: {}, value: '', style: {setProperty() {}},
-    isConnected: true, getClientRects: () => shown ? [{}] : [],
-    empty() {this.children = []; this.text = '';}, addClass() {}, setAttr(name, value) {this.attrs[name] = value;}, setText(value) {this.text = value;},
-    addEventListener() {}, focus() {}, all() {return [this, ...this.children.flatMap(child => child.all())];},
-    querySelector(selector) {const label = selector.match(/aria-label="([^"]+)"/)?.[1]; return this.all().find(child => child.attrs['aria-label'] === label) || null;},
-    querySelectorAll() {return [];}, createDiv(options) {return this.createEl('div', options);}, createSpan(options) {return this.createEl('span', options);},
-    createEl(tag, options = {}) {const child = makeEl(options); this.children.push(child); return child;},
-  });
-  const view = Object.create(View.prototype);
-  view.contentEl = makeEl(); view.dateIso = '2026-10-06'; view.day = null;
-  view.addChild = child => {child.register = callback => cleanup.push(callback); child.registerEvent = () => {}; child.onload();};
-  view.removeChild = () => cleanup.splice(0).forEach(callback => callback());
-  view.host = {dashboardEnabled: () => true, dashboardWeek: () => [], dashboardAction() {},
-    mountDashboardDay: (container, date, onRendered) => new Child(container, plugin, {dateIso: date}, 'macros',
-      {macroStyle: 'table', foodList: 'hidden', nutrientRows: 'hidden'}, '', {dates: [date], onRendered})};
-  await view.onOpen();
-  assert.equal(fake.app.workspace.layoutReady, false, 'actual ItemView.onOpen does not await layout/index/child reads');
-  assert.equal(plugin.nativeRecordService.getDailyIndexStatus(), 'loading');
-  assert.equal(reads, 0, 'hidden child opens without a pending aggregation');
-  fake.app.workspace.layoutReady = true; layout.splice(0).forEach(callback => callback());
-  fake.app.metadataCache.initialized = true; metadata.get('resolved')();
-  assert.equal((await plugin.nativeRecordService.readDailyFoodTotals('2026-10-06')).calories, 250);
-  shown = true; fake.app.workspace.trigger('active-leaf-change');
-  for (let cycle = 0; timers.size && cycle < 20; cycle++) {
-    const [id, callback] = timers.entries().next().value; timers.delete(id); callback();
-    for (let tick = 0; tick < 12; tick++) await Promise.resolve();
-  }
-  assert.equal(reads, 1);
-  assert.match(view.contentEl.all().map(el => el.text).join(' '), /250 kcal/);
-  assert.deepEqual(fake.writes, []);
-  await view.onClose(); plugin.nativeRecordService.dispose();
-});
-
 test('workout exercise menu removal uses the existing active session owner and preserves pointer state', async () => {
   installDeterministicBrowserGlobals();
   const {default:TPSHealthPlugin}=await importPluginWithObsidianStub();
@@ -11187,4 +11117,18 @@ test('Health unloaded during the settings read cannot start discovery or registe
     assert.equal(plugin.nativeRecordService, undefined);
     assert.equal(fake.app.tpsHealth, undefined);
   } finally { plugin.nativeRecordService?.dispose(); globalThis.document = priorDocument; }
+});
+
+
+test('standalone dashboard is removed while logging and nutrient APIs remain', async () => {
+  const {default: Plugin}=await importPluginWithObsidianStub();
+  const plugin=new Plugin(createFakeHealthApp().app);
+  assert.equal(plugin.openHealthDashboard,undefined);
+  assert.equal(plugin.mountDashboardDay,undefined);
+  assert.equal(plugin.dashboardWeek,undefined);
+  const api=plugin.createApi();
+  for(const method of ['logFood','logActivity','startWorkout','getDailyFoodMacroTotals','getMetricRenderConfigs','ensureFoodLogBase']) assert.equal(typeof api[method],'function',method);
+  const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/registerView|open-health-dashboard|HealthDashboardView/);
+  assert.match(source,/registerNativeDailySection\("tps-health-macros", "macros"\)/);
 });

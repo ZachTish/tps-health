@@ -139,7 +139,8 @@ test("Every active user preference remains bound and exerciseTag is editable", (
   assert.match(settingsSource, /\.addOption\("floating", "In floating note bar"\)/);
   assert.match(settingsSource, /workout-controls:changed/);
   assert.match(settingsSource, /this\.addMappingSetting\(calendarProperties/);
-  assert.match(settingsSource, /controller\.openConnectionSettings\(section\)/);
+  assert.match(settingsSource, /controller\.openConnectionSettings\("ai"\)/);
+  assert.doesNotMatch(settingsSource, /controller\.openConnectionSettings\("health"\)/);
   assert.match(settingsSource, /openTabById\?\.\(pluginId\)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeSettingsPage|disclosureState|settingsPage)/);
   assert.doesNotMatch(settingsSource, /this\.plugin\.settings\.(activeWorkoutPath|activeWorkoutId|pendingFoodLogDraft|rollupHeading)/);

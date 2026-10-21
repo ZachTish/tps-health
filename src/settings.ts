@@ -3,6 +3,7 @@ import { changeHealthMapping } from "./health-mapping-migration";
 import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
+import { HealthConnectionSettings } from "./connection-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
 import { App, Notice, FuzzySuggestModal, PluginSettingTab, Setting, TFolder, TextComponent } from "obsidian";
 import * as logger from "./logger";
@@ -91,6 +92,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   private activeSettingsPage: HealthSettingsPage = "daily";
   private activeNativePropertyKey: HealthNativeRecordPropertyKey = "completedDate";
   private readonly disclosureState = new Map<OptionalDisclosureId, boolean>();
+  private foodConnections: HealthConnectionSettings | null = null;
 
   constructor(app: App, plugin: TPSHealthPlugin) {
     super(app, plugin);
@@ -98,12 +100,18 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.hide();
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Health" });
 
     this.renderSettingsHub(containerEl);
     this.renderActiveSettingsPage(containerEl);
+  }
+
+  hide(): void {
+    this.foodConnections?.dispose();
+    this.foodConnections = null;
   }
 
   private renderSettingsHub(container: HTMLElement): void {
@@ -270,7 +278,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     if (this.plugin.settings.storageMode === "legacy") {
       new Setting(records)
         .setName("Earlier inline logs need review")
-        .setDesc("Your previous storage setting used lines inside notes. Those lines remain in their original notes, but whole-note dashboards count only copied records. Preview and copy them explicitly below; nothing is imported on startup.")
+        .setDesc("Your previous storage setting used lines inside notes. Those lines remain in their original notes, but whole-note totals count only copied records. Preview and copy them explicitly below; nothing is imported on startup.")
         .addButton((button) => button
           .setButtonText("Mark reviewed")
           .onClick(async () => {
@@ -697,6 +705,10 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderIntegrationsPage(page: HTMLElement): void {
+    const food = createSettingsGroup(page, "Food databases");
+    this.foodConnections = new HealthConnectionSettings(this.plugin, food);
+    this.foodConnections.render();
+
     const gcm = createSettingsGroup(
       page,
       "TPS Global Context Menu",
@@ -717,14 +729,12 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.renderNativeFrontmatterSettings(nativeFrontmatter);
 
     const connections = createSettingsGroup(page, "Connections");
-    for (const [section, label] of [["health", "Food databases"], ["ai", "AI-assisted Describe"]]) {
-      new Setting(connections).setName(label).setDesc("Managed in TPS Controller.")
-        .addButton(button => button.setButtonText("Open connections").onClick(() => {
-          const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
-          if (typeof controller?.openConnectionSettings === "function") controller.openConnectionSettings(section);
-          else new Notice("Enable or update TPS Controller to 2.6.0+ to manage connections.");
-        }));
-    }
+    new Setting(connections).setName("AI-assisted Describe").setDesc("AI Gateway connection settings are available through TPS Controller.")
+      .addButton(button => button.setButtonText("Open connections").onClick(() => {
+        const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
+        if (typeof controller?.openConnectionSettings === "function") controller.openConnectionSettings("ai");
+        else new Notice("Enable TPS Controller to open AI Gateway connection settings.");
+      }));
 
     const earlierLogs = this.createOptionalDisclosure(
       page,

@@ -70,7 +70,7 @@ async function fixture(size = 37) {
   const inputs = { local: [], online: [] };
   const localSearch = plugin.searchLocalFoods, onlineSearch = plugin.searchFoods;
   plugin.searchLocalFoods = function (query, stats) { inputs.local.push(stats); return localSearch.call(this, query, stats); };
-  plugin.searchFoods = function (query, stats, shouldContinue) { inputs.online.push(stats); return onlineSearch.call(this, query, stats, shouldContinue); };
+  plugin.searchFoods = function (query, stats, ...args) { inputs.online.push(stats); return onlineSearch.call(this, query, stats, ...args); };
   return { tray, plugin, native, calls, inputs, paths,
     close() { tray.onClose(); native.service.dispose(); } };
 }

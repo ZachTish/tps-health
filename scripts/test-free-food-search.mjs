@@ -84,7 +84,7 @@ test('matching saved beer and recipes retain priority and unrelated saved foods 
 
 test('recipe picker ignores a label response after it has closed',async()=>{
  const p=plugin();let finish;p.enrichFoodSearchItem=()=>new Promise(resolve=>finish=resolve);
- const modal=new m.RecipeIngredientModal(p.app,p,null);modal.contentEl={empty(){}};modal.statusEl={setText(){}};
+ const modal=new m.RecipeIngredientModal(p.app,p,null);modal.contentEl={empty(){}};modal.statusEl={setText(){},setAttr(){}};
  const pending=modal.selectFood({name:'Selected food'});modal.onClose();finish({id:'late',name:'Selected food',source:'open-food-facts',nutrition:{calories:95}});
  await assert.doesNotReject(pending);assert.equal(modal.selectedFood,null);
 });
