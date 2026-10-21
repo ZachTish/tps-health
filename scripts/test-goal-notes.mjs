@@ -42,12 +42,19 @@ test('adopted settings remove every legacy goal authority and never resurrect de
  assert.equal(m.isFutureTPSHealthSettings({settingsVersion:11}),true);
 });
 test('native comparison includes live target rows, exact configured fields and local-day filtering',()=>{
- const settings=m.normalizeTPSHealthSettings({nativeRecordProperties:{proteinG:'myProtein',completedDate:'eatenAt'}});
+ const settings=m.normalizeTPSHealthSettings({nativeRecordProperties:{proteinG:'myProtein',completedDate:'eatenAt',quantity:'consumed',unit:'portionUnit',food:'foodLink'}});
  const base=m.foodGoalsBaseDefinition(settings,[goal], 'list(note.kind).contains("transaction") && note.transactionKind == "food-entry"');
  assert.equal(base.views[0].type,'table');
  assert.match(base.formulas.protein,/note\["myProtein"\]/);
  assert.match(base.formulas.protein,/link\(file.path/);
  assert.match(base.formulas.protein,/goalMinimum/);
+ assert.match(base.formulas.healthFood,/note\["foodLink"\]/);
+ assert.match(base.formulas.healthServings,/note\["consumed"\]/);
+ assert.match(base.formulas.healthUnit,/note\["portionUnit"\]/);
+ assert.deepEqual(base.views[0].order.slice(0,3),['file.name','note.consumed','note.portionUnit']);
+ assert.equal(base.properties['note.consumed'].displayName,'Amount consumed');
+ assert.ok(base.views[0].order.includes('formula.healthPortionStatus'));
+ assert.doesNotMatch(JSON.stringify(base.filters),/healthServings|healthFood|healthMetric/,'helper formulas must not become goal identities');
  assert.match(JSON.stringify(base.filters),/eatenAt/);
  assert.match(JSON.stringify(base.filters),/today/);
  assert.doesNotMatch(JSON.stringify(base),/inFolder|backlinks|tps-table|125/);

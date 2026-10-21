@@ -1,6 +1,7 @@
 import type { HealthGoal, TPSHealthSettings } from './types';
 import { canonicalGoalKey, trackedFoodNutrientKeys } from './nutrient-goals';
 import { configuredNativePropertyKey } from './native-record-schema';
+import { foodPortionBaseFormulas, foodNutrientBaseFormula, foodPortionBaseProperties, foodPortionBaseColumns } from './food-base-formulas';
 
 export const HEALTH_GOALS_BASE = 'Health Goals.base';
 export const FOOD_GOALS_BASE = 'Food & Goals.base';
@@ -34,20 +35,20 @@ export function healthGoalsBaseDefinition(): Record<string, unknown> {
 }
 
 export function foodGoalsBaseDefinition(settings: TPSHealthSettings, goals: HealthGoal[], foodFilter: string): Record<string, unknown> {
-  const formulas: Record<string, string> = {};
-  const properties: Record<string, unknown> = {};
+  const formulas: Record<string, string> = foodPortionBaseFormulas(settings);
+  const properties: Record<string, unknown> = foodPortionBaseProperties(settings);
   const summaries: Record<string, string> = {};
   const summaryDefinitions: Record<string, string> = {};
   const core: string[] = [], all: string[] = [];
+  const metrics: string[] = [];
   for (const goal of goals) {
     const metric = canonicalGoalKey(goal.propertyKey);
     const nutrient = [...trackedFoodNutrientKeys([goal])][0];
     if (!nutrient) continue; // Activity/other saved metrics remain editable in Health Goals.
     const name = metric;
-    const physical = configuredNativePropertyKey(settings, nutrient as any);
-    const field = property(physical);
     const label = 'goalLabel + " · " + if(goalMinimum != null, "≥ " + goalMinimum + " ", "") + if(goalMaximum != null, "≤ " + goalMaximum + " ", "") + goalUnit';
-    formulas[name] = `if(!healthGoal.isEmpty(), if(healthGoal == ${quoted(metric)}, link(file.path, ${label}), null), if(${field}.isType("number") && ${field} >= 0, ${field}, "Unknown"))`;
+    formulas[name] = `if(!healthGoal.isEmpty(), if(healthGoal == ${quoted(metric)}, link(file.path, ${label}), null), ${foodNutrientBaseFormula(settings, nutrient)})`;
+    metrics.push(metric);
     const key = 'formula.' + name;
     properties[key] = {displayName: goal.label + ' (' + goal.unit + ')'};
     const summaryName = 'Goal comparison (' + goal.unit + ')';
@@ -58,11 +59,11 @@ export function foodGoalsBaseDefinition(settings: TPSHealthSettings, goals: Heal
   }
   const date = property(configuredNativePropertyKey(settings, 'completedDate'));
   return {
-    filters: {and: ['file.ext == "md"', 'goalEnabled != false', `${property(configuredNativePropertyKey(settings, 'archived'))} != true`, {or: [`${quoted(Object.keys(formulas))}.contains(healthGoal)`, {and: [foodFilter, `${date} != null`, `date(${date}.toString()).date() == today()`]}]}]},
+    filters: {and: ['file.ext == "md"', 'goalEnabled != false', `${property(configuredNativePropertyKey(settings, 'archived'))} != true`, {or: [`${quoted(metrics)}.contains(healthGoal)`, {and: [foodFilter, `${date} != null`, `date(${date}.toString()).date() == today()`]}]}]},
     formulas, properties, summaries: summaryDefinitions,
     views: [
-      {type: 'table', name: 'Today', order: ['file.name', ...(core.length ? core : all)], summaries},
-      {type: 'table', name: 'All tracked nutrients today', order: ['file.name', ...all], summaries},
+      {type: 'table', name: 'Today', order: ['file.name', ...foodPortionBaseColumns(settings), ...(core.length ? core : all), 'formula.healthPortionStatus'], summaries},
+      {type: 'table', name: 'All tracked nutrients today', order: ['file.name', ...foodPortionBaseColumns(settings), ...all, 'formula.healthPortionStatus'], summaries},
     ],
   };
 }
