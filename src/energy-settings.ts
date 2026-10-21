@@ -51,14 +51,14 @@ export function renderEnergySettings(container: HTMLElement, plugin: TPSHealthPl
       updatePreview();
     });
   });
-  const sourceSetting = new Setting(container).setName('Identify activity notes by').setDesc('Read matching notes without changing them. Select individual activities or daily summaries; matching both can count the same activity twice.').addDropdown(dropdown => {
+  const sourceSetting = new Setting(container).setName('Activity input filter').setDesc('Select existing notes to read for this estimate only; this does not configure GCM note types or change notes. Use individual activities or daily summaries, not both, to avoid counting activity twice.').addDropdown(dropdown => {
     dropdown.addOption('property','Property value').addOption('tag','Tag').setValue(activitySettings.energyActivityIdentificationMode).onChange(value => {
       activitySettings.energyActivityIdentificationMode = value === 'tag' ? 'tag' : 'property';
       updateVisibility();
       updatePreview();
     });
   });
-  const propertySetting = new Setting(container).setName('Activity property').setDesc('The frontmatter key used to identify activity notes.').addText(text => {
+  const propertySetting = new Setting(container).setName('Activity property').setDesc('The property to filter when selecting activity inputs for this estimate.').addText(text => {
     text.inputEl.setAttribute('aria-label','Activity identification property');
     text.setPlaceholder('kind').setValue(activitySettings.energyActivityPropertyKey).onChange(value => {
       activitySettings.energyActivityPropertyKey = value;

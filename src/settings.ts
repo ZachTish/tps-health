@@ -234,7 +234,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderDailyLoggingPage(page: HTMLElement): void {
-    const appearance = createSettingsGroup(page, "Appearance");
+    const appearance = createSettingsGroup(page, "Optional Health blocks", "Appearance of embedded Health blocks. Your Bases and Canvas control their own layout and columns.");
     new Setting(appearance).setName("Macros block").addDropdown(dropdown => dropdown
       .addOption("rings", "Rings").addOption("table", "Rows")
       .setValue(this.plugin.settings.macroBlockStyle)
@@ -319,13 +319,13 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     const energy = createSettingsGroup(page, "Energy estimate", "Choose a fixed TDEE, BMR × activity factor, or BMR plus calories from activity notes.");
     renderEnergySettings(energy, this.plugin);
 
-    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Browse nutrients and set daily minimums, maximums or ranges. Food data can be incomplete; missing nutrients are never inferred. Targets are your own, not automatic dietary recommendations.");
+    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "Choose which nutrients Health saves and set their daily targets. GCM controls which properties appear inline on notes; Bases control their own columns and formulas. Missing nutrients are never inferred. Targets are your own, not dietary recommendations.");
     let goalJson: HTMLTextAreaElement | undefined;
     const refreshGoals = renderNutrientGoalSettings(nutrientGoals, this.plugin, () => {
       if (goalJson) goalJson.value = JSON.stringify(this.plugin.settings.healthGoals, null, 2);
     });
 
-    const customNutrients = createSettingsGroup(page, "Custom nutrients", "Add any name and unit missing from the catalog. Your nutrients are available in the target picker and food editor without GCM menu properties.");
+    const customNutrients = createSettingsGroup(page, "Custom nutrients", "Add a nutrient name and unit for Health’s food editor and target picker. This does not add an inline property control in GCM.");
     renderCustomNutrientSettings(customNutrients, this.plugin, refreshGoals);
 
     const goals = createSettingsGroup(page, "Activity goal");
@@ -490,13 +490,15 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.addLibraryFolderSetting(folders, "exercisesFolder", "Exercises destination", "New exercise notes are created here. Existing exercise notes remain where they are.");
     this.addLibraryFolderSetting(folders, "foodsFolder", "Foods destination", "New food notes are created here. Recipes and meals use their separate destination. Existing food notes remain where they are.");
     this.addLibraryFolderSetting(folders, "recipesFolder", "Recipes destination", "New recipe and meal notes are created here. Existing notes are not moved.");
-    this.addLibraryFolderSetting(folders, "workoutsFolder", "Existing workout folder", "Used to recognize workout notes when matching includes folders. It does not set the destination for new workout sessions.");
+    if (this.plugin.settings.workoutIdentificationMode === "folder" || this.plugin.settings.workoutIdentificationMode === "metadata-folder-tag") {
+      this.addLibraryFolderSetting(folders, "workoutsFolder", "Existing workout folder", "Used to recognize workout notes with your current folder matching mode. It does not set the destination for new workout sessions.");
+    }
 
     if (this.plugin.getGcmApi()?.frontmatterKinds?.version === 2) {
-      const classification = createSettingsGroup(page, "Record types", "GCM → Properties → Records controls how foods, recipes, meals, exercises, plans and logs are identified. Health uses those mappings.");
+      const classification = createSettingsGroup(page, "Note types & inline properties", "GCM identifies foods, recipes, meals, exercises, plans and logs. Health uses those note types when reading and creating records.");
       new Setting(classification)
-        .setName("Configure kinds in TPS GCM")
-        .setDesc("Choose each type’s properties and review existing notes in GCM. Library folders remain above.")
+        .setName("Configure note types and inline fields")
+        .setDesc("In GCM → Properties, use Records for note types and Custom fields for inline visibility. Nutrient tracking and targets belong to Health → Food & goals.")
         .addButton(button => button.setButtonText("Open GCM settings").onClick(() => this.openPluginSettings("tps-global-context-menu")));
     } else {
     const identification = createSettingsGroup(
@@ -568,7 +570,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
     new Setting(identification)
       .setName("Workout note identification")
-      .addDropdown((dropdown) => dropdown
+      .addDropdown((dropdown) => {
+        dropdown.selectEl.dataset.tpsHealthWorkoutIdentification = "true";
+        return dropdown
         .addOption("metadata-folder-tag", "Frontmatter, folder, or tag")
         .addOption("folder", "Folder only")
         .addOption("tag", "Tag only")
@@ -577,8 +581,11 @@ export class TPSHealthSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.workoutIdentificationMode = value as HealthEntityIdentificationMode;
           await this.plugin.saveSettings();
-        }));
+          this.redisplayPreservingContext("[data-tps-health-workout-identification]");
+        });
+      });
 
+    if (this.plugin.settings.workoutIdentificationMode === "tag" || this.plugin.settings.workoutIdentificationMode === "metadata-folder-tag") {
     new Setting(identification)
       .setName("Workout tag")
       .setDesc("Used when workout identification includes tags. Blank disables this identity signal.")
@@ -588,6 +595,8 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.workoutTag = value.trim();
           await this.plugin.saveSettings();
         }));
+
+    }
 
     new Setting(identification)
       .setName("Exercise tag")
@@ -599,6 +608,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    if (this.plugin.settings.foodIdentificationMode === "tag" || this.plugin.settings.foodIdentificationMode === "metadata-folder-tag") {
     new Setting(identification)
       .setName("Food tag")
       .setDesc("Used when food identification includes tags. Blank disables this identity signal.")
@@ -618,6 +628,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
           this.plugin.settings.recipeTag = value.trim();
           await this.plugin.saveSettings();
         }));
+    }
     }
 
     const templates = this.createOptionalDisclosure(

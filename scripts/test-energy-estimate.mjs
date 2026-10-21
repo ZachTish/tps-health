@@ -186,12 +186,13 @@ test('energy settings progressively show only the active method and source contr
  assert.equal(f.container.classes.has('tps-health-settings-energy-controls'),true);
  assert.deepEqual(f.row('TDEE method').dropdown.options,{calculated:'Calculated',fixed:'Fixed','activity-notes':'BMR + activity notes'});
  assert.equal(f.row('Daily activity factor').settingEl.hidden,false);
- assert.equal(f.row('Identify activity notes by').settingEl.hidden,true);
+ assert.equal(f.row('Activity input filter').settingEl.hidden,true);
+ assert.match(f.row('Activity input filter').desc,/estimate only; this does not configure GCM note types or change notes/);
  f.row('TDEE method').dropdown.change('activity-notes');
  assert.equal(f.row('Daily activity factor').settingEl.hidden,true);assert.equal(f.row('Fixed TDEE (kcal/day)').settingEl.hidden,true);
  assert.equal(f.row('Activity property').settingEl.hidden,false);assert.equal(f.row('Activity property value').settingEl.hidden,false);
  assert.equal(f.row('Activity tag').settingEl.hidden,true);assert.match(f.preview.text,/BMR baseline: 1600 kcal/);
- f.row('Identify activity notes by').dropdown.change('tag');
+ f.row('Activity input filter').dropdown.change('tag');
  assert.equal(f.row('Activity property').settingEl.hidden,true);assert.equal(f.row('Activity property value').settingEl.hidden,true);
  assert.equal(f.row('Activity tag').settingEl.hidden,false);
  f.row('Activity tag').input.change('#health/activity');f.row('Activity calories property').input.change('activeKcal');
@@ -209,7 +210,7 @@ test('energy controls scope an explicit hidden rule so native setting flex style
  const styles=readFileSync(new URL('../styles.css',import.meta.url),'utf8');
  assert.match(styles,/\.tps-health-settings-energy-controls\s+\.setting-item\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/);
  const f=uiFixture({energyBmrKcal:1600,...activitySource});
- const allConditional=['BMR (kcal/day)','Daily activity factor','Fixed TDEE (kcal/day)','Identify activity notes by',
+ const allConditional=['BMR (kcal/day)','Daily activity factor','Fixed TDEE (kcal/day)','Activity input filter',
   'Activity property','Activity property value','Activity tag','Activity calories property','Activity date property'];
  for(const mode of ['fixed','calculated','activity-notes']) {
   f.row('TDEE method').dropdown.change(mode);

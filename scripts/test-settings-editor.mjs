@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 const source = readFileSync(new URL('../src/settings.ts', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('settings.ts', source, ts.ScriptTarget.Latest, true);
 const wanted = new Set(['renderNativeFrontmatterSettings', 'addNativePropertyKeySetting', 'addMappingSetting',
-  'renderEarlierLogsSettings', 'renderDailyLoggingPage', 'renderIntegrationsPage', 'createOptionalDisclosure', 'hide', 'display']);
+  'renderNoteLibraryPage', 'addLibraryFolderSetting', 'renderNativeKindSettings', 'renderEarlierLogsSettings', 'renderDailyLoggingPage', 'renderIntegrationsPage', 'createOptionalDisclosure', 'hide', 'display']);
 const methods = [];
 let settingsGroup;
 (function visit(node) {
@@ -78,19 +78,19 @@ const compiled=ts.transpileModule(`const ${settingsGroup}; export class Tab { ${
   compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
 }).outputText;
 function harness() {
-  const calls={saves:0,migrations:[],preview:0,copy:0,review:0,connection:[],focus:[]};
-  const dependencies={Setting,HealthConnectionSettings:providerModule.exports.HealthConnectionSettings,EXTRA_NUTRIENTS:nutrients.BUILT_IN_NUTRIENTS,...schema,Notice:class{},
+  const calls={opened:[],saves:0,migrations:[],preview:0,copy:0,review:0,connection:[],focus:[]};
+  const dependencies={Setting,DEFAULT_SETTINGS:defaults.DEFAULT_SETTINGS,logger:{flow(){}},HealthConnectionSettings:providerModule.exports.HealthConnectionSettings,EXTRA_NUTRIENTS:nutrients.BUILT_IN_NUTRIENTS,...schema,Notice:class{},
     changeHealthMapping:async(plugin,next,label,scope)=>{calls.migrations.push({next,label,scope});return false;}};
   const exports={};new Function('exports',...Object.keys(dependencies),compiled)(exports,...Object.values(dependencies));
   const settings=structuredClone(defaults.DEFAULT_SETTINGS);
-  const plugin={settings,saveSettings:async()=>{calls.saves++;},
+  const plugin={settings,getGcmApi:()=>({frontmatterKinds:{version:2}}),saveSettings:async()=>{calls.saves++;},
     getGcmNativeRecordsApi:()=>({getStorageProfile:()=>({identityPropertyKey:'id',titlePropertyKey:'title',kindPropertyKey:'kind',createdPropertyKey:'createdDate',modifiedPropertyKey:'modifiedDate'})}),
     previewLegacyHealthImport(){calls.preview++;},copyLegacyHealthLogs:async()=>{calls.copy++;},acknowledgeLegacyHealthHistory:async()=>{calls.review++;},
     refreshGcmFoodLogButtonRegistration(){},
   };
   const tab=Object.assign(new exports.Tab(),{plugin,activeNativePropertyKey:'completedDate',disclosureState:new Map(),
     app:{plugins:{plugins:{'tps-controller':{api:{openConnectionSettings(section){calls.connection.push(section);}}}}}},
-    redisplayPreservingContext(selector){calls.focus.push(selector);},openPluginSettings(){},
+    redisplayPreservingContext(selector){calls.focus.push(selector);},openPluginSettings(id){calls.opened.push(id);},
   });
   const container=new Element();
   const rows=()=>container.all().filter(el=>el.setting).map(el=>el.setting);
@@ -171,4 +171,47 @@ test('Advanced keeps history actions in one closed disclosure and opening it per
   assert.equal(h.calls.saves,0);assert.equal(h.calls.preview,0);assert.equal(h.calls.copy,0);
   actions[0].click();await actions[1].click();await h.row('Earlier inline logs need review').controls[0].click();
   assert.equal(h.calls.preview,1);assert.equal(h.calls.copy,1);assert.equal(h.calls.review,1);
+});
+
+
+test('current GCM owns note types and inline visibility while Health retains destinations and templates',()=>{
+  const h=harness();h.plugin.settings.workoutIdentificationMode='metadata';
+  const before=structuredClone(h.plugin.settings);
+  h.tab.renderNoteLibraryPage(h.container);
+  for(const name of ['Workout plans destination','Exercises destination','Foods destination','Recipes destination',
+    'Workout plan template path','Exercise template path','Food template path']) assert.ok(h.row(name),name);
+  assert.equal(h.row('Existing workout folder'),undefined);
+  for(const name of ['Food note identification','Workout note identification','Food frontmatter key','Entry and session frontmatter key']) assert.equal(h.row(name),undefined,name);
+  const handoff=h.row('Configure note types and inline fields');
+  assert.match(handoff.description,/Records for note types and Custom fields for inline visibility/);
+  assert.match(handoff.description,/Nutrient tracking and targets belong to Health/);
+  handoff.controls[0].click();assert.deepEqual(h.calls.opened,['tps-global-context-menu']);
+  assert.equal(h.calls.saves,0);assert.deepEqual(h.calls.migrations,[]);assert.deepEqual(h.plugin.settings,before);
+});
+
+test('folder and tag controls follow the matching mode, preserving all inactive values',()=>{
+  for(const gcm of [true,false]) for(const mode of ['metadata','folder','tag','metadata-folder-tag']) {
+    const h=harness();h.plugin.getGcmApi=()=>gcm?{frontmatterKinds:{version:2}}:undefined;
+    Object.assign(h.plugin.settings,{foodIdentificationMode:mode,workoutIdentificationMode:mode,
+      workoutsFolder:'Synthetic old sessions',workoutTag:'synthetic/workout',customFoodTag:'synthetic/food',recipeTag:'synthetic/recipe'});
+    const before=structuredClone(h.plugin.settings);h.tab.renderNoteLibraryPage(h.container);
+    const folders=mode==='folder'||mode==='metadata-folder-tag';
+    const tags=!gcm&&(mode==='tag'||mode==='metadata-folder-tag');
+    assert.equal(!!h.row('Existing workout folder'),folders,`${gcm}: ${mode} folder`);
+    for(const name of ['Workout tag','Food tag','Recipe/meal tag']) assert.equal(!!h.row(name),tags,`${gcm}: ${mode} ${name}`);
+    if(!gcm) assert.ok(h.row('Exercise tag'),'independent exercise tag remains available');
+    assert.equal(h.calls.saves,0);assert.deepEqual(h.calls.migrations,[]);assert.deepEqual(h.plugin.settings,before);
+  }
+});
+
+test('legacy workout matching changes refresh conditional controls and restore the selector focus',async()=>{
+  const h=harness();h.plugin.getGcmApi=()=>undefined;h.plugin.settings.workoutIdentificationMode='metadata';
+  h.tab.renderNoteLibraryPage(h.container);
+  const control=h.row('Workout note identification').controls[0];
+  assert.equal(control.selectEl.dataset.tpsHealthWorkoutIdentification,'true');
+  await control.change('folder');
+  assert.equal(h.plugin.settings.workoutIdentificationMode,'folder');assert.equal(h.calls.saves,1);
+  assert.deepEqual(h.calls.focus,['[data-tps-health-workout-identification]']);
+  h.container.empty();h.tab.renderNoteLibraryPage(h.container);
+  assert.ok(h.row('Existing workout folder'));assert.equal(h.row('Workout tag'),undefined);
 });

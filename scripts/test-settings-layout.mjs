@@ -38,7 +38,7 @@ test("Health settings expose five shallow routed destinations", () => {
 test("GCM v2 kind configuration has one settings owner while legacy controls remain available to older installations", () => {
   const libraryPage = settingsSource.slice(settingsSource.indexOf("private renderNoteLibraryPage"), settingsSource.indexOf("private renderNativeKindSettings"));
   assert.match(libraryPage, /frontmatterKinds\?\.version === 2/);
-  assert.match(libraryPage, /Configure kinds in TPS GCM/);
+  assert.match(libraryPage, /Configure note types and inline fields/);
   assert.match(libraryPage, /openPluginSettings\("tps-global-context-menu"\)/);
   assert.match(libraryPage, /} else \{\s*const identification = createSettingsGroup/);
   assert.match(libraryPage, /"Food frontmatter key"/);

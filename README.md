@@ -1,6 +1,6 @@
 # TPS Health
 
-TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **9.0.0** requires Obsidian **1.12.0** or newer.
+TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **9.0.1** requires Obsidian **1.12.0** or newer.
 
 ## Start here
 
@@ -20,17 +20,21 @@ The hub shows one destination at a time:
 
 | Destination | What it configures |
 | --- | --- |
-| **Daily logging** (default) | Rings/rows, lower nutrient rows, the GCM food-log shortcut and a Core Daily notes settings handoff. |
+| **Daily logging** (default) | Optional Health block rings/rows and lower nutrient rows, the GCM food-log shortcut and a Core Daily notes settings handoff. |
 | **Food & goals** | Nutrient tracking, targets, independent primary totals and lower bars, energy settings, custom nutrients and branded search. |
 | **Workouts** | Whole-note controls, rest timing, workout estimates and calendar timing properties. |
-| **Note library** | Reusable food/recipe/exercise/workout-plan destinations, supported templates and identification. GCM v2 owns kinds; older installations retain their supported identification controls, including Exercise tag. |
+| **Note library** | Reusable food/recipe/exercise/workout-plan destinations, supported templates and identification. GCM v2 owns note types and inline property visibility. The existing-workout folder appears only for folder matching. Older installations retain their matching-mode controls; food/workout tags appear only for tag matching, while Exercise tag remains independent. |
 | **Integrations & advanced** | Food databases, the GCM handoff, Health property names, AI connection handoff, explicit earlier-log review/import and diagnostics. |
+
+**Tracking, recognition and display are separate choices.** Food & goals selects nutrients to save in future food records and their targets. Note library links to GCM → Properties: Records identifies note types; Custom fields controls inline property visibility. Hiding a GCM field does not disable Health tracking. Native Bases own their columns, filters and comparison formulas; Health settings do not rewrite them. Daily logging appearance applies only to optional embedded Health blocks.
+
+The energy estimate’s **Activity input filter** selects existing notes to read for that calculation only. It does not define a GCM record type, migrate notes or change their properties. Choose individual activities or daily summaries to avoid double counting. Its property/tag fields remain conditional on the selected energy method and input filter.
 
 **Food databases opens directly in Health.** It uses the existing provider panel, settings keys and secret references; Controller can be disabled or absent. Opening, switching and closing settings performs no provider requests or saves. Provider credentials are not copied to a new store. The existing `api.connectionSettings` renderer remains available to current consumers.
 
 USDA credentials use **device-local Obsidian SecretStorage**. References are ordered, editable and removable through the existing controls. The `DEMO_KEY` fallback has much lower public limits. Open Food Facts needs no credential. Editing references uses Health's existing settings-save owner; opening the panel does not fetch food. AI-assisted Describe still uses AI Gateway and the existing Controller connection-settings handoff; neither is required for ordinary food setup or logging.
 
-Custom goal JSON, Templates, Property names and Earlier inline logs are the only intentional disclosures, all one level deep. One property-name editor is mounted at a time; Apply uses the existing confirmed migration. No automatic migration runs when browsing settings. The route and scroll position are transient, as are selected editors and disclosures; no navigation state is persisted.
+Custom goal JSON, Templates, Property names and Earlier inline logs are the only intentional disclosures, all one level deep. One property-name editor is mounted at a time; Apply uses the existing confirmed migration. No automatic migration runs when browsing settings. Hidden folder/tag values are retained unchanged; switching matching modes restores their controls. These visibility and copy changes introduce no settings keys, default changes or migration. The route and scroll position are transient, as are selected editors and disclosures; no navigation state is persisted.
 
 The mobile route hub scrolls horizontally, labels wrap and control grids stack. Controls are native, selected routes expose `aria-pressed`, keyboard focus is restored after navigation, and settings CSS is Health-scoped. Leaving the provider page disposes its existing panel so late saves cannot repaint the abandoned page.
 
@@ -64,9 +68,13 @@ The retired Macros Base and `tps-health-food-log` Base layouts are not registere
 
 Use the workspace source map and release checklist. Each repository remains independently buildable; `npm test` and a separate final `npm run build` never deploy or reload. Deployment to the named test vault is explicit. Cross-plugin tests use current sibling sources, not historical Dev checkouts. Never copy runtime settings or private data into source.
 
-Focused checks execute the existing food-provider panel with Controller absent, preserve ordered synthetic secret references, verify disposal, and count zero settings saves/provider requests on open. Food-search checks use the actual search/modal methods with controlled provider responses: both arrival orders, local selection, portions, cancellation, timeouts, request counts and unchanged final ranking. Existing serving/nutrition and native-index operation-count checks remain. These source/host tests do not establish installed response times. Release acceptance requires the full suite, separate final build and installed test-vault UI inspection; see [9.0.0 validation and release status](release-notes/9.0.0.md).
+Focused checks execute the existing food-provider panel with Controller absent, preserve ordered synthetic secret references, verify disposal, and count zero settings saves/provider requests on open. Food-search checks use the actual search/modal methods with controlled provider responses: both arrival orders, local selection, portions, cancellation, timeouts, request counts and unchanged final ranking. Existing serving/nutrition and native-index operation-count checks remain. These source/host tests do not establish installed response times. Release acceptance requires the full suite, separate final build and installed test-vault UI inspection; see [9.0.1 validation and release status](release-notes/9.0.1.md).
+
+Settings coverage also executes the current and older GCM branches across all four matching modes, checks conditional folder/tag visibility, preserves inactive values, and verifies focus restoration. Installed test-vault inspection covers all five routes, the actual GCM handoff, energy-method/filter visibility, one-level disclosures and a narrow desktop settings window. Synthetic recognition configurations are temporary; no settings are saved. Narrow desktop checks do not establish physical-phone acceptance.
 
 ## Release history
+
+**9.0.1** clarifies Health nutrient tracking/targets, GCM note types/inline visibility and Bases presentation. Unused folder/tag controls are hidden by matching mode; inactive values and all behavior remain supported. Energy activity filters are explicitly scoped to their read-only calculation.
 
 **9.0.0** removes the standalone dashboard and includes the previously unpublished fixes for the unnecessary Controller dependency for food setup and the slow-provider display barrier in food/recipe searches. Selecting an ingredient releases the existing search busy state. It reuses existing settings, query tokens and requests, adds no background work, and retains both the panel API and complete-result search API. The README is now a current specification; contradictory historical setup claims remain only as dated evidence.
 
