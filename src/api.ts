@@ -175,6 +175,8 @@ export interface HealthPropertyCatalogEntry {
   type: HealthPropertyCatalogType;
   icon?: string;
   options?: string[];
+  acceptsKind?: string;
+  linkedOptions?: { linkProperty: string; provider: string };
   listItemType?: "text" | "link" | "tag";
   scope: HealthPropertyCatalogScope;
 }
@@ -219,6 +221,8 @@ export interface DailyFoodMacroTotals extends NutritionTotals {
 }
 
 export interface TPSHealthApi {
+  /** Pure indexed-frontmatter choices; no catalog search, network or body reads. */
+  linkedPropertyChoices: { version: 1; providers: Record<string, { label: string; sourceProperties: string[]; getChoices(frontmatter: Record<string, unknown>): Array<{value: string; label: string; aliases?: string[]}> }> };
   connectionSettings: { version: 1; render(parent: HTMLElement): () => void };
   version: 1;
   homeActions?: TPSHealthHomeActionProvider;

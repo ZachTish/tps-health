@@ -53,9 +53,9 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
     icon: 'circle-check', options: ['active', 'complete', 'discarded'],
   }),
   scoped('record-completed', 'completedDate', 'Completed', 'datetime', ['food-entry', 'activity-entry'], { icon: 'check-check' }),
-  scoped('food-link', 'food', 'Food', 'list', ['food-entry'], { icon: 'utensils', listItemType: 'link' }),
-  scoped('food-quantity', 'quantity', 'Consumed quantity', 'number', ['food-entry'], { icon: 'scale' }),
-  scoped('food-unit', 'unit', 'Consumed unit', 'text', ['food-entry'], { icon: 'ruler' }),
+  scoped('food-link', 'food', 'Food', 'selector', ['food-entry'], { icon: 'utensils', acceptsKind: 'food, recipe, meal' }),
+  scoped('food-quantity', 'quantity', 'Amount consumed', 'number', ['food-entry'], { icon: 'scale' }),
+  scoped('food-unit', 'unit', 'Unit', 'selector', ['food-entry'], { icon: 'ruler', linkedOptions: { linkProperty: 'food', provider: 'tps-health:food-servings' } }),
   scoped('record-calories', 'calories', 'Calculated calories', 'number', ['food-entry'], { icon: 'flame' }),
   scoped('record-protein', 'proteinG', 'Calculated protein', 'number', ['food-entry'], { icon: 'dumbbell' }),
   scoped('record-carbs', 'carbsG', 'Calculated carbs', 'number', ['food-entry'], { icon: 'wheat' }),
@@ -95,6 +95,7 @@ function nativeRecordProperties(settings: TPSHealthSettings, codec?: HealthKindC
       const reusableKinds = kinds.filter(kind => kind === 'exercise' || kind === 'workout-plan');
       return {
         ...property,
+        ...(property.linkedOptions ? { linkedOptions: { ...property.linkedOptions, linkProperty: configuredNativePropertyKey(settings, 'food') } } : {}),
         key: Object.prototype.hasOwnProperty.call(settings.nativeRecordProperties, property.key)
           ? configuredNativePropertyKey(settings, property.key as keyof TPSHealthSettings['nativeRecordProperties'])
           : property.key,

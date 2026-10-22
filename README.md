@@ -1,6 +1,6 @@
 # TPS Health
 
-TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.1.1** requires Obsidian **1.12.0** or newer.
+TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.2.0** requires Obsidian **1.12.0** or newer.
 
 ## Start here
 
@@ -97,3 +97,12 @@ Settings coverage also executes the current and older GCM branches across all fo
 **9.0.0** removes the standalone dashboard and includes the previously unpublished fixes for the unnecessary Controller dependency for food setup and the slow-provider display barrier in food/recipe searches. Selecting an ingredient releases the existing search busy state. It reuses existing settings, query tokens and requests, adds no background work, and retains both the panel API and complete-result search API. The README is now a current specification; contradictory historical setup claims remain only as dated evidence.
 
 Historical narratives and receipts remain in [the preceding README in Git history](https://github.com/ZachTish/tps-health/blob/42c569927f7a08d365a3f0549701e9bde6cf0e55/README.md), [REFERENCE.md](REFERENCE.md), [release notes](release-notes/) and [GitHub releases](https://github.com/ZachTish/tps-health/releases). They do not override the current contract. Production installation and physical-phone acceptance are separate from a test-vault release.
+
+
+## Food-aware property choices (10.2.0)
+
+Enable GCM 11.2.0 and use its existing **Properties → Install TPS task and Health fields** action to install/refresh the supplied fields. Food selects one indexed food/recipe/meal note, Amount consumed stays numeric, and Unit uses **Choices from linked note → Food servings** with the configured Food link property. No new Health settings page or food-specific dialog is added. Use the existing GCM inline property or the food log row's GCM menu; native Bases number cells continue to edit consumed amounts and formulas recalculate the totals.
+
+The Unit selector shows the declared serving and known compatible units, with label quantities such as `serving · 2 pieces (30 g)`. The stored value remains a unit; one `piece` means half of that example's labeled serving, while one `serving` means the whole label. Mass and volume choices require the corresponding basis; no density, can size, cup weight or missing serving is invented. The provider and native nutrition projection share the same portion resolver. Missing definitions explain how to open the Food note; changing Food never silently substitutes a unit or copies macros into the log.
+
+Health exposes the pure `api.linkedPropertyChoices.providers['food-servings']` adapter. It reads only servingAmount, servingUnit, servingGrams and servingMl supplied from the metadata index; no search, body read, new food index or network request. The GCM catalog carries the configured link key and provider descriptor. GCM owns selector lifecycle and fresh-source guarded writes. Existing authored Bases, notes and settings are preserved until an explicit field install or edit. Native Bases still owns cell editors; this feature does not replace its unit cell with a custom cell widget. Desktop and physical iPhone acceptance remain separate.

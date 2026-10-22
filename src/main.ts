@@ -1,3 +1,4 @@
+import { foodServingChoices } from "./food-property-choices";
 import { GOAL_FIELDS, goalNoteFields, goalNoteSignature, legacyGoalSignature, readGoalNote } from "./goal-notes";
 import { HEALTH_GOALS_BASE, FOOD_GOALS_BASE, healthGoalsBaseDefinition, foodGoalsBaseDefinition } from "./goal-bases";
 import { MACRO_KCAL_PER_GRAM, macroInputGrams, macroInputDisplay, type EnergyMacro, type MacroInputUnit } from "./macro-input";
@@ -7811,6 +7812,7 @@ export default class TPSHealthPlugin extends Plugin {
       }),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
+      linkedPropertyChoices: { version: 1, providers: { "food-servings": foodServingChoices } },
       getPropertyCatalog: () => buildHealthPropertyCatalog(this.getGoalAwareSettings(), this.configuredKindCodec()),
       openFoodLogEntryMenuFromLine: (event, filePath, lineNumber, line) => this.openFoodLogEntryMenuFromLine(event, filePath, lineNumber, line),
     };
