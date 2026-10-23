@@ -647,7 +647,8 @@ test("food, activity, and workout entry points create only native records with a
   const plugin = new TPSHealthPlugin(fake.app);
   plugin.settings = { ...plugin.settings, storageMode: "legacy" };
   const writes = [];
-  plugin.nativeRecordService = {
+  plugin.findOrCreateFoodNote=async food=>({...food,sourcePath:food.sourcePath || "Inbox/Synthetic food.md"});
+  plugin.nativeRecordService = { requireApi:()=>({}),
     isEnabled: () => true,
     createFoodEntry: async entry => { writes.push(["food", entry]); return { path: "Health/Food Entries/entry.md" }; },
     createActivityEntry: async entry => { writes.push(["activity", entry]); return { path: "Health/Activity Entries/entry.md" }; },
@@ -1558,7 +1559,8 @@ test("native food usage reflects each whole-note log without legacy history read
   }
   const entries = [];
   let queries = 0, scans = 0, reads = 0, settingsReads = 0;
-  plugin.nativeRecordService = {
+  plugin.findOrCreateFoodNote=async food=>({...food,sourcePath:food.sourcePath || "Inbox/Synthetic food.md"});
+  plugin.nativeRecordService = { requireApi:()=>({}),
     isEnabled: () => true,
     getFoodUsageEntries: () => { queries++; return entries.map(entry => ({ ...entry })); },
     createFoodEntry: async entry => {
@@ -4320,7 +4322,8 @@ test("a one-gram portion keeps a nonzero native food snapshot", async () => {
   const fake = createFakeHealthApp();
   const plugin = new TPSHealthPlugin(fake.app);
   let captured;
-  plugin.nativeRecordService = { isEnabled: () => true, createFoodEntry: async entry => { captured = entry; return { path: "Health/Food Entries/weighted.md" }; } };
+  plugin.findOrCreateFoodNote=async food=>({...food,sourcePath:food.sourcePath || "Inbox/Synthetic food.md"});
+  plugin.nativeRecordService = { requireApi:()=>({}), isEnabled: () => true, createFoodEntry: async entry => { captured = entry; return { path: "Health/Food Entries/weighted.md" }; } };
   await plugin.logFood({
     id: "weighted-food", name: "Weighted Food", source: "manual",
     servingAmount: 1, servingUnit: "serving", servingGrams: 46,
@@ -9958,33 +9961,25 @@ test("scanner uses accessible camera overlay actions without a Shortcut button",
   assert.match(mainSource, /setAttribute\("aria-pressed", String\(this.torchEnabled\)\)/);
 });
 
-test('explicit food and recipe edits await linked-entry persistence with their committed definition before returning', async () => {
+test('explicit food and recipe edits publish their committed definition without linked-log writes', async () => {
   installDeterministicBrowserGlobals();
   const { default: Plugin } = await importPluginWithObsidianStub();
   for (const type of ['food', 'recipe']) {
     const fake = createFakeHealthApp(), plugin = new Plugin(fake.app);
     const food = await plugin.createFoodFromInput({name: `Owner ${type}`, type, servingAmount: 1, servingUnit: 'serving', nutrition: {calories: 200}});
     const file = fake.app.vault.getAbstractFileByPath(food.sourcePath);
-    let release, finished = false, calls = 0, committedDefinition = null;
+    let calls = 0, committedDefinition = null;
     plugin.nativeRecordService = {
       acceptFoodDefinitionCommit: (target, committed) => {
+        calls++;
         assert.equal(target.path, file.path);
         committedDefinition = committed;
       },
-      persistLinkedFoodEntries: async (target) => {
-        calls++;
-        assert.equal(target.path, file.path);
-        assert.deepEqual(committedDefinition, parseFrontmatter(fake.files.get(file.path)), 'definition body work finishes before fan-out');
-        await new Promise(resolve => { release = resolve; });
-      },
+      persistLinkedFoodEntries: () => { throw Error('Retired linked-log writer'); },
     };
-    const save = plugin.upsertFoodFromInput({path: file.path, name: food.name, type, servingAmount: 2, servingUnit: 'serving', nutrition: {calories: 300}})
-      .then(() => { finished = true; });
-    for (let tick = 0; !release && tick < 100; tick++) await Promise.resolve();
+    await plugin.upsertFoodFromInput({path: file.path, name: food.name, type, servingAmount: 2, servingUnit: 'serving', nutrition: {calories: 300}});
     assert.equal(calls, 1, type);
-    assert.equal(finished, false, 'explicit edit cannot report success before its linked notes are saved');
-    release(); await save;
-    assert.equal(finished, true);
+    assert.deepEqual(committedDefinition, parseFrontmatter(fake.files.get(file.path)));
   }
 });
 

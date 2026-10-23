@@ -48,7 +48,6 @@ const scoped = (
 });
 
 const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
-  ...EXTRA_NUTRIENTS.map(n => scoped(`record-${n.key}`, n.key, `${n.label} (${n.unit})`, "number", ["food-entry"], { icon: "pill" })),
   scoped('record-status', 'status', 'Status', 'selector', ['workout-session'], {
     icon: 'circle-check', options: ['active', 'complete', 'discarded'],
   }),
@@ -56,15 +55,6 @@ const NATIVE_RECORD_PROPERTIES: HealthPropertyCatalogEntry[] = [
   scoped('food-link', 'food', 'Food', 'selector', ['food-entry'], { icon: 'utensils', acceptsKind: 'food, recipe, meal' }),
   scoped('food-quantity', 'quantity', 'Amount consumed', 'number', ['food-entry'], { icon: 'scale' }),
   scoped('food-unit', 'unit', 'Unit', 'selector', ['food-entry'], { icon: 'ruler', linkedOptions: { linkProperty: 'food', provider: 'tps-health:food-servings' } }),
-  scoped('record-calories', 'calories', 'Calculated calories', 'number', ['food-entry'], { icon: 'flame' }),
-  scoped('record-protein', 'proteinG', 'Calculated protein', 'number', ['food-entry'], { icon: 'dumbbell' }),
-  scoped('record-carbs', 'carbsG', 'Calculated carbs', 'number', ['food-entry'], { icon: 'wheat' }),
-  scoped('record-fat', 'fatG', 'Calculated fat', 'number', ['food-entry'], { icon: 'droplet' }),
-  scoped('record-fiber', 'fiberG', 'Calculated fiber', 'number', ['food-entry'], { icon: 'sprout' }),
-  scoped('record-sugar', 'sugarG', 'Calculated sugar', 'number', ['food-entry'], { icon: 'candy' }),
-  scoped('record-sugar-alcohol', 'sugarAlcoholG', 'Calculated sugar alcohol', 'number', ['food-entry'], { icon: 'candy-off' }),
-  scoped('record-alcohol', 'alcoholG', 'Calculated alcohol', 'number', ['food-entry'], { icon: 'wine' }),
-  scoped('record-sodium', 'sodiumMg', 'Calculated sodium', 'number', ['food-entry'], { icon: 'shaker' }),
   scoped('activity-type', 'activityType', 'Activity type', 'text', ['activity-entry'], { icon: 'list-filter' }),
   scoped('activity-started', 'startedAt', 'Started', 'datetime', ['activity-entry'], { icon: 'play' }),
   scoped('activity-duration', 'durationMinutes', 'Duration', 'number', ['activity-entry'], { icon: 'timer' }),

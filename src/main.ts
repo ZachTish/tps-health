@@ -1,16 +1,18 @@
+import { foodLogUpgrade, upgradeFoodBaseFormulas, commitFoodUpgrade } from './food-log-upgrade';
+import { calculatedFoodLogKeys, foodLogBody, prepareFoodLogCreation } from './food-log-presentation';
 import { foodServingChoices } from "./food-property-choices";
 import { GOAL_FIELDS, goalNoteFields, goalNoteSignature, legacyGoalSignature, readGoalNote } from "./goal-notes";
 import { HEALTH_GOALS_BASE, FOOD_GOALS_BASE, healthGoalsBaseDefinition, foodGoalsBaseDefinition } from "./goal-bases";
 import { MACRO_KCAL_PER_GRAM, macroInputGrams, macroInputDisplay, type EnergyMacro, type MacroInputUnit } from "./macro-input";
 import { HealthConnectionSettings } from "./connection-settings";
-import { canonicalNativeKind } from "./native-record-schema";
+import { canonicalNativeKind, configuredNativeKind, decodeNativeRecordFrontmatter } from "./native-record-schema";
 import { HealthKindCodec, libraryIdentity, matchesLibraryIdentity, applyLibraryIdentity, mappingSnapshot } from "./health-mapping";
 import { dailyEnergyEstimate, parseEnergySettings, type DailyEnergyEstimate } from "./energy-estimate";
 import { energyActivitySourceSignature, type EnergyActivitySettings } from "./energy-activity";
 import { renderEnergyOverview } from "./energy-overview";
 import { nutrientGoalChange, trackedFoodNutrientKeys, trackedFoodNutrition } from "./nutrient-goals";
 import { nutritionNumber, foodNutritionProvenance, assessFoodData, foodDataDetail, assertSupportedFoodSelection, isOpenFoodFactsSearchPreview } from "./food-data-quality";
-import { authoredMetricServing } from "./food-serving";
+import { authoredMetricServing, foodEntryPortion } from "./food-serving";
 import { configureCustomNutrients, normalizeCustomNutrients, type CustomNutrientDefinition, EXTRA_NUTRIENTS, EXTRA_NUTRIENT_KEYS, NUTRIENT_KEYS, extraNutrition, addExtraNutrition, usdaExtraNutrition, isExtraNutrientKey } from "./nutrients";
 import type { HealthGoal, NutritionTotals } from "./types";
 import { BarcodeOrientationLock, barcodeOrientationDrivers } from "./barcode-orientation";
@@ -20,7 +22,7 @@ import { normalizeFoodLogTags } from "./food-log-tags";
 import { isArchivedFoodDefinition } from "./food-eligibility";
 import { EditorState, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile, stringifyYaml } from "obsidian";
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, EventRef, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownView, Menu, Modal, Notice, Platform, Plugin, WorkspaceLeaf, editorInfoField, editorLivePreviewField, normalizePath, requestUrl, setIcon, Setting, TFile, stringifyYaml, parseYaml, getFrontMatterInfo } from "obsidian";
 import { OrientationAwareBarcodeReader } from "./barcode-reader";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { CreateExerciseInput, CreateFoodInput, CreateWorkoutPlanInput, DailyFoodMacroTotals, FinishWorkoutInput, FoodDuplicateStrategy, FoodLabelInput, HealthMetricRenderConfig, LogActivityInput, LogFoodByBarcodeInput, LogFoodByFoodPathInput, LogFoodByNameInput, LogFoodInput, LogSetInput, StartWorkoutInput, TPSHealthApi, UpsertExerciseInput, UpsertFoodInput, UpsertWorkoutPlanInput } from "./api";
@@ -837,6 +839,14 @@ export default class TPSHealthPlugin extends Plugin {
       callback: () => this.traceCommand("open-food-log-base", () => this.openFoodLogBase()),
     });
     this.addCommand({
+      id: "use-calculated-food-log", name: "Use calculated nutrients in current food log",
+      callback: () => this.traceCommand("use-calculated-food-log", () => this.upgradeCurrentFoodFile("log")),
+    });
+    this.addCommand({
+      id: "update-food-base-calculations", name: "Update current food Base calculations",
+      callback: () => this.traceCommand("update-food-base-calculations", () => this.upgradeCurrentFoodFile("base")),
+    });
+    this.addCommand({
       id: "open-workout-log-base",
       name: "Open Activity Log base",
       callback: () => this.traceCommand("open-workout-log-base", () => this.openActivityLogBase()),
@@ -1648,6 +1658,59 @@ export default class TPSHealthPlugin extends Plugin {
       : `note[${JSON.stringify(key)}] == ${JSON.stringify(value)}`).join(" && ");
     if (!foodFilter) throw new Error("Configure food-entry recognition in GCM first.");
     return await this.app.vault.create(basePath, stringifyYaml(foodGoalsBaseDefinition(this.settings, this.getHealthGoals(true), foodFilter)));
+  }
+
+  /** Explicit single-file conversion. No startup/open listeners or vault traversal. */
+  async upgradeCurrentFoodFile(mode: "log" | "base"): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension !== (mode === "log" ? "md" : "base")) {
+      throw new Error(mode === "log" ? "Open a food log first." : "Open a food Base first.");
+    }
+    const path = file.path;
+    const source = await this.app.vault.read(file);
+    const gcm = this.getGcmApi();
+    const configuration = JSON.stringify([this.settings.nativeRecordKinds, this.settings.nativeRecordProperties, this.settings.nativeRecordPropertyAliases]);
+    const allowed = () => {
+      if (file.path !== path || this.app.vault.getAbstractFileByPath(path) !== file ||
+        configuration !== JSON.stringify([this.settings.nativeRecordKinds, this.settings.nativeRecordProperties, this.settings.nativeRecordPropertyAliases])) return false;
+      if (gcm?.templates?.canAutomaticallyMutate?.(file) === false || gcm?.templates?.canAutomaticallyMutateSource?.(source) === false) return false;
+      const editors = this.app.workspace.getLeavesOfType("markdown").map(leaf => leaf.view as MarkdownView)
+        .filter(view => view.file === file && view.getMode?.() === "source");
+      return editors.every(view => view.editor?.getValue() === source);
+    };
+    let next: string;
+    if (mode === "log") {
+      const info = getFrontMatterInfo(source);
+      if (!info.exists) throw new Error("This note is not a food log.");
+      const frontmatter = parseYaml(info.frontmatter);
+      const record = await gcm?.nativeRecords?.resolve(file);
+      if (!record || record.kind !== configuredNativeKind(this.settings, 'food-entry') || isArchivedFoodDefinition(path, frontmatter)) throw new Error("Open an active, uniquely identified food log first.");
+      const decoded = decodeNativeRecordFrontmatter(this.settings, frontmatter);
+      const link = String(decoded.food || '').replace(/^\[\[|\]\]$/g, '').split('|')[0].split('#')[0];
+      const food = this.app.metadataCache.getFirstLinkpathDest(link, path);
+      if (!food) throw new Error("Link this log to a food note before converting it. Saved estimates were kept.");
+      const foodSource = await this.app.vault.read(food);
+      const foodInfo = getFrontMatterInfo(foodSource);
+      if (!foodInfo.exists || !foodEntryPortion(decoded, parseYaml(foodInfo.frontmatter))) throw new Error("Choose a valid food, amount and unit before converting this log.");
+      const upgrade = foodLogUpgrade(frontmatter, source.slice(info.contentStart), this.settings, foodLogBody(this.settings, this.getHealthGoals(true)));
+      if (!upgrade.changed) { new Notice("This food log already uses calculated nutrients."); return; }
+      next = '---\n' + stringifyYaml(upgrade.frontmatter) + '---\n' + upgrade.body;
+    } else {
+      const base = parseYaml(source);
+      const upgrade = upgradeFoodBaseFormulas(base, this.settings);
+      if (!upgrade) { new Notice("No older Health formulas to update in this Base."); return; }
+      next = stringifyYaml(upgrade);
+    }
+    const backupFolder = `${this.app.vault.configDir}/plugins/${this.manifest.id}/food-log-backups`;
+    const backupPath = `${backupFolder}/${Date.now()}-${id("food-upgrade")}.json`;
+    await commitFoodUpgrade({ source, next, allowed,
+      backup: async () => {
+        if (!await this.app.vault.adapter.exists(backupFolder)) await this.app.vault.adapter.mkdir(backupFolder);
+        await this.app.vault.adapter.write(backupPath, JSON.stringify({path, source}));
+      },
+      process: callback => this.app.vault.process(file, callback),
+    });
+    new Notice(mode === "log" ? "Food log now shows calculated nutrients. Original saved in Health backups." : "Food Base calculations updated. Original saved in Health backups.");
   }
 
   async openHealthGoalsBase(basePath = HEALTH_GOALS_BASE): Promise<void> {
@@ -3202,8 +3265,10 @@ export default class TPSHealthPlugin extends Plugin {
     assertSupportedFoodSelection(item);
     return this.measureFoodLogging("food", 1, async timing => {
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Food amount must be greater than 0.");
-      if (persistFoodNote) this.nativeRecordService.requireApi();
-      const loggedItem = persistFoodNote ? await timing.measure("food-note", () => this.findOrCreateFoodNote(item)) : normalizeFoodMetricServing(item);
+      const requestedServing = resolveFoodLogServingWithGramAmount(item, quantity, unit, options.amountGrams);
+      if (requestedServing.unsupportedUnit || requestedServing.servings <= 0) throw new Error("Choose a supported unit for this food.");
+      this.nativeRecordService.requireApi();
+      const loggedItem = await timing.measure("food-note", () => this.findOrCreateFoodNote(item));
       const resolvedServing = resolveFoodLogServingWithGramAmount(loggedItem, quantity, unit, options.amountGrams);
       if (resolvedServing.unsupportedUnit || resolvedServing.servings <= 0) {
         logger.flowWarn("FoodLog", "write:unsupported-unit", { unit, servingUnit: loggedItem.servingUnit });
@@ -3775,14 +3840,12 @@ export default class TPSHealthPlugin extends Plugin {
         replaceRecipeBody ? item.recipeBody ?? currentNonIngredientBody : currentNonIngredientBody,
       );
       await this.writeRecipeMutationContent(file, bodyContent, "food-note-body", processedContent, processedContent);
-      if (committedFrontmatter) await this.nativeRecordService?.persistLinkedFoodEntries(file);
       this.localFoodIndexDirty = true;
       logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
       return normalized;
     }
 
     await this.app.vault.process(file, (content) => stripStandaloneFoodIdentityTagFromBody(content, tag, type));
-    if (committedFrontmatter) await this.nativeRecordService?.persistLinkedFoodEntries(file);
     this.localFoodIndexDirty = true;
     logger.flow("Food", "note:update", { path: file.path, type, name: normalized.name, replaceRecipeBody, identificationMode: this.settings.foodIdentificationMode });
     return normalized;
@@ -7716,7 +7779,7 @@ export default class TPSHealthPlugin extends Plugin {
       version: 1 as const,
       entities: {
         food: ["name", "brand", "barcode", "servingAmount", "servingUnit", "servingGrams", "servingMl", "nutritionBasis", "calories", "proteinG", "carbsG", "fatG", "fiberG", "sugarG", "sugarAlcoholG", "sugarAlcoholCaloriesPerG", "alcoholG", "sodiumMg", ...EXTRA_NUTRIENT_KEYS, "ingredients", "sourceImagePath"],
-        foodLog: ["type", "foodPath", "servings", "amount", "unit", "foodServingAmount", "foodServingUnit", "foodServingGrams", "foodServingMl", "nutritionSnapshot", "cal", "protein", "carbs", "fat", "fiber", "sugar", "sugarAlcohol", "alcohol", "sodium", ...EXTRA_NUTRIENT_KEYS, "createdDate", "completedDate"],
+        foodLog: ["foodPath", "servingQuantity", "servingUnit", "quantity", "unit", "tags", "note", "createdDate", "completedDate"],
         activityLog: ["type", "activity", "activityType", "activityId", "source", "sourceId", "device", "startedAt", "completedDate", "durationMinutes", "distance", "distanceUnit", "steps", "caloriesBurned", "dailyNotePath", "note"],
         exercise: ["name", "category", "primaryMuscles", "secondaryMuscles", "equipment", "defaultRestSeconds", "defaultSetType", "recommendedRestDays"],
         workoutPlan: ["name", "cooldownDays", "defaultRestSeconds", "lastCompletedDate", "nextEligibleDate", "lastSessionPath"],
@@ -7812,6 +7875,13 @@ export default class TPSHealthPlugin extends Plugin {
       }),
       getMetricRenderConfigs: () => this.getMetricRenderConfigs(),
       getMetricRenderConfig: (propertyKey) => this.getMetricRenderConfig(propertyKey),
+      foodLogs: {
+        version: 1,
+        calculatedProperties: frontmatter => this.configuredKindCodec()?.matches?.(frontmatter, configuredNativeKind(this.settings, 'food-entry'))
+          ? calculatedFoodLogKeys(this.settings) : [],
+        prepareCreation: (kind, properties) => kind === configuredNativeKind(this.settings, 'food-entry')
+          ? prepareFoodLogCreation(this.settings, this.getHealthGoals(true), properties) : null,
+      },
       linkedPropertyChoices: { version: 1, providers: { "food-servings": foodServingChoices } },
       getPropertyCatalog: () => buildHealthPropertyCatalog(this.getGoalAwareSettings(), this.configuredKindCodec()),
       openFoodLogEntryMenuFromLine: (event, filePath, lineNumber, line) => this.openFoodLogEntryMenuFromLine(event, filePath, lineNumber, line),
@@ -13738,18 +13808,13 @@ class NativeFoodEntryEditModal extends Modal {
       cls: "tps-health-status",
       text: this.entry.linkedFood
         ? "Amount changes recalculate this log from its linked food. The saved food definition is not changed."
-        : "Edit this estimate only. No reusable food note will be created or changed.",
+        : "This older log has no food link. Link a food note to calculate nutrition; its saved estimate is preserved.",
     });
     let title = this.entry.title;
     let quantity = String(this.entry.quantity);
     let unit = this.entry.unit;
     let completedDateInput = foodLogDateTimeLocalFromTimestamp(this.entry.completedDate);
     let note = this.entry.note;
-    const nutrition = {
-      calories: String(this.entry.calories), proteinG: String(this.entry.proteinG), carbsG: String(this.entry.carbsG),
-      fatG: String(this.entry.fatG), fiberG: String(this.entry.fiberG), sugarG: String(this.entry.sugarG),
-      sugarAlcoholG: String(this.entry.sugarAlcoholG), alcoholG: String(this.entry.alcoholG), sodiumMg: String(this.entry.sodiumMg),
-    };
     const formEl = this.contentEl.createDiv({ cls: "tps-health-form-grid" });
     new Setting(formEl).setName("Name").addText((text) => text.setValue(title).onChange((value) => title = value.trim()));
     new Setting(formEl).setName("Amount").addText((text) => {
@@ -13763,21 +13828,6 @@ class NativeFoodEntryEditModal extends Modal {
       configureFoodLogDateTimeInput(text.inputEl);
       text.setValue(completedDateInput).onChange((value) => completedDateInput = value.trim());
     });
-    if (!this.entry.linkedFood) {
-      const fields: Array<[keyof typeof nutrition, string, string]> = [
-        ["calories", "Calories", "1"], ["proteinG", "Protein (g)", "any"], ["carbsG", "Carbs (g)", "any"],
-        ["fatG", "Fat (g)", "any"], ["fiberG", "Fiber (g)", "any"], ["sugarG", "Sugar (g)", "any"],
-        ["sugarAlcoholG", "Sugar alcohol (g)", "any"], ["alcoholG", "Alcohol (g)", "any"], ["sodiumMg", "Sodium (mg)", "any"],
-      ];
-      for (const [key, label, step] of fields) {
-        new Setting(formEl).setName(label).addText((text) => {
-          text.inputEl.type = "number";
-          text.inputEl.min = "0";
-          text.inputEl.step = step;
-          text.setValue(nutrition[key]).onChange((value) => nutrition[key] = value.trim());
-        });
-      }
-    }
     new Setting(formEl).setName("Notes").addTextArea((text) => text.setPlaceholder("Optional").setValue(note).onChange((value) => note = value.trim()));
     new Setting(this.contentEl).setClass("tps-health-modal-actions").addButton((button) => button.setButtonText("Save log entry").setCta().onClick(async () => {
       if (this.submitting) return;
@@ -13790,15 +13840,6 @@ class NativeFoodEntryEditModal extends Modal {
           quantity: Number(quantity),
           unit,
           completedDate: resolveBatchFoodCompletedDate(completedDateInput, null) || this.entry.completedDate,
-          calories: Number(nutrition.calories),
-          proteinG: Number(nutrition.proteinG),
-          carbsG: Number(nutrition.carbsG),
-          fatG: Number(nutrition.fatG),
-          fiberG: Number(nutrition.fiberG),
-          sugarG: Number(nutrition.sugarG),
-          sugarAlcoholG: Number(nutrition.sugarAlcoholG),
-          alcoholG: Number(nutrition.alcoholG),
-          sodiumMg: Number(nutrition.sodiumMg),
           note,
         });
         logger.flow("NativeDailyDashboard", "food-edit:done", { path: this.entry.path, linkedFood: this.entry.linkedFood });

@@ -65,7 +65,8 @@ test('manufacturer Michelob beer is distinct from seltzer, keeps reported energy
  assert.ok(beer,'manufacturer entry missing');assert.equal(rows[0],beer);assert.notEqual(beer.name,rows.find(x=>x.name.includes('Seltzer'))?.name);
  assert.deepEqual({...beer.nutrition,alcoholG:undefined},{calories:95,proteinG:.6,carbsG:2.6,fatG:0,alcoholG:undefined});
  assert.match(beer.nutritionProvenance.warnings.join(' '),/ABV/);assert.equal(beer.nutritionBasis,'labeled-serving');
- const entries=[];p.nativeRecordService={isEnabled:()=>true,createFoodEntry:async entry=>{entries.push(entry);return {id:entry.id,path:'Inbox/synthetic-log.md'}}};
+ p.findOrCreateFoodNote=async food=>({...food,sourcePath:"Inbox/Michelob.md"});
+ const entries=[];p.nativeRecordService={isEnabled:()=>true,requireApi:()=>({}),createFoodEntry:async entry=>{entries.push(entry);return {id:entry.id,path:'Inbox/synthetic-log.md'}}};
  await p.logFood(beer,m.defaultFoodLogQuantity(beer),'serving',undefined,'2026-10-18T12:00:00',false);
  await p.logFood(beer,24,'fl oz',undefined,'2026-10-18T12:00:00',false);
  assert.equal(entries[0].nutritionOverride.calories,95);assert.equal(entries[0].nutritionOverride.carbsG,2.6);assert.equal(entries[0].nutritionOverride.fatG,0);assert.equal(entries[0].nutritionOverride.sodiumMg,undefined);assert.equal(entries[0].nutritionOverride.fiberG,undefined);

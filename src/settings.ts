@@ -372,7 +372,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
       .setDesc("Preserves current targets, labels, units and display choices. After adoption, goal notes become the only target source; the old goal settings are removed.")
       .addButton(button => button.setButtonText("Move goals to notes").setCta().onClick(() => void run(() => this.plugin.adoptGoalNotes())));
 
-    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "These controls edit the same goal notes shown in Bases. Goals also select nutrients saved in future logs. Targets are your own, not dietary recommendations.");
+    const nutrientGoals = createSettingsGroup(page, "Nutrient targets", "These controls edit the same goal notes shown in Bases. Goals also select nutrients kept on food definitions. Logs calculate from their food and portion. Targets are your own, not dietary recommendations.");
     let refreshGoals = () => {};
     try { refreshGoals = renderNutrientGoalSettings(nutrientGoals, this.plugin, () => {}); }
     catch (error) { nutrientGoals.createEl("p", {text: (error as Error).message}); }

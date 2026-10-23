@@ -13,6 +13,7 @@ export interface LogFoodInput {
   servingUnit?: string;
   section?: string;
   completedDate?: string;
+  /** @deprecated A linked food definition is always created or reused. */
   createFoodNote?: boolean;
 }
 
@@ -221,6 +222,11 @@ export interface DailyFoodMacroTotals extends NutritionTotals {
 }
 
 export interface TPSHealthApi {
+  foodLogs: {
+    version: 1;
+    calculatedProperties(frontmatter: Record<string, unknown>): string[];
+    prepareCreation(kind: string, properties: Record<string, unknown>): {properties: Record<string, unknown>; body: string} | null;
+  };
   /** Pure indexed-frontmatter choices; no catalog search, network or body reads. */
   linkedPropertyChoices: { version: 1; providers: Record<string, { label: string; sourceProperties: string[]; getChoices(frontmatter: Record<string, unknown>): Array<{value: string; label: string; aliases?: string[]}> }> };
   connectionSettings: { version: 1; render(parent: HTMLElement): () => void };

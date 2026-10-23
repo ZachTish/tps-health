@@ -26,10 +26,12 @@ test('an explicit gram portion survives the handoff from food logger to native r
   const plugin = new m.default(fake.app), entries = [];
   plugin.nativeRecordService = {
     isEnabled: () => true,
+    requireApi: () => ({}),
     createFoodEntry: async entry => { entries.push(entry); return { id: entry.id, path: 'Inbox/entry.md' }; },
   };
   const food = item('custom-note', 'Synthetic bowl', { sourcePath: 'Inbox/bowl.md', servingAmount: 1,
     servingUnit: 'bowl', servingGrams: 100, nutrition: { calories: 200, proteinG: 10, carbsG: 25, fatG: 6 } });
+  let linked=0;plugin.findOrCreateFoodNote=async value=>{linked++;return value;};
   await plugin.logFood(food, 1, 'bowl', undefined, '2026-09-29T12:00:00', false, undefined, { amountGrams: 300 });
   assert.equal(entries[0].nutritionOverride.calories, 600);
   assert.equal(entries[0].servingQuantity, 300, 'the stored amount must describe the portion used for nutrition');
@@ -38,6 +40,7 @@ test('an explicit gram portion survives the handoff from food logger to native r
   assert.equal(entries[1].nutritionOverride.calories, 200);
   assert.equal(entries[1].servingQuantity, 1);
   assert.equal(entries[1].servingUnit, 'bowl');
+  assert.equal(linked,2,'the deprecated flag cannot create an unlinked snapshot');
   assert.deepEqual(fake.writes, [], 'the controlled native adapter does not write vault files');
 });
 

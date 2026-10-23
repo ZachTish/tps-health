@@ -116,7 +116,7 @@ function createHarness(options = {}) {
   const legacyFileNames = options.legacyFileNames === true;
   const api = {
     version: options.apiVersion ?? 7,
-    capabilities: { customKinds: options.customKinds === true, updateFromSource: options.sourceUpdates !== false },
+    capabilities: { initialBodies: true, customKinds: options.customKinds === true, updateFromSource: options.sourceUpdates !== false },
     isEnabled: () => options.apiEnabled !== false,
     async create(kind, properties, options = {}) {
       const id = String(options.id || `${kind}-${++generated}`);
@@ -628,24 +628,17 @@ test('the async macro API waits for the current full owner across replacement an
   } finally { h.service.dispose(); tasks.restore(); }
 });
 
-test('explicit definition persistence waits for full discovery and leaves discovery read-only', async () => {
-  const tasks = manualIndexTasks();
-  const h = await createLinkedProjectionHarness();
-  try {
-    const originalFiles = [...h.files.values()]; h.files.clear(); addIndexLoad(h);
-    for (const file of originalFiles) h.files.set(file.path, file);
-    const changed = { ...h.frontmatters.get(h.food), calories: 500 };
-    h.frontmatters.set(h.food, changed);
-    h.service.refreshConfiguration();
-    h.service.acceptFoodDefinitionCommit(h.food, changed);
-    const persist = h.service.persistLinkedFoodEntries(h.food);
-    await Promise.resolve();
-    assert.equal(h.frontmatterCalls.length, 0, 'a partial full discovery cannot enter the write queue');
-    await tasks.drain(); await persist;
-    assert.equal(h.frontmatterCalls.length, 1);
-    assert.equal(h.frontmatters.get(h.seed.file).calories, 500);
-    assert.equal(h.updateCalls.length, 0);
-  } finally { h.service.dispose(); tasks.restore(); }
+test('definition commits during discovery remain read-only and converge after discovery', async () => {
+ const tasks=manualIndexTasks(),h=await createLinkedProjectionHarness();
+ try {
+  const before=new Map(h.contents),originalFiles=[...h.files.values()];h.files.clear();addIndexLoad(h);
+  for(const file of originalFiles)h.files.set(file.path,file);
+  const changed={...h.frontmatters.get(h.food),calories:500};h.frontmatters.set(h.food,changed);
+  h.service.refreshConfiguration();h.service.acceptFoodDefinitionCommit(h.food,changed);await tasks.drain();
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,500);
+  assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0);
+  for(const [path,content] of before)assert.equal(h.contents.get(path),content);
+ }finally{h.service.dispose();tasks.restore();}
 });
 
 test('dispose while yielded cannot inspect, notify, hydrate or accept any more files', async () => {
@@ -948,135 +941,56 @@ test('startup and metadata nutrition projection display current totals without e
   } finally { h.service.dispose(); }
 });
 
-test('linked portion edit saves derived nutrition in its own operation before returning and survives reload', async () => {
+test('linked portion edit saves only consumption and calculated totals survive reload', async () => {
   const h = await createLinkedProjectionHarness();
   try {
     const updated = await h.service.updateDailyFoodEntry(h.seed.path, {
       ...h.service.getDailyFoodEntries('2026-10-06')[0], quantity: 2,
     });
-    assert.equal(updated.frontmatter.calories, 400);
-    assert.equal(h.frontmatters.get(h.seed.file).calories, 400, 'no delayed projection is required');
+    assert.equal(updated.frontmatter.calories, undefined);
+    assert.equal(h.frontmatters.get(h.seed.file).calories, undefined, 'no nutrient copy is stored');
     h.service.refreshConfiguration();
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 400);
     assert.equal(h.updateCalls.length + h.frontmatterCalls.length, 1, 'one explicit edit owns one mutation');
   } finally { h.service.dispose(); }
 });
 
-test('explicit portion edits remain user actions while linked definition persistence retains automation exclusions', async () => {
-  const h = await createLinkedProjectionHarness();
-  try {
-    const causes = [], update = h.api.updateFromSource;
-    h.api.updateFromSource = (...args) => { causes.push(args[3]); return update.apply(h.api, args); };
-    await h.service.updateDailyFoodEntry(h.seed.path, {
-      ...h.service.getDailyFoodEntries('2026-10-06')[0], quantity: 2,
-    });
-    const changed = {...h.frontmatters.get(h.food), calories: 300};
-    h.frontmatters.set(h.food, changed);
-    h.service.acceptFoodDefinitionCommit(h.food, changed);
-    await h.service.persistLinkedFoodEntries(h.food);
-    assert.deepEqual(causes.map(cause => ({kind: cause.kind, surface: cause.surface})), [
-      {kind: 'user', surface: 'health-daily-food-edit'},
-      {kind: 'automation', surface: 'health-food-definition-edit'},
-    ]);
-    assert.ok(causes.every(cause => cause.sourcePluginId === h.plugin.manifest.id));
-    assert.equal(h.frontmatters.get(h.seed.file).calories, 600);
-    assert.equal(h.frontmatterCalls.length, 2, 'classification does not add another processor or retry');
-  } finally { h.service.dispose(); }
+test('definition changes never write logs while an explicit portion edit stays one user mutation', async () => {
+ const h=await createLinkedProjectionHarness(3);
+ try {
+  const before=new Map(h.contents),causes=[],update=h.api.updateFromSource;
+  h.api.updateFromSource=(...args)=>{causes.push(args[3]);return update.apply(h.api,args)};
+  for(const calories of [300,350,350])h.service.acceptFoodDefinitionCommit(h.food,{...h.frontmatters.get(h.food),calories});
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,1050);
+  assert.deepEqual(h.contents,before);assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0);
+  await h.service.updateDailyFoodEntry(h.seed.path,{...h.service.getDailyFoodEntries('2026-10-06').find(x=>x.id===h.seed.id),quantity:2});
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,1400);
+  assert.equal(h.frontmatters.get(h.seed.file).calories,undefined);
+  assert.equal(h.frontmatters.get(h.seed.file).quantity,2);
+  assert.deepEqual(causes.map(x=>x.kind),['user']);assert.equal(h.frontmatterCalls.length,1);
+  assert.equal(h.counts.scans,0);assert.deepEqual(h.readCalls,[]);
+ }finally{h.service.dispose();}
 });
 
-test('explicit definition edit persists only linked changed entries using current atomic portions', async () => {
-  const h = await createLinkedProjectionHarness(3);
-  try {
-    const changed = { ...h.frontmatters.get(h.food), calories: 300 };
-    h.frontmatters.set(h.food, changed);
-    h.service.acceptFoodDefinitionCommit(h.food, changed);
-    await h.service.persistLinkedFoodEntries(h.food);
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 900);
-    assert.equal(h.frontmatterCalls.length, 3);
-    assert.equal(h.updateCalls.length, 0);
-    for (const entry of h.service.recordsByPath.values()) assert.equal(h.frontmatters.get(entry.file).calories, 300);
-    const mutations = h.frontmatterCalls.length;
-    h.service.acceptFoodDefinitionCommit(h.food, changed);
-    await h.service.persistLinkedFoodEntries(h.food);
-    assert.equal(h.frontmatterCalls.length, mutations, 'unchanged explicit save must skip the queue');
-    assert.equal(h.counts.scans, 0);
-  } finally { h.service.dispose(); }
-});
-
-test('explicit definition nutrition uses current portion and preserves link identity exclusions at the atomic boundary', async () => {
-  for (const scenario of ['portion', 'link', 'archived', 'identity', 'kind']) {
-    const h = await createLinkedProjectionHarness();
-    try {
-      const processor = h.plugin.app.fileManager.processFrontMatter;
-      let current;
-      h.plugin.app.fileManager.processFrontMatter = async (file, mutate) => {
-        const prior = h.frontmatters.get(file);
-        current = { ...prior, quantity: 3, userField: 'keep' };
-        if (scenario === 'link') current.food = '[[Inbox/Other food]]';
-        if (scenario === 'archived') current.archived = true;
-        if (scenario === 'identity') current.id = 'replacement-id';
-        if (scenario === 'kind') current.kind = 'activity-entry';
-        h.frontmatters.set(file, current);
-        return processor(file, mutate);
-      };
-      const definition = { ...h.frontmatters.get(h.food), calories: 300 };
-      h.service.acceptFoodDefinitionCommit(h.food, definition);
-      await h.service.persistLinkedFoodEntries(h.food);
-      const saved = h.frontmatters.get(h.seed.file);
-      if (scenario === 'portion') { assert.equal(saved.calories, 900); assert.equal(saved.quantity, 3); }
-      else assert.deepEqual(saved, current, `${scenario}: stale membership cannot authorize a write`);
-      assert.equal(saved.userField, 'keep');
-      assert.equal(h.frontmatterCalls.length, 1, 'one preflight-eligible boundary, no retry');
-      assert.deepEqual(h.readCalls, []);
-      assert.equal(h.counts.scans, 0);
-    } finally { h.service.dispose(); }
-  }
-});
-
-test('concurrent definition and portion edits compute the latest linked nutrition instead of overwriting a newer source', async () => {
-  const h = await createLinkedProjectionHarness();
-  try {
-    const processor = h.plugin.app.fileManager.processFrontMatter;
-    let entered = false;
-    h.plugin.app.fileManager.processFrontMatter = async (file, mutate) => {
-      if (!entered) {
-        entered = true;
-        const changed = { ...h.frontmatters.get(h.food), calories: 350 };
-        h.frontmatters.set(h.food, changed); h.notifyDefinition(changed);
-        h.frontmatters.set(file, { ...h.frontmatters.get(file), quantity: 3, note: 'Concurrent note' });
-      }
-      return processor(file, mutate);
-    };
-    h.service.acceptFoodDefinitionCommit(h.food, { ...h.frontmatters.get(h.food), calories: 300 });
-    await h.service.persistLinkedFoodEntries(h.food);
-    const saved = h.frontmatters.get(h.seed.file);
-    assert.equal(saved.calories, 1050);
-    assert.equal(saved.quantity, 3);
-    assert.equal(saved.note, 'Concurrent note');
-    assert.equal(h.frontmatterCalls.length, 1);
-  } finally { h.service.dispose(); }
-});
-
-test('definition A then B with reversed entry callbacks always persists the latest committed definition', async () => {
-  const h = await createLinkedProjectionHarness();
-  try {
-    const sourceUpdate = h.api.updateFromSource, callbacks = [];
-    h.api.updateFromSource = (...args) => new Promise((resolve, reject) => {
-      callbacks.push(() => sourceUpdate.apply(h.api, args).then(resolve, reject));
-    });
-    h.service.acceptFoodDefinitionCommit(h.food, {...h.frontmatters.get(h.food), calories: 300});
-    const first = h.service.persistLinkedFoodEntries(h.food);
-    await Promise.resolve(); await Promise.resolve();
-    assert.equal(callbacks.length, 1);
-    h.service.acceptFoodDefinitionCommit(h.food, {...h.frontmatters.get(h.food), calories: 350});
-    const second = h.service.persistLinkedFoodEntries(h.food);
-    await Promise.resolve(); await Promise.resolve();
-    assert.equal(callbacks.length, 2);
-    await callbacks[1](); await second;
-    await callbacks[0](); await first;
-    assert.equal(h.frontmatters.get(h.seed.file).calories, 350, 'late A callback cannot replace B nutrition');
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 350);
-  } finally { h.service.dispose(); }
+test('portion changes recheck identity and archive at the existing atomic boundary',async()=>{
+ for(const scenario of ['identity','kind','archived','unrelated']){
+  const h=await createLinkedProjectionHarness();
+  try{
+   const process=h.plugin.app.fileManager.processFrontMatter;
+   h.plugin.app.fileManager.processFrontMatter=async(file,mutate)=>{
+    const current={...h.frontmatters.get(file),userField:'keep'};
+    if(scenario==='identity')current.id='replacement';
+    if(scenario==='kind')current.kind='activity-entry';
+    if(scenario==='archived')current.archived=true;
+    h.frontmatters.set(file,current);return process(file,mutate);
+   };
+   const save=h.service.updateDailyFoodEntry(h.seed.file,{...h.service.getDailyFoodEntries('2026-10-06')[0],quantity:2});
+   if(scenario==='unrelated')await save;else await assert.rejects(save,/changed/);
+   const current=h.frontmatters.get(h.seed.file);
+   assert.equal(current.quantity,scenario==='unrelated'?2:1);assert.equal(current.userField,'keep');
+   assert.equal(current.calories,undefined);
+  }finally{h.service.dispose();}
+ }
 });
 
 test('temporary last-entry reindex retains committed nutrition evidence and changed links delete obsolete ownership', async () => {
@@ -1086,7 +1000,6 @@ test('temporary last-entry reindex retains committed nutrition evidence and chan
     h.contents.set(h.seed.path, h.contents.get(h.seed.path) + body);
     const id = h.seed.id;
     h.service.acceptFoodDefinitionCommit(h.food, {...h.frontmatters.get(h.food), calories: 350});
-    await h.service.persistLinkedFoodEntries(h.food);
     assert.equal(h.service.foodDefinitionsByPath.get(h.food.path).calories, 350, 'temporary last-reference removal cannot discard newer committed evidence');
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 350);
     assert.ok(h.contents.get(h.seed.path).endsWith(body));
@@ -1098,7 +1011,6 @@ test('temporary last-entry reindex retains committed nutrition evidence and chan
     assert.equal(h.service.foodDefinitionsByPath.has(h.food.path), false, 'accepted changed link drops unreferenced prior definition evidence');
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 75);
     const beforeMutations = h.frontmatterCalls.length;
-    await h.service.persistLinkedFoodEntries(h.food);
     assert.equal(h.frontmatterCalls.length, beforeMutations, 'the prior definition no longer owns this entry');
     await h.plugin.app.vault.trash(h.seed.file);
     assert.equal(h.service.foodDefinitionsByPath.has(other.path), false, 'actual last-reference deletion removes evidence');
@@ -1119,7 +1031,7 @@ test('linked portion saving requires the shared computed owner and never bypasse
     await assert.rejects(h.service.updateDailyFoodEntry(h.seed.file, patch), /changed before it could be saved/);
     assert.equal(sourceAttempts, 1);
     assert.equal(h.updateCalls.length + h.frontmatterCalls.length, 0, 'no raw/generic/native-update fallback after authority refuses');
-    assert.equal(h.frontmatters.get(h.seed.file).calories, 200);
+    assert.equal(h.frontmatters.get(h.seed.file).calories, undefined);
     assert.equal(h.frontmatters.get(h.seed.file).quantity, 1);
   } finally { h.service.dispose(); }
 });
@@ -1133,16 +1045,15 @@ test('explicit linked portion and definition saves honor configured kind and pro
     const food = h.addFrontmatterFile('Inbox/Mapped food.md', {kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 200});
     const entry = await h.service.createFoodEntry({id: 'mapped-ownership', createdDate: '2026-10-06T12:00:00Z',
       item: {id: 'mapped', name: 'Mapped food', sourcePath: food.path}, quantity: 1, unit: 'serving'});
-    assert.equal(h.frontmatters.get(entry.file).energyKcal, 200, 'creation prepares linked nutrition without a follow-up write');
+    assert.equal(h.frontmatters.get(entry.file).energyKcal, undefined, 'creation stores only consumption');
     await h.service.updateDailyFoodEntry(entry.file, {...h.service.getDailyFoodEntries('2026-10-06')[0], quantity: 2});
-    assert.equal(h.frontmatters.get(entry.file).energyKcal, 400);
+    assert.equal(h.frontmatters.get(entry.file).energyKcal, undefined);
     h.service.acceptFoodDefinitionCommit(food, {...h.frontmatters.get(food), calories: 300});
-    await h.service.persistLinkedFoodEntries(food);
     const saved = h.frontmatters.get(entry.file);
-    assert.equal(saved.energyKcal, 600); assert.equal(saved.portion, 2); assert.equal(saved.kind, 'nutrition-log');
+    assert.equal(saved.energyKcal, undefined); assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,600); assert.equal(saved.portion, 2); assert.equal(saved.kind, 'nutrition-log');
     assert.equal(saved.title, 'Mapped food', 'the existing envelope title is preserved');
     for (const key of ['calories', 'quantity', 'unit', 'food', 'completedDate']) assert.equal(Object.hasOwn(saved, key), false, key);
-    assert.equal(h.createCalls.length, 1); assert.equal(h.frontmatterCalls.length, 2); assert.equal(h.updateCalls.length, 0);
+    assert.equal(h.createCalls.length, 1); assert.equal(h.frontmatterCalls.length, 1); assert.equal(h.updateCalls.length, 0);
     assert.deepEqual(h.readCalls, []);
   } finally { h.service.dispose(); }
 });
@@ -1211,11 +1122,10 @@ test('every built-in core and extra nutrient remains a read-only live projection
     }
     assert.equal(h.frontmatterCalls.length, 0, 'metadata projection stays read-only');
     h.service.acceptFoodDefinitionCommit(h.food, h.frontmatters.get(h.food));
-    await h.service.persistLinkedFoodEntries(h.food);
     const persisted = (await h.api.resolve(h.seed.file)).frontmatter;
-    for (const key of keys) assert.equal(persisted[key], 7, key);
+    for (const key of keys) assert.equal(persisted[key], undefined, key);
     assert.equal(h.updateCalls.length, 0);
-    assert.equal(h.frontmatterCalls.length, 1, 'the explicit definition owner saves once');
+    assert.equal(h.frontmatterCalls.length, 0, 'the definition owner never writes consumption logs');
   } finally { h.service.dispose(); }
 });
 
@@ -1238,9 +1148,8 @@ test('configured and archived custom nutrient changes, known zero and removal ke
     assert.equal(h.service.getDailyFoodTotals('2026-10-06')[keys[1]], undefined);
     assert.equal(h.frontmatterCalls.length, 0, 'metadata projection stays read-only');
     h.service.acceptFoodDefinitionCommit(h.food, h.frontmatters.get(h.food));
-    await h.service.persistLinkedFoodEntries(h.food);
     const persisted = (await h.api.resolve(h.seed.file)).frontmatter;
-    assert.equal(persisted[keys[0]], 0);
+    assert.equal(persisted[keys[0]], undefined);
     assert.equal(persisted[keys[1]], undefined);
   } finally { h.service.dispose(); configureCustomNutrients([]); }
 });
@@ -1254,8 +1163,8 @@ test('non-scalar consumed inputs conservatively reproject even when their nested
     calories[0] = 225;
     h.notifyDefinition({ ...h.frontmatters.get(h.food) });
     assert.equal(h.counts.projections, 2);
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 225,
-      'a shared nested object cannot be treated as an immutable scalar snapshot');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 0,
+      'non-scalar nutrient data remains unknown');
   } finally { h.service.dispose(); }
 });
 
@@ -1278,11 +1187,11 @@ test('registering a custom nutrient does not backfill existing logs and the next
     configureCustomNutrients([{ key, label: 'Registered later', unit: 'mg' }]);
     h.plugin.settings.healthGoals.push({propertyKey:key,kind:'counter'});
     h.service.refreshConfiguration();
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], undefined,
-      'registering and tracking a nutrient does not add historical display data');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key], 24,
+      'calculated logs use the current food definition');
     const next=await h.service.createFoodEntry({id:'registered-later',createdDate:'2026-10-06T12:00:00Z',item:{id:'food',name:'Projection food',source:'custom-note',sourcePath:h.food.path},quantity:1,unit:'serving'});
-    assert.equal((await h.api.resolve(next.file)).frontmatter[key],12);
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key],12);
+    assert.equal((await h.api.resolve(next.file)).frontmatter[key],undefined);
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06')[key],36);
     assert.equal((await h.api.resolve(h.seed.file)).frontmatter[key], undefined, 'configuration discovery does not rewrite notes');
   } finally { h.service.dispose(); configureCustomNutrients([]); }
 });
@@ -1336,15 +1245,15 @@ test('definition deletion and late replacement reproject from the current source
   const h = await createLinkedProjectionHarness();
   try {
     await h.plugin.app.vault.trash(h.food);
-    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 200, 'deletion retains the existing saved log snapshot');
+    assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 0, 'missing definitions cannot leave stale totals');
     const replacement = h.addFrontmatterFile(h.food.path, {
       kind: 'food', servingAmount: 1, servingUnit: 'serving', calories: 300,
     });
     h.emitMetadata('changed', replacement, '', { frontmatter: h.frontmatters.get(replacement) });
-    assert.equal(h.counts.projections, 1, 'a missing previous definition cannot certify equal inputs');
+    assert.equal(h.counts.projections, 2, 'deletion and replacement each invalidate the calculation');
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 300);
     await new Promise(resolve => setTimeout(resolve, 180));
-    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, 200, 'late metadata replacement stays read-only');
+    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, undefined, 'late metadata replacement stays read-only');
     assert.equal(h.updateCalls.length + h.frontmatterCalls.length, 0);
   } finally { h.service.dispose(); }
 });
@@ -1379,7 +1288,7 @@ test('a food log quantity or linked-source edit still reprojects when its defini
     assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories, 150);
     assert.equal(h.service.getFoodUsageEntries()[0].sourcePath, other.path);
     await new Promise(resolve => setTimeout(resolve, 180));
-    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, 200, 'generic metadata never persists its projected values');
+    assert.equal((await h.api.resolve(h.seed.file)).frontmatter.calories, undefined, 'generic metadata never persists its projected values');
     assert.equal(h.updateCalls.length + h.frontmatterCalls.length, 0);
   } finally { h.service.dispose(); }
 });
@@ -1741,8 +1650,8 @@ test('a provider rebuild drops a linked-food definition only when current cached
   h.plugin.getGcmNativeRecordsApi = () => ({ ...h.api });
   h.emitWorkspace('tps:gcm-api-changed', providerEvent(true));
   assert.equal(h.service.foodDefinitionsByPath.has(definition.path), false);
-  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 100,
-    'the logged nutrition snapshot remains until its own current source changes');
+  assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 0,
+    'missing definitions cannot leave stale totals');
   assert.deepEqual(h.readCalls, []);
   assert.deepEqual(h.cachedReadCalls, []);
   assert.deepEqual(h.updateCalls, []);
@@ -1784,9 +1693,10 @@ test('pending metadata follows a rename and a real vault deletion without a new 
 
 test('metadata changes use their saved source when cached frontmatter is absent', async () => {
   const h = createHarness();
+  h.addFrontmatterFile('Lunch source.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:210,proteinG:12});
   const food = await h.service.createFoodEntry({
     id: 'changed-food', createdDate: '2026-09-29T12:00:00.000Z', completedDate: '2026-09-29T12:00:00.000Z',
-    item: { id: 'changed-food', name: 'Lunch', source: 'manual' }, quantity: 1, unit: 'serving',
+    item: { id: 'changed-food', name: 'Lunch', source: 'manual', sourcePath:'Lunch source.md' }, quantity: 1, unit: 'serving',
     nutritionOverride: { calories: 210, proteinG: 12 },
   });
   const activity = await h.service.createActivityEntry({
@@ -2985,8 +2895,7 @@ test('food lifecycle retains exact portions and local days through edits, linked
     h.emitMetadata('changed', definition, '', { frontmatter: next });
     assertDay('2026-09-28', 330);
     h.service.acceptFoodDefinitionCommit(definition, next);
-    await h.service.persistLinkedFoodEntries(definition);
-    assert.equal(h.frontmatters.get(record.file).energyKcal, 330);
+    assert.equal(h.frontmatters.get(record.file).energyKcal, undefined);
     assert.equal(h.frontmatters.get(record.file).quantity, 150);
     h.service.refreshConfiguration();
     assertDay('2026-09-28', 330);
@@ -3008,7 +2917,7 @@ test('food notes arriving before their linked definition converge without reopen
       food: '[[Inbox/late-definition]]', calories: 400,
     });
     h.emitMetadata('changed', entry, '', { frontmatter: h.frontmatters.get(entry) });
-    assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 400);
+    assert.equal(h.service.getDailyFoodTotals('2026-09-29').calories, 0);
     const food = h.addFrontmatterFile('Inbox/late-definition.md', {
       kind: 'food', title: 'Food', servingAmount: 1, servingUnit: 'serving', calories: 210,
     });
@@ -3058,25 +2967,26 @@ test('custom Health kind values and property keys write once and decode to the c
     },
     nativeRecordPropertyAliases: {},
   };
-  const { service, createCalls } = createHarness({ settings, customKinds: true });
+  const { service, createCalls, addFrontmatterFile } = createHarness({ settings, customKinds: true });
+  addFrontmatterFile('Sandwich source.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:410,proteinG:24,carbsG:38,fatG:18});
   const created = await service.createFoodEntry({
     id: 'custom-food-1',
     createdDate: '2026-09-03T12:00:00.000Z',
     completedDate: '2026-09-03T12:05:00.000Z',
-    item: { id: 'sandwich', name: 'Sandwich', source: 'manual' },
+    item: { id: 'sandwich', name: 'Sandwich', source: 'manual', sourcePath:'Sandwich source.md' },
     quantity: 1,
     unit: 'serving',
     nutritionOverride: { calories: 410, proteinG: 24, carbsG: 38, fatG: 18 },
   });
   assert.equal(createCalls[0].kind, 'nutrition-log');
   assert.equal(createCalls[0].properties.loggedAt, '2026-09-03T12:05:00.000Z');
-  assert.equal(createCalls[0].properties.energyKcal, 410);
-  assert.equal(createCalls[0].properties.protein, 24);
+  assert.equal(createCalls[0].properties.energyKcal, undefined);
+  assert.equal(createCalls[0].properties.protein, undefined);
   assert.equal(Object.hasOwn(createCalls[0].properties, 'completedDate'), false);
   assert.equal(Object.hasOwn(createCalls[0].properties, 'calories'), false);
   assert.equal(created.kind, 'food-entry');
   assert.equal(created.frontmatter.completedDate, '2026-09-03T12:05:00.000Z');
-  assert.equal(created.frontmatter.calories, 410);
+  assert.equal(created.frontmatter.calories, undefined);
   assert.deepEqual(service.getDailyFoodTotals('2026-09-03'), {
     entryCount: 1,
     calories: 410,
@@ -3107,11 +3017,12 @@ test('native food and activity records keep typed quantities and indexed daily m
     unit: 'serving',
     nutritionOverride: { calories: 95, proteinG: 0.5, carbsG: 25, fatG: 0.3, fiberG: 4.4, sodiumMg: 2 },
   });
+  addFrontmatterFile('Dinner source.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:600,proteinG:40,carbsG:50,fatG:20,fiberG:7,sodiumMg:800});
   await service.createFoodEntry({
     id: 'food-2',
     createdDate: '2026-08-24T18:00:00.000Z',
     completedDate: '2026-08-24T18:00:00.000Z',
-    item: { id: 'meal', name: 'Dinner', source: 'manual' },
+    item: { id: 'meal', name: 'Dinner', source: 'manual', sourcePath:'Dinner source.md' },
     quantity: 1,
     unit: 'serving',
     nutritionOverride: { calories: 600, proteinG: 40, carbsG: 50, fatG: 20, fiberG: 7, sodiumMg: 800 },
@@ -3247,10 +3158,10 @@ test('a Base quantity edit immediately updates read-only Health totals and prese
   assert.equal(persisted.frontmatter.unit, 'cup');
   assert.equal(Object.hasOwn(persisted.frontmatter, 'amount'), false, 'converted amount remains a derived in-memory value');
   assert.equal(Object.hasOwn(persisted.frontmatter, 'amountUnit'), false);
-  assert.equal(persisted.frontmatter.calories, 100);
-  assert.equal(persisted.frontmatter.proteinG, 15);
-  assert.equal(persisted.frontmatter.carbsG, 11.25);
-  assert.equal(persisted.frontmatter.sodiumMg, 56.25);
+  assert.equal(persisted.frontmatter.calories, undefined);
+  assert.equal(persisted.frontmatter.proteinG, undefined);
+  assert.equal(persisted.frontmatter.carbsG, undefined);
+  assert.equal(persisted.frontmatter.sodiumMg, undefined);
   assert.deepEqual(persisted.frontmatter.tags, authored.tags, 'projection cleanup preserves GCM identity and user tags');
 });
 
@@ -3269,11 +3180,10 @@ test('editing a linked food definition recalculates only its indexed food entrie
   service.indexFile(foodFile, revisedFood);
   assert.equal(service.getDailyFoodTotals('2026-08-25').calories, 420);
   service.acceptFoodDefinitionCommit(foodFile, revisedFood);
-  await service.persistLinkedFoodEntries(foodFile);
   const persisted = await api.resolve(created.file);
-  assert.equal(persisted.frontmatter.calories, 420);
-  assert.equal(persisted.frontmatter.proteinG, 44);
-  assert.equal(persisted.frontmatter.carbsG, 40);
+  assert.equal(persisted.frontmatter.calories, undefined);
+  assert.equal(persisted.frontmatter.proteinG, undefined);
+  assert.equal(persisted.frontmatter.carbsG, undefined);
 });
 
 test('a known Health modify refreshes its cached source before MetadataCache catches up', async () => {
@@ -4059,7 +3969,8 @@ test('whole-note storage is mandatory while legacy import remains explicit and c
 });
 
 test('legacy Health import is deterministic, typed, copy-only, and idempotent', async () => {
-  const { service, addLegacyFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 7 });
+  const { service, addLegacyFile, addFrontmatterFile, contents, files, exerciseDefinitions } = createHarness({ apiVersion: 7 });
+  addFrontmatterFile("Apple.md", {kind:"food", servingAmount:1, servingUnit:"serving", calories:95, proteinG:.5, carbsG:25, fatG:.3});
   const legacy = [
     '- Apple <!-- [type:: foodLog] [food:: Apple] [foodId:: food-old-1] [servings:: 2] [unit:: serving] [cal:: 190] [protein:: 1] [carbs:: 50] [fat:: 0.6] [fiber:: 8.8] [sodium:: 4] [completedDate:: 2026-08-23T12:00:00.000Z] -->',
     '- Walk <!-- [type:: activityLog] [activity:: Walk] [activityType:: walking] [activityId:: activity-old-1] [source:: manual] [durationMinutes:: 30] [startedAt:: 2026-08-23T08:00:00.000Z] [completedDate:: 2026-08-23T08:30:00.000Z] -->',
@@ -4182,8 +4093,10 @@ test('an unloaded service cannot refresh controls when an old mobile read finish
 });
 
 test('food record projection preserves requested order and excludes duplicates and non-food records', async () => {
-  const { service } = createHarness({ apiVersion: 7 });
-  const food = (id, amount) => ({id,createdDate:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:00:00.000Z',item:{id,name:id,source:'manual',nutrition:{calories:amount}},quantity:1,unit:'serving'});
+  const { service, addFrontmatterFile } = createHarness({ apiVersion: 7 });
+  addFrontmatterFile('base-a food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100});
+  addFrontmatterFile('base-b food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:200});
+  const food = (id, amount) => ({id,createdDate:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:00:00.000Z',item:{id,name:id,source:'manual',sourcePath:id+' food.md',nutrition:{calories:amount}},quantity:1,unit:'serving'});
   const a=await service.createFoodEntry(food('base-a',100));
   const b=await service.createFoodEntry(food('base-b',200));
   const activity=await service.createActivityEntry({id:'base-walk',activity:'Walk',activityType:'walking',startedAt:'2026-09-14T12:00:00.000Z',completedDate:'2026-09-14T12:30:00.000Z',durationMinutes:30,source:'manual'});
@@ -4242,21 +4155,20 @@ test('tracked supplement label amounts survive native creation, serving edits, d
   assert.equal(total.vitaminDMcg, 50);
   assert.equal(total.vitaminB12Mcg, 4.8);
   await service.updateDailyFoodEntry(created.file, {...service.getDailyFoodEntries('2026-08-25')[0], quantity: 4, unit: 'capsule'});
-  assert.equal((await api.resolve(created.file)).frontmatter.vitaminB12Mcg, 4.8);
+  assert.equal((await api.resolve(created.file)).frontmatter.vitaminB12Mcg, undefined);
   const definition = { ...frontmatters.get(food) }; delete definition.vitaminDMcg;
   frontmatters.set(food, definition); service.indexFile(food, definition);
   assert.equal(service.getDailyFoodTotals('2026-08-25').vitaminDMcg, undefined);
   service.acceptFoodDefinitionCommit(food, definition);
-  await service.persistLinkedFoodEntries(food);
   assert.equal((await api.resolve(created.file)).frontmatter.vitaminDMcg, undefined);
 });
 
 test('supplement properties honor configured atomic keys and aliases', async () => {
  const { service, createCalls } = createHarness({ settings: { healthGoals:[{propertyKey:'creatineG',kind:'counter'}], nativeRecordProperties: { creatineG: 'creatineDose' }, nativeRecordPropertyAliases: {} } });
  await service.createFoodEntry({ id:'dose-key', createdDate:'2026-08-25T17:20:00.000Z', completedDate:'2026-08-25T17:20:00.000Z', item:{id:'dose',name:'Creatine',source:'manual'}, quantity:1, unit:'serving', nutritionOverride:{creatineG:3} });
- assert.equal(createCalls[0].properties.creatineDose, 3);
+ assert.equal(createCalls[0].properties.creatineDose, undefined);
  assert.equal(createCalls[0].properties.creatineG, undefined);
- assert.equal(service.getDailyFoodTotals('2026-08-25').creatineG, 3);
+ assert.equal(service.getDailyFoodTotals('2026-08-25').creatineG, undefined);
 });
 
 
@@ -4294,16 +4206,14 @@ test('selected custom nutrients persist through native creation, food serving ed
   const {service,api,addFrontmatterFile,frontmatters}=createHarness({settings:{healthGoals:[{propertyKey:key,kind:'counter'}]}});
   const food=addFrontmatterFile('Custom.md',{kind:'food',servingAmount:2,servingUnit:'capsule',[key]:120});
   const record=await service.createFoodEntry({id:'custom-nutrient',nutritionOverride:{[key]:60},createdDate:'2026-08-25T17:20:00Z',completedDate:'2026-08-25T17:20:00Z',item:{id:'food',name:'Custom',source:'custom-note',sourcePath:food.path},quantity:.5,unit:'serving',servingQuantity:1,servingUnit:'capsule'});
-  assert.equal((await api.resolve(record.file)).frontmatter[key],60);
+  assert.equal((await api.resolve(record.file)).frontmatter[key],undefined);
   assert.equal(service.getDailyFoodTotals('2026-08-25')[key],60);
   const edited={...frontmatters.get(food),[key]:140};frontmatters.set(food,edited);service.indexFile(food,edited);
   assert.equal(service.getDailyFoodTotals('2026-08-25')[key],70);
   service.acceptFoodDefinitionCommit(food, edited);
-  await service.persistLinkedFoodEntries(food);
-  assert.equal((await api.resolve(record.file)).frontmatter[key],70);
+  assert.equal((await api.resolve(record.file)).frontmatter[key],undefined);
   delete edited[key];frontmatters.set(food,edited);service.indexFile(food,edited);
   service.acceptFoodDefinitionCommit(food, edited);
-  await service.persistLinkedFoodEntries(food);
   assert.equal((await api.resolve(record.file)).frontmatter[key],undefined);
   assert.equal(service.getDailyFoodTotals('2026-08-25')[key],undefined);
  } finally {configureCustomNutrients([]);}
@@ -4587,7 +4497,7 @@ const freshFoodEntry=()=>({id:'uncommitted-food-id',createdDate:'2026-09-23T12:0
 
 test('food logging uses fresh identity creation and returns the persisted ID and unchanged nutrients',async()=>{
  const h=createHarness();let freshCalls=0;const create=h.api.create;
- h.api.capabilities={freshIdentityCreates:true};
+ h.api.capabilities={initialBodies:true,freshIdentityCreates:true};
  h.api.create=async()=>{throw Error('Must not use the scanning create route');};
  h.api.createFresh=async function(kind,properties,options){
   freshCalls++;assert.equal(Object.hasOwn(options,'id'),false);
@@ -4597,13 +4507,14 @@ test('food logging uses fresh identity creation and returns the persisted ID and
  const entry=freshFoodEntry(),record=await h.service.createFoodEntry(entry);
  assert.equal(freshCalls,1);assert.equal(entry.id,'food-generated-uuid');assert.equal(record.id,entry.id);
  assert.equal(record.frontmatter.quantity,50);assert.equal(record.frontmatter.unit,'g');
- assert.equal(record.frontmatter.calories,100);assert.equal(record.frontmatter.fiberG,2);
- assert.equal(h.service.getDailyFoodTotals('2026-09-23').calories,100);
+ assert.equal(record.frontmatter.calories,undefined);assert.equal(record.frontmatter.fiberG,undefined);
+ assert.equal(h.service.getDailyFoodTotals('2026-09-23').calories,0);
+ assert.match(h.createCalls[0].options.body,/```base/);
 });
 
 test('older GCM retains the existing food ID when the optional fresh-create contract is unavailable',async()=>{
  for(const withCapability of [false,true]){
-  const h=createHarness();h.api.capabilities={freshIdentityCreates:withCapability};
+  const h=createHarness();h.api.capabilities={initialBodies:true,freshIdentityCreates:withCapability};
   const entry=freshFoodEntry();const record=await h.service.createFoodEntry(entry);
   assert.equal(record.id,'uncommitted-food-id');assert.equal(entry.id,record.id);
   assert.equal(h.createCalls[0].options.id,entry.id);
@@ -4612,7 +4523,7 @@ test('older GCM retains the existing food ID when the optional fresh-create cont
 
 test('fresh-create errors never fall through to a second food write',async()=>{
  const h=createHarness();let calls=0;
- h.api.capabilities={freshIdentityCreates:true};h.api.createFresh=async()=>{calls++;throw Error('Storage unavailable');};
+ h.api.capabilities={initialBodies:true,freshIdentityCreates:true};h.api.createFresh=async()=>{calls++;throw Error('Storage unavailable');};
  const entry=freshFoodEntry();
  await assert.rejects(h.service.createFoodEntry(entry),/Storage unavailable/);
  assert.equal(calls,1);assert.equal(h.createCalls.length,0);assert.equal(entry.id,'uncommitted-food-id');
@@ -4623,7 +4534,7 @@ test('new activity uses one fresh GCM identity without a cold vault scan', async
   for (let index = 0; index < 10_000; index++) h.addLegacyFile(`Inbox/unrelated-${index}.md`, 'Body');
   const create = h.api.create;
   let coldScans = 0, freshCalls = 0;
-  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.capabilities = { initialBodies: true, freshIdentityCreates: true };
   h.api.create = async () => { coldScans++; h.plugin.app.vault.getMarkdownFiles(); throw Error('Scanning create must not run'); };
   h.api.createFresh = async function (kind, properties, options) {
     freshCalls++;
@@ -4651,7 +4562,7 @@ test('new activity uses one fresh GCM identity without a cold vault scan', async
 test('activity creation keeps the supplied ID without a complete fresh contract and does not retry failures', async () => {
   for (const capability of [false, true]) {
     const h = createHarness();
-    h.api.capabilities = { freshIdentityCreates: capability };
+    h.api.capabilities = { initialBodies: true, freshIdentityCreates: capability };
     const entry = {
       id: 'legacy-activity-id', activity: 'Walk', activityType: 'walking',
       startedAt: '2026-09-29T12:00:00', completedDate: '2026-09-29T12:30:00',
@@ -4665,7 +4576,7 @@ test('activity creation keeps the supplied ID without a complete fresh contract 
   }
   const h = createHarness();
   let freshCalls = 0;
-  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.capabilities = { initialBodies: true, freshIdentityCreates: true };
   h.api.createFresh = async () => { freshCalls++; throw Error('Storage unavailable'); };
   const entry = {
     id: 'uncommitted-activity-id', activity: 'Walk', activityType: 'walking',
@@ -4712,7 +4623,7 @@ test('new workout bursts use one fresh create each and adopt the persisted ident
   const h = createHarness();
   const create = h.api.create;
   let freshCalls = 0;
-  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.capabilities = { initialBodies: true, freshIdentityCreates: true };
   h.api.create = async () => { throw Error('Unexpected scanning create'); };
   h.api.createFresh = async function (kind, properties, options) {
     assert.equal(this, h.api, 'API receiver is retained');
@@ -4739,7 +4650,7 @@ test('new workout bursts use one fresh create each and adopt the persisted ident
 for (const capability of [undefined, false, true, 'true']) {
   test(`workout creation preserves the legacy ID without the complete fresh contract (${capability})`, async () => {
     const h = createHarness();
-    h.api.capabilities = { freshIdentityCreates: capability };
+    h.api.capabilities = { initialBodies: true, freshIdentityCreates: capability };
     if (capability !== true) h.api.createFresh = () => { throw Error('Unadvertised API must not run'); };
     const record = await h.service.createWorkoutSession({ title: 'Compatible workout' }, 'legacy-workout');
     assert.equal(h.createCalls.length, 1);
@@ -4751,7 +4662,7 @@ for (const capability of [undefined, false, true, 'true']) {
 test('a failed fresh workout write rejects once without publishing an active snapshot or writing again', async () => {
   const h = createHarness();
   let calls = 0;
-  h.api.capabilities = { freshIdentityCreates: true };
+  h.api.capabilities = { initialBodies: true, freshIdentityCreates: true };
   h.api.createFresh = async () => { calls++; throw Error('Storage unavailable'); };
   await assert.rejects(h.service.createWorkoutSession({ title: 'Failed' }, 'uncommitted-workout'), /Storage unavailable/);
   assert.equal(calls, 1);
@@ -5063,20 +4974,20 @@ test('food log creation and edits persist only selected nutrients through config
  const sourceBefore=structuredClone(h.frontmatters.get(food));
  const input={id:'tracked-food',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Tracked food',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'};
  const record=await h.service.createFoodEntry(input);
- assert.equal(h.createCalls[0].properties.energy,100);assert.equal(h.createCalls[0].properties.proteinAmount,10);
+ assert.equal(h.createCalls[0].properties.energy,undefined);assert.equal(h.createCalls[0].properties.proteinAmount,undefined);
  for(const key of ['calories','proteinG','carbsG','fatG','vitaminB12Mcg','b12Dose'])assert.equal(h.createCalls[0].properties[key],undefined,key);
  await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:2,unit:'serving'});
  let saved=(await h.api.resolve(record.file)).frontmatter;
- assert.equal(saved.energy,200);assert.equal(saved.proteinAmount,20);assert.equal(saved.b12Dose,undefined);
+ assert.equal(saved.energy,undefined);assert.equal(saved.proteinAmount,undefined);assert.equal(saved.b12Dose,undefined);
  // Selection is read at each owning mutation, not captured by discovery or a menu definition.
  h.plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
  await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],quantity:3,unit:'serving'});
  saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.b12Dose,undefined,'enabling a nutrient cannot backfill the previous log');
  const future=await h.service.createFoodEntry({...input,id:'future-tracked-food',quantity:3});
- saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,7.2);assert.equal(saved.vitaminB12Mcg,undefined);
+ saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,undefined);assert.equal(saved.vitaminB12Mcg,undefined);
  h.plugin.settings.healthGoals=h.plugin.settings.healthGoals.filter(g=>g.propertyKey!=='vitaminB12Mcg');
  await h.service.updateDailyFoodEntry(future.file,{...h.service.getDailyFoodEntries('2026-08-25').find(entry=>entry.id===future.id),quantity:4,unit:'serving'});
- saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,7.2,'historical unselected data is not silently deleted or rewritten');
+ saved=(await h.api.resolve(future.file)).frontmatter;assert.equal(saved.b12Dose,undefined,'historical unselected data is not silently deleted or rewritten');
  assert.deepEqual(h.frontmatters.get(food),sourceBefore,'logging never strips the reusable food definition');
  assert.deepEqual(h.readCalls,[]);h.service.dispose();
 });
@@ -5087,23 +4998,22 @@ test('an untracked-only food definition edit performs no linked log mutation',as
  const record=await h.service.createFoodEntry({id:'selection',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Food selection',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'});
  const before=h.contents.get(record.path);h.frontmatterCalls.length=0;h.updateCalls.length=0;
  const next={...h.frontmatters.get(food),vitaminB12Mcg:4.8};h.frontmatters.set(food,next);h.service.acceptFoodDefinitionCommit(food,next);
- await h.service.persistLinkedFoodEntries(food);
  assert.deepEqual(h.frontmatterCalls,[]);assert.deepEqual(h.updateCalls,[]);assert.equal(h.contents.get(record.path),before);
- assert.equal(h.service.getDailyFoodTotals('2026-08-25').vitaminB12Mcg,undefined,'read-only display cannot introduce a nutrient absent from the saved log');
+ assert.equal(h.service.getDailyFoodTotals('2026-08-25').vitaminB12Mcg,4.8,'calculated values come from the definition without note writes');
  h.service.dispose();
 });
 
-test('unlinked food edits honor selected zeroes and leave existing untracked data and content alone',async()=>{
+test('consumption edits cannot inject nutrients into an unlinked legacy log',async()=>{
  const h=createHarness({settings:{healthGoals:[{propertyKey:'fiber',kind:'counter'}]}});
  const record=await h.service.createFoodEntry({id:'unlinked-selection',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Unlinked food',source:'manual'},quantity:1,unit:'serving',nutritionOverride:{fiberG:0,vitaminB12Mcg:2.4,calories:100}});
- assert.equal(h.createCalls[0].properties.fiberG,0);assert.equal(h.createCalls[0].properties.calories,undefined);assert.equal(h.createCalls[0].properties.vitaminB12Mcg,undefined);
+ assert.equal(h.createCalls[0].properties.fiberG,undefined);assert.equal(h.createCalls[0].properties.calories,undefined);assert.equal(h.createCalls[0].properties.vitaminB12Mcg,undefined);
  await h.service.updateDailyFoodEntry(record.file,{...h.service.getDailyFoodEntries('2026-08-25')[0],fiberG:3,vitaminB12Mcg:5});
- const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.fiberG,3);assert.equal(saved.vitaminB12Mcg,undefined);
+ const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.fiberG,undefined);assert.equal(saved.vitaminB12Mcg,undefined);
  h.service.dispose();
 });
 
 
-test('newly tracked definition nutrients apply to future logs without display or persisted backfill',async()=>{
+test('definition nutrients update all linked calculations without persisted backfill',async()=>{
  const h=createHarness({settings:{healthGoals:[{propertyKey:'consumedCalories',kind:'counter'}],nativeRecordProperties:{calories:'energy',vitaminB12Mcg:'b12Dose'}}});
  try{
   const food=h.addFrontmatterFile('Future nutrient food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100});
@@ -5115,42 +5025,23 @@ test('newly tracked definition nutrients apply to future logs without display or
   h.plugin.settings.healthGoals.push({propertyKey:'vitaminB12Mcg',kind:'counter'});
   const changed={...h.frontmatters.get(food),vitaminB12Mcg:2.4};h.frontmatters.set(food,changed);
   for(let event=0;event<20;event++)h.service.acceptFoodDefinitionCommit(food,{...changed});
-  assert.equal(h.service.getDailyFoodEntries('2026-10-17').find(x=>x.id===old.id).vitaminB12Mcg,undefined,'old logs must not acquire unsaved nutrients through display projection');
-  await h.service.persistLinkedFoodEntries(food);
+  assert.equal(h.service.getDailyFoodEntries('2026-10-17').find(x=>x.id===old.id).vitaminB12Mcg,2.4,'display reads the definition');
   assert.equal(h.contents.get(old.path),before,'adding a selected nutrient cannot rewrite historical logs');
   assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0,'a new nutrient alone must skip the existing write queue');
   assert.deepEqual(h.readCalls,[],'no authoritative reads for historical backfill');
   assert.equal(scans,0,'definition event bursts do not enumerate the vault');
   const next=await h.service.createFoodEntry(make('new-nutrient-log'));
-  assert.equal((await h.api.resolve(next.file)).frontmatter.b12Dose,2.4);
+  assert.equal((await h.api.resolve(next.file)).frontmatter.b12Dose,undefined);
   h.service.refreshConfiguration();
   let rows=h.service.getDailyFoodEntries('2026-10-17');
-  assert.equal(rows.find(x=>x.id===old.id).vitaminB12Mcg,undefined,'reload must not visually backfill');
+  assert.equal(rows.find(x=>x.id===old.id).vitaminB12Mcg,2.4,'reload calculates from the food');
   assert.equal(rows.find(x=>x.id===next.id).vitaminB12Mcg,2.4);
-  assert.equal(h.service.getDailyFoodTotals('2026-10-17').vitaminB12Mcg,2.4,'only the future log contributes the added nutrient');
+  assert.equal(h.service.getDailyFoodTotals('2026-10-17').vitaminB12Mcg,4.8,'both logs calculate from the current food');
   await h.service.updateDailyFoodEntry(old.file,{...rows.find(x=>x.id===old.id),quantity:2});
   const edited=(await h.api.resolve(old.file)).frontmatter;
-  assert.equal(edited.energy,200);assert.equal(edited.b12Dose,undefined,'portion changes recalculate the original nutrient set');
+  assert.equal(edited.energy,undefined);assert.equal(edited.b12Dose,undefined,'portion changes never store calculated nutrients');
  }finally{h.service.dispose();}
 });
-
-test('linked definition updates recheck nutrient membership against current source at the atomic boundary',async()=>{
- const h=createHarness({settings:{healthGoals:[{propertyKey:'consumedCalories',kind:'counter'},{propertyKey:'vitaminB12Mcg',kind:'counter'}]}});
- try{
-  const food=h.addFrontmatterFile('Concurrent nutrient food.md',{kind:'food',servingAmount:1,servingUnit:'serving',calories:100,vitaminB12Mcg:2.4});
-  const old=await h.service.createFoodEntry({id:'concurrent-nutrient-log',createdDate:'2026-10-17T12:00:00Z',item:{id:'f',name:'Concurrent nutrient food',source:'custom-note',sourcePath:food.path},quantity:1,unit:'serving'});
-  const process=h.plugin.app.fileManager.processFrontMatter;
-  h.plugin.app.fileManager.processFrontMatter=async(file,mutate)=>{
-   const current={...h.frontmatters.get(file),userField:'concurrent edit'};delete current.vitaminB12Mcg;
-   h.frontmatters.set(file,current);return process(file,mutate);
-  };
-  const changed={...h.frontmatters.get(food),calories:200,vitaminB12Mcg:4.8};h.frontmatters.set(food,changed);h.service.acceptFoodDefinitionCommit(food,changed);
-  await h.service.persistLinkedFoodEntries(food);
-  const saved=(await h.api.resolve(old.file)).frontmatter;
-  assert.equal(saved.calories,200);assert.equal(saved.vitaminB12Mcg,undefined,'a concurrent removal cannot be restored from the old projection');assert.equal(saved.userField,'concurrent edit');
- }finally{h.service.dispose();}
-});
-
 
 test('a read-only definition gap does not forget a previously recorded nutrient',async()=>{
  const h=await createLinkedProjectionHarness(1,{vitaminB12Mcg:2.4},['vitaminB12Mcg']);
@@ -5158,7 +5049,7 @@ test('a read-only definition gap does not forget a previously recorded nutrient'
   const original=h.contents.get(h.seed.path),missing={...h.frontmatters.get(h.food)};delete missing.vitaminB12Mcg;
   h.notifyDefinition(missing);assert.equal(h.service.getDailyFoodTotals('2026-10-06').vitaminB12Mcg,undefined);
   h.notifyDefinition({...missing,vitaminB12Mcg:6});
-  assert.equal(h.service.getDailyFoodTotals('2026-10-06').vitaminB12Mcg,6,'the stored log still records this nutrient');
+  assert.equal(h.service.getDailyFoodTotals('2026-10-06').vitaminB12Mcg,6,'a restored definition value is calculated again');
   assert.equal(h.contents.get(h.seed.path),original);assert.equal(h.frontmatterCalls.length+h.updateCalls.length,0);assert.deepEqual(h.readCalls,[]);
  }finally{h.service.dispose();}
 });
@@ -5168,7 +5059,7 @@ test('a read-only definition gap does not forget a previously recorded nutrient'
  try {
  const food=h.addFrontmatterFile('Sourced beer.md',{kind:'food',servingAmount:12,servingUnit:'fl oz',servingMl:354.9,calories:95,proteinG:.6,carbsG:2.6,fatG:0,alcoholG:11.8});
  const record=await h.service.createFoodEntry({id:'known-beer',createdDate:'2026-08-25T17:20:00Z',item:{id:'f',name:'Sourced beer',source:'custom-note',sourcePath:food.path},quantity:2,unit:'serving'});
- const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.calories,190);assert.equal(saved.fatG,0);assert.equal(saved.fiberG,undefined);assert.equal(saved.sodiumMg,undefined);assert.equal(saved.sugarAlcoholG,undefined);
+ const saved=(await h.api.resolve(record.file)).frontmatter;assert.equal(saved.calories,undefined);assert.equal(saved.fatG,undefined);assert.equal(saved.fiberG,undefined);assert.equal(saved.sodiumMg,undefined);assert.equal(saved.sugarAlcoholG,undefined);
  h.service.refreshConfiguration();const row=h.service.getDailyFoodEntries('2026-08-25').find(x=>x.id===record.id);assert.equal(row.calories,190);assert.equal((await h.api.resolve(record.file)).frontmatter.fiberG,undefined);
  }finally{h.service.dispose();}
  });
@@ -5211,6 +5102,15 @@ test('reload projects linked food before goal discovery without consulting mutat
   assert.equal(h.service.getDailyFoodTotals('2026-10-06').calories,200);
   assert.deepEqual(h.updateCalls,[]);assert.deepEqual(h.cachedReadCalls,[]);
   // Explicit persistence keeps the guard; changing only a target never writes logs.
-  await assert.rejects(h.service.persistLinkedFoodEntries(food),/mutation readiness/);
  } finally {h.service.dispose();}
+});
+
+
+test('legacy food import refuses missing definitions instead of discarding recorded nutrients', async () => {
+ const h=createHarness({apiVersion:7});
+ const source='- Apple [type:: foodLog] [food:: Missing] [foodId:: old-food] [servings:: 2] [cal:: 190]';
+ h.addLegacyFile('Inbox/Old.md',source);
+ const result=await h.service.importLegacyRecords();
+ assert.equal(result.created,0);assert.equal(result.failed,1);
+ assert.equal(h.contents.get('Inbox/Old.md'),source);assert.equal(h.createCalls.length,0);
 });

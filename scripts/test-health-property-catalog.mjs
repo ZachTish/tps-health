@@ -146,11 +146,12 @@ test('catalog scopes configurable Health fields to configurable native kind valu
     nativeRecordProperties: { food: 'foodRef', calories: 'energyKcal', status: 'trainingStatus' },
   });
   const food = catalog.nativeRecords.find((property) => property.id === 'food-link');
-  const calories = catalog.nativeRecords.find((property) => property.id === 'record-calories');
+  assert.equal(catalog.nativeRecords.some(property => property.id === 'record-calories'), false);
+  const calories = catalog.nativeRecords.find((property) => property.id === 'food-quantity');
   const status = catalog.nativeRecords.find((property) => property.id === 'record-status');
   assert.equal(food.key, 'foodRef');
   assert.deepEqual(food.scope.kinds, ['nutrition-log']);
-  assert.equal(calories.key, 'energyKcal');
+  assert.equal(calories.key, 'quantity');
   assert.deepEqual(calories.scope.kinds, ['nutrition-log']);
   assert.equal(status.key, 'trainingStatus');
   assert.deepEqual(status.scope.kinds, ['training-session']);

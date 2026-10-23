@@ -1,3 +1,4 @@
+import { foodLogBody } from './food-log-presentation';
 import { HealthGoalNotes } from "./goal-notes";
 import { migrateWorkoutTiming } from './workout-timing-migration';
 import { foodEntryPortion } from "./food-serving";
@@ -49,7 +50,7 @@ interface RawNativeRecordHandle extends Omit<NativeRecordHandle, 'kind'> {
 
 interface NativeRecordsApi {
   version: number;
-  capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean; updateFromSource?: boolean };
+  capabilities?: { customKinds?: boolean; freshIdentityCreates?: boolean; updateFromSource?: boolean; initialBodies?: boolean };
   isEnabled(): boolean;
   getStorageProfile?(kind?: string): unknown;
   getKindPropertyKeys?(): unknown;
@@ -867,7 +868,7 @@ function foodProjectionInputsUnchanged(
 /**
  * Derive a native food-entry's nutrition from its linked food definition and
  * authored consumption amount. The entry never owns an independent macro
- * value; persisted macro fields are only Base-compatible projections.
+ * value; calculation is a read-only index projection, never a note write.
  */
 export function deriveNativeFoodEntryProjection(
   entry: Record<string, unknown>,
@@ -877,9 +878,8 @@ export function deriveNativeFoodEntryProjection(
   if (!portion) return null;
   const { servings, amount, amountUnit } = portion;
   const nutrition = Object.fromEntries(CORE_NUTRIENT_KEYS.flatMap(key => {
-    const value = food[key];
-    return value == null || String(value).trim() === '' || !Number.isFinite(Number(value))
-      ? [] : [[key, stableNumber(Number(value) * servings)]];
+    const value = nutritionNumber(food[key]);
+    return value == null ? [] : [[key, stableNumber(value * servings)]];
   })) as NativeFoodEntryProjection['nutrition'];
   Object.assign(nutrition, extraNutrition(food, servings));
   return {
@@ -1060,6 +1060,7 @@ export class HealthNativeRecordService {
         this.pendingMetadataPaths.delete(file.path);
         const hadPendingRead = this.refreshGenerations.delete(file.path);
         this.foodDefinitionsByPath.delete(file.path);
+        this.refreshLinkedFoodEntries(file.path);
         this.workoutDataByPath.delete(file.path);
         this.removePath(file.path);
         this.notifyDailyIndexStatusChanged(previousStatus);
@@ -1238,9 +1239,8 @@ export class HealthNativeRecordService {
   }
 
   private foodLogWriteProperties(properties: Record<string, unknown>): Record<string, unknown> {
-    const tracked = trackedFoodNutrientKeys(this.plugin.getHealthGoals?.(true) ?? this.plugin.settings.healthGoals ?? []);
     const nutrients = new Set<string>(foodNutritionKeys());
-    return Object.fromEntries(Object.entries(properties).filter(([key]) => !nutrients.has(key) || tracked.has(key)));
+    return Object.fromEntries(Object.entries(properties).filter(([key]) => !nutrients.has(key)));
   }
 
   private async updateRecord(
@@ -1301,7 +1301,6 @@ export class HealthNativeRecordService {
   }
 
   async createFoodEntry(entry: FoodLogEntry): Promise<NativeRecordHandle> {
-    const nutrition = entry.nutritionOverride || entry.item.nutrition || {};
     const authoredQuantity = positiveNumber(entry.servingQuantity, entry.quantity);
     const authoredUnit = String(entry.servingUnit || entry.unit || 'serving').trim() || 'serving';
     const properties = compactRecordProperties({
@@ -1311,13 +1310,12 @@ export class HealthNativeRecordService {
       food: this.recordLink(entry.item.sourcePath),
       quantity: authoredQuantity,
       unit: authoredUnit,
-      ...foodNutritionStorageValues(nutrition),
       note: entry.note,
     });
-    const projected = this.projectFoodEntry(properties, entry.item.sourcePath || '', true);
-    if (projected) Object.assign(properties, foodNutritionStorageValues(projected.frontmatter, true));
     const api = this.requireApi();
+    if (!api.capabilities?.initialBodies) throw new Error('Update TPS GCM to 11.4.0 or newer before logging food.');
     const record = await this.createRecord('food-entry', compactRecordProperties(properties), {
+      body: foodLogBody(this.plugin.settings, this.plugin.getHealthGoals?.(true) ?? this.plugin.settings.healthGoals ?? []),
       id: entry.id,
       now: new Date(entry.createdDate),
       fileName: Number(api.version) >= 3 ? buildNativeHealthRecordFileName('food-entry', properties) : undefined,
@@ -2160,24 +2158,11 @@ export class HealthNativeRecordService {
       throw new Error('Food log title, consumed time, quantity, and unit are required.');
     }
     const linkedFood = Boolean(foodReference(current.frontmatter));
-    const nutritionUpdates = linkedFood ? {} : {
-      calories: nonNegativeNumber(patch.calories),
-      proteinG: nonNegativeNumber(patch.proteinG),
-      carbsG: nonNegativeNumber(patch.carbsG),
-      fatG: nonNegativeNumber(patch.fatG),
-      fiberG: nonNegativeNumber(patch.fiberG),
-      sugarG: nonNegativeNumber(patch.sugarG),
-      sugarAlcoholG: nonNegativeNumber(patch.sugarAlcoholG),
-      alcoholG: nonNegativeNumber(patch.alcoholG),
-      sodiumMg: nonNegativeNumber(patch.sodiumMg),
-      ...extraNutrition(patch),
-    };
     const updates = {
       title,
       completedDate,
       quantity: patch.quantity,
       unit,
-      ...nutritionUpdates,
       note: String(patch.note || '').trim() || null,
     };
     const updated = linkedFood
@@ -2491,6 +2476,10 @@ export class HealthNativeRecordService {
             }))
             .filter((exercise) => Boolean(exercise.name));
           importedWorkoutExercises = await this.ensureWorkoutExerciseDefinitionPaths(exercises, resolveDefinition);
+        }
+        if (candidate.kind === 'food-entry') {
+          const food = this.foodDefinitionForEntry(properties, candidate.sourcePath);
+          if (!food || !foodEntryPortion(properties, food.frontmatter)) throw new Error('Legacy food log needs a linked food definition and valid portion; original line preserved.');
         }
         const minimalProperties = minimalNativeRecordProperties(candidate.kind, properties);
         const persistedProperties = candidate.kind === 'workout-session'
@@ -3109,7 +3098,10 @@ export class HealthNativeRecordService {
         const inputsUnchanged = foodProjectionInputsUnchanged(this.foodDefinitionsByPath.get(file.path), resolved);
         this.foodDefinitionsByPath.set(file.path, { ...resolved });
         this.refreshLinkedFoodEntries(file.path, inputsUnchanged);
-      } else this.foodDefinitionsByPath.delete(file.path);
+      } else {
+        this.foodDefinitionsByPath.delete(file.path);
+        this.refreshLinkedFoodEntries(file.path);
+      }
       if (previous) this.emitChange(file.path, previous, null);
       if (previousFoodPath && !this.entryPathsByFoodPath.has(previousFoodPath)) this.foodDefinitionsByPath.delete(previousFoodPath);
       return;
@@ -3294,43 +3286,18 @@ export class HealthNativeRecordService {
     return { path: foodPath, frontmatter: copy };
   }
 
-  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string, newEntry = false, forPersistence = false): {
+  private projectFoodEntry(frontmatter: Record<string, unknown>, sourcePath: string): {
     frontmatter: Record<string, unknown>;
-    needsPersist: boolean;
   } | null {
+    // Legacy estimates without a food link remain readable. Once linked, the
+    // definition is authoritative even when it or a nutrient is missing.
+    if (!foodReference(frontmatter)) return null;
     const food = this.foodDefinitionForEntry(frontmatter, sourcePath);
-    if (!food) return null;
-    const projection = deriveNativeFoodEntryProjection(frontmatter, food.frontmatter);
-    if (!projection) return null;
-    // Existing logs retain their recorded nutrient set. New tracking choices
-    // apply when creating the next log, never by filling historical gaps.
-    const nutritionUpdates = Object.fromEntries(Object.entries(foodNutritionStorageValues(projection.nutrition, true))
-      .filter(([key]) => newEntry || Object.prototype.hasOwnProperty.call(frontmatter, key)));
-    const updates: Record<string, unknown> = {
-      ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
-      ...nutritionUpdates,
-    };
-    // Read projections must not depend on goal-index readiness (or goal validity).
-    // Existing logs retain their recorded fields; the actual create/edit boundary
-    // below still applies current tracked nutrients and its readiness guard.
-    const persistedKeys = newEntry || forPersistence ? this.foodLogWriteProperties(updates) : updates;
+    const projection = food ? deriveNativeFoodEntryProjection(frontmatter, food.frontmatter) : null;
     const next = { ...frontmatter };
-    let needsPersist = false;
-    for (const [key, value] of Object.entries(updates)) {
-      if (value == null) {
-        if (Object.prototype.hasOwnProperty.call(next, key)) {
-          // Retain membership in the read-only projection until a source save
-          // actually removes it; temporary definition gaps cannot erase history.
-          if (Object.prototype.hasOwnProperty.call(nutritionUpdates, key)) next[key] = undefined;
-          else delete next[key];
-          if (Object.prototype.hasOwnProperty.call(persistedKeys, key)) needsPersist = true;
-        }
-        continue;
-      }
-      if (next[key] !== value && Object.prototype.hasOwnProperty.call(persistedKeys, key)) needsPersist = true;
-      next[key] = value;
-    }
-    return { frontmatter: next, needsPersist };
+    for (const key of [...foodNutritionKeys(), ...REDUNDANT_FOOD_ENTRY_KEYS]) delete next[key];
+    if (projection) Object.assign(next, foodNutritionStorageValues(projection.nutrition));
+    return { frontmatter: next };
   }
 
   private refreshLinkedFoodEntries(foodPath: string, inputsUnchanged = false): void {
@@ -3372,56 +3339,23 @@ export class HealthNativeRecordService {
     this.refreshLinkedFoodEntries(food.path, unchanged);
   }
 
-  /** Explicit definition edits own persistence; discovery and metadata only project display values. */
-  async persistLinkedFoodEntries(food: TFile): Promise<void> {
-    await this.waitForFullDiscovery();
-    if (!this.isEnabled()) return;
-    for (const path of [...(this.entryPathsByFoodPath.get(food.path) || [])]) {
-      const entry = this.recordsByPath.get(path);
-      if (!entry || entry.kind !== 'food-entry' || entry.frontmatter.archived === true) continue;
-      // Cached preflight only rejects work. Native GCM rechecks identity,
-      // exclusions and current source in its existing atomic write owner.
-      const raw = this.plugin.app.metadataCache.getFileCache(entry.file)?.frontmatter;
-      const inspected = this.readApi()?.inspect(raw);
-      if (!inspected || inspected.id !== entry.id || canonicalNativeKind(this.plugin.settings, inspected.kind) !== 'food-entry') continue;
-      const current = decodeNativeRecordFrontmatter(this.plugin.settings, inspected.frontmatter);
-      if (this.resolveFoodSourcePath(foodReference(current), path) !== food.path
-        || current.archived === true || !this.projectFoodEntry(current, path, false, true)?.needsPersist) continue;
-      await this.processFoodEntry(entry, {}, food.path);
-    }
-  }
-
   private async processFoodEntry(
     entry: NativeRecordHandle | IndexedHealthRecord,
     updates: Record<string, unknown>,
-    expectedFoodPath?: string,
   ): Promise<NativeRecordHandle | null> {
     const api = this.requireApi();
     if (api.capabilities?.updateFromSource !== true || typeof api.updateFromSource !== 'function') {
-      throw new Error('Update TPS GCM to a build with nativeRecords.updateFromSource before saving linked food nutrition.');
+      throw new Error('Update TPS GCM to a build with nativeRecords.updateFromSource before editing a food log.');
     }
-    const nutritionKeys = encodeNativeRecordProperties(this.plugin.settings, {
-      ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
-      ...Object.fromEntries(foodNutritionKeys().map(key => [key, null])),
-      ...updates,
-    });
+    const keys = encodeNativeRecordProperties(this.plugin.settings, this.foodLogWriteProperties(updates));
     const updated = this.canonicalHandle(await api.updateFromSource({path: entry.file.path, id: entry.id},
-      Object.keys(nutritionKeys), (frontmatter) => {
+      Object.keys(keys), (frontmatter) => {
         if (!this.isEnabled()) return null;
         const current = decodeNativeRecordFrontmatter(this.plugin.settings, frontmatter);
         if (String(current.id || '') !== entry.id || canonicalNativeKind(this.plugin.settings, current.kind) !== 'food-entry') return null;
         if (current.archived === true) return null;
-        if (expectedFoodPath && this.resolveFoodSourcePath(foodReference(current), entry.file.path) !== expectedFoodPath) return null;
-        const projected = this.projectFoodEntry({ ...current, ...updates }, entry.file.path);
-        return encodeNativeRecordProperties(this.plugin.settings, this.foodLogWriteProperties({
-          ...updates,
-          ...(projected ? {
-            ...clearProperties(REDUNDANT_FOOD_ENTRY_KEYS),
-            ...foodNutritionStorageValues(projected.frontmatter, true),
-          } : {}),
-        }));
-      }, {kind: expectedFoodPath ? 'automation' : 'user', sourcePluginId: this.plugin.manifest.id,
-        surface: expectedFoodPath ? 'health-food-definition-edit' : 'health-daily-food-edit'}));
+        return encodeNativeRecordProperties(this.plugin.settings, this.foodLogWriteProperties(updates));
+      }, {kind: 'user', sourcePluginId: this.plugin.manifest.id, surface: 'health-daily-food-edit'}));
     if (updated) this.trackHandle(updated);
     return updated;
   }

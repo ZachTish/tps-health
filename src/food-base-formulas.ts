@@ -18,7 +18,8 @@ const factor = (value: string) => `if(["oz", "ounce", "ounces"].contains(${value
  * Keep conversions aligned with native-records foodEntryPortion. An explicit
  * g/ml label overrides stale auxiliary serving weights; never infer density.
  */
-export function foodPortionBaseFormulas(settings: TPSHealthSettings): Record<string, string> {
+export function foodPortionBaseFormulas(settings: TPSHealthSettings, embedded = false): Record<string, string> {
+  const field = (key: string) => `${embedded ? 'this' : 'note'}[${quote(key)}]`;
   const food = field(configuredNativePropertyKey(settings, 'food'));
   const quantity = field(configuredNativePropertyKey(settings, 'quantity'));
   const consumedUnit = field(configuredNativePropertyKey(settings, 'unit'));
@@ -29,25 +30,26 @@ export function foodPortionBaseFormulas(settings: TPSHealthSettings): Record<str
   const directMetric = `(["g", "gram", "grams", "ml", "milliliter", "milliliters"].contains(${s}) && ${positive(amount)})`;
   const sameUnit = `(${u} == ${s} || ${singular(u)} == ${singular(s)})`;
   return {
-    healthFood: `if(${food}.isEmpty(), null, if(${food}.isType("link"), ${food}.asFile(), if(${food}.isType("string"), link(${food}).asFile(), null)))`,
+    healthFood: embedded ? "file" : `if(${food}.isEmpty(), null, if(${food}.isType("link"), ${food}.asFile(), if(${food}.isType("string"), link(${food}).asFile(), null)))`,
     healthUnit: unit(consumedUnit),
     healthServingUnit: unit(`${source}.servingUnit`),
     healthServingSize: `if(${positive(amount)}, number(${amount}), 1)`,
     healthMetricUnit: `if(${directMetric}, if(${grams(s)}, "g", "ml"), if(${positive(`${source}.servingGrams`)}, "g", if(${positive(`${source}.servingMl`)}, "ml", if(${grams(s)}, "g", if(${milliliters(s)}, "ml", null)))))`,
     healthMetricSize: `if(${directMetric}, number(${amount}), if(${positive(`${source}.servingGrams`)}, number(${source}.servingGrams), if(${positive(`${source}.servingMl`)}, number(${source}.servingMl), formula.healthServingSize * ${factor(s)})))`,
     healthServings: `if(formula.healthFood == null || !(${valid(quantity)}), null, if(${sameUnit}, number(${quantity}) / formula.healthServingSize, if(${u} == "serving", number(${quantity}), if((${grams(u)} && ${metricUnit} == "g") || (${milliliters(u)} && ${metricUnit} == "ml"), number(${quantity}) * ${factor(u)} / ${metricSize}, null))))`,
-    healthPortionStatus: `if(!healthGoal.isEmpty(), "", if(${food}.isEmpty(), "Saved totals — link a food to scale", if(formula.healthFood == null, "Missing food — saved totals", if(formula.healthServings == null, "Check amount or unit", "Calculated"))))`,
+    healthPortionStatus: `if(!healthGoal.isEmpty(), "", if(${food}.isEmpty(), "Link a food", if(formula.healthFood == null, "Missing food", if(formula.healthServings == null, "Check amount or unit", "Calculated"))))`,
   };
 }
 
-/** Saved amounts are used only when there is no usable source, and the status
+/** Saved amounts are used only for legacy unlinked logs, and the status
  * column makes that exception visible. Invalid portions and unknown nutrients
- * stay unknown. Existing logs never acquire newly tracked nutrient fields.
+ * stay unknown. No nutrient is stored on a new log. Legacy unlinked estimates remain readable.
  */
-export function foodNutrientBaseFormula(settings: TPSHealthSettings, nutrient: string): string {
+export function foodNutrientBaseFormula(settings: TPSHealthSettings, nutrient: string, embedded = false): string {
   const stored = field(configuredNativePropertyKey(settings, nutrient as any));
+  const linked = field(configuredNativePropertyKey(settings, 'food'));
   const source = `formula.healthFood.properties[${quote(nutrient)}]`;
-  return `if(formula.healthFood == null, if(${valid(stored)}, number(${stored}), "Unknown"), if(${stored} != null && formula.healthServings != null && ${valid(source)}, (number(${source}) * formula.healthServings).round(6), "Unknown"))`;
+  return `if(formula.healthFood == null, ${embedded ? '"Unknown"' : `if(${linked}.isEmpty() && ${valid(stored)}, number(${stored}), "Unknown")`}, if(formula.healthServings != null && ${valid(source)}, (number(${source}) * formula.healthServings).round(6), "Unknown"))`;
 }
 
 export function foodPortionBaseProperties(settings: TPSHealthSettings): Record<string, {displayName: string}> {
