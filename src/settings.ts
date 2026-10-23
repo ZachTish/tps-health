@@ -1,3 +1,5 @@
+import { nativeSettingsSearch, focusSettingsSearchResult, type SettingsSearchEntry } from "./native-settings-search";
+import { SETTINGS_SEARCH_ENTRIES, SETTINGS_SEARCH_ROUTES } from "./settings-search-catalog";
 import type { HealthMappingScope } from "./health-mapping";
 import { changeHealthMapping } from "./health-mapping-migration";
 import { renderEnergySettings } from "./energy-settings";
@@ -87,6 +89,44 @@ class HealthFolderSuggestModal extends FuzzySuggestModal<TFolder> {
 }
 
 export class TPSHealthSettingTab extends PluginSettingTab {
+  private searchContentEl: HTMLElement | null = null;
+  private get settingsContentEl(): HTMLElement {
+    return this.searchContentEl?.isConnected ? this.searchContentEl : this.containerEl;
+  }
+
+  getSettingDefinitions() {
+    const nutrientFields: SettingsSearchEntry[] = EXTRA_NUTRIENTS.map(nutrient => ({
+      name: `${nutrient.label} (${nutrient.unit})`, desc: 'Health property name mapping.',
+      aliases: [nutrient.key], key: nutrient.key, route: 'integrations',
+    }));
+    return nativeSettingsSearch([...SETTINGS_SEARCH_ENTRIES, ...nutrientFields], SETTINGS_SEARCH_ROUTES,
+      container => {
+        this.searchContentEl = container;
+        this.display();
+        return () => { this.hide(); if (this.searchContentEl === container) this.searchContentEl = null; };
+      }, entry => this.openSearchResult(entry));
+  }
+
+  private openSearchResult(entry: SettingsSearchEntry): void {
+    this.activeSettingsPage = entry.route as HealthSettingsPage;
+    if (entry.key && entry.key in DEFAULT_HEALTH_NATIVE_RECORD_PROPERTIES) {
+      this.activeNativePropertyKey = entry.key as HealthNativeRecordPropertyKey;
+      this.disclosureState.set('native-frontmatter', true);
+    }
+    const manager = (this.app as App & { setting?: { openTabById?: (id: string) => void } }).setting;
+    manager?.openTabById?.(this.plugin.manifest.id);
+    this.display();
+    if (!focusSettingsSearchResult(this.settingsContentEl, entry.name)) {
+      const message = this.settingsContentEl.createDiv({
+        text: `“${entry.name}” is in this area. Its control appears when the relevant feature or saved item is selected.`,
+        attr: { role: 'status', tabindex: '-1' },
+      });
+      this.settingsContentEl.prepend(message);
+      message.focus();
+      message.scrollIntoView({ block: 'start' });
+    }
+  }
+
   plugin: TPSHealthPlugin;
   private activeSettingsPage: HealthSettingsPage = "daily";
   private activeNativePropertyKey: HealthNativeRecordPropertyKey = "completedDate";
@@ -100,7 +140,7 @@ export class TPSHealthSettingTab extends PluginSettingTab {
 
   display(): void {
     this.hide();
-    const { containerEl } = this;
+    const containerEl = this.settingsContentEl;
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Health" });
 
@@ -188,10 +228,10 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.display();
     this.containerEl.scrollTop = 0;
     window.requestAnimationFrame(() => {
-      this.containerEl
+      this.settingsContentEl
         .querySelector<HTMLElement>('button.tps-health-settings-route-button[aria-pressed="true"]')
         ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-      const pageTitle = this.containerEl.querySelector<HTMLElement>(".tps-health-settings-page-title");
+      const pageTitle = this.settingsContentEl.querySelector<HTMLElement>(".tps-health-settings-page-title");
       pageTitle?.focus({ preventScroll: true });
       pageTitle?.scrollIntoView({ block: "start" });
     });
@@ -203,9 +243,9 @@ export class TPSHealthSettingTab extends PluginSettingTab {
     this.containerEl.scrollTop = scrollTop;
     const fallbackSelector = `.tps-health-settings-route-button[data-tps-health-settings-route="${this.activeSettingsPage}"]`;
     const focusTarget = focusSelector
-      ? this.containerEl.querySelector<HTMLElement>(focusSelector)
+      ? this.settingsContentEl.querySelector<HTMLElement>(focusSelector)
       : null;
-    (focusTarget ?? this.containerEl.querySelector<HTMLElement>(fallbackSelector))
+    (focusTarget ?? this.settingsContentEl.querySelector<HTMLElement>(fallbackSelector))
       ?.focus({ preventScroll: true });
     this.containerEl.scrollTop = scrollTop;
   }
