@@ -7,6 +7,10 @@ export const SETTINGS_SEARCH_ROUTES = {
   "integrations": "Integrations & advanced"
 } as const;
 export const SETTINGS_SEARCH_ENTRIES = [
+  {"name":"Daily nutrition totals","desc":"Copy selected calculated food totals into existing daily-note properties. Incomplete nutrients are left blank. Daily-note text and other properties are preserved.","aliases":[],"route":"daily"},
+  {"name":"Update daily totals","desc":"Automatic updates follow food-log and linked food changes while Health is running. Opening notes and startup never write totals; use the command to refresh earlier days. Turning this off leaves previously saved totals in place.","aliases":["Update daily totals","When food changes","Command only","Off"],"route":"daily"},
+  {"name":"Refresh current daily note","desc":"Open an existing daily note, then update its selected totals. This does not create notes or fill historical days automatically.","aliases":["Refresh current daily note","Update totals"],"route":"daily"},
+  {"name":"Totals to copy","desc":"Choose properties to maintain on daily notes. Removing a selection leaves any previously saved value unchanged. Track additional nutrients under Food & goals to make them available here.","aliases":[],"route":"daily"},
   {"name":"Optional Health blocks","desc":"Appearance of embedded Health blocks. Your Bases and Canvas control their own layout and columns.","aliases":[],"route":"daily"},
   {"name":"Macros block","desc":"","aliases":["Macros block","Rows","Rings"],"route":"daily"},
   {"name":"Nutrient rows","desc":"Choose which nutrients appear in primary totals and lower bars under Food & goals → Nutrient targets.","aliases":["Nutrient rows","Hidden","Expanded","Collapsed"],"route":"daily"},

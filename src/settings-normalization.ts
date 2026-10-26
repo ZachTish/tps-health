@@ -1,4 +1,5 @@
 import { GOAL_SETTINGS_KEYS } from "./goal-notes";
+import { normalizeDailyNutritionRollup } from './daily-nutrition-rollup';
 import { nutritionNumber, normalizeCustomNutrients } from "./nutrients";
 import { MAX_DAILY_ENERGY_KCAL } from "./energy-estimate";
 import { normalizeFoodLogTags } from "./food-log-tags";
@@ -62,6 +63,7 @@ export function normalizeTPSHealthSettings(stored: unknown, identityPropertyKey 
   }, {} as SettingsRecord) as unknown as TPSHealthSettings;
 
   if (!["rings", "table"].includes(settings.macroBlockStyle)) settings.macroBlockStyle = DEFAULT_SETTINGS.macroBlockStyle;
+  settings.dailyNutritionRollup = normalizeDailyNutritionRollup(settings.dailyNutritionRollup);
   if (!["collapsed", "expanded", "hidden"].includes(settings.macroNutrientRows)) settings.macroNutrientRows = DEFAULT_SETTINGS.macroNutrientRows;
   settings.workoutsFolder = folderSetting(settings.workoutsFolder, DEFAULT_SETTINGS.workoutsFolder);
   settings.workoutPlansFolder = folderSetting(settings.workoutPlansFolder, DEFAULT_SETTINGS.workoutPlansFolder);

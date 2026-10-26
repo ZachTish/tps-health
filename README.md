@@ -11,7 +11,7 @@ Search metadata is generated at build time from the existing UI copy in `scripts
 The settings/action inventory is preserved in source; focused regressions cover catalog freshness, every indexed entry and destination, description/placeholder aliases, read-only navigation, 1,000 metadata-enumeration calls without UI/I/O/saves, disclosure focus and disabled-control visibility. The full declared suite and separate final build remain required. Release notes record installed search, route, state-preservation and performance evidence.
 
 
-TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **10.2.0** requires Obsidian **1.12.0** or newer.
+TPS Health provides whole-note food, activity and workout records, nutrition calculations, and interactive logging. Version **11.1.0** requires Obsidian **1.12.0** or newer.
 
 Installed acceptance: all existing destinations were inspected in the reloaded desktop test vault. Native archive results and keyboard navigation were checked without executing maintenance actions or changing saved preferences. Conditional controls stay disabled/hidden until their existing prerequisites are selected. Existing mobile CSS is retained; physical phone acceptance remains separate.
 
@@ -45,13 +45,27 @@ Existing notes are not rewritten on startup or open. **Use calculated nutrients 
 
 The comparison Base is created once with the nutrient columns and physical food-property mappings active at creation. Existing authored Bases, including Macros, are never repaired or replaced by opening a command. Updating an existing Base’s portion columns/formulas is an explicit configuration change; user-authored views, filters and grouping stay owned by that Base. To show an additional nutrient added later, add its column/formula to that Base or create another authored view; target edits do not require this. Activity and other non-food goals remain in the Goals Base; the food comparison does not mix activity totals into nutrition. Current recurring targets apply to the selected day, not historical effective-date snapshots. Bases continue working with Health disabled; food logging/interactive editing still uses Health and GCM.
 
+## Daily-note nutrition totals
+
+**Daily logging → Daily nutrition totals** restores selected numeric daily-note properties using the existing whole-note food index. Choose **Command only** or **When food changes**, then expand **Totals to copy**. Calories, protein, carbohydrates and fat are initially selected; additional tracked nutrients from Food & goals are available. This opt-in feature starts **Off** and does not enable the retired inline-log writer. Goals remain note-backed; rollup preferences contain no target values.
+
+**Update current daily nutrition totals** updates the existing daily note selected in the workspace. The settings button runs the same command. GCM resolves the daily note using its current Core Daily notes/record configuration, including its existing indexed legacy lookup. No notes are created and no new folder/date-format settings are introduced. The output keys are shown next to each selection (for example `consumedCalories`, `protein`, `carbs`, `fat`). Daily-note properties are saved summaries; linked food definitions and consumed quantities remain the nutrition authority. Editing a saved summary does not change consumption.
+
+Automatic mode follows meaningful indexed food-log additions, portion/food/date changes, archives/deletions and linked-food nutrition changes. Only affected dates are considered. It does not run on startup, opening notes, ordinary body-only edits or settings changes. Existing historical days, edits made while Health is closed, and daily notes created after logging can be refreshed with the command. Turning rollups off or deselecting a nutrient leaves previously saved properties untouched.
+
+Totals use the current projected labels, scaled portions and local log dates. A nutrient missing from any included entry makes that day's property blank (`null` if a value was previously saved); a day with no entries is also blank. Known zeroes stay zero. Archived logs are excluded. Incomplete indexing refuses the write rather than treating an unfinished index as a complete day. Changing food definitions can therefore change past daily totals; these are not frozen historical snapshots.
+
+The existing index emits a nutrition-change flag; a transient Set coalesces dates within an event burst. There is no second data index, timer, poller, retry loop, navigation writer or vault enumeration. Cached metadata rejects no-ops before reading a daily note or entering `Vault.process`. At that existing atomic boundary, current indexed values, target identity, selected settings, template/archive exclusions, source bytes and open-editor conflicts are rechecked. Only selected scalar YAML fields are patched; unrelated properties, comments, IDs and body bytes are retained. Malformed/complex properties and unsaved or concurrent editor changes refuse the update; an automatic failure gives one notice per burst and can be retried with the explicit command. GCM must be enabled with daily-note and template APIs.
+
+Controls stay editable while Off and use one disclosure for the nutrient list, with the update action before the list. Existing Health hub, mobile stacking/scrolling, focus behavior, settings destinations and native settings-search indexing are retained. Unit/integration tests cover selective complete/unknown totals, source preservation, source/editor conflicts, mode changes, unchanged bursts and affected-date changes. Installed desktop checks and device limitations are recorded in the release notes.
+
 ## Settings and ownership
 
 The hub shows one destination at a time:
 
 | Destination | What it configures |
 | --- | --- |
-| **Daily logging** (default) | Optional Health block rings/rows and lower nutrient rows, the GCM food-log shortcut and a Core Daily notes settings handoff. |
+| **Daily logging** (default) | Optional Health block rings/rows and lower nutrient rows, selective daily-note nutrition totals, the GCM food-log shortcut and a Core Daily notes settings handoff. |
 | **Food & goals** | Nutrient tracking, targets, independent primary totals and lower bars, energy settings, custom nutrients and branded search. |
 | **Workouts** | Whole-note controls, rest timing, workout estimates and calendar timing properties. |
 | **Note library** | Reusable food/recipe/exercise/workout-plan destinations, supported templates and identification. GCM v2 owns note types and inline property visibility. The existing-workout folder appears only for folder matching. Older installations retain their matching-mode controls; food/workout tags appear only for tag matching, while Exercise tag remains independent. |

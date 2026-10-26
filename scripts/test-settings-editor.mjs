@@ -22,6 +22,7 @@ async function load(entry) {
 const defaults = await load('src/types.ts');
 const schema = await load('src/native-record-schema.ts');
 const nutrients = await load('src/nutrients.ts');
+const nutrientGoals = await load('src/nutrient-goals.ts');
 
 class Element {
   constructor(tag='div', options={}, parent=null) {
@@ -79,7 +80,7 @@ const compiled=ts.transpileModule(`const ${settingsGroup}; export class Tab { ${
 }).outputText;
 function harness() {
   const calls={opened:[],saves:0,migrations:[],preview:0,copy:0,review:0,connection:[],focus:[]};
-  const dependencies={Setting,DEFAULT_SETTINGS:defaults.DEFAULT_SETTINGS,logger:{flow(){}},HealthConnectionSettings:providerModule.exports.HealthConnectionSettings,EXTRA_NUTRIENTS:nutrients.BUILT_IN_NUTRIENTS,...schema,Notice:class{},
+  const dependencies={...nutrientGoals,Setting,DEFAULT_SETTINGS:defaults.DEFAULT_SETTINGS,logger:{flow(){}},HealthConnectionSettings:providerModule.exports.HealthConnectionSettings,EXTRA_NUTRIENTS:nutrients.BUILT_IN_NUTRIENTS,...schema,Notice:class{},
     changeHealthMapping:async(plugin,next,label,scope)=>{calls.migrations.push({next,label,scope});return false;}};
   const exports={};new Function('exports',...Object.keys(dependencies),compiled)(exports,...Object.values(dependencies));
   const settings=structuredClone(defaults.DEFAULT_SETTINGS);
@@ -157,7 +158,7 @@ test('selected property survives a rerender and Apply still requests the existin
 
 test('Daily logging keeps appearance and daily actions without rendering history import controls',()=>{
   const h=harness();h.tab.renderDailyLoggingPage(h.container);
-  assert.deepEqual(h.rows().map(row=>row.name),['Macros block','Nutrient rows','Show food log button in GCM','Daily Notes source']);
+  assert.deepEqual(h.rows().map(row=>row.name),['Update daily totals','Refresh current daily note','Calories','Protein','Carbohydrates','Fat','Macros block','Nutrient rows','Show food log button in GCM','Daily Notes source']);
   assert.equal(h.calls.saves,0);assert.equal(h.calls.preview,0);assert.equal(h.calls.copy,0);
 });
 
@@ -214,4 +215,17 @@ test('legacy workout matching changes refresh conditional controls and restore t
   assert.deepEqual(h.calls.focus,['[data-tps-health-workout-identification]']);
   h.container.empty();h.tab.renderNoteLibraryPage(h.container);
   assert.ok(h.row('Existing workout folder'));assert.equal(h.row('Workout tag'),undefined);
+});
+
+test('daily rollup controls are opt-in, remain editable while off, and retain independent selections',async()=>{
+ const h=harness();const before=structuredClone(h.plugin.settings);h.tab.renderDailyLoggingPage(h.container);
+ assert.equal(h.row('Update daily totals').controls[0].inputEl.value,'off');
+ assert.equal(h.calls.saves,0);assert.deepEqual(h.plugin.settings,before);
+ const disclosure=h.container.all().find(el=>el.dataset.tpsHealthSettingsDisclosure==='daily-nutrition');
+ assert.equal(disclosure.open,false);assert.ok(h.row('Protein'));
+ await h.row('Protein').controls[0].change(false);
+ assert.equal(h.plugin.settings.dailyNutritionRollup.nutrients.includes('protein'),false);
+ await h.row('Update daily totals').controls[0].change('automatic');
+ assert.equal(h.plugin.settings.dailyNutritionRollup.mode,'automatic');assert.equal(h.plugin.settings.dailyNutritionRollup.nutrients.includes('protein'),false);
+ assert.deepEqual(h.plugin.settings.healthGoals,before.healthGoals);
 });

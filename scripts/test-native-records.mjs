@@ -3211,7 +3211,7 @@ test('a known Health modify refreshes its cached source before MetadataCache cat
   assert.deepEqual(readCalls, []);
   assert.deepEqual(cachedReadCalls, [file.path]);
   assert.deepEqual(changes.at(-1), {
-    path: 'food-live.md', kinds: ['food-entry'], dates: ['2026-08-24'],
+    path: 'food-live.md', kinds: ['food-entry'], dates: ['2026-08-24'], nutritionChanged: true,
   });
 });
 
@@ -5113,4 +5113,26 @@ test('legacy food import refuses missing definitions instead of discarding recor
  const result=await h.service.importLegacyRecords();
  assert.equal(result.created,0);assert.equal(result.failed,1);
  assert.equal(h.contents.get('Inbox/Old.md'),source);assert.equal(h.createCalls.length,0);
+});
+
+test('daily rollup projection keeps missing nutrients and emits only meaningful nutrition changes without scans', async()=>{
+ const h=await createLinkedProjectionHarness(2,{sodiumMg:0});
+ try {
+  const changes=[];h.service.onRecordsChanged(change=>{if(change.nutritionChanged)changes.push(change);});
+  const before=[h.counts.scans,h.cachedReadCalls.length,h.readCalls.length,h.updateCalls.length];
+  for(let i=0;i<100;i++)h.emitMetadata('changed',h.seed.file,'ordinary body '+i,{frontmatter:h.frontmatters.get(h.seed.file)});
+  assert.equal(changes.length,0,'body-only edits do not queue rollups');
+  const rows=h.service.getDailyFoodNutrition('2026-10-06');
+  assert.equal(rows.length,2);assert.equal(rows[0].sodiumMg,0);assert.equal(rows[0].fiberG,undefined);
+  assert.deepEqual([h.counts.scans,h.cachedReadCalls.length,h.readCalls.length,h.updateCalls.length],before);
+  h.notifyDefinition({...h.frontmatters.get(h.food),proteinG:30});
+  assert.equal(changes.length,2);assert.equal(h.service.getDailyFoodNutrition('2026-10-06')[0].proteinG,30);
+  const moved={...h.frontmatters.get(h.seed.file),completedDate:'2026-10-07T12:00:00Z'};
+  h.frontmatters.set(h.seed.file,moved);h.emitMetadata('changed',h.seed.file,'',{frontmatter:moved});
+  assert.deepEqual(changes.at(-1).dates,['2026-10-06','2026-10-07']);
+  assert.equal(h.service.getDailyFoodNutrition('2026-10-06').length,1);
+  assert.equal(h.service.getDailyFoodNutrition('2026-10-07').length,1);
+  h.emitMetadata('changed',h.seed.file,'',{frontmatter:{...moved,archived:true}});
+  assert.equal(h.service.getDailyFoodNutrition('2026-10-07').length,0);
+ } finally {h.service.dispose();}
 });
