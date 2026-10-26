@@ -4,7 +4,6 @@ import type { HealthMappingScope } from "./health-mapping";
 import { changeHealthMapping } from "./health-mapping-migration";
 import { renderEnergySettings } from "./energy-settings";
 import { renderNutrientGoalSettings } from "./nutrient-goal-settings";
-import { goalNutrients, canonicalGoalKey } from './nutrient-goals';
 import { renderCustomNutrientSettings } from "./custom-nutrient-settings";
 import { HealthConnectionSettings } from "./connection-settings";
 import { BUILT_IN_NUTRIENTS as EXTRA_NUTRIENTS } from "./nutrients";
@@ -21,7 +20,7 @@ import {
 } from "./native-record-schema";
 
 type HealthSettingsPage = "daily" | "food-goals" | "workouts" | "library" | "integrations";
-type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter" | "earlier-logs" | "daily-nutrition";
+type OptionalDisclosureId = "custom-goals" | "templates" | "native-frontmatter" | "earlier-logs";
 type LibraryFolderSettingKey = "workoutsFolder" | "workoutPlansFolder" | "exercisesFolder" | "foodsFolder" | "recipesFolder";
 
 interface HealthSettingsDestination {
@@ -274,32 +273,6 @@ export class TPSHealthSettingTab extends PluginSettingTab {
   }
 
   private renderDailyLoggingPage(page: HTMLElement): void {
-    const rollup = createSettingsGroup(page, 'Daily nutrition totals', 'Copy selected calculated food totals into existing daily-note properties. Incomplete nutrients are left blank. Daily-note text and other properties are preserved.');
-    new Setting(rollup).setName('Update daily totals').setDesc('Automatic updates follow food-log and linked food changes while Health is running. Opening notes and startup never write totals; use the command to refresh earlier days. Turning this off leaves previously saved totals in place.').addDropdown(dropdown => dropdown
-      .addOption('off', 'Off').addOption('manual', 'Command only').addOption('automatic', 'When food changes')
-      .setValue(this.plugin.settings.dailyNutritionRollup.mode)
-      .onChange(async value => {
-        this.plugin.settings.dailyNutritionRollup.mode = value as 'off' | 'manual' | 'automatic';
-        await this.plugin.saveSettings();
-      }));
-    new Setting(rollup).setName('Refresh current daily note').setDesc('Open an existing daily note, then update its selected totals. This does not create notes or fill historical days automatically.').addButton(button => button
-      .setButtonText('Update totals')
-      .onClick(() => {
-        const executed = (this.app as any).commands?.executeCommandById('tps-health:update-current-daily-nutrition-totals');
-        if (!executed) new Notice('Select Command only or When food changes above, and open a daily note first.');
-      }));
-    const selected = new Set(this.plugin.settings.dailyNutritionRollup.nutrients);
-    const tracked = new Set((this.plugin.getHealthGoals?.() || []).map(goal => canonicalGoalKey(goal.propertyKey)));
-    const choices = goalNutrients().filter(nutrient => selected.has(nutrient.key) || tracked.has(nutrient.key)
-      || ['consumedCalories', 'protein', 'carbs', 'fat'].includes(nutrient.key));
-    const selection = this.createOptionalDisclosure(rollup, 'daily-nutrition', 'Totals to copy', 'Choose properties to maintain on daily notes. Removing a selection leaves any previously saved value unchanged. Track additional nutrients under Food & goals to make them available here.');
-    for (const nutrient of choices) new Setting(selection).setName(nutrient.label).setDesc(`${nutrient.key} · ${nutrient.unit}`).addToggle(toggle => toggle
-      .setValue(selected.has(nutrient.key)).onChange(async enabled => {
-        const keys = new Set(this.plugin.settings.dailyNutritionRollup.nutrients);
-        if (enabled) keys.add(nutrient.key); else keys.delete(nutrient.key);
-        this.plugin.settings.dailyNutritionRollup.nutrients = [...keys];
-        await this.plugin.saveSettings();
-      }));
     const appearance = createSettingsGroup(page, "Optional Health blocks", "Appearance of embedded Health blocks. Your Bases and Canvas control their own layout and columns.");
     new Setting(appearance).setName("Macros block").addDropdown(dropdown => dropdown
       .addOption("rings", "Rings").addOption("table", "Rows")

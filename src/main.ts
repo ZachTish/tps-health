@@ -1,7 +1,4 @@
-import { dailyNutritionSource } from './daily-nutrition-source';
-import { configuredNativePropertyKey } from './native-record-schema';
 import { foodLogUpgrade, upgradeFoodBaseFormulas, commitFoodUpgrade } from './food-log-upgrade';
-import { dailyNutritionValues, needsDailyNutritionUpdate } from './daily-nutrition-rollup';
 import { calculatedFoodLogKeys, foodLogBody, prepareFoodLogCreation } from './food-log-presentation';
 import { foodServingChoices } from "./food-property-choices";
 import { GOAL_FIELDS, goalNoteFields, goalNoteSignature, legacyGoalSignature, readGoalNote } from "./goal-notes";
@@ -717,27 +714,6 @@ export default class TPSHealthPlugin extends Plugin {
     this.lastSavedSettingsSnapshot = cloneSettingsSnapshot(this.settings);
     this.nativeRecordService = new HealthNativeRecordService(this);
     this.nativeRecordService.setup();
-    this.register(this.nativeRecordService.onRecordsChanged(change => {
-      if (this.settings.dailyNutritionRollup.mode !== 'automatic' || !change.nutritionChanged
-        || this.nativeRecordService?.getDailyIndexStatus() !== 'ready') return;
-      this.queueDailyNutritionTotals(change.dates);
-    }));
-    this.register(() => { this.dailyNutritionStopped = true; this.pendingDailyNutritionDates.clear(); });
-
-    this.addCommand({
-      id: 'update-current-daily-nutrition-totals',
-      name: 'Update current daily nutrition totals',
-      checkCallback: checking => {
-        const file = this.app.workspace.getActiveFile();
-        const date = file && this.getGcmApi()?.dailyNotes?.dateForFile?.(file);
-        if (!date || this.settings.dailyNutritionRollup.mode === 'off') return false;
-        if (!checking) void this.traceCommand('update-current-daily-nutrition-totals', async () => {
-          const result = await this.updateDailyNutritionTotals(date, file!);
-          new Notice(result === 'updated' ? 'Daily nutrition totals updated.' : result === 'unchanged' ? 'Daily nutrition totals are already current.' : 'No eligible daily note found.');
-        });
-        return true;
-      },
-    });
 
     this.register(this.onActiveWorkoutStateChanged(() => this.scheduleWorkoutActionBars()));
     this.api = this.createApi();
@@ -6167,90 +6143,6 @@ export default class TPSHealthPlugin extends Plugin {
     const { format, folder } = await this.getDailyNoteSettings();
     const fileName = `${window.moment().format(format)}.md`;
     return normalizePath(folder ? `${folder}/${fileName}` : fileName);
-  }
-
-  private pendingDailyNutritionDates = new Set<string>();
-  private dailyNutritionDrain: Promise<void> | null = null;
-  private dailyNutritionStopped = false;
-
-  private queueDailyNutritionTotals(dates: string[]): void {
-    for (const date of dates) this.pendingDailyNutritionDates.add(date);
-    if (this.dailyNutritionDrain) return;
-    // Coalesce a source event burst only. No timers, startup pass or retry loop.
-    this.dailyNutritionDrain = Promise.resolve().then(async () => {
-      let failures = 0;
-      while (!this.dailyNutritionStopped && this.pendingDailyNutritionDates.size) {
-        const date = this.pendingDailyNutritionDates.values().next().value!;
-        this.pendingDailyNutritionDates.delete(date);
-        try { await this.updateDailyNutritionTotals(date, undefined, true); }
-        catch (error) {
-          logger.flowWarn('DailyNutrition', 'update:skipped', { date, error: logger.errorSummary(error) });
-          failures++;
-        }
-      }
-      if (failures && !this.dailyNutritionStopped) new Notice(`Daily nutrition totals skipped ${failures} day(s). Save any daily-note edits, then run Update current daily nutrition totals.`, 8000);
-    }).finally(() => { this.dailyNutritionDrain = null; });
-  }
-
-  async updateDailyNutritionTotals(date: string, expectedFile?: TFile, automatic = false): Promise<'updated' | 'unchanged' | 'skipped'> {
-    const settings = this.settings.dailyNutritionRollup;
-    if (this.dailyNutritionStopped || settings.mode === 'off' || (automatic && settings.mode !== 'automatic') || !settings.nutrients.length) return 'skipped';
-    const api = this.getGcmApi();
-    if (typeof api?.dailyNotes?.findForIsoDate !== 'function' || typeof api?.templates?.canAutomaticallyMutate !== 'function'
-      || typeof api?.templates?.canAutomaticallyMutateSource !== 'function') {
-      throw new Error('Daily nutrition totals require current TPS GCM daily-note and template support.');
-    }
-    const file = api.dailyNotes.findForIsoDate(date);
-    if (!(file instanceof TFile) || (expectedFile && expectedFile !== file)) return 'skipped';
-    const path = file.path;
-    const configuration = JSON.stringify(settings);
-    // The public file guard is asynchronous. Retain its exclusion configuration
-    // so a rule edit cannot invalidate that permission before Vault.process.
-    const gcm = (this.app as any).plugins?.plugins?.['tps-global-context-menu'];
-    const exclusions = gcm?.settings?.frontmatterAutoWriteExclusions;
-    const profile = this.getGcmNativeRecordsApi()?.getStorageProfile?.();
-    const reserved = new Set(['id', 'kind', 'tags', 'title', 'date', 'createddate', 'modifieddate', 'completeddate', 'archived', 'archiveddate',
-      String(profile?.identityPropertyKey || 'id').toLowerCase(),
-      String(api.frontmatterKinds?.propertyKey?.('kind') || 'kind').toLowerCase(),
-      ...Object.values(api.frontmatterKinds?.snapshot?.() || {}).flatMap((entry: any) => [entry.primary?.key, entry.primary?.kindList?.key, entry.primary?.scalar?.key, entry.discriminator?.key].filter(Boolean).map((key: string) => key.toLowerCase()))]);
-    if (settings.nutrients.some(key => reserved.has(key.toLowerCase()))) throw new Error('A selected daily total conflicts with an identity or classification property.');
-    const currentValues = () => dailyNutritionValues(this.nativeRecordService!.getDailyFoodNutrition(date), settings.nutrients);
-    const values = currentValues();
-    const cache = this.app.metadataCache.getFileCache(file)?.frontmatter;
-    const allowed = (fields: Record<string, unknown>) => !this.dailyNutritionStopped
-      && configuration === JSON.stringify(this.settings.dailyNutritionRollup)
-      && exclusions === gcm?.settings?.frontmatterAutoWriteExclusions && this.getGcmApi() === api
-      && file.path === path && this.app.vault.getAbstractFileByPath(path) === file
-      && api.dailyNotes.findForIsoDate(date) === file
-      && api.templates.canAutomaticallyMutateFrontmatter?.(fields) !== false
-      && fields.archived !== true && fields[configuredNativePropertyKey(this.settings, 'archived')] !== true;
-    if (!allowed(cache || {})) return 'skipped';
-    if (cache && !needsDailyNutritionUpdate(cache, values)) return 'unchanged';
-    if (await api.templates.canAutomaticallyMutate(file) !== true) return 'skipped';
-    const source = await this.app.vault.read(file);
-    const editorUnchanged = () => {
-      let clean = true;
-      this.app.workspace.iterateAllLeaves(leaf => {
-        const view = leaf.view;
-        if (view instanceof MarkdownView && view.file === file && view.getMode() === 'source' && view.editor?.getValue() !== source) clean = false;
-      });
-      return clean;
-    };
-    if (!editorUnchanged()) throw new Error('Daily note has unsaved editor changes.');
-    if (dailyNutritionSource(source, currentValues()) === source) return 'unchanged';
-    let changed = false;
-    // Existing atomic boundary: recheck the source, editors, exclusions and
-    // indexed totals inside the write, never overwrite a newer daily note.
-    await this.app.vault.process(file, current => {
-      if (current !== source || !editorUnchanged()) throw new Error('Daily note changed before totals could be saved.');
-      const info = getFrontMatterInfo(current.replace(/^\uFEFF/, ''));
-      const fields = info.exists ? parseYaml(info.frontmatter) || {} : {};
-      if (!allowed(fields) || api.templates.canAutomaticallyMutateSource(current) !== true) throw new Error('Daily note or rollup configuration changed.');
-      const next = dailyNutritionSource(current, currentValues());
-      changed = next !== current;
-      return next;
-    });
-    return changed ? 'updated' : 'unchanged';
   }
 
   private async processHealthFrontmatter(

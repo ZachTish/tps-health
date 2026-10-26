@@ -261,7 +261,6 @@ export interface NativeHealthRecordChange {
   path: string;
   kinds: NativeHealthKind[];
   dates: string[];
-  nutritionChanged?: boolean;
 }
 
 export interface NativeDailyActivityTotals {
@@ -2049,16 +2048,6 @@ export class HealthNativeRecordService {
     return { entryCount: records.length, ...totals };
   }
 
-  /** Complete indexed consumption, without converting absent label values to zero. */
-  getDailyFoodNutrition(dateIso: string): Record<string, unknown>[] {
-    if (this.getDailyIndexStatus() !== 'ready' || this.refreshGenerations.size > 0) {
-      throw new Error('Health food totals are still loading. Try Update current daily nutrition totals once indexing finishes.');
-    }
-    return this.getKindDateRecords('food-entry', dateIso)
-      .filter(record => record.frontmatter.archived !== true && dateKey(record.frontmatter.completedDate || record.frontmatter.date) === dateIso)
-      .map(record => ({...record.frontmatter}));
-  }
-
   async readDailyFoodTotals(dateIso: string): Promise<NutritionTotals & { entryCount: number }> {
     await this.waitForFullDiscovery();
     if (this.disposed) throw new Error('Health native records are unloaded.');
@@ -3381,11 +3370,7 @@ export class HealthNativeRecordService {
     if (kinds.includes('workout-session') || kinds.includes('workout-exercise')) {
       this.plugin.scheduleWorkoutActionBars();
     }
-    const nutritionSignature = (record: IndexedHealthRecord | null | undefined) => record?.kind === 'food-entry'
-      ? JSON.stringify([record.dailyDates, record.frontmatter.archived === true,
-        ...[...CORE_NUTRIENT_KEYS, ...EXTRA_NUTRIENT_KEYS].map(key => nutritionNumber(record.frontmatter[key]) ?? null)]) : null;
-    const change: NativeHealthRecordChange = { path, kinds, dates,
-      ...(kinds.includes('food-entry') ? {nutritionChanged: nutritionSignature(previous) !== nutritionSignature(current)} : {}) };
+    const change = { path, kinds, dates };
     for (const listener of this.changeListeners) listener(change);
   }
 

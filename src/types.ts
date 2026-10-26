@@ -79,7 +79,6 @@ export interface TPSHealthSettings {
   customFoodTag: string;
   recipeTag: string;
   showFoodLogButtonInGcm: boolean;
-  dailyNutritionRollup: import('./daily-nutrition-rollup').DailyNutritionRollupSettings;
   includeBrandedFoodSearch: boolean;
   macroBlockStyle: "rings" | "table";
   macroNutrientRows: "collapsed" | "expanded" | "hidden";
@@ -388,7 +387,6 @@ export const DEFAULT_SETTINGS: TPSHealthSettings = {
   customFoodTag: "#tps/food",
   recipeTag: "#tps/recipe",
   showFoodLogButtonInGcm: false,
-  dailyNutritionRollup: { mode: 'off', nutrients: ['consumedCalories', 'protein', 'carbs', 'fat'] },
   includeBrandedFoodSearch: true,
   macroBlockStyle: "rings",
   macroNutrientRows: "collapsed",
